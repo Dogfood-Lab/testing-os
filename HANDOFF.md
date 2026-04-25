@@ -229,6 +229,13 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
 
 ## Session G — Final ship: v1.0.0 + GitHub release + (optional) npm publish
 
+**Completed 2026-04-25 (npm publish deferred per HANDOFF guidance).** v1.0.0 cut, tag pushed, GitHub release published at [https://github.com/dogfood-lab/testing-os/releases/tag/v1.0.0](https://github.com/dogfood-lab/testing-os/releases/tag/v1.0.0). Trail:
+
+- Shipcheck audit: 100% pass on hard gates A–D (20 checked / 17 SKIP-with-justification / 0 unchecked). [PR #13](https://github.com/dogfood-lab/testing-os/pull/13) (squash `9625ea3`) ships the SHIP_GATE.md, SCORECARD.md, README threat model, repo metadata, lockstep `0.2.0-pre` → `1.0.0` bump, and the [1.0.0] CHANGELOG entry enumerating Sessions A–F.
+- Tag `v1.0.0` pushed to `dogfood-lab/testing-os`.
+- GitHub release created via `gh release create v1.0.0` with the CHANGELOG section as body.
+- npm publish: **deferred** — all 7 packages remain `private: true` per the HANDOFF's "deferred to Mike's choice." Flip to publish when there's a downstream pulled-via-npm consumer that needs it.
+
 **Goal.** Promote `0.1.0-pre` → `1.0.0` lockstep across all 7 packages. Tag a release. Optionally publish.
 
 **Why.** First stable version after migration. Marks the point where consumers can pin to `^1.0.0` confidently.
@@ -267,7 +274,7 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
 - [x] Session D done — 7 translations published
 - [x] Session E done — `$id` URLs flipped, schemas bumped
 - [x] Session F done — zero unintentional external references (intentional ones documented in Session F header)
-- [ ] Session G done — v1.0.0 tagged and released
+- [x] Session G done — v1.0.0 tagged and released (npm publish deferred per HANDOFF guidance)
 - [ ] **Issues + PR history archived externally** for the legacy repo:
   ```bash
   gh issue list --repo mcp-tool-shop-org/dogfood-labs --state all --limit 1000 --json number,title,state,body,createdAt,labels,comments > legacy-issues.json
@@ -336,8 +343,8 @@ For the record (so they don't get lost):
 - ~~**`scripts/sync-version.mjs`** — world-forge has it, we don't. Without it, README version line drifts.~~ — Done 2026-04-25 (Session C). Wired as `prebuild`; `npm run sync-version:check` is the CI gate.
 - ~~**`CONTRIBUTING.md`** — none.~~ — Done 2026-04-25 (Session C). Points at CLAUDE.md as the operating manual.
 - **TS conversion** — JS packages, not type-safe yet.
-- **First v1.0.0 stable release** — still on `0.1.0-pre`.
-- **npm publish** — all packages still `private: true`. May want some public.
+- ~~**First v1.0.0 stable release** — still on `0.1.0-pre`.~~ — Done 2026-04-25 (Session G). [Release v1.0.0](https://github.com/dogfood-lab/testing-os/releases/tag/v1.0.0).
+- **npm publish** — all packages still `private: true`. May want some public. Mike's call; defer until a downstream consumer needs it via npm.
 - **The 4 dispatcher orphans** (polyglot-vscode, repo-crawler-mcp, tool-scan, vocal-synth-engine) — folded into the prototypes seed vault. Their passports may still reference dogfood-labs paths. Audit happens in Session F.
 - ~~**`.github/workflows/pages.yml`** — testing-os has only `ci.yml`. Need a Pages workflow for the handbook.~~ — Done 2026-04-25 (Session B). testing-os now has 3 workflows (`ci.yml`, `ingest.yml`, `pages.yml`) — exceeds the soft cap of 2 in `.claude/rules/github-actions.md`, but each has a distinct purpose. Surfaced in [PR #3](https://github.com/dogfood-lab/testing-os/pull/3).
 - **Site-tree npm audit vulnerabilities** — surfaced during Session B. `site/package-lock.json` (inherited from legacy) reports 8 vulnerabilities (5 moderate, 3 high) in Astro/Starlight transitive deps. Not blocking deployment, but worth a `npm audit fix` pass.
