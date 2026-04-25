@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-25T03:06:22.186Z",
+  "generatedAt": "2026-04-25T21:21:34.616Z",
   "coverage": {
     "total_repos": 13,
     "surfaces_covered": 8,
@@ -31,10 +31,10 @@
       "surface": "mcp-server",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 30,
+      "freshness_days": 0,
       "scenario": "status-preflight-roundtrip",
-      "run_id": "claude-guardian-23567284476-1",
-      "finished_at": "2026-03-25T22:26:10Z"
+      "run_id": "claude-guardian-24922209099-1",
+      "finished_at": "2026-04-25T04:09:45Z"
     },
     {
       "repo": "mcp-tool-shop-org/code-batch",
@@ -91,7 +91,7 @@
       "surface": "npm-package",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 28,
+      "freshness_days": 29,
       "scenario": "scaffold-and-verify",
       "run_id": "site-theme-23630385933-1",
       "finished_at": "2026-03-27T03:56:32Z"
