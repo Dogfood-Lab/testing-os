@@ -10,6 +10,8 @@ export default defineConfig({
   integrations: [
     starlight({
       title: 'testing-os',
+      logo: { src: './public/logo.png', replacesTitle: false },
+      favicon: '/logo.png',
       disable404Route: true,
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/dogfood-lab/testing-os' },
