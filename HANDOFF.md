@@ -101,6 +101,14 @@ Bundled the missing `ingest.yml` workflow into Session A (per the plan); shipped
 
 ## Session C — Brand testing-os
 
+**Completed 2026-04-25 (logo deferred).** 3 of 4 items shipped via [PR #5](https://github.com/dogfood-lab/testing-os/pull/5) (squash `4ba9f06`):
+- 4 badges in README.md (CI, Pages, License, Node ≥ 20)
+- `scripts/sync-version.mjs` adopted from world-forge, wired as `prebuild`. README version block auto-stamped.
+- CONTRIBUTING.md added, points at CLAUDE.md
+- Status/Packages/Layout sections updated to reflect the migration is done
+
+Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mike's directional input. Tracking under "Things we didn't have time for tonight."
+
 **Goal.** Logo, badges, polished README — match the world-forge / motif standard.
 
 **Why.** testing-os is the flagship of the new org. A bare-bones README erodes trust before anyone reads the code.
@@ -240,7 +248,7 @@ Bundled the missing `ingest.yml` workflow into Session A (per the plan); shipped
 
 - [x] Session A done — verified end-to-end flow works on the new repo
 - [x] Session B done — handbook lives at `dogfood-lab.github.io/testing-os/`
-- [ ] Session C done — brand + badges + version stamping in place
+- [x] Session C done — brand + badges + version stamping in place (logo deferred to its own session)
 - [ ] Session D done — 7 translations published
 - [ ] Session E done — `$id` URLs flipped, schemas bumped
 - [ ] Session F done — zero unintentional external references
@@ -299,8 +307,8 @@ gh repo delete mcp-tool-shop-org/dogfood-labs --yes
 
 For the record (so they don't get lost):
 
-- **Logo** — testing-os has none. Brand repo references the legacy `dogfood-labs/readme.png`.
-- **README badges** — none on the new repo. World-forge has them; we should mirror.
+- **Logo** — testing-os has none. Brand repo references the legacy `dogfood-labs/readme.png`. Wants its own session: Sprite Foundry visual-pipeline pass + Mike's directional input.
+- ~~**README badges** — none on the new repo. World-forge has them; we should mirror.~~ — Done 2026-04-25 (Session C). 4 badges live (CI, Pages, License, Node).
 - **Translation pass** — 7 README languages.
 - ~~**Astro handbook + Pages deployment** — biggest gap. The old `mcp-tool-shop-org.github.io/dogfood-labs/` site is the public face.~~ — Done 2026-04-25 (Session B). The legacy URL still serves; it dies when `mcp-tool-shop-org/dogfood-labs` is deleted in Session H.
 - **Schema `$id` URLs** — still legacy.
@@ -310,8 +318,8 @@ For the record (so they don't get lost):
 - **`HANDOFF.md` Session A step 4 used the wrong subcommand** — it said `npx @mcptoolshop/shipcheck audit --gate F …`, but the actual subcommand is `npx @mcptoolshop/shipcheck dogfood …`. The `audit` subcommand is the SHIP_GATE.md tracker, not the dogfood-freshness check. Fixed.
 - **Pinned action SHAs in `ingest.yml` and `ci.yml` are Node 20** — GitHub deprecation warning fired during the first ingest.yml run. Forced to Node 24 by 2026-06-02; Node 20 removed by 2026-09-16. Bump the SHAs before then.
 - **External-reference audit** — beyond the 4 codebases the recon swarm found, we never checked the prototypes seed vault, the brand repo, or external consumers.
-- **`scripts/sync-version.mjs`** — world-forge has it, we don't. Without it, README version line drifts.
-- **`CONTRIBUTING.md`** — none.
+- ~~**`scripts/sync-version.mjs`** — world-forge has it, we don't. Without it, README version line drifts.~~ — Done 2026-04-25 (Session C). Wired as `prebuild`; `npm run sync-version:check` is the CI gate.
+- ~~**`CONTRIBUTING.md`** — none.~~ — Done 2026-04-25 (Session C). Points at CLAUDE.md as the operating manual.
 - **TS conversion** — JS packages, not type-safe yet.
 - **First v1.0.0 stable release** — still on `0.1.0-pre`.
 - **npm publish** — all packages still `private: true`. May want some public.
