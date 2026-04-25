@@ -1,0 +1,14 @@
+/* Starlight dark theme — blue accent (matches testing-os cube logo) */
+:root {
+  --sl-color-accent-low: #1e1b4b;
+  --sl-color-accent: #3b82f6;
+  --sl-color-accent-high: #93c5fd;
+}
+
+html[data-theme='dark'] {
+  --sl-color-bg: #09090b;
+  --sl-color-bg-sidebar: #0a0a0c;
+  --sl-color-bg-nav: #09090b;
+  --sl-color-hairline: #27272a;
+  --sl-color-hairline-light: #27272a;
+}
