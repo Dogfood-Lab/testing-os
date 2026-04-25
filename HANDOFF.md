@@ -23,6 +23,18 @@
 
 ## Session A — Live verification of the cutover
 
+**Completed 2026-04-25.** End-to-end verified against `mcp-tool-shop-org/claude-guardian` (ai-loadout's build is broken on main — see "Things we didn't have time for"). Run trail:
+
+- ai-loadout dogfood run [24922190504](https://github.com/mcp-tool-shop-org/ai-loadout/actions/runs/24922190504) — failed at `npm run build` (pre-existing TS config issue, unrelated to migration)
+- claude-guardian dogfood run [24922209099](https://github.com/mcp-tool-shop-org/claude-guardian/actions/runs/24922209099) — success but `DOGFOOD_TOKEN not set` warning, dispatch skipped
+- Manually dispatched the same submission shape from `mcp-tool-shop` user → testing-os ingest run [24922250743](https://github.com/dogfood-lab/testing-os/actions/runs/24922250743) ✓
+- Record at [records/mcp-tool-shop-org/claude-guardian/2026/04/25/run-claude-guardian-24922209099-1.json](records/mcp-tool-shop-org/claude-guardian/2026/04/25/run-claude-guardian-24922209099-1.json) on commit 4fb1913 (auto-committed by ingest.yml)
+- `latest-by-repo.json` updated to point at the new record
+- `node F:/AI/shipcheck/bin/shipcheck.mjs dogfood --repo mcp-tool-shop-org/claude-guardian --surface mcp-server` → ✓ "verified pass, 0d old"
+- `node F:/AI/repo-knowledge/dist/cli.js sync-dogfood --local F:/AI/dogfood-lab/testing-os` → ✓ "13 repos synced, 91 facts upserted"
+
+Bundled the missing `ingest.yml` workflow into Session A (per the plan); shipped via [PR #1](https://github.com/dogfood-lab/testing-os/pull/1) (squash `e808d77`).
+
 **Goal.** Confirm the merged PRs actually work in production, not just in CI.
 
 **Why first.** If something's broken about the new dispatch path, every other session is wasted effort.
@@ -42,7 +54,7 @@
 3. Confirm a new record appears in `records/mcp-tool-shop-org/ai-loadout/<year>/<month>/<day>/`.
 4. Run shipcheck Gate F against the new repo:
    ```bash
-   npx @mcptoolshop/shipcheck audit --gate F --repo mcp-tool-shop-org/ai-loadout --surface cli
+   npx @mcptoolshop/shipcheck dogfood --repo mcp-tool-shop-org/ai-loadout --surface cli
    ```
    Should succeed using the new `DEFAULT_DOGFOOD_REPO = "dogfood-lab/testing-os"`.
 5. Run repo-knowledge sync against the new repo:
@@ -224,7 +236,7 @@
 
 **Pre-flight checklist:**
 
-- [ ] Session A done — verified end-to-end flow works on the new repo
+- [x] Session A done — verified end-to-end flow works on the new repo
 - [ ] Session B done — handbook lives at `dogfood-lab.github.io/testing-os/`
 - [ ] Session C done — brand + badges + version stamping in place
 - [ ] Session D done — 7 translations published
@@ -290,7 +302,11 @@ For the record (so they don't get lost):
 - **Translation pass** — 7 README languages.
 - **Astro handbook + Pages deployment** — biggest gap. The old `mcp-tool-shop-org.github.io/dogfood-labs/` site is the public face.
 - **Schema `$id` URLs** — still legacy.
-- **Live verification** — we have CI green but no actual end-to-end dogfood run through the new repo yet.
+- ~~**Live verification** — we have CI green but no actual end-to-end dogfood run through the new repo yet.~~ — Done 2026-04-25 (Session A).
+- **`DOGFOOD_TOKEN` secret missing on consumer repos** — surfaced during Session A. Without it, every consumer's `dogfood.yml` skips the dispatch step with a `DOGFOOD_TOKEN not set — skipping dispatch` warning. Affects: ai-loadout, claude-guardian, glyphstudio, site-theme, plus any future consumer. Need a fine-grained PAT (or GitHub App) with `contents: write` on `dogfood-lab/testing-os`, added as `DOGFOOD_TOKEN` to each consumer's secrets. **User-side action** (token creation requires Mike's auth).
+- **ai-loadout build is broken on `main`** — surfaced during Session A. `tsc` fails with TS2591 / TS2534 on `node:fs`, `node:path`, `process` etc.; `@types/node` not effective. Pre-existing on main since at least the 2026-04-25 cutover commit. Independent of testing-os migration but blocks ai-loadout's own dogfood until fixed.
+- **`HANDOFF.md` Session A step 4 used the wrong subcommand** — it said `npx @mcptoolshop/shipcheck audit --gate F …`, but the actual subcommand is `npx @mcptoolshop/shipcheck dogfood …`. The `audit` subcommand is the SHIP_GATE.md tracker, not the dogfood-freshness check. Fixed.
+- **Pinned action SHAs in `ingest.yml` and `ci.yml` are Node 20** — GitHub deprecation warning fired during the first ingest.yml run. Forced to Node 24 by 2026-06-02; Node 20 removed by 2026-09-16. Bump the SHAs before then.
 - **External-reference audit** — beyond the 4 codebases the recon swarm found, we never checked the prototypes seed vault, the brand repo, or external consumers.
 - **`scripts/sync-version.mjs`** — world-forge has it, we don't. Without it, README version line drifts.
 - **`CONTRIBUTING.md`** — none.
