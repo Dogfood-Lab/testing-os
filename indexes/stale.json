@@ -1,1 +1,74 @@
-[]
+[
+  {
+    "repo": "mcp-tool-shop-org/ai-loadout",
+    "surface": "cli",
+    "run_id": "ai-loadout-23566269375-1",
+    "finished_at": "2026-03-25T21:59:20Z",
+    "age_days": 30,
+    "path": "records/mcp-tool-shop-org/ai-loadout/2026/03/25/run-ai-loadout-23566269375-1.json"
+  },
+  {
+    "repo": "mcp-tool-shop-org/code-batch",
+    "surface": "cli",
+    "run_id": "code-batch-23568477306-1",
+    "finished_at": "2026-03-25T23:00:15Z",
+    "age_days": 30,
+    "path": "records/mcp-tool-shop-org/code-batch/2026/03/25/run-code-batch-23568477306-1.json"
+  },
+  {
+    "repo": "mcp-tool-shop-org/glyphstudio",
+    "surface": "desktop",
+    "run_id": "glyphstudio-23325766223-1",
+    "finished_at": "2026-03-20T01:54:44Z",
+    "age_days": 36,
+    "path": "records/mcp-tool-shop-org/glyphstudio/2026/03/20/run-glyphstudio-23325766223-1.json"
+  },
+  {
+    "repo": "mcp-tool-shop-org/repo-crawler-mcp",
+    "surface": "mcp-server",
+    "run_id": "repo-crawler-mcp-23571073097-1",
+    "finished_at": "2026-03-26T00:22:41Z",
+    "age_days": 30,
+    "path": "records/mcp-tool-shop-org/repo-crawler-mcp/2026/03/26/run-repo-crawler-mcp-23571073097-1.json"
+  },
+  {
+    "repo": "mcp-tool-shop-org/shipcheck",
+    "surface": "cli",
+    "run_id": "shipcheck-23571363808-1",
+    "finished_at": "2026-03-26T00:32:46Z",
+    "age_days": 30,
+    "path": "records/mcp-tool-shop-org/shipcheck/2026/03/26/run-shipcheck-23571363808-1.json"
+  },
+  {
+    "repo": "mcp-tool-shop-org/tool-scan",
+    "surface": "cli",
+    "run_id": "tool-scan-23571932376-1",
+    "finished_at": "2026-03-26T00:52:34Z",
+    "age_days": 30,
+    "path": "records/mcp-tool-shop-org/tool-scan/2026/03/26/run-tool-scan-23571932376-1.json"
+  },
+  {
+    "repo": "mcp-tool-shop-org/vocal-synth-engine",
+    "surface": "api",
+    "run_id": "vocal-synth-engine-23572047723-1",
+    "finished_at": "2026-03-26T00:56:40Z",
+    "age_days": 30,
+    "path": "records/mcp-tool-shop-org/vocal-synth-engine/2026/03/26/run-vocal-synth-engine-23572047723-1.json"
+  },
+  {
+    "repo": "mcp-tool-shop-org/voice-soundboard",
+    "surface": "library",
+    "run_id": "voice-soundboard-23572161533-1",
+    "finished_at": "2026-03-26T01:00:42Z",
+    "age_days": 30,
+    "path": "records/mcp-tool-shop-org/voice-soundboard/2026/03/26/run-voice-soundboard-23572161533-1.json"
+  },
+  {
+    "repo": "mcp-tool-shop-org/zip-meta-map",
+    "surface": "cli",
+    "run_id": "zip-meta-map-23572590802-1",
+    "finished_at": "2026-03-26T01:16:09Z",
+    "age_days": 30,
+    "path": "records/mcp-tool-shop-org/zip-meta-map/2026/03/26/run-zip-meta-map-23572590802-1.json"
+  }
+]

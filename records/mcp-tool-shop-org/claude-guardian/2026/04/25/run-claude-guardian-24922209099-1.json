@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0.0",
+  "policy_version": "1.0.0",
+  "run_id": "claude-guardian-24922209099-1",
+  "repo": "mcp-tool-shop-org/claude-guardian",
+  "ref": {
+    "branch": "main",
+    "commit_sha": "aa4b50e2c0599442d2228faf15d8f9e7be3b0718"
+  },
+  "source": {
+    "actor": "mcp-tool-shop",
+    "attempt": 1,
+    "provider": "github",
+    "provider_run_id": "24922209099",
+    "run_url": "https://github.com/mcp-tool-shop-org/claude-guardian/actions/runs/24922209099",
+    "workflow": "dogfood.yml"
+  },
+  "timing": {
+    "duration_ms": 20000,
+    "finished_at": "2026-04-25T04:09:45Z",
+    "started_at": "2026-04-25T04:07:35Z"
+  },
+  "ci_checks": [],
+  "scenario_results": [
+    {
+      "evidence": [
+        {
+          "description": "CI run log with status + preflight output",
+          "kind": "log",
+          "url": "https://github.com/mcp-tool-shop-org/claude-guardian/actions/runs/24922209099"
+        }
+      ],
+      "execution_mode": "bot",
+      "notes": "Bot-driven status + preflight roundtrip",
+      "product_surface": "mcp-server",
+      "scenario_id": "status-preflight-roundtrip",
+      "scenario_name": "Run status + preflight on mock project",
+      "scenario_version": "1.0.0",
+      "step_results": [
+        {
+          "status": "pass",
+          "step_id": "run-status"
+        },
+        {
+          "status": "pass",
+          "step_id": "run-preflight"
+        },
+        {
+          "status": "pass",
+          "step_id": "verify-output"
+        }
+      ],
+      "verdict": "pass"
+    }
+  ],
+  "overall_verdict": {
+    "proposed": "pass",
+    "verified": "pass",
+    "downgraded": false
+  },
+  "verification": {
+    "status": "accepted",
+    "verified_at": "2026-04-25T04:10:15.506Z",
+    "provenance_confirmed": true,
+    "schema_valid": true,
+    "policy_valid": true,
+    "rejection_reasons": []
+  },
+  "notes": "Session A live verification: dispatched manually from mcp-tool-shop user"
+}

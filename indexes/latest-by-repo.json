@@ -19,11 +19,11 @@
   },
   "mcp-tool-shop-org/claude-guardian": {
     "mcp-server": {
-      "run_id": "claude-guardian-23567284476-1",
+      "run_id": "claude-guardian-24922209099-1",
       "verified": "pass",
       "verification_status": "accepted",
-      "finished_at": "2026-03-25T22:26:10Z",
-      "path": "records/mcp-tool-shop-org/claude-guardian/2026/03/25/run-claude-guardian-23567284476-1.json"
+      "finished_at": "2026-04-25T04:09:45Z",
+      "path": "records/mcp-tool-shop-org/claude-guardian/2026/04/25/run-claude-guardian-24922209099-1.json"
     }
   },
   "mcp-tool-shop-org/code-batch": {
