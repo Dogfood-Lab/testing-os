@@ -1,0 +1,89 @@
+name: Ingest dogfood submission
+
+on:
+  repository_dispatch:
+    types: [dogfood_submission]
+  workflow_dispatch:
+    inputs:
+      submission_file:
+        description: "Path to submission JSON file (relative to repo root)"
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-ingest
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run ingestion (repository_dispatch)
+        if: github.event_name == 'repository_dispatch'
+        env:
+          SUBMISSION_PAYLOAD: ${{ toJson(github.event.client_payload.submission) }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "$SUBMISSION_PAYLOAD" | node packages/ingest/run.js --provenance=github | tee /tmp/ingest-result.json
+
+      - name: Run ingestion (workflow_dispatch)
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          node packages/ingest/run.js --provenance=github --file "${{ inputs.submission_file }}" | tee /tmp/ingest-result.json
+
+      - name: Read result
+        id: result
+        run: |
+          if [ -f /tmp/ingest-result.json ]; then
+            STATUS=$(jq -r '.status' /tmp/ingest-result.json)
+            RUN_ID=$(jq -r '.run_id' /tmp/ingest-result.json)
+            WRITTEN=$(jq -r '.written' /tmp/ingest-result.json)
+            echo "status=$STATUS" >> "$GITHUB_OUTPUT"
+            echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
+            echo "written=$WRITTEN" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Commit records and indexes
+        if: steps.result.outputs.written == 'true'
+        run: |
+          git config user.name "dogfood-bot"
+          git config user.email "64996768+mcp-tool-shop@users.noreply.github.com"
+          git add records/ indexes/
+          RUN_ID="${{ steps.result.outputs.run_id }}"
+          STATUS="${{ steps.result.outputs.status }}"
+          git diff --cached --quiet && echo "No changes to commit" && exit 0
+          git commit -m "ingest: ${STATUS} dogfood record ${RUN_ID}"
+
+          for i in 1 2 3; do
+            git push && exit 0
+            echo "Push attempt $i failed, pulling and retrying..."
+            git pull --rebase
+          done
+          echo "All push attempts failed" && exit 1
+
+      - name: Summary
+        if: always()
+        run: |
+          if [ -f /tmp/ingest-result.json ]; then
+            echo "### Dogfood Ingestion Result" >> "$GITHUB_STEP_SUMMARY"
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/ingest-result.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
