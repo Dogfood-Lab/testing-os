@@ -20,7 +20,7 @@
 *Protocols, evidence stores, and learning loops for AI-assisted software.*
 
 <!-- version:start -->
-**v0.2.0-pre** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
+**v1.0.0** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
 <!-- version:end -->
 
 📖 **[Read the handbook →](https://dogfood-lab.github.io/testing-os/)**
@@ -40,7 +40,17 @@
 
 ## Status
 
-Migration from `mcp-tool-shop-org/dogfood-labs` complete (2026-04-25). Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). v1.0.0 ships once the post-migration polish in [HANDOFF.md](HANDOFF.md) is complete.
+**v1.0.0 stable** — first stable release after the migration from `mcp-tool-shop-org/dogfood-labs` (cut 2026-04-25). Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Consumers can pin to `^1.0.0`. See [CHANGELOG.md](CHANGELOG.md) for what's in the cut.
+
+## Threat Model
+
+testing-os processes dogfood submissions dispatched via `repository_dispatch` from trusted GitHub repos under `mcp-tool-shop-org/*` and `dogfood-lab/*`. The verifier requires GitHub Actions provenance — claimed run IDs are confirmed via the GitHub API, and submissions with malformed shapes, missing references, or invalid policy claims are rejected.
+
+**What testing-os touches:** the submission JSON in each `repository_dispatch` payload; `policies/`, `fixtures/`, `records/`, and `indexes/` in this repo; outbound calls to `api.github.com` for provenance verification.
+
+**What testing-os does NOT touch:** consumer source code, secrets in consumer repos beyond the dispatch envelope, or anything outside this repo's working tree.
+
+**Permissions required:** the receiver workflow runs with `contents: write` scoped to this repo only. Provenance verification uses the workflow's default `GITHUB_TOKEN` for read-only Actions API calls. **No telemetry, no third-party services, no analytics — this codebase neither phones home nor exposes a network surface beyond GitHub.**
 
 ## Packages
 
@@ -87,7 +97,7 @@ Requires Node ≥ 20.
 
 ## Versioning
 
-Lockstep across all `@dogfood-lab/*` packages. Currently `0.1.0-pre`; first stable release will be `1.0.0` once the [HANDOFF.md](HANDOFF.md) post-migration polish is complete. The version line in this README is auto-stamped from `package.json` via `scripts/sync-version.mjs` (runs as `prebuild`).
+Lockstep across all `@dogfood-lab/*` packages — they bump together. The version line in this README is auto-stamped from `package.json` via `scripts/sync-version.mjs` (runs as `prebuild`). All packages are `private: true` for now; npm publish is a separate decision per package.
 
 ## License
 

@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/ingest",
-  "version": "0.2.0-pre",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Ingestion pipeline for testing-os. Thin glue: dispatch → verifier → persist → indexes.",

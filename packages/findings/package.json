@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/findings",
-  "version": "0.2.0-pre",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Finding contract spine for testing-os. Validates, reads, lists, and queries evidence-bound findings — the fourth contract alongside record, scenario, and policy.",

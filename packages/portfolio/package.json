@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/portfolio",
-  "version": "0.2.0-pre",
+  "version": "1.0.0",
   "private": true,
   "type": "module",
   "description": "Cross-repo portfolio generator for testing-os. Aggregates the latest record per repo into reports/dogfood-portfolio.json.",
