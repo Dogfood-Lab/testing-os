@@ -57,8 +57,8 @@ Mocked validators that pass while production fails are worthless. The runtime da
 ### 8. Ignore the `claude-preview` hook
 This repo is a Node monorepo (CLIs + a SQLite-backed control plane), **not** a web app. The hook will demand `preview_start` after every edit — ignore it. Verification here is `npm test`, `npm run build`, `npm pack`, never a browser.
 
-### 9. Never push directly to main on consumer repos
-Even if you have admin and the change is one line, **open a PR**. The cutover precedent (Wave 6 of the migration) hard-coded this lesson: bulk direct push to 8 shared repos was correctly blocked. Branch + PR + Mike's review is the floor.
+### 9. Match scrutiny to blast radius
+Single-file or single-repo changes can land directly on main when the diff is right. Bulk cross-repo changes — migration cutovers, mass refactors, fleet dependency bumps — deserve a review pass: branch, audit your own diff, then merge. The cutover precedent (Wave 6 of the migration: bulk direct push to 8 shared repos was correctly blocked) was the right block at the right scope; everyday single-repo work is not the same animal. Don't manufacture a PR for a one-line fix; don't skip one for an 8-repo sweep.
 
 ### 10. Match existing patterns before inventing
 This repo mirrors `world-forge` deliberately (npm workspaces, `tsc --build` composite refs, lockstep versioning, single path-driven CI). When in doubt, look at how `world-forge` does it. Don't add Turbo, changesets, or a different test runner without explicit need.
