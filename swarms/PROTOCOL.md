@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Dogfood Swarm Protocol orchestrates parallel Claude Code agents through a 9-phase play that first establishes a clean bill of health, then builds features to production readiness. A human coordinator reads this document and executes it step by step. All artifacts live under `F:\AI\dogfood-labs\swarms\<org>--<repo>\`.
+The Dogfood Swarm Protocol orchestrates parallel Claude Code agents through a 9-phase play that first establishes a clean bill of health, then builds features to production readiness. A human coordinator reads this document and executes it step by step. All artifacts live under `F:\AI\dogfood-lab\testing-os\swarms\<org>--<repo>\`.
 
 ## Prerequisites
 
