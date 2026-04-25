@@ -158,6 +158,8 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
 
 ## Session E — Schema `$id` URL update
 
+**Completed 2026-04-25.** All 8 schemas in `packages/schemas/src/json/` now point at the new canonical path. Lockstep bump `0.1.0-pre` → `0.2.0-pre` across root + 7 packages. Shipped via [PR #7](https://github.com/dogfood-lab/testing-os/pull/7) (squash `7a04dc2`). README version block auto-stamped via the `prebuild` hook.
+
 **Goal.** Update `$id` fields in all 8 JSON schemas to point at `dogfood-lab/testing-os`.
 
 **Why.** `$id` is informational but JSON Schema dereferencing tools (`$ref`, validators that fetch via URL) follow them. Right now they 404-via-archive — readable but stale.
@@ -250,7 +252,7 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
 - [x] Session B done — handbook lives at `dogfood-lab.github.io/testing-os/`
 - [x] Session C done — brand + badges + version stamping in place (logo deferred to its own session)
 - [ ] Session D done — 7 translations published
-- [ ] Session E done — `$id` URLs flipped, schemas bumped
+- [x] Session E done — `$id` URLs flipped, schemas bumped
 - [ ] Session F done — zero unintentional external references
 - [ ] Session G done — v1.0.0 tagged and released
 - [ ] **Issues + PR history archived externally** for the legacy repo:
@@ -311,7 +313,7 @@ For the record (so they don't get lost):
 - ~~**README badges** — none on the new repo. World-forge has them; we should mirror.~~ — Done 2026-04-25 (Session C). 4 badges live (CI, Pages, License, Node).
 - **Translation pass** — 7 README languages.
 - ~~**Astro handbook + Pages deployment** — biggest gap. The old `mcp-tool-shop-org.github.io/dogfood-labs/` site is the public face.~~ — Done 2026-04-25 (Session B). The legacy URL still serves; it dies when `mcp-tool-shop-org/dogfood-labs` is deleted in Session H.
-- **Schema `$id` URLs** — still legacy.
+- ~~**Schema `$id` URLs** — still legacy.~~ — Done 2026-04-25 (Session E). All 8 point at `dogfood-lab/testing-os` canonical paths; packages bumped to `0.2.0-pre`.
 - ~~**Live verification** — we have CI green but no actual end-to-end dogfood run through the new repo yet.~~ — Done 2026-04-25 (Session A).
 - **`DOGFOOD_TOKEN` secret missing on consumer repos** — surfaced during Session A. Without it, every consumer's `dogfood.yml` skips the dispatch step with a `DOGFOOD_TOKEN not set — skipping dispatch` warning. Affects: ai-loadout, claude-guardian, glyphstudio, site-theme, plus any future consumer. Need a fine-grained PAT (or GitHub App) with `contents: write` on `dogfood-lab/testing-os`, added as `DOGFOOD_TOKEN` to each consumer's secrets. **User-side action** (token creation requires Mike's auth).
 - **ai-loadout build is broken on `main`** — surfaced during Session A. `tsc` fails with TS2591 / TS2534 on `node:fs`, `node:path`, `process` etc.; `@types/node` not effective. Pre-existing on main since at least the 2026-04-25 cutover commit. Independent of testing-os migration but blocks ai-loadout's own dogfood until fixed.
