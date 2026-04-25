@@ -54,6 +54,8 @@ describe('Phase map', () => {
     const phases = Object.keys(PHASE_MAP);
     assert.ok(phases.includes('health-audit-a'));
     assert.ok(phases.includes('health-amend-a'));
+    assert.ok(phases.includes('stage-d-audit'));
+    assert.ok(phases.includes('stage-d-amend'));
     assert.ok(phases.includes('feature-audit'));
     assert.ok(phases.includes('feature-execute'));
     assert.ok(phases.includes('test'));
@@ -65,11 +67,29 @@ describe('Phase map', () => {
     assert.equal(PHASE_MAP['health-audit-a'].amend, 'health-amend-a');
   });
 
+  it('health-audit-c advances to stage-d-audit (Stage D inserted between health and feature passes)', () => {
+    assert.equal(PHASE_MAP['health-audit-c'].next, 'stage-d-audit');
+    assert.equal(PHASE_MAP['health-audit-c'].amend, 'health-amend-c');
+  });
+
+  it('stage-d-audit advances to feature-audit and amends to stage-d-amend', () => {
+    assert.equal(PHASE_MAP['stage-d-audit'].next, 'feature-audit');
+    assert.equal(PHASE_MAP['stage-d-audit'].amend, 'stage-d-amend');
+  });
+
   it('amend phases return to their audit phase', () => {
     assert.equal(PHASE_MAP['health-amend-a'].next, 'health-audit-a');
     assert.equal(PHASE_MAP['health-amend-b'].next, 'health-audit-b');
     assert.equal(PHASE_MAP['health-amend-c'].next, 'health-audit-c');
+    assert.equal(PHASE_MAP['stage-d-amend'].next, 'stage-d-audit');
     assert.equal(PHASE_MAP['feature-execute'].next, 'feature-audit');
+  });
+
+  it('Stage D is finding-gated alongside health-audit-a/b/c', () => {
+    assert.ok(FINDING_GATED_PHASES.has('stage-d-audit'));
+    assert.ok(FINDING_GATED_PHASES.has('health-audit-a'));
+    assert.ok(FINDING_GATED_PHASES.has('health-audit-b'));
+    assert.ok(FINDING_GATED_PHASES.has('health-audit-c'));
   });
 
   it('treatment advances to complete', () => {
@@ -359,7 +379,7 @@ describe('Promotion records', () => {
 // ═══════════════════════════════════════════
 
 describe('Multi-phase progression', () => {
-  it('health-audit-a → b → c → feature-audit via promotions', () => {
+  it('health-audit-a → b → c → stage-d-audit → feature-audit via promotions', () => {
     const db = openMemoryDb();
 
     // Phase A
@@ -382,14 +402,23 @@ describe('Multi-phase progression', () => {
       db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (3, ?, 'complete')").run(d.id);
     }
     result = advance(db, 'r1');
+    assert.equal(result.toPhase, 'stage-d-audit');
+
+    // Stage D
+    db.prepare("INSERT INTO waves (run_id, phase, wave_number, status) VALUES ('r1', 'stage-d-audit', 4, 'collected')").run();
+    for (const d of domains) {
+      db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (4, ?, 'complete')").run(d.id);
+    }
+    result = advance(db, 'r1');
     assert.equal(result.toPhase, 'feature-audit');
 
     // Verify promotion history
     const promotions = getPromotions(db, 'r1');
-    assert.equal(promotions.length, 3);
+    assert.equal(promotions.length, 4);
     assert.equal(promotions[0].to_phase, 'health-audit-b');
     assert.equal(promotions[1].to_phase, 'health-audit-c');
-    assert.equal(promotions[2].to_phase, 'feature-audit');
+    assert.equal(promotions[2].to_phase, 'stage-d-audit');
+    assert.equal(promotions[3].to_phase, 'feature-audit');
 
     db.close();
   });

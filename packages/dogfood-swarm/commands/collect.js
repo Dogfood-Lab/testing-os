@@ -20,8 +20,8 @@ import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from 
 import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
 import { transitionAgent } from '../lib/state-machine.js';
 
-const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'feature-audit'];
-const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'feature-execute'];
+const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
+const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
 
 /**
  * @param {object} opts

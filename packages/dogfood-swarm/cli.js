@@ -201,7 +201,7 @@ function cmdDispatch(args) {
   const phase = args[1];
   if (!runId || !phase) {
     console.error('Usage: swarm dispatch <run-id> <phase>');
-    console.error('Phases: health-audit-a, health-audit-b, health-audit-c, health-amend-a, health-amend-b, health-amend-c, feature-audit, feature-execute');
+    console.error('Phases: health-audit-a, health-audit-b, health-audit-c, health-amend-a, health-amend-b, health-amend-c, stage-d-audit, stage-d-amend, feature-audit, feature-execute');
     process.exit(1);
   }
 
@@ -580,6 +580,7 @@ Phases:
   health-audit-a   health-amend-a
   health-audit-b   health-amend-b
   health-audit-c   health-amend-c
+  stage-d-audit    stage-d-amend
   feature-audit    feature-execute`);
   process.exit(command ? 1 : 0);
 }

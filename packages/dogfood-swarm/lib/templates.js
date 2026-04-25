@@ -36,9 +36,27 @@ These are not afterthoughts. They represent the gap between "code that works" an
 - Responsive layouts: does the UI work at all breakpoints?
 - Loading states: is there feedback during async operations?
 - State persistence: does the app remember user context across sessions?
-- Accessibility: keyboard navigation, screen reader support, contrast
+- Accessibility of content: keyboard navigation, screen reader support
 
-This is the bridge between "not broken" and "actually good to use."`,
+This is the bridge between "not broken" and "actually good to use."
+Stage C addresses BEHAVIORAL polish (text, behavior, accessibility-of-content).
+Visual polish (typography, layout, brand) is Stage D.`,
+  },
+  'stage-d-audit': {
+    label: 'Visual Polish',
+    instruction: `Audit with a VISUAL UI/UX lens:
+- Typography, spacing, layout hierarchy in rendered output
+- Iconography & assets (logos, illustrations, command-palette icons)
+- Color/theming including dark mode parity, contrast ratios
+- Animated demonstrations (GIFs/screenshots for marketplace)
+- Command palette presentation (categories, descriptions, icons)
+- Status bar integration, first-run welcome, settings UI grouping
+- Marketplace listing visuals (hero banner, badges, screenshots)
+
+Frontend domain primary; Bridge + CI/Docs participate. Visual polish is NOT
+afterthought — it represents the gap between "respects the user behaviorally"
+(Stage C) and "respects the user visually" (Stage D). Triage findings with
+the same severity rigor as bug fixes. Polish IS quality.`,
   },
   'feature-audit': {
     label: 'Feature Audit',

@@ -2,6 +2,28 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] — 2026-04-25
+
+Stage D Visual Polish becomes a first-class phase in the swarm protocol. Added at the protocol-spec layer (`memory/dogfood-swarm.md`) on 2026-04-25 after the runforge-vscode v1.1.0 swarm exposed the Stage C gap; this release propagates the spec into the `@dogfood-lab/dogfood-swarm` CLI implementation so consumers can dispatch `stage-d-audit` / `stage-d-amend` as recognized phases. Receipts from the first reference run land at `swarms/mcp-tool-shop-org--runforge-vscode/stage-d/`.
+
+### Added
+
+- **`stage-d-audit` + `stage-d-amend` phases** in `packages/dogfood-swarm/`. Recognized by `swarm dispatch`, `swarm collect`, `swarm advance`, and `swarm resume`.
+- **Visual Polish lens** in `packages/dogfood-swarm/lib/templates.js` (`STAGE_LENS['stage-d-audit']`). Mirrors the canonical bullet list from `memory/dogfood-swarm.md` verbatim — typography/spacing/layout, iconography & assets, color/theming/dark-mode, animated demonstrations, command palette presentation, status bar integration, first-run welcome, settings UI grouping, marketplace listing visuals.
+- **Stage D in `FINDING_GATED_PHASES`** (`lib/advance.js`). HIGH/CRITICAL visual findings block advance, same severity rigor as bug fixes.
+- **CLI help + error messages** updated to list the new phases.
+- **`advance.test.js`** coverage: PHASE_MAP includes `stage-d-{audit,amend}`, finding-gating asserted, multi-phase progression test extended to `health-audit-a → b → c → stage-d-audit → feature-audit`.
+
+### Changed
+
+- **`PHASE_MAP` restructured** to slot Stage D between the health pass and feature pass. `health-audit-c.next` flips from `feature-audit` to `stage-d-audit`. `stage-d-audit.next` is `feature-audit`. The amend lane returns: `stage-d-amend.next = stage-d-audit`. Existing health and feature transitions are unchanged.
+- **`health-audit-c` (Humanization) lens copy** now explicitly scopes itself to BEHAVIORAL polish (text, behavior, accessibility-of-content) and points readers at Stage D for visual polish. Prevents the "Stage C interpreted as covering visual" gap that triggered Stage D's creation.
+
+### Notes
+
+- Backward-compatible: existing runs that have already promoted past `health-audit-c` still advance normally. New runs flow through Stage D before reaching `feature-audit`.
+- Cross-references: pattern #18 in `memory/dogfood-swarm.md`; runforge-vscode `swarms/mcp-tool-shop-org--runforge-vscode/stage-d/` is the reference run for future Stage D dispatches.
+
 ## [1.0.0] — 2026-04-25
 
 First stable release. The migration from `mcp-tool-shop-org/dogfood-labs` is complete and the post-migration polish in [HANDOFF.md](HANDOFF.md) sessions A–G has shipped. Consumers can now pin to `^1.0.0` confidently.

@@ -7,8 +7,9 @@
  * Phase progression:
  *   health-audit-a  → health-amend-a  → health-audit-a (repeat) OR health-audit-b
  *   health-audit-b  → health-amend-b  → health-audit-b (repeat) OR health-audit-c
- *   health-audit-c  → health-amend-c  → health-audit-c (repeat) OR feature-audit
- *   feature-audit   → feature-execute → feature-audit (repeat) OR test
+ *   health-audit-c  → health-amend-c  → health-audit-c (repeat) OR stage-d-audit
+ *   stage-d-audit   → stage-d-amend   → stage-d-audit (repeat)  OR feature-audit
+ *   feature-audit   → feature-execute → feature-audit (repeat)  OR test
  *   test            → treatment
  *   treatment       → complete
  *
@@ -16,7 +17,8 @@
  *   health-amend-a  → health-audit-a (re-audit)
  *   health-amend-b  → health-audit-b (re-audit)
  *   health-amend-c  → health-audit-c (re-audit)
- *   feature-execute → feature-audit (re-audit)
+ *   stage-d-amend   → stage-d-audit  (re-audit)
+ *   feature-execute → feature-audit  (re-audit)
  *
  * Gate verdicts:
  *   BLOCK   — hard gate failure, cannot advance
@@ -37,8 +39,10 @@ const PHASE_MAP = {
   'health-amend-a':  { amend: null,               next: 'health-audit-a', reaudit: null },
   'health-audit-b':  { amend: 'health-amend-b',  next: 'health-audit-c', reaudit: null },
   'health-amend-b':  { amend: null,               next: 'health-audit-b', reaudit: null },
-  'health-audit-c':  { amend: 'health-amend-c',  next: 'feature-audit',  reaudit: null },
+  'health-audit-c':  { amend: 'health-amend-c',  next: 'stage-d-audit',  reaudit: null },
   'health-amend-c':  { amend: null,               next: 'health-audit-c', reaudit: null },
+  'stage-d-audit':   { amend: 'stage-d-amend',   next: 'feature-audit',  reaudit: null },
+  'stage-d-amend':   { amend: null,               next: 'stage-d-audit',  reaudit: null },
   'feature-audit':   { amend: 'feature-execute',  next: 'test',           reaudit: null },
   'feature-execute': { amend: null,               next: 'feature-audit',  reaudit: null },
   'test':            { amend: null,               next: 'treatment',      reaudit: null },
@@ -47,9 +51,14 @@ const PHASE_MAP = {
 
 /**
  * Phases where HIGH/CRITICAL findings block advancement to next stage.
+ *
+ * Stage D (Visual Polish) is finding-gated alongside the health-audit-a/b/c
+ * stages: per dogfood-swarm.md, "polish IS quality" — visual findings are
+ * triaged with the same severity rigor as bug fixes, so HIGH/CRITICAL must
+ * resolve before advance.
  */
 const FINDING_GATED_PHASES = new Set([
-  'health-audit-a', 'health-audit-b', 'health-audit-c',
+  'health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit',
 ]);
 
 /**
