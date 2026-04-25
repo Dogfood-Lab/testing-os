@@ -72,6 +72,8 @@ Bundled the missing `ingest.yml` workflow into Session A (per the plan); shipped
 
 ## Session B — Migrate the Astro Starlight handbook
 
+**Completed 2026-04-25.** Live at [https://dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) — root, `/handbook/`, and `/handbook/beginners/` all return 200. Shipped via [PR #3](https://github.com/dogfood-lab/testing-os/pull/3) (squash `9108082`). Pages workflow [run 24922508507](https://github.com/dogfood-lab/testing-os/actions/runs/24922508507) — build + deploy + verify-200 all green. Pages source configured via `gh api -X POST repos/dogfood-lab/testing-os/pages -f build_type=workflow`.
+
 **Goal.** Bring the documentation site over from `dogfood-labs/site/` and deploy it to `dogfood-lab.github.io/testing-os/`.
 
 **Why.** The old Pages site at `mcp-tool-shop-org.github.io/dogfood-labs/` is the public-facing docs. It dies when we delete the old repo. testing-os needs an equivalent.
@@ -237,7 +239,7 @@ Bundled the missing `ingest.yml` workflow into Session A (per the plan); shipped
 **Pre-flight checklist:**
 
 - [x] Session A done — verified end-to-end flow works on the new repo
-- [ ] Session B done — handbook lives at `dogfood-lab.github.io/testing-os/`
+- [x] Session B done — handbook lives at `dogfood-lab.github.io/testing-os/`
 - [ ] Session C done — brand + badges + version stamping in place
 - [ ] Session D done — 7 translations published
 - [ ] Session E done — `$id` URLs flipped, schemas bumped
@@ -300,7 +302,7 @@ For the record (so they don't get lost):
 - **Logo** — testing-os has none. Brand repo references the legacy `dogfood-labs/readme.png`.
 - **README badges** — none on the new repo. World-forge has them; we should mirror.
 - **Translation pass** — 7 README languages.
-- **Astro handbook + Pages deployment** — biggest gap. The old `mcp-tool-shop-org.github.io/dogfood-labs/` site is the public face.
+- ~~**Astro handbook + Pages deployment** — biggest gap. The old `mcp-tool-shop-org.github.io/dogfood-labs/` site is the public face.~~ — Done 2026-04-25 (Session B). The legacy URL still serves; it dies when `mcp-tool-shop-org/dogfood-labs` is deleted in Session H.
 - **Schema `$id` URLs** — still legacy.
 - ~~**Live verification** — we have CI green but no actual end-to-end dogfood run through the new repo yet.~~ — Done 2026-04-25 (Session A).
 - **`DOGFOOD_TOKEN` secret missing on consumer repos** — surfaced during Session A. Without it, every consumer's `dogfood.yml` skips the dispatch step with a `DOGFOOD_TOKEN not set — skipping dispatch` warning. Affects: ai-loadout, claude-guardian, glyphstudio, site-theme, plus any future consumer. Need a fine-grained PAT (or GitHub App) with `contents: write` on `dogfood-lab/testing-os`, added as `DOGFOOD_TOKEN` to each consumer's secrets. **User-side action** (token creation requires Mike's auth).
@@ -314,7 +316,8 @@ For the record (so they don't get lost):
 - **First v1.0.0 stable release** — still on `0.1.0-pre`.
 - **npm publish** — all packages still `private: true`. May want some public.
 - **The 4 dispatcher orphans** (polyglot-vscode, repo-crawler-mcp, tool-scan, vocal-synth-engine) — folded into the prototypes seed vault. Their passports may still reference dogfood-labs paths. Audit happens in Session F.
-- **`.github/workflows/pages.yml`** — testing-os has only `ci.yml`. Need a Pages workflow for the handbook.
+- ~~**`.github/workflows/pages.yml`** — testing-os has only `ci.yml`. Need a Pages workflow for the handbook.~~ — Done 2026-04-25 (Session B). testing-os now has 3 workflows (`ci.yml`, `ingest.yml`, `pages.yml`) — exceeds the soft cap of 2 in `.claude/rules/github-actions.md`, but each has a distinct purpose. Surfaced in [PR #3](https://github.com/dogfood-lab/testing-os/pull/3).
+- **Site-tree npm audit vulnerabilities** — surfaced during Session B. `site/package-lock.json` (inherited from legacy) reports 8 vulnerabilities (5 moderate, 3 high) in Astro/Starlight transitive deps. Not blocking deployment, but worth a `npm audit fix` pass.
 - **CODEOWNERS** — none. Single-owner repo for now, but worth establishing the pattern.
 - **SECURITY.md threat model section** — basic policy is in place; full threat model could be expanded with the migration's specific surfaces.
 
