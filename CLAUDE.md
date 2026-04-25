@@ -70,15 +70,23 @@ This repo mirrors `world-forge` deliberately (npm workspaces, `tsc --build` comp
 - Package names mirror the directory: `packages/findings/` → `@dogfood-lab/findings`. Exception: `dogfood-swarm` (the directory name disambiguates from generic "swarm")
 
 ### Versioning
-**Lockstep.** All packages bump together. Currently `0.1.0-pre`. First stable cut is `1.0.0`, after the migration is fully complete (HANDOFF.md sessions all done).
+**Lockstep.** All packages bump together. Currently **`1.0.0`** ([release v1.0.0 cut 2026-04-25](https://github.com/dogfood-lab/testing-os/releases/tag/v1.0.0)). The README's `<!-- version:start -->` block is auto-stamped by `scripts/sync-version.mjs` (runs as `prebuild`). Use `npm run sync-version:check` as a CI gate when you bump.
 
 ### TypeScript
 `tsconfig.base.json` is the only place to set compiler options. Per-package `tsconfig.json` extends it and adds `outDir`/`rootDir`/`include`. `composite: true` everywhere. Never set `baseUrl` (deprecated; bit repo-knowledge in CI).
 
-### CI
-Single workflow at `.github/workflows/ci.yml`. Path-gated on `packages/**`, `package.json`, `package-lock.json`, `tsconfig*.json`, `.github/workflows/**`. Node 20 + 22 matrix. Pinned action SHAs (no floating `@v4`).
+### CI + workflows
+Three workflows, each with a distinct purpose — exceeds the org-wide soft cap of 2 from `.claude/rules/github-actions.md`, but each is genuinely needed and bundling would be worse:
 
-Adding a new workflow without explicit need is rejected — see `F:/AI/.claude/rules/github-actions.md` for the org-wide rules. The $130 incident memory (`memory/github-actions-incident.md`) explains why.
+| Workflow | Trigger | What it does |
+|----------|---------|--------------|
+| `ci.yml` | `push` / `pull_request` on `packages/**`, `package*.json`, `tsconfig*.json`, `.github/workflows/**` | Build + test on Node 20 + 22 |
+| `ingest.yml` | `repository_dispatch` (`dogfood_submission`) + `workflow_dispatch` | Receives consumer dogfood submissions, runs `packages/ingest/run.js --provenance=github`, commits new records + indexes back to `main`. Concurrency-safe per-repo. |
+| `pages.yml` | `push` to `main` on `site/**` or `.github/workflows/pages.yml` | Builds the Astro Starlight handbook, deploys to `dogfood-lab.github.io/testing-os/`, curls the URL with retry to verify deploy. |
+
+All action SHAs pinned (no floating `@v4`). The $130 GitHub Actions incident memory (`memory/github-actions-incident.md`) is why.
+
+Adding a fourth workflow needs explicit justification.
 
 ### Commit messages
 Subject line = imperative, ≤72 chars. Body explains *why* the change is being made — what changed is in the diff. Co-author trailer included. Wave-style commit messages (used during the migration) are good for orientation but not required forever.
@@ -91,7 +99,10 @@ When a new test needs a new fixture, add it under `fixtures/<category>/<scenario
 ### Schemas
 JSON Schema 2020-12. Title and description on every schema and every property. `additionalProperties: false` unless an open-ended bag is genuinely intended. The 8 current schemas in `packages/schemas/src/json/` are the canonical examples.
 
-`$id` URLs currently point at the legacy `mcp-tool-shop-org/dogfood-labs` location. They will be updated to `dogfood-lab/testing-os` in a future session (see [HANDOFF.md](HANDOFF.md) — session E). Don't update them piecemeal; that's a coordinated change.
+`$id` URLs point at the canonical monorepo path: `https://github.com/dogfood-lab/testing-os/packages/schemas/src/json/<name>.schema.json`. If you ever change a schema in a way that consumers should treat as a contract change, bump the workspace lockstep version — `$id` is a contract field.
+
+### Ship gate
+`SHIP_GATE.md` at the repo root tracks what shipcheck audits. Hard gates A–D (Security, Errors, Operator Docs, Hygiene) currently pass at 100% (20 checked / 17 SKIP-with-justification / 0 unchecked). Soft gate E (Identity) is fully met. Re-run `node F:/AI/shipcheck/bin/shipcheck.mjs audit` before any release; if a previously-checked item fails, fix the underlying gap before bumping the version.
 
 ### Runtime data dirs at the repo root
 `policies/`, `fixtures/`, `records/`, `indexes/`, `reports/`, `swarms/`, `dogfood/`, `docs/`. These are the **shared backing store** that consumers (e.g. `repo-knowledge`, `shipcheck`) read from via `raw.githubusercontent.com/dogfood-lab/testing-os/main/...` URLs. The paths inside those dirs are part of the public API. **Don't reorganize them without thinking about every consumer first.**
@@ -115,11 +126,14 @@ CI runs the same `verify` flow on Node 20 + 22.
 
 ## Working with the legacy
 
-The legacy repo (`mcp-tool-shop-org/dogfood-labs`) is **archived but not deleted**. Several historical references remain on purpose:
+The legacy repo (`mcp-tool-shop-org/dogfood-labs`) is **archived but not deleted**. The 30-day grace window before Session H delete started 2026-04-25. Several historical references remain on purpose:
 
-- Schema `$id` URLs still point there (informational)
 - Old records have `repo: "mcp-tool-shop-org/dogfood-labs"` and old paths in their provenance — these are historical truth, not bugs
-- `repo-knowledge`'s `loadIntelligenceExport` has a back-compat fallback that tries `tools/findings/cli.js` (legacy layout) after `packages/findings/cli.js` (new layout) — keep that fallback until [HANDOFF.md](HANDOFF.md) Session H verifies no callers depend on it
+- `dogfood-lab/testing-os/policies/repos/mcp-tool-shop-org/dogfood-labs.yaml` — the policy file *for* the legacy repo itself; archived artifact
+- `swarms/manifest-schema.json` `$id` is `dogfood-labs.local/...` — a local-namespace URL, not a GitHub reference
+- `repo-knowledge`'s `loadIntelligenceExport` has a back-compat fallback that tries `tools/findings/cli.js` (legacy layout) after `packages/findings/cli.js` (new layout) — keep that fallback until Session H verifies no callers depend on it
+
+Schema `$id` URLs **were updated** in Session E and now point at the canonical monorepo path. Do not roll those back.
 
 When in doubt about a legacy reference: **don't normalize it for aesthetics**. The historical record is the historical record.
 

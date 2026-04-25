@@ -1,23 +1,34 @@
 # HANDOFF.md — testing-os migration completion
 
-> **Purpose.** This is the session-based roadmap that takes us from the current state (testing-os live + dogfood-labs archived) to the final state (testing-os production-grade + dogfood-labs **safely deleted**). Each session below is a discrete unit of work — pick one up cold, finish it, check it off.
+> **Purpose.** This is the session-based roadmap that took testing-os from "Wave 7 archived legacy" to "v1.0.0 stable + dogfood-labs safely deletable." Sessions A–G are done; Session H is the only piece left and it requires Mike's explicit approval + a 30-day grace window.
 >
-> **Current state (2026-04-25, end of session 1):**
+> ## Where we are (end of session 2, 2026-04-25)
 >
-> - ✅ Waves 1–7 of the migration shipped. testing-os has 7 packages, 468 tests, CI green on Node 20+22.
-> - ✅ All known consumers cut over via PRs and merged: ai-loadout, claude-guardian, glyphstudio, site-theme, role-os, shipcheck, repo-knowledge.
-> - ✅ Legacy `mcp-tool-shop-org/dogfood-labs` archived (read-only) with migration banner.
+> **All seven sessions A–G shipped this session.** [Release v1.0.0](https://github.com/dogfood-lab/testing-os/releases/tag/v1.0.0) is live. Receiver chain verified end-to-end. Handbook deployed. Translated. Branded. Schemas cut over. External audit closed. Hard gates A–D pass at 100%.
 >
-> **What stops us from deleting dogfood-labs today:**
+> **What's left to do tomorrow (or whenever you pick it up):**
 >
-> - The Astro Starlight handbook + GitHub Pages deployment never moved over — old URL still serves
-> - Schema `$id` URLs still resolve to the legacy path
-> - testing-os has no logo, no README badges, no translations, no Pages site
-> - We haven't actually verified a single live dogfood run lands in testing-os end-to-end
-> - Unknown external consumers may still be hitting `raw.githubusercontent.com/mcp-tool-shop-org/dogfood-labs/main/...`
-> - Issues, PR history, Actions runs, and Pages site of the old repo aren't archived externally
+> 1. **Session H — delete legacy `mcp-tool-shop-org/dogfood-labs`.** Pre-flight checklist below is satisfied for items A–G; remaining gates are the 30-day window (started 2026-04-25 — earliest delete: 2026-05-25), Mike's explicit "yes delete it," archiving issues + PR history + Actions runs into `legacy/`, and traffic re-check just before delete.
+> 2. **Five surfaced follow-ups** (each is its own small session, none blocks H):
+>    - Set `DOGFOOD_TOKEN` secret on consumer repos so dispatch actually fires (currently skipped silently). User-side: mint a fine-grained PAT with `contents: write` on `dogfood-lab/testing-os`, add as `DOGFOOD_TOKEN` to ai-loadout / claude-guardian / glyphstudio / site-theme / shipcheck.
+>    - Fix ai-loadout's broken `main` build (TS errors on missing `@types/node` config).
+>    - Bump pinned action SHAs from Node 20 → Node 24 across `ci.yml`, `ingest.yml`, `pages.yml`. Deadline 2026-09-16.
+>    - Run `npm audit fix` on `site/package-lock.json` (8 vulns inherited from legacy lockfile, 5 mod / 3 high).
+>    - Wire dependency scanning + Dependabot config into `ci.yml`. Currently SKIPped in SHIP_GATE.md.
+> 3. **npm publish decision** — all 7 packages are `private: true`. Flip whichever ones consumers will pull via npm. Mike's call.
 >
-> Each session below closes one of those gaps. Session H is the green light to delete.
+> **Resumable from a cold start:** read this file and [CLAUDE.md](CLAUDE.md), then pick from the list above. The state is documented; you won't have to reconstruct anything from git log.
+
+> ## Original session intent (preserved for context)
+>
+> Each session below was a discrete unit of work that closed one of these gaps:
+>
+> - The Astro Starlight handbook + GitHub Pages deployment never moved over → ✅ Session B
+> - Schema `$id` URLs still resolved to the legacy path → ✅ Session E
+> - testing-os had no logo, no README badges, no translations, no Pages site → ✅ Sessions B/C/D
+> - We hadn't actually verified a single live dogfood run lands in testing-os end-to-end → ✅ Session A
+> - Unknown external consumers may still be hitting `raw.githubusercontent.com/mcp-tool-shop-org/dogfood-labs/main/...` → ✅ Session F
+> - Issues, PR history, Actions runs, and Pages site of the old repo aren't archived externally → ⏳ Session H pre-flight
 
 ---
 
