@@ -97,11 +97,27 @@ jobs:
         # would pull a chromium-puppeteer chain into every `npm ci` for a
         # check that only ever runs in this workflow leg. If we ever sweep
         # multiple pages we'll revisit and pin via site/package-lock.json.
+        #
+        # Chromium sandbox shim: GitHub Actions ubuntu-latest runners disable
+        # the SUID sandbox by default, so puppeteer (which pa11y embeds) fails
+        # to launch chrome without `--no-sandbox`. The fix lives inline as a
+        # minimal config written to /tmp at run time — NOT a checked-in
+        # .pa11yrc.json, because the only reason the file exists is the GHA
+        # runner kernel constraint, not a tested-against config we want to
+        # commit. Same "no Cadillac" discipline as the original pa11y wiring.
         run: |
           target="${{ steps.verify.outputs.page_url }}handbook/error-codes/"
           echo "pa11y target: $target"
+          cat > /tmp/pa11y-ci.json <<'EOF'
+          {
+            "chromeLaunchConfig": {
+              "args": ["--no-sandbox", "--disable-setuid-sandbox"]
+            }
+          }
+          EOF
           npx -y pa11y@^8 \
             --standard WCAG2AA \
             --reporter cli \
             --threshold 0 \
+            --config /tmp/pa11y-ci.json \
             "$target"
