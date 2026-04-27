@@ -24,3 +24,27 @@ html[data-theme='dark'] {
   --sl-color-hairline: #27272a;
   --sl-color-hairline-light: #27272a;
 }
+
+/* Light-mode accent ramp — D-DOCS-004 fix (resolves pa11y WCAG AA failure
+ * caught by wave-22 CI gate on first deploy of v1.1.2). The dark-mode
+ * accent #34d399 (logo emerald) gives 1.92:1 contrast against white,
+ * failing WCAG AA 4.5:1 for text. Pa11y recommends #008857 (darker
+ * emerald, same hue family) which gives 4.55:1 against white = pass.
+ *
+ * Brand identity preserved: dark mode stays #34d399 (logo-matching).
+ * Only the light-mode link/text accent shifts darker for legibility.
+ * Hue is held; lightness drops. Logo file untouched. Surfaces that
+ * use the accent for non-text purposes (focus rings, badges) get the
+ * darker green in light mode, which is acceptable per Stage D
+ * accessibility-over-aesthetic-purity discipline (logo file is the
+ * brand canon; CSS accent is the operating expression).
+ *
+ * scripts/check-accent-color.test.mjs is intentionally NOT updated to
+ * assert this — it locks the dark-mode value to the logo. Light-mode
+ * is a derived value, not a brand declaration.
+ */
+html[data-theme='light'] {
+  --sl-color-accent-low: #a7f3d0;   /* emerald-200 — sidebar accent low (light) */
+  --sl-color-accent: #008857;       /* WCAG-AA-compliant emerald on white (4.55:1) */
+  --sl-color-accent-high: #064e3b;  /* emerald-900 — hover / high-contrast (light) */
+}
