@@ -97,6 +97,22 @@
 > cascade closed 4 outputs findings (1 CRIT + 2 HIGH + 1 MED) via shared
 > validation contract propagation alone.
 >
+> **Pattern #9 weak-generalization update (post wave 31, two-instance
+> evidence).** Wave 3 produced 1.00× cascade leverage (18 dispatched, 18
+> effective: 7 v1.1.5 capability work + 9 of 11 v1.1.6 migration flips +
+> 2 incidental cascade closures). Below the wave-2 baseline of 1.79×.
+>
+> **Reframe:** "structural fixes CAN produce cascade closures" — not
+> "structural fixes WILL produce 1.5×+ leverage." The pattern is real
+> (cascade closures DO happen beyond the explicit ledger) but the
+> leverage RATIO is variable, not predictable. Wave-2's 1.79× appears to
+> have been an unusually high-collateral closure case, not the norm.
+>
+> **Practical implication for prioritization:** structural fixes are
+> still preferred for first-order reasons — they prevent recurrence, not
+> just fix instances. Cascade is a bonus when it lands, **not a planning
+> input**. Don't optimize prioritization for cascade ratio.
+>
 > Implication for prioritization: structural fixes (contract gates,
 > helper extraction) have measurably higher cascade-closure ratios than
 > localized fixes. Future Phase 7 / Phase 8 triage can prefer structural
@@ -118,6 +134,22 @@
 > reviewer prove the safety mechanism is doing the work? If not, add a
 > 2-step proof gate. The DISABLE_APPEND_LOCK env-gated branch is the
 > reference implementation.
+>
+> **Pattern #10 prior-art reframe (post wave 31, ci-tooling audit).**
+> Wave 30's event-log race detection was the first NAMED instance of the
+> 2-step proof gate, but **three prior-art instances exist in the
+> codebase predating the naming:**
+> - `scripts/sync-version.mjs --check` — preview-vs-apply split
+> - `scripts/apply-finding-migration.mjs --check` — wave-30 instance with the same shape
+> - `scripts/check-doc-drift.mjs` `framework-self-test` handler — structural Pattern #10 instance via negative-fixture proof
+>
+> The `--check` mode flag pattern across CLI scripts IS Pattern #10
+> already. Wave 30 didn't INVENT Pattern #10 — it documented an
+> organically-emerging practice. **Methodology honesty:** when documenting
+> patterns, audit the codebase for prior art before claiming origination.
+> Most "patterns" emerge before they're named. Reframe: "the swarm
+> recognized and named a pattern already operative in the codebase"
+> rather than "the swarm invented a new pattern."
 
 ## Cross-pollination chains (5, with corrected claim shape)
 

@@ -35,7 +35,7 @@
  */
 
 import { readFileSync, existsSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, resolve, join } from 'node:path';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -221,7 +221,15 @@ function main() {
     });
 }
 
-if (import.meta.url === `file://${process.argv[1]}` || import.meta.url.endsWith(process.argv[1])) {
+// W31-BACK-001 fix: previous heuristic compared `import.meta.url` to a
+// hand-built `file://${process.argv[1]}` plus an `endsWith` fallback. Both
+// failed on Windows because `process.argv[1]` uses backslashes while
+// `import.meta.url` is always POSIX/URL form. Result: `node scripts/apply-
+// finding-migration.mjs` silently no-op'd on Windows; only the imported
+// API worked. `pathToFileURL(...).href` is the canonical Node cross-
+// platform "is this script the entrypoint" pattern. Caught by wave-31
+// audit-the-audit (Class #14 5th-iteration instance).
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }
 

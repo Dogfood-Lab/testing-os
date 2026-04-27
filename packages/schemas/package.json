@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/schemas",
-  "version": "1.1.6",
+  "version": "1.1.7",
   "description": "JSON schemas for the testing-os contract spine — record, finding, pattern, recommendation, doctrine, policy, scenario, submission.",
   "type": "module",
   "main": "dist/index.js",

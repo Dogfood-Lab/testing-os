@@ -78,10 +78,10 @@
       "original_file": "packages/dogfood-swarm/commands/resume.js",
       "cross_ref": {
         "file": "packages/dogfood-swarm/commands/resume.js",
-        "symbol": "MAX(ar2.id)",
-        "line": 78
+        "symbol": "agentRuns",
+        "line": 72
       },
-      "verified_via_evidence": "Wave-2 work introduced the latest-per-domain SQL filter at packages/dogfood-swarm/commands/resume.js:72-81 via a MAX(ar2.id) subquery, picking each domain's latest agent_run row so the bogus row-by-row resume bug is structurally impossible."
+      "verified_via_evidence": "Wave-2 work introduced the latest-per-domain SQL filter at packages/dogfood-swarm/commands/resume.js:72-81. The `agentRuns` query result is filtered via a MAX(ar2.id) subquery picking each domain's latest agent_run row, making the bogus row-by-row resume bug structurally impossible. v1.1.7 refinement: original symbol 'MAX(ar2.id)' was non-identifier SQL syntax that v2's classifier regex couldn't anchor; replaced with the identifier-shaped variable name `agentRuns` per W31-BACK audit calibration."
     },
     {
       "finding_id": "F-246817-001",
@@ -104,10 +104,10 @@
       "original_file": "packages/schemas/test/schemas.test.ts",
       "cross_ref": {
         "file": "packages/schemas/test/validate.test.ts",
-        "symbol": "validate",
-        "line": 1
+        "symbol": "remediated_at",
+        "line": 177
       },
-      "verified_via_evidence": "Wave-2 work added packages/schemas/test/validate.test.ts (33 Ajv positive+negative payload tests across all 8 schemas, including an explicit F-246817-001 partial-remediation regression). The new test harness is the consumer-side closure of the original 'no Ajv coverage' finding."
+      "verified_via_evidence": "Wave-2 work added packages/schemas/test/validate.test.ts (33 Ajv positive+negative payload tests across all 8 schemas, including an explicit F-246817-001 partial-remediation regression at line 177). The `remediated_at` anchor is the unique identifier-shaped token in the F-246817-001 regression test that the v2 classifier can resolve. v1.1.7 refinement: original symbol 'validate' was too generic; replaced with the F-246817-001-specific identifier `remediated_at` per W31-BACK audit calibration."
     },
     {
       "finding_id": "F-246817-006",
@@ -138,7 +138,7 @@
       "severity": "HIGH",
       "category": "docs",
       "original_file": "site/src/content/docs/handbook/intelligence-layer.md",
-      "verified_via_evidence": "Wave-2 work updated intelligence-layer.md handbook page; the 'unknown_freshness' portfolio bucket explanation that was missing per the original finding is now present. Wave-29 docs agent attested to closure on file inspection. No single anchor — markdown prose."
+      "verified_via_evidence": "Wave-2 work updated the handbook to explain the `unknown_freshness` portfolio bucket. Closure landed on sibling pages (operating-guide.md:14, state-machines.md:51, beginners.md), not on intelligence-layer.md itself — wave-29 docs agent attested precisely to the sibling-page placement. Closure verdict holds at handbook-surface level; the original_file pointer reflects where the finding was first recorded, not where the fix landed. v1.1.7 refinement: original wording 'is now present on intelligence-layer.md' was looser than the wave-29 attestation; tightened per W31-DOCS-001 audit calibration."
     },
     {
       "finding_id": "F-827321-011",
@@ -163,6 +163,14 @@
       "category": "quality",
       "original_file": "packages/report/build-submission.js",
       "verified_via_evidence": "Wave-2 work added additionalProperties:false to the recordSubmission schema at packages/schemas/src/json/, which Ajv enforces at validation time (closing the original 'silent extra-property accept' concern). Closure is in the JSON schema file — no JS symbol anchor — coordinator-resolved is the correct vantage."
+    },
+    {
+      "finding_id": "F-091578-041",
+      "domain": "backend",
+      "severity": "HIGH",
+      "category": "tests",
+      "original_file": "packages/dogfood-swarm/wave12-observability.test.js",
+      "verified_via_evidence": "v1.1.7 addition: W31 audit caught this as a false-positive in v2 distribution despite W3-BACK-006 fix landing in v1.1.5. Wave-30 backend agent added a CollectUpsertError message-shape pin at packages/dogfood-swarm/wave12-observability.test.js:227-232 (assert.match against /upsertFindings/, /wave=/, /findings attempted/) — mirrors the wave-22+23 IsolationError gold-standard pattern. Original anchor was 'throws CollectUpsertError when upsertFindings hits a SQLite error mid-tx' which still appeared at its recorded line, so v1's anchor classified as still-present. The W3-BACK-006 fix added new assert.match calls inside the existing test block, not a structural change v1 could detect. Coordinator-resolved is the correct vantage; pinning to the W3-BACK-006 marker comment in the test file."
     }
   ]
 }
