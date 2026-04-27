@@ -191,7 +191,7 @@
 | 9 | Vitest config narrowing | candidate | Phase 9 surfaced — vitest walks workspace and tries to load node:test format files; should narrow to `packages/schemas/test/**/*.test.ts` only |
 | 10 | Contrast unit test sweep across all text-using-accent surfaces | candidate | Pa11y caught 6 light-mode link/nav contrast violations the wave-23 unit test missed (test surface ≠ visual surface) |
 
-## Self-incrimination tally (6+)
+## Self-incrimination tally (8+)
 
 Swarm tooling bugs caught + fixed by the swarm running on it (testing-os auditing testing-os):
 
@@ -201,6 +201,8 @@ Swarm tooling bugs caught + fixed by the swarm running on it (testing-os auditin
 4. `commands/dispatch.js` — `--isolate` silent fallback to non-isolated mode — wave 12
 5. `commands/dispatch.js` — domain-filter dumping all findings to all agents — wave 2.5
 6. `lib/log-stage.js` — cross-pollination chain #2 incompleteness (private logStage in ingest bypassed shared helper) — wave 22
+7. `scripts/apply-finding-migration.mjs` — Windows entrypoint detection bug (`process.argv[1]` backslashes vs `import.meta.url` POSIX form); script silently no-op'd when invoked directly on Windows. **Caught by wave-31 audit-the-audit (W31-BACK-001)**, fixed in v1.1.7 via canonical `pathToFileURL` pattern. Class #14 5th-iteration evidence.
+8. `docs/swarm-evidence-2026-04-27.md` — final-closure commit (f203d3c) shipped with an **untagged code fence on line 363** (the verified_via_distribution display block). **Caught by Pattern #5 (`untagged-fence` drift handler)** in CI of the swarm-closure commit itself. Pattern #5 was added wave 23 to catch this exact class. The discipline closed on its own closing artifact — most fitting self-incrimination instance of the run. Fixed in same-day follow-up commit.
 
 ## Wave-1 deferred follow-ups (5, still tracked)
 
@@ -360,7 +362,7 @@ This swarm ran from 2026-04-25 through 2026-04-27 across ~31 dispatched waves (1
 
 ### Final v2 verified_via_distribution
 
-```
+```text
 total: 199
 verified: 153 / regressed: 24 / claimed-but-still-present: 16 / unverifiable: 6
 
