@@ -326,6 +326,169 @@ The progression: *"we're producing fixes" → "we're producing methodology" → 
 
 This is the strongest justification yet for the multi-wave / multi-stage discipline: it produces **self-referential evidence that single-wave or single-stage work cannot**. Future swarms should expect that each wave's output is BOTH substantive AND methodology-validating — record both.
 
+## Swarm complete — final closure (2026-04-27)
+
+**Phase 7 wave 3 closed; swarm declared complete after v1.1.7 cleanup.**
+
+This swarm ran from 2026-04-25 through 2026-04-27 across ~31 dispatched waves (1–28 wave executions + 29/31 re-audits + 4 cleanup commits v1.1.4–v1.1.7). Mike chose **Option I (ship-and-stop)** at the wave-31 closure ack, reasoning that the methodology-evidence catalog is rich enough to compound across other repos rather than continue accumulating in one. Phase 5 deferred candidates (FT-CITOOLING-007 + Slices C/D/F) and the 16 still-present `claimed-but-still-present` MED/LOW entries become post-swarm session-tracked work.
+
+### Final repo state
+
+| Metric | Value |
+|--------|-------|
+| Final version | v1.1.7 |
+| Final commit | `5f4571a` |
+| Tests | **965/965** (473 baseline → +492, **+104%**) |
+| CI | GREEN (29s + 31s + 34s across last 3 commits) |
+| Pages deploy | GREEN with pa11y WCAG2AA threshold 0 |
+| Logo identity | byte-untouched: sha256 `30093bd6...`, 950504 bytes |
+| Save-point | `swarm-save-1777234130` (revertable) |
+| Branch hygiene | clean main, no orphan branches |
+
+### Cumulative output
+
+- ~31 waves dispatched (Stage A–D + Phase 5 + Phase 7 waves 1–3)
+- ~115 fixes verified holding (199 fixed-status findings; 153 verified, 24 regressed, 16 claimed-but-still-present, 6 unverifiable per final v2 distribution)
+- **10 positive design patterns** documented (with prior-art audit calibration on Pattern #10)
+- **14 audit-coverage classes** with multi-instance evidence; Class #14 productized to v1 + v2 across two iterations
+- **5 cross-pollination chains** validated (sweep automation + invariant test + stress reproduction)
+- **Class #14 5-iteration recursion arc** complete (human claim → v1 productization → v1 vantage limit → v2 productization → v1.1.6 data layer → v1.1.7 Windows path)
+- **Methodology evidence at 5 layers** (substantive → methodology → efficacy → self-application → audit-the-audit)
+- **8+ self-incrimination bugs** caught and fixed in swarm tooling
+- **2 numerical cascade-leverage measurements** (1.79× wave 2; 1.00× wave 3) → Pattern #9 reframed to weak-generalization
+- **2 coordinator scope-expansion commits** (v1.1.6, v1.1.7) under bounded 5-factor test, precedent-limited
+
+### Final v2 verified_via_distribution
+
+```
+total: 199
+verified: 153 / regressed: 24 / claimed-but-still-present: 16 / unverifiable: 6
+
+verified_via_distribution:
+  anchor:            182 (legacy v1 path; primary file:line still matches)
+  cross_ref:           5 (consumer-side fix anchored in different file)
+  allowlist:           6 (coordinator_resolved with attestation evidence)
+  agent_attestation:   0 (channel reserved for future use)
+  unverifiable:        6 (neither anchor nor cross_ref produced verdict)
+```
+
+The v2 capability is exercised in production data path with a working migration discipline. Future swarms inherit a tested classifier base + manifest format + idempotent migration runner.
+
+## Post-swarm session roadmap
+
+Work deferred at swarm close, organized by self-contained sessions Mike can pick up at his cadence. Each session is bounded scope + stated effort + clear done-criteria. **No session is required**; pick up only when testing-os is the active focus.
+
+### Session A: Cross-repo drift-checker (FT-CITOOLING-007)
+
+**Effort:** half-day to full session
+**Value:** HIGH — Class #13 productization with strongest multi-instance evidence in the swarm
+
+**Scope:**
+- New CLI `check-cross-repo-drift.mjs` consuming `raw.githubusercontent.com/dogfood-lab/testing-os/main/...` URLs
+- Detects drift between testing-os schemas/protocols and consumer repos
+- Tested against the 2 known instances:
+  - site-theme: BaseLayout skip-link + favicon
+  - repo-knowledge@1.0.5: missing `schema.sql` in published artifact (broke `rk init`)
+
+**Done-criteria:** CLI flags both known instances + 1 synthetic test case; CI gate optional (low blast radius until a third consumer materializes).
+
+### Session B: Operator-experience trilogy (Slice C)
+
+**Effort:** full session
+**Value:** HIGH — completes the verb family with operator-facing surfaces
+
+**Scope:**
+- `swarm tail` real-time human banner (folds in F-916867-004 verdict-first carryover; Phase 5 candidate #2)
+- `swarm worktree` CLI surface (currently internal; expose for inspection/cleanup)
+- JSON modes for query commands (`status`, `verify-fixed`, `verify-recurring/unverified/approved` already have JSON; extend to `dispatch`, `collect`, `receipt`)
+
+**Done-criteria:** 3 new operator surfaces wired with tests + handbook reference section.
+
+### Session C: Docs canonical-glossary trilogy (Slice D)
+
+**Effort:** half-day
+**Value:** MEDIUM — productizes Pattern #3 (reference page as canonical glossary) to 3 more handbook pages
+
+**Scope:**
+- Pick 3 handbook pages currently lacking canonical-glossary discipline
+- Apply the `state-machines.md` / `error-codes.md` reference pattern
+- Cross-link from operating-guide.md and beginners.md
+
+**Done-criteria:** 3 new reference pages live + cross-linked + pa11y green.
+
+### Session D: Test infrastructure (Slice F)
+
+**Effort:** half-day to full session
+**Value:** MEDIUM — adds capacity for future test discipline
+
+**Scope:**
+- Fuzz / property-based testing harness (e.g., for fingerprint, classifier, validator inputs)
+- End-to-end smoke test (full `swarm` flow against a fixture repo)
+- Schema versioning gate (CI check that schema bumps include lockstep version updates)
+
+**Done-criteria:** Harness in place + 1 fuzz example + 1 e2e example + schema versioning gate passing.
+
+### Session E: Wave-4 cleanup batch
+
+**Effort:** half-day
+**Value:** MEDIUM-LOW — bounded edge cases, maintenance hygiene
+
+**Scope (6 items):**
+- `linkSync` no-fallback for FAT32/exFAT/ENOTSUP filesystems (degrade path)
+- Stale-graveyard janitor in `findings/lib/file-lock.js` (cleanup `.gy.*` files orphaned by crash-after-rename-before-unlink)
+- Pattern #10 propagation × 3 candidates: `ingest.test.js:640` writeRecord TOCTOU, `rebuild-indexes-atomicity.test.js:244` journal-disable, `review.test.js:544` temp+rename bypass
+- Missing `apply-finding-migration.test.mjs` (Class #9 sibling-test gap)
+
+**Done-criteria:** 6 small fixes shipped, all idiomatic.
+
+### Session F: Cumulative MED/LOW Class #14 triage
+
+**Effort:** variable (one session for triage decisions; more for fixes)
+**Value:** LOW individually, MEDIUM cumulatively
+
+**Scope:** 16 still-present `claimed-but-still-present` entries (down from 27 pre-migration). Mostly MED/LOW quality findings.
+
+**Done-criteria:** each entry classified `fix-now` / `defer` / `dismiss` with rationale; fixes shipped for `fix-now` set.
+
+### Session G: M5 Max migration validation (when M5 arrives ~2026-04-24)
+
+**Effort:** half-day
+**Value:** HIGH for hardware-stage transition
+
+**Scope:**
+- Cross-platform validation of all atomic primitives on Darwin/APFS
+- `linkSync` semantics on macOS HFS+ vs APFS vs network mounts
+- File-lock `rename-to-graveyard` CAS behavior on Darwin
+- Full test suite + CI run on M5 Max
+
+**Done-criteria:** testing-os runs cleanly on M5 Max; any platform-specific gaps surfaced as wave-X candidates.
+
+### Session ordering recommendation
+
+If Mike picks up testing-os again, **Session A (FT-CITOOLING-007) first** — Class #13 evidence is strongest now and the productization is bounded. Then Session B if operator UX is the focus, or Session E if "one quick cleanup batch" is the mood. Sessions C/D/F are independent; pick by whichever pulls Mike's interest at the moment.
+
+**No session is required.** The swarm declared testing-os in best state of its life. The roadmap exists to make resumption frictionless if Mike returns; it is not a backlog Mike owes.
+
+## Cross-swarm methodology takeaways
+
+For future swarms on OTHER repos consuming this catalog:
+
+1. **Pattern #9 is real but variable.** Don't optimize for cascade ratio. Structural fixes are still preferred for first-order recurrence-prevention reasons.
+
+2. **The 5-factor test for coordinator scope expansion holds at 2 instances** (v1.1.6, v1.1.7) but is precedent-limited. Default "small dev tasks" to mini-wave dispatch unless they meet all 5 factors. A 3rd instance would warrant policy revisit.
+
+3. **Class #14 prevention is recursive.** Any productization can become a claimed-fixed surface needing its own verify-* discipline at the next layer. Closure-check sub-conditions for productization waves: "wired through to production data path" + "verified to run on the production OS surface."
+
+4. **Audit-the-audit is the ultimate safety mechanism.** The wave-31 audit caught W31-BACK-001 (Windows path bug in coordinator-scope work) — the discipline catches its own incompleteness. Class 4 + Class 5 evidence layers are reproducible.
+
+5. **Pattern naming should follow prior-art audit.** Most "patterns" emerge organically before they're named (Pattern #10 had 3 prior-art instances predating wave-30). When documenting a pattern, audit the codebase first.
+
+6. **Cross-pollination chain shape requires:** new callers + pre-existing callers audited + sweep automation in place + invariant test. Anything less is partial validation.
+
+7. **Save-point reachability is non-negotiable.** Every commit during a swarm should leave the run revertable. testing-os's `swarm-save-1777234130` tag is the discipline reference.
+
+8. **Mike's Windows-primary workflow is a real test surface.** Cross-platform path semantics (`pathToFileURL` over hand-rolled `file://` strings, backslash vs POSIX) need explicit verification in any productization that ships scripts.
+
 ## What's NOT in this catalog
 
 - Per-wave agent JSON outputs (gitignored under `swarms/swarm-*/`)
