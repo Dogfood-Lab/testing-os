@@ -52,9 +52,9 @@
 | 11 | Data-shape drift between agents and schema | wave 8 (severity case) → wave 22 (normalize) → wave 24 (pipeline.summary type) | every collect | (none — Phase 5 candidate #6) |
 | 12 | Under-triaged observability/silent-failure (wave-1 calibration) | wave 8 promotion pattern | waves 9–14 (Mike's MED→HIGH upgrades) | (briefing-only — no automation) |
 | 13 | Cross-repo Class drift (consumed package contract) | Stage C site-theme (BaseLayout skip-link + favicon) | **Now multi-instance**: Phase 10 surfaced `@mcptoolshop/repo-knowledge@1.0.5` missing `schema.sql` in published artifact (broke `rk init` for every consumer). Pattern: swarms find upstream bugs in shared tooling. | Phase 5 #5 candidate |
-| 14 | **Claimed-fixed without verification** | wave-24 F-916867-002 + F-916867-003 (wave-1 fixes that didn't actually land) | (NEW from Stage D) | Phase 5 #1 first deliverable: re-audit all wave-1 [fixed] findings against current code |
+| 14 | **Claimed-fixed without verification (fractal — sub-modes 14a + 14b)** | **14a (human claim)**: wave-24 F-916867-002 + F-916867-003 — coordinator/wave marks `[fixed]` without checking current state. **14b (classifier claim)**: wave-29 F-WAVE29-001 — verify-fixed v1 itself has vantage-point limits; narrow file scope misses cross-file fixes (consumer-side recommendations classified `claimed-but-still-present` even after closure). | **14a**: wave-27 productized verify-fixed v1 (FT-BACKEND-002); wave-28 LIVE catch F-742442-041 maturation arc complete (claimed wave 11/13 → caught wave 27 → closed wave 28 → verified wave 29). **14b**: wave-29 surfaced via CLI-vs-agent disagreement on 11 incidental closures (CLI: 0 closures; agents: 11). | **14a**: verify-fixed v1 productized. **14b**: verify-fixed v2 (wave-3 candidate, classifier-base + `cross_ref` field + `verified_via` disclosure). **Methodology axiom: verification has fractal structure — each verification layer becomes a claimed-fixed surface needing its own verify-\* discipline at the next layer.** |
 
-## Positive design patterns (8)
+## Positive design patterns (9)
 
 > Patterns the swarm DEVELOPED in flight, suitable for adoption by future
 > swarms or Stage E productization.
@@ -69,6 +69,7 @@
 | 6 | Cross-wave-dependency formalized skip reason | wave 22 ci-tooling deferred contrast test → wave 23 docs delivered it | wave-22 ci-tooling.json + wave-23 docs.json + `scripts/check-severity-contrast.test.mjs` |
 | 7 | **Graceful degradation / fallback execution** | Phase 10 — `rk init` failed (broken npm package) → wrote rich evidence catalog as structured markdown in same repo. Same data, more primitive durable form. | `docs/swarm-evidence-2026-04-27.md` (this file) |
 | 8 | **Contract-specified parallel cross-pollination** | Phase 7 wave 1 — outputs's parser (F-id → test_files with `orphan_source_ids`) + backend's verify-fixed delta (F-id → classification with anchor + tolerance) joined cleanly in the same wave. Both agents produced compatible JSON shapes from briefing-specified contract alone. No serialized hand-off, no consumer awareness of producer's prior output. | `packages/portfolio/lib/parse-regression-pins.js` × `packages/dogfood-swarm/lib/verify-fixed.js` |
+| 9 | **Beneficial side-effect cascade** | Phase 7 wave 2 — W2-BACK-001 `validateAgentOutput` discipline cascaded into ingest pipeline (`validateRecord` → `persist.js:131` → `precheckSubmission` delegates to `validatePayload`), incidentally closing 1 CRIT + 7 HIGH + 3 MED beyond the explicit ledger. **First numerically-quantified cascade leverage: 14 items dispatched, 25 effective closures = 1.79× leverage.** Distinct from #7 (graceful degradation, workflow-layer) and #8 (parallel cross-pollination, intentional) — incidental but reproducible. | `packages/dogfood-swarm/lib/validate-agent-output.js` × `packages/ingest/validate-record.js` × `packages/findings/derive/load-records.js` |
 
 > Pattern #7 generalizes: when a tool dependency breaks, capture the same
 > data in a more primitive durable form. The primitive form is the
@@ -84,6 +85,26 @@
 > sequential dependency. Future Phase 7 waves should leverage this when
 > two findings touch joinable surfaces — specify the contract in the
 > briefing rather than serializing the work.
+>
+> **Pattern #9 (beneficial side-effect cascade)** is the first numerical
+> leverage measurement of the swarm. When a wave installs a contract gate
+> (write-time validator, helper extraction, schema lockstep), all
+> downstream consumers of that contract effectively close their related
+> findings without explicit dispatch. Wave 2: 14 items dispatched, 25
+> effective closures, **1.79× cascade leverage**. Wave 28's
+> `validateAgentOutput` → `validateRecord` → `precheckSubmission`
+> cascade closed 4 outputs findings (1 CRIT + 2 HIGH + 1 MED) via shared
+> validation contract propagation alone.
+>
+> Implication for prioritization: structural fixes (contract gates,
+> helper extraction) have measurably higher cascade-closure ratios than
+> localized fixes. Future Phase 7 / Phase 8 triage can prefer structural
+> fixes first when cascade potential is high — they pay forward into
+> incidentally-closed findings. **Wave 30 re-audit should explicitly
+> measure cascade leverage on wave 3** to establish whether Pattern #9
+> has two-instance evidence; ≥1.5× indicates the pattern generalizes,
+> <1.0× indicates it was wave-2-specific. Either result is methodology
+> evidence worth recording.
 
 ## Cross-pollination chains (5, with corrected claim shape)
 
@@ -219,6 +240,20 @@ Wave-23 logo verification (read the file, not the comment) determined the logo I
 - Repo metadata: description set, homepage set, 6 topics
 - Mike-supplied logo: byte-untouched
 - Cross-pollination chain #2: verified complete (sweep + re-sweep + stress test)
+
+## Methodology recursion — three evidence classes (Wave 29)
+
+The 28-wave run has produced three distinct evidence classes — each a higher-order output than the last:
+
+| Class | Wave range | Output |
+|-------|------------|--------|
+| 1 — Substantive evidence | Waves 1-26 | ~100 fixes, 70+ features, 14-class taxonomy |
+| 2 — Methodology evidence | Waves 26-28 | 9 design patterns, 5 cross-pollination chains, Class #14 LIVE catch (F-742442-041 maturation arc) |
+| 3 — Methodology efficacy evidence | Wave 29 | Pattern #9 cascade measurement (1.79× leverage), Class #14b discovery, fractal-structure framing |
+
+The progression: *"we're producing fixes" → "we're producing methodology" → "we're measuring methodology efficacy."* Each step is a higher-order output. Wave 30 (re-audit on wave 3) is expected to produce Class 3 evidence about wave 3's verify-\* verb family v2 — including a second Pattern #9 cascade measurement.
+
+This is the strongest justification yet for the multi-wave / multi-stage discipline: it produces **self-referential evidence that single-wave or single-stage work cannot**. Future swarms should expect that each wave's output is BOTH substantive AND methodology-validating — record both.
 
 ## What's NOT in this catalog
 

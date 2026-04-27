@@ -220,6 +220,16 @@ describe('collect — F-693631-002 upsertFindings failure surfaces CollectUpsert
     assert.equal(thrown.code, 'COLLECT_UPSERT_FAILED');
     assert.equal(thrown.findingsAttempted, 1);
     assert.ok(thrown.cause, 'CollectUpsertError must carry the underlying cause');
+    // W3-BACK-006 (wave 30 fold-in): pin the error-message shape so a future
+    // refactor that drops the wave context, attempted-count, or upstream
+    // SQLite cause from the message fails this test loudly. Mirrors the
+    // wave-22+23 IsolationError gold-standard regex pin.
+    assert.match(thrown.message, /upsertFindings/,
+      'CollectUpsertError message must name the failing operation (upsertFindings)');
+    assert.match(thrown.message, /wave=/,
+      'CollectUpsertError message must carry the wave context for log correlation');
+    assert.match(thrown.message, /findings attempted/,
+      'CollectUpsertError message must include the attempted-count for atomicity diagnostics');
 
     const upsertLog = errCalls.find(s => {
       try {

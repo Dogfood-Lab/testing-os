@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/dogfood-swarm",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "private": true,
   "type": "module",
   "description": "10-phase parallel-agent protocol runner for testing-os. SQLite-backed control plane, durable receipts, domain-aware orchestration.",
@@ -14,7 +14,7 @@
     "./lib/*": "./lib/*"
   },
   "scripts": {
-    "test": "node --test control-plane.test.js hardening.test.js verify.test.js verify-fixed.test.js advance.test.js persist.test.js swarm.test.js dispatch-amend-filter.test.js dispatch-state-machine.test.js self-inspection.test.js wave9-defensive-depth.test.js wave10-docs-identity-drift.test.js wave12-observability.test.js wave17-display-layer.test.js wave18-operator-ux.test.js wave23-findings-format.test.js wave28-cross-fix.test.js"
+    "test": "node --test control-plane.test.js hardening.test.js verify.test.js verify-fixed.test.js verify-verb-family.test.js advance.test.js persist.test.js swarm.test.js dispatch-amend-filter.test.js dispatch-state-machine.test.js self-inspection.test.js wave9-defensive-depth.test.js wave10-docs-identity-drift.test.js wave12-observability.test.js wave17-display-layer.test.js wave18-operator-ux.test.js wave23-findings-format.test.js wave28-cross-fix.test.js lib/verify-classifier-v2.test.js"
   },
   "dependencies": {
     "@dogfood-lab/findings": "*",

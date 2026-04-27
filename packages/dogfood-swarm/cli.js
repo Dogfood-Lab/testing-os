@@ -29,6 +29,9 @@ import { resume, formatResume } from './commands/resume.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
+import { verifyRecurring as runVerifyRecurring } from './commands/verify-recurring.js';
+import { verifyUnverified as runVerifyUnverified } from './commands/verify-unverified.js';
+import { verifyApproved as runVerifyApproved } from './commands/verify-approved.js';
 import { advance as runAdvance, checkGates, getPromotions } from './lib/advance.js';
 import { persist as runPersist, formatPersist } from './commands/persist.js';
 import { openDb } from './db/connection.js';
@@ -333,15 +336,12 @@ function cmdVerify(args) {
   console.log(formatVerify(result));
 }
 
-function cmdVerifyFixed(args) {
-  const runId = args[0];
-  if (!runId) {
-    console.error('Usage: swarm verify-fixed <run-id> [--threshold=N] [--format=text|markdown|json]');
-    process.exit(1);
-  }
-
-  // --threshold=N (default 0). Per wave-22 D-OUT-003 minimum-bar discipline:
-  // any regressed/claimed-but-still-present finding fails by default.
+/**
+ * Parse the shared verify-* CLI flags: --threshold=N, --format=text|markdown|json,
+ * --legacy-v1. Returned values are plain JS so each verb's wrapper can
+ * spread directly into its impl call.
+ */
+function parseVerifyFlags(args) {
   let threshold = 0;
   for (const a of args.slice(1)) {
     const m = a.match(/^--threshold=(\d+)$/);
@@ -352,8 +352,6 @@ function cmdVerifyFixed(args) {
     threshold = parseInt(args[tIdx + 1], 10);
   }
 
-  // --format=text|markdown|json (auto-detect if absent). Mirrors the
-  // wave-23 D-BACK-002 surface on `swarm findings`.
   let format;
   for (const a of args.slice(1)) {
     const m = a.match(/^--format=(text|markdown|json)$/);
@@ -364,12 +362,27 @@ function cmdVerifyFixed(args) {
     format = args[fIdx + 1];
   }
 
+  const legacyV1 = args.includes('--legacy-v1');
+
+  return { threshold, format, legacyV1 };
+}
+
+function cmdVerifyFixed(args) {
+  const runId = args[0];
+  if (!runId) {
+    console.error('Usage: swarm verify-fixed <run-id> [--threshold=N] [--format=text|markdown|json] [--legacy-v1]');
+    process.exit(1);
+  }
+
+  const { threshold, format, legacyV1 } = parseVerifyFlags(args);
+
   const result = runVerifyFixed({
     runId,
     dbPath: getDbPath(),
     outputDir: getOutputDir(runId),
     threshold,
     format,
+    legacyV1,
   });
 
   console.log(result.output);
@@ -379,6 +392,68 @@ function cmdVerifyFixed(args) {
   // Exit with the 3-way state: 0 clean / 1 threshold exceeded /
   // 2 pipeline broken. The CLI seam preserves this signal so CI gates
   // can use `swarm verify-fixed` as a check.
+  process.exit(result.exitCode);
+}
+
+function cmdVerifyRecurring(args) {
+  const runId = args[0];
+  if (!runId) {
+    console.error('Usage: swarm verify-recurring <run-id> [--threshold=N] [--format=text|markdown|json]');
+    process.exit(1);
+  }
+  const { threshold, format } = parseVerifyFlags(args);
+  const result = runVerifyRecurring({
+    runId,
+    dbPath: getDbPath(),
+    outputDir: getOutputDir(runId),
+    threshold,
+    format,
+  });
+  console.log(result.output);
+  console.log('');
+  console.log(`Delta written to: ${result.deltaPath}`);
+  process.exit(result.exitCode);
+}
+
+function cmdVerifyUnverified(args) {
+  const runId = args[0];
+  if (!runId) {
+    console.error('Usage: swarm verify-unverified <run-id> [--threshold=N] [--format=text|markdown|json]');
+    process.exit(1);
+  }
+  const { threshold, format } = parseVerifyFlags(args);
+  const result = runVerifyUnverified({
+    runId,
+    dbPath: getDbPath(),
+    outputDir: getOutputDir(runId),
+    threshold,
+    format,
+  });
+  console.log(result.output);
+  console.log('');
+  console.log(`Delta written to: ${result.deltaPath}`);
+  process.exit(result.exitCode);
+}
+
+function cmdVerifyApproved(args) {
+  const runId = args[0];
+  if (!runId) {
+    console.error('Usage: swarm verify-approved <run-id> [--threshold=N] [--format=text|markdown|json]');
+    process.exit(1);
+  }
+  const { threshold, format } = parseVerifyFlags(args);
+  const result = runVerifyApproved({
+    runId,
+    dbPath: getDbPath(),
+    outputDir: getOutputDir(runId),
+    threshold,
+    format,
+  });
+  console.log(result.output);
+  console.log('');
+  console.log(`Delta written to: ${result.deltaPath}`);
+  // Exit code 2 on broken anchor blocks subsequent amend dispatch — the
+  // CLI seam carries the signal so a CI step can gate dispatch on it.
   process.exit(result.exitCode);
 }
 
@@ -620,6 +695,9 @@ const commands = {
   collect: cmdCollect,
   verify: cmdVerify,
   'verify-fixed': cmdVerifyFixed,
+  'verify-recurring': cmdVerifyRecurring,
+  'verify-unverified': cmdVerifyUnverified,
+  'verify-approved': cmdVerifyApproved,
   receipt: cmdReceipt,
   advance: cmdAdvance,
   status: cmdStatus,
@@ -643,10 +721,29 @@ Commands:
                              Re-audit findings marked [fixed]; classify into
                              verified / regressed / claimed-but-still-present
                              / unverifiable. Writes delta JSON to swarms/
-                             <run>/verify-fixed-<wave>.json. Format auto-
-                             detects (text on TTY, markdown when piped).
-                             --threshold=N fails non-zero when regressed +
-                             claimed-but-still-present > N (default 0).
+                             <run>/verify-fixed-<wave>.json. Schema v2 by
+                             default (verified_via vantage-point disclosure);
+                             use --legacy-v1 for backward-compat consumers.
+                             Format auto-detects (text on TTY, markdown when
+                             piped). --threshold=N fails non-zero when
+                             regressed + claimed-but-still-present > N
+                             (default 0).
+  verify-recurring <run-id> [opts]
+                             Audit findings with multiple [fixed] events
+                             (regression-and-reclaim pattern). Writes delta
+                             JSON to swarms/<run>/verify-recurring-<wave>.json.
+                             Output schema verify-recurring-delta/v1.
+  verify-unverified <run-id> [opts]
+                             Re-classify findings deferred as 'unverified'
+                             against the current code state. Writes delta
+                             JSON to swarms/<run>/verify-unverified-<wave>.json.
+                             Output schema verify-unverified-delta/v1.
+  verify-approved <run-id> [opts]
+                             Pre-amend gate: confirm approved findings still
+                             have valid anchors. Exit 2 (broken anchor) blocks
+                             subsequent amend dispatch. Writes delta JSON to
+                             swarms/<run>/verify-approved-<wave>.json.
+                             Output schema verify-approved-delta/v1.
   receipt <run-id> [wave]    Export durable wave receipt (JSON + markdown)
   advance <run-id> [opts]    Check gates and advance to next phase
   persist <run-id> [opts]    Export canonical truth to downstream systems

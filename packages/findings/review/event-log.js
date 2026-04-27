@@ -9,6 +9,8 @@ import { resolve, dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import yaml from 'js-yaml';
 
+import { withFileLock } from '../lib/file-lock.js';
+
 let _eventCounter = 0;
 
 /**
@@ -64,33 +66,69 @@ export function getLogPath(rootDir, date = new Date()) {
  * a half-written file. This also makes the operation crash-safe: a Ctrl+C
  * between read and write leaves the original log intact.
  *
- * Concurrency caveat: there is still a read-then-write race. Two simultaneous
- * appends can both read N events, both push their event, both rename — the
- * second rename wins, dropping the first appender's event. The atomic rename
- * eliminates the corrupted-file failure mode (worst-case at the previous
- * implementation), but operators running concurrent reviewers must serialize
- * via an external lock if no event may be lost.
+ * Concurrency: serialized at the choke point via `withFileLock` on the daily
+ * log file (F-PIPELINE-011 / W3-PIPE-001 — Pattern #4 choke-point fix). The
+ * read-then-write window is closed by holding a directory-mutex (`<logPath>.lock`)
+ * across the read → push → rename sequence. Two concurrent `appendEvent` calls
+ * to the SAME daily log serialize against each other; calls to DIFFERENT daily
+ * logs (e.g. across a midnight boundary) do not contend. The lock is reclaimed
+ * if the holder process dies — see `lib/file-lock.js` for the full design
+ * rationale (why a lock dir, why not `O_APPEND`, stale recovery semantics,
+ * single-machine scope).
  */
 export function appendEvent(rootDir, event) {
   const logPath = getLogPath(rootDir);
   const dir = dirname(logPath);
   mkdirSync(dir, { recursive: true });
 
-  let events = [];
-  if (existsSync(logPath)) {
-    const raw = readFileSync(logPath, 'utf-8');
-    events = yaml.load(raw) || [];
-    if (!Array.isArray(events)) events = [events];
+  // FAILS-then-PASSES proof gate (W3-PIPE-001):
+  // Set DISABLE_APPEND_LOCK=1 in the env to bypass the lock for the explicit
+  // purpose of demonstrating the race-detection test fails without the fix.
+  // Wave-30 receipt documents the proof: with the lock, the multi-process
+  // test passes 50/50 forks across 3 iterations, 20 consecutive test runs.
+  // With the lock disabled, the test reliably fails (rename collisions on
+  // unprotected concurrent rebuilds, dropped events).
+  if (process.env.DISABLE_APPEND_LOCK) {
+    let events = [];
+    if (existsSync(logPath)) {
+      const raw = readFileSync(logPath, 'utf-8');
+      events = yaml.load(raw) || [];
+      if (!Array.isArray(events)) events = [events];
+    }
+    events.push(event);
+    const tmpSuffix = randomBytes(4).toString('hex');
+    const tmpPath = `${logPath}.${tmpSuffix}.tmp`;
+    writeFileSync(tmpPath, yaml.dump(events, { lineWidth: 120, noRefs: true }), 'utf-8');
+    renameSync(tmpPath, logPath);
+    return logPath;
   }
 
-  events.push(event);
+  return withFileLock(logPath, () => {
+    let events = [];
+    // Read-or-empty without an `existsSync` precheck: the readFileSync call
+    // either returns the bytes or throws ENOENT. Avoiding `existsSync` here
+    // closes a Windows-specific TOCTOU window where the dirent cache could
+    // report `existsSync(logPath) === false` immediately after a sibling
+    // process renamed a fresh file into place — which would cause us to
+    // start with `events = []` and silently OVERWRITE the sibling's events.
+    // The lock alone wasn't enough; the existsSync gate was the bug.
+    try {
+      const raw = readFileSync(logPath, 'utf-8');
+      const parsed = yaml.load(raw);
+      if (parsed) events = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (err) {
+      if (!err || err.code !== 'ENOENT') throw err;
+    }
 
-  // Atomic write: temp file → rename. Same pattern persist.js + rebuild-indexes.js use.
-  const tmpSuffix = randomBytes(4).toString('hex');
-  const tmpPath = `${logPath}.${tmpSuffix}.tmp`;
-  writeFileSync(tmpPath, yaml.dump(events, { lineWidth: 120, noRefs: true }), 'utf-8');
-  renameSync(tmpPath, logPath);
-  return logPath;
+    events.push(event);
+
+    // Atomic write: temp file → rename. Same pattern persist.js + rebuild-indexes.js use.
+    const tmpSuffix = randomBytes(4).toString('hex');
+    const tmpPath = `${logPath}.${tmpSuffix}.tmp`;
+    writeFileSync(tmpPath, yaml.dump(events, { lineWidth: 120, noRefs: true }), 'utf-8');
+    renameSync(tmpPath, logPath);
+    return logPath;
+  });
 }
 
 /**

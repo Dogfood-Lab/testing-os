@@ -549,9 +549,26 @@ describe('verifyFixed — end-to-end against a temp DB + temp filesystem', () =>
     assert.ok(existsSync(result.deltaPath));
     assert.match(result.deltaPath, /verify-fixed-7\.json$/);
     const onDisk = JSON.parse(readFileSync(result.deltaPath, 'utf-8'));
-    assert.equal(onDisk.schema, 'verify-fixed-delta/v1');
+    // W3-BACK-002 wave 30: schema bumped to v2 by default; --legacy-v1 keeps v1.
+    assert.equal(onDisk.schema, 'verify-fixed-delta/v2');
+    assert.equal(onDisk.verb, 'verify-fixed');
     assert.equal(onDisk.summary.total, 1);
     assert.equal(onDisk.summary.claimedButStillPresent, 1);
+    // Vantage-point disclosure: every entry must carry verified_via.
+    assert.ok(onDisk.findings.every((f) => typeof f.verified_via === 'string'));
+    assert.ok(onDisk.summary.verified_via_distribution, 'v2 must surface verified_via_distribution');
+  });
+
+  it('--legacy-v1 emits the v1 schema for backward-compat consumers', () => {
+    const result = verifyFixed({
+      runId: 'r1', dbPath, outputDir, threshold: 0, format: 'json', stream: pipe(),
+      legacyV1: true,
+    });
+    const onDisk = JSON.parse(readFileSync(result.deltaPath, 'utf-8'));
+    assert.equal(onDisk.schema, 'verify-fixed-delta/v1');
+    // v1 has no verb or verified_via fields — that's the contract.
+    assert.equal(onDisk.verb, undefined);
+    assert.equal(onDisk.findings[0].verified_via, undefined);
   });
 
   it('returns exit code 1 when threshold (0) is exceeded by the claimed-present finding', () => {

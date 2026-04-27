@@ -154,13 +154,15 @@
       "callers": ["packages/**/*.js"],
       "allowlist": [
         "packages/findings/lib/atomic-write.js",
+        "packages/findings/lib/file-lock.js",
+        "packages/ingest/lib/atomic-write.js",
         "packages/ingest/persist.js",
         "packages/ingest/rebuild-indexes.js",
         "packages/findings/review/event-log.js",
         "packages/portfolio/generate.js",
         "packages/report/build-submission.js"
       ],
-      "wrapperHint": "Cross-package: import via @dogfood-lab/findings/lib/atomic-write.js. Same package: relative import. Wrappers that pin a component tag are allowed; the wrapper file must still import the helper. Phase 7 wave 2 W2-BACK-003: 6 dogfood-swarm/ callers migrated to import the helper; allowlist shrunk from 13 to 6 entries (5 cross-domain pipeline/outputs callers + the helper itself remain). Verify/runner.js was confirmed STALE (no callsites in source) and removed entirely."
+      "wrapperHint": "Cross-package: import via @dogfood-lab/findings/lib/atomic-write.js. Same package: relative import. Wrappers that pin a component tag are allowed; the wrapper file must still import the helper. Phase 7 wave 2 W2-BACK-003: 6 dogfood-swarm/ callers migrated to import the helper; allowlist shrunk from 13 to 6 entries (5 cross-domain pipeline/outputs callers + the helper itself remain). Verify/runner.js was confirmed STALE (no callsites in source) and removed entirely. Phase 7 wave 3 W3-PIPE-001/002 added: `findings/lib/file-lock.js` (the lock helper itself uses raw writeFileSync in atomicCreateLock — its purpose IS to be the choke point for cross-process exclusion, distinct from atomic-write's torn-write contract) and `ingest/lib/atomic-write.js` (sibling helper to findings/lib/atomic-write.js — cannot import the findings copy without creating a workspace dependency cycle since findings already depends on ingest)."
     },
     {
       "id": "helper-adoption--log-stage",

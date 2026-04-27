@@ -1,6 +1,6 @@
 {
   "name": "testing-os",
-  "version": "1.1.4",
+  "version": "1.1.5",
   "private": true,
   "description": "Operating system for testing in the AI era — protocols, evidence stores, and learning loops for AI-assisted software.",
   "engines": {
