@@ -10,12 +10,18 @@
  */
 
 import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { execSync } from 'node:child_process';
 import { openDb } from '../db/connection.js';
 import { buildRunExport, computeRunVerdict } from '../lib/persist/export.js';
 import { buildDogfoodSubmission } from '../lib/persist/dogfood-bridge.js';
 import { buildAuditPayload } from '../lib/persist/repoknowledge-bridge.js';
+
+// Resolve REPO_ROOT off this file (commands/persist.js → packages/dogfood-swarm → repo root).
+// Mirrors the pattern in persist-results.js so the ingest path survives the consumer's cwd.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = resolve(__dirname, '../../..');
 
 /**
  * @param {object} opts
@@ -68,7 +74,9 @@ export function persist(opts) {
   // 4. Ingest to dogfood-labs (if not dry run)
   if (opts.ingestDogfood && !opts.dryRun) {
     try {
-      const ingestScript = resolve(opts.outputDir, '../../tools/ingest/run.js');
+      // Post testing-os monorepo migration: ingest lives at packages/ingest/run.js.
+      // See persist-results.js:222 for the canonical pattern. F-742440-002.
+      const ingestScript = resolve(REPO_ROOT, 'packages/ingest/run.js');
       if (existsSync(ingestScript)) {
         execSync(`node "${ingestScript}" --provenance=stub --file "${submissionPath}"`, {
           stdio: ['ignore', 'pipe', 'pipe'],

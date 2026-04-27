@@ -161,6 +161,86 @@ describe('Pattern derivation: exclusions', () => {
   });
 });
 
+describe('Pattern derivation: pattern_id collision (regression)', () => {
+  // Regression for F-742442-040: cluster key includes root_cause_kind but slug did not,
+  // so two clusters that differ only by root_cause_kind produced identical pattern_id
+  // values. writePattern() then silently overwrote the first pattern on disk.
+  before(() => {
+    setupTestRoot();
+    // Cluster A: entrypoint_truth + contract_drift on cli surface
+    writeFinding(TEST_ROOT, makeAcceptedFinding({
+      finding_id: 'dfind-collide-a1',
+      repo: 'mcp-tool-shop-org/repo-a',
+      source_record_ids: ['record-a1'],
+      product_surface: 'cli',
+      issue_kind: 'entrypoint_truth',
+      root_cause_kind: 'contract_drift'
+    }));
+    writeFinding(TEST_ROOT, makeAcceptedFinding({
+      finding_id: 'dfind-collide-a2',
+      repo: 'mcp-tool-shop-org/repo-b',
+      source_record_ids: ['record-a2'],
+      product_surface: 'cli',
+      issue_kind: 'entrypoint_truth',
+      root_cause_kind: 'contract_drift'
+    }));
+    // Cluster B: entrypoint_truth + surface_misclassification on cli surface
+    // Same surface + issue_kind as Cluster A, but different root_cause_kind.
+    writeFinding(TEST_ROOT, makeAcceptedFinding({
+      finding_id: 'dfind-collide-b1',
+      repo: 'mcp-tool-shop-org/repo-c',
+      source_record_ids: ['record-b1'],
+      product_surface: 'cli',
+      issue_kind: 'entrypoint_truth',
+      root_cause_kind: 'surface_misclassification'
+    }));
+    writeFinding(TEST_ROOT, makeAcceptedFinding({
+      finding_id: 'dfind-collide-b2',
+      repo: 'mcp-tool-shop-org/repo-d',
+      source_record_ids: ['record-b2'],
+      product_surface: 'cli',
+      issue_kind: 'entrypoint_truth',
+      root_cause_kind: 'surface_misclassification'
+    }));
+  });
+  after(() => { if (existsSync(TEST_ROOT)) rmSync(TEST_ROOT, { recursive: true }); });
+
+  it('produces two distinct clusters', () => {
+    const { patterns, stats } = derivePatterns(TEST_ROOT);
+    assert.equal(stats.clustersFound, 2, 'cluster key includes root_cause_kind, so 2 distinct clusters');
+    assert.equal(patterns.length, 2, 'both clusters meet 2-finding threshold');
+  });
+
+  it('emits unique pattern_id values for each cluster', () => {
+    const { patterns } = derivePatterns(TEST_ROOT);
+    const ids = patterns.map(p => p.pattern_id);
+    const unique = new Set(ids);
+    assert.equal(unique.size, ids.length,
+      `pattern_id collision: ${JSON.stringify(ids)} — slug must include root_cause_kind to match cluster key`);
+  });
+
+  it('persists both patterns to disk without overwrite', () => {
+    const { patterns } = derivePatterns(TEST_ROOT);
+    for (const p of patterns) writePattern(TEST_ROOT, p);
+    const loaded = loadPatterns(TEST_ROOT);
+    const collidedIds = patterns.map(p => p.pattern_id);
+    for (const id of collidedIds) {
+      assert.ok(loaded.some(x => x.pattern_id === id),
+        `pattern ${id} missing on disk — second writePattern() overwrote the first`);
+    }
+    // Verify each persisted pattern carries its own root_cause_kind in dimensions
+    const loadedRootCauses = new Set(
+      loaded
+        .filter(p => collidedIds.includes(p.pattern_id))
+        .flatMap(p => p.dimensions.root_cause_kinds)
+    );
+    assert.ok(loadedRootCauses.has('contract_drift'),
+      'contract_drift cluster should survive on disk');
+    assert.ok(loadedRootCauses.has('surface_misclassification'),
+      'surface_misclassification cluster should survive on disk');
+  });
+});
+
 describe('Pattern derivation: thresholds', () => {
   it('single finding does not produce a pattern', () => {
     setupTestRoot();

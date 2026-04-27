@@ -20,10 +20,10 @@
 *Protocols, evidence stores, and learning loops for AI-assisted software.*
 
 <!-- version:start -->
-**v1.1.1** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
+**v1.1.2** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
 <!-- version:end -->
 
-📖 **[Read the handbook →](https://dogfood-lab.github.io/testing-os/)**
+📖 **[Read the handbook →](https://dogfood-lab.github.io/testing-os/handbook/)**
 
 </div>
 
@@ -40,7 +40,7 @@
 
 ## Status
 
-**v1.0.0 stable** — first stable release after the migration from `mcp-tool-shop-org/dogfood-labs` (cut 2026-04-25). Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Consumers can pin to `^1.0.0`. See [CHANGELOG.md](CHANGELOG.md) for what's in the cut.
+**v1.1.1** — patch release (2026-04-26) on top of the v1.0.0 cut from 2026-04-25, the first stable release after the migration from `mcp-tool-shop-org/dogfood-labs`. Fixes two Stage D dispatch blockers (validator stage enum + template stage-letter extraction) shipped in v1.1.0. Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Packages are not currently published to npm — see [Versioning](#versioning) for the publish status. To consume locally, clone the repo and use `file:` workspace links, or fetch the generated indexes via `raw.githubusercontent.com` (see the handbook's Integration page). See [CHANGELOG.md](CHANGELOG.md) for the v1.1.1 patch notes.
 
 ## Threat Model
 
@@ -71,7 +71,7 @@ Sibling testing tools that **stay independent** but integrate via published APIs
 ```
 testing-os/
 ├── packages/                  # 7 workspace packages (@dogfood-lab/*)
-├── site/                      # Astro Starlight handbook → dogfood-lab.github.io/testing-os/
+├── site/                      # Astro Starlight handbook → dogfood-lab.github.io/testing-os/handbook/
 ├── swarms/                    # Swarm-run artifacts + control-plane.db
 ├── indexes/                   # Generated read API: latest-by-repo.json, failing.json, stale.json
 ├── policies/                  # Policy YAML by repo
@@ -107,7 +107,7 @@ Lockstep across all `@dogfood-lab/*` packages — they bump together. The versio
 
 <div align="center">
 
-**[Handbook](https://dogfood-lab.github.io/testing-os/)** · **[All Repositories](https://github.com/orgs/dogfood-lab/repositories)** · **[Profile](https://github.com/dogfood-lab)**
+**[Handbook](https://dogfood-lab.github.io/testing-os/handbook/)** · **[All Repositories](https://github.com/orgs/dogfood-lab/repositories)** · **[Profile](https://github.com/dogfood-lab)**
 
 *Eat first. Ship second.*
 

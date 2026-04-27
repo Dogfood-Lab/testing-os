@@ -367,7 +367,17 @@ Filters (for list):
     }
 
     // Derive
-    const { candidates, stats } = deriveFromRecords(entries);
+    const { candidates, ruleErrors, stats } = deriveFromRecords(entries);
+
+    // Surface per-rule throws — derivation only "succeeded" when ruleErrors is empty.
+    // Exit non-zero so CI never silently treats a partially-degraded run as green.
+    if (ruleErrors.length > 0) {
+      console.error(`${ruleErrors.length} rule error(s) during derivation:`);
+      for (const e of ruleErrors) {
+        console.error(`  rule=${e.ruleId} run_id=${e.runId} msg=${e.message}`);
+      }
+      process.exit(1);
+    }
 
     // Validate all candidates against schema
     const invalid = candidates.filter(c => !validateFinding(c).valid);

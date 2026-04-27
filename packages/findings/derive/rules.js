@@ -326,7 +326,7 @@ const ruleSchemaRejection = {
   description: 'Detects schema validation failures not covered by surface misclassification — general contract drift between producer and consumer.',
 
   applies(ctx) {
-    if (!ctx.record.verification?.schema_valid === false) return false;
+    if (ctx.record.verification?.schema_valid !== false) return false;
     // Only fire if not already covered by surface misclassification
     const reasons = ctx.record.verification?.rejection_reasons || [];
     const hasSurfaceIssue = reasons.some(r => /product_surface/.test(r));

@@ -1,0 +1,123 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 560" role="img" aria-labelledby="diagram-title diagram-desc" preserveAspectRatio="xMidYMid meet">
+  <title id="diagram-title">testing-os ingestion data flow</title>
+  <desc id="diagram-desc">A horizontal flow diagram with five stages. Stage 1: a source repo workflow builds a structured JSON submission. Stage 2: it emits the submission to testing-os via GitHub repository_dispatch. Stage 3: the testing-os verifier runs seven steps in order — schema validation, verifier-owned field guard, provenance check, step results validation, policy evaluation, verdict computation, and record assembly. Stage 4: the persist layer writes accepted records to records/&lt;org&gt;/&lt;repo&gt;/YYYY/MM/DD/ and rejected records to records/_rejected/. Stage 5: the index rebuilder regenerates latest-by-repo.json, failing.json, and stale.json. Downstream consumers — shipcheck Gate F, repo-knowledge sync-dogfood, the portfolio generator, and role-os advice bundles — read those indexes; they never write to testing-os.</desc>
+
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#34d399" />
+    </marker>
+    <style>
+      .stage-bg { fill: #18181b; stroke: #27272a; stroke-width: 1.5; rx: 12; }
+      .accent-bg { fill: #064e3b; stroke: #34d399; stroke-width: 1.5; rx: 12; }
+      .reject-bg { fill: #3f1d1d; stroke: #f87171; stroke-width: 1.5; rx: 12; }
+      .stage-title { fill: #fafafa; font-family: 'Inter', system-ui, sans-serif; font-size: 14px; font-weight: 600; }
+      .stage-label { fill: #d4d4d8; font-family: 'Inter', system-ui, sans-serif; font-size: 11px; }
+      .step-label { fill: #a1a1aa; font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 10px; }
+      .arrow-line { stroke: #34d399; stroke-width: 2; fill: none; }
+      .arrow-line-reject { stroke: #f87171; stroke-width: 2; fill: none; stroke-dasharray: 6 4; }
+      .section-label { fill: #a1a1aa; font-family: 'Inter', system-ui, sans-serif; font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; }
+    </style>
+  </defs>
+
+  <!-- Background -->
+  <rect width="880" height="560" fill="#09090b" />
+
+  <!-- Section: Source -->
+  <text x="20" y="30" class="section-label">Source repo</text>
+  <rect x="20" y="50" width="160" height="90" class="stage-bg" />
+  <text x="100" y="78" text-anchor="middle" class="stage-title">Workflow</text>
+  <text x="100" y="100" text-anchor="middle" class="stage-label">Builds submission</text>
+  <text x="100" y="116" text-anchor="middle" class="stage-label">JSON payload</text>
+  <text x="100" y="132" text-anchor="middle" class="step-label">.github/workflows/dogfood.yml</text>
+
+  <!-- Arrow: source -> dispatch -->
+  <path d="M 180 95 L 222 95" class="arrow-line" marker-end="url(#arrow)" />
+  <text x="201" y="85" text-anchor="middle" class="step-label">dispatch</text>
+
+  <!-- Section: Transport -->
+  <text x="220" y="30" class="section-label">Transport</text>
+  <rect x="220" y="50" width="160" height="90" class="stage-bg" />
+  <text x="300" y="78" text-anchor="middle" class="stage-title">repository_dispatch</text>
+  <text x="300" y="100" text-anchor="middle" class="stage-label">GitHub API event</text>
+  <text x="300" y="116" text-anchor="middle" class="stage-label">DOGFOOD_TOKEN auth</text>
+  <text x="300" y="132" text-anchor="middle" class="step-label">type: dogfood_submission</text>
+
+  <!-- Arrow: dispatch -> verifier -->
+  <path d="M 380 95 L 422 95" class="arrow-line" marker-end="url(#arrow)" />
+
+  <!-- Section: Verifier (7 steps) -->
+  <text x="420" y="30" class="section-label">testing-os ingestion (ingest.yml)</text>
+  <rect x="420" y="50" width="240" height="180" class="accent-bg" />
+  <text x="540" y="78" text-anchor="middle" class="stage-title">Verifier — 7 steps</text>
+  <text x="435" y="100" class="step-label">1. Schema validate (AJV)</text>
+  <text x="435" y="116" class="step-label">2. Verifier-owned field guard</text>
+  <text x="435" y="132" class="step-label">3. Provenance check (GH API)</text>
+  <text x="435" y="148" class="step-label">4. Step results validation</text>
+  <text x="435" y="164" class="step-label">5. Policy evaluation</text>
+  <text x="435" y="180" class="step-label">6. Verdict computation</text>
+  <text x="435" y="196" class="step-label">7. Record assembly</text>
+  <text x="540" y="220" text-anchor="middle" class="stage-label">packages/verify + packages/ingest</text>
+
+  <!-- Arrow: verifier -> accepted persist -->
+  <path d="M 660 105 L 702 105" class="arrow-line" marker-end="url(#arrow)" />
+  <text x="681" y="95" text-anchor="middle" class="step-label">accepted</text>
+
+  <!-- Arrow: verifier -> rejected persist (downward branch, dashed/red) -->
+  <path d="M 660 175 L 702 175" class="arrow-line-reject" marker-end="url(#arrow)" />
+  <text x="681" y="195" text-anchor="middle" class="step-label" fill="#f87171">rejected</text>
+
+  <!-- Section: Persistence -->
+  <text x="700" y="30" class="section-label">Persistence (atomic)</text>
+  <rect x="700" y="60" width="160" height="90" class="stage-bg" />
+  <text x="780" y="86" text-anchor="middle" class="stage-title">Accepted record</text>
+  <text x="780" y="108" text-anchor="middle" class="step-label">records/&lt;org&gt;/&lt;repo&gt;/</text>
+  <text x="780" y="124" text-anchor="middle" class="step-label">YYYY/MM/DD/&lt;run-id&gt;.json</text>
+  <text x="780" y="140" text-anchor="middle" class="stage-label">tmp + rename</text>
+
+  <rect x="700" y="160" width="160" height="60" class="reject-bg" />
+  <text x="780" y="184" text-anchor="middle" class="stage-title">Rejected record</text>
+  <text x="780" y="204" text-anchor="middle" class="step-label">records/_rejected/...</text>
+
+  <!-- Arrow: accepted -> index rebuild (down) -->
+  <path d="M 780 150 L 780 270" class="arrow-line" marker-end="url(#arrow)" />
+  <text x="800" y="220" class="step-label">rebuild</text>
+
+  <!-- Section: Indexes -->
+  <text x="600" y="295" class="section-label">Index rebuild (rebuild-indexes.js)</text>
+  <rect x="600" y="310" width="240" height="120" class="accent-bg" />
+  <text x="720" y="338" text-anchor="middle" class="stage-title">Generated indexes</text>
+  <text x="615" y="362" class="step-label">latest-by-repo.json</text>
+  <text x="615" y="380" class="step-label">failing.json</text>
+  <text x="615" y="398" class="step-label">stale.json</text>
+  <text x="720" y="420" text-anchor="middle" class="stage-label">Per-record outcomes:</text>
+  <text x="720" y="436" text-anchor="middle" class="step-label" font-style="italic">accepted / rejected / corrupted / skipped</text>
+
+  <!-- Arrow: indexes -> consumers (left/down) -->
+  <path d="M 600 370 L 540 370 L 540 460" class="arrow-line" marker-end="url(#arrow)" />
+  <text x="555" y="385" class="step-label">CDN</text>
+
+  <!-- Section: Consumers -->
+  <text x="20" y="475" class="section-label">Consumers (read-only)</text>
+  <rect x="20" y="490" width="180" height="50" class="stage-bg" />
+  <text x="110" y="510" text-anchor="middle" class="stage-title">shipcheck Gate F</text>
+  <text x="110" y="528" text-anchor="middle" class="step-label">raw.githubusercontent CDN</text>
+
+  <rect x="220" y="490" width="180" height="50" class="stage-bg" />
+  <text x="310" y="510" text-anchor="middle" class="stage-title">repo-knowledge</text>
+  <text x="310" y="528" text-anchor="middle" class="step-label">rk sync-dogfood</text>
+
+  <rect x="420" y="490" width="180" height="50" class="stage-bg" />
+  <text x="510" y="510" text-anchor="middle" class="stage-title">Portfolio</text>
+  <text x="510" y="528" text-anchor="middle" class="step-label">packages/portfolio/generate.js</text>
+
+  <rect x="620" y="490" width="180" height="50" class="stage-bg" />
+  <text x="710" y="510" text-anchor="middle" class="stage-title">role-os advice</text>
+  <text x="710" y="528" text-anchor="middle" class="step-label">advise --surface ...</text>
+
+  <!-- Arrows: consumer -> indexes (drawn as multiple) -->
+  <path d="M 200 490 L 540 460" class="arrow-line" stroke-opacity="0.4" />
+  <path d="M 400 490 L 540 460" class="arrow-line" stroke-opacity="0.4" />
+  <path d="M 600 490 L 540 460" class="arrow-line" stroke-opacity="0.4" />
+  <path d="M 700 490 L 540 460" class="arrow-line" stroke-opacity="0.4" />
+</svg>

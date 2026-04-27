@@ -128,7 +128,13 @@ describe('State machine — transitionAgent', () => {
   });
 
   it('rejects illegal transition', () => {
-    assert.throws(() => transitionAgent(db, 1, 'complete', 'skip ahead'), /Illegal transition/);
+    // F-091578-002 (wave-17): rejection now throws StateMachineRejectionError
+    // with kind=INVALID and an actionable hint. Old shape was a bare
+    // `Illegal transition: ...` Error without a `code`.
+    assert.throws(
+      () => transitionAgent(db, 1, 'complete', 'skip ahead'),
+      (err) => err.code === 'STATE_MACHINE_INVALID' && /not allowed/.test(err.message)
+    );
     db.close();
   });
 
@@ -138,7 +144,12 @@ describe('State machine — transitionAgent', () => {
     // Manually set to invalid_output for test
     db.prepare("UPDATE agent_runs SET status = 'invalid_output' WHERE id = 1").run();
 
-    assert.throws(() => transitionAgent(db, 1, 'dispatched'), /blocked/);
+    // F-091578-002 (wave-17): blocked-status rejection now throws
+    // StateMachineRejectionError with kind=BLOCKED and a manual-override hint.
+    assert.throws(
+      () => transitionAgent(db, 1, 'dispatched'),
+      (err) => err.code === 'STATE_MACHINE_BLOCKED' && /blocked/.test(err.message)
+    );
     db.close();
   });
 
@@ -175,8 +186,10 @@ describe('State machine — timeout policy', () => {
     db.prepare("INSERT INTO waves (run_id, phase, wave_number) VALUES (?, ?, ?)")
       .run('r1', 'test', 1);
     const domainId = db.prepare('SELECT id FROM domains WHERE run_id = ?').get('r1').id;
+    // Seed started_at in the SAME shape executeTransition() writes it: ISO with Z.
+    // The previous fixture used '2026-04-10T10:00:00' (no Z) which masked F-742440-001.
     db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status, started_at) VALUES (1, ?, 'dispatched', ?)")
-      .run(domainId, '2026-04-10T10:00:00');
+      .run(domainId, '2026-04-10T10:00:00.000Z');
   });
 
   it('times out stale agents deterministically', () => {
@@ -213,6 +226,66 @@ describe('State machine — timeout policy', () => {
     const now = new Date('2026-04-10T10:06:00Z').getTime();
     const timedOut = applyTimeoutPolicy(db, 1, 300000, now);
     assert.equal(timedOut.length, 1);
+    db.close();
+  });
+});
+
+// F-742440-001 regression: production write path (transitionAgent) writes
+// started_at via toISOString() which already ends in 'Z'. Earlier hardening
+// tests seed started_at via raw SQL without 'Z', which masks the bug. These
+// tests drive the bug through the same code path production uses.
+describe('State machine — timeout policy (production write path)', () => {
+  let db;
+  let pendingAgentId;
+
+  beforeEach(() => {
+    db = openMemoryDb();
+    db.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+      .run('r1', 'org/r', '/tmp/r', 'a'.repeat(40));
+    saveDomainDraft(db, 'r1', [{ name: 'backend', globs: ['src/**'], ownership_class: 'owned' }]);
+    db.prepare("INSERT INTO waves (run_id, phase, wave_number) VALUES (?, ?, ?)")
+      .run('r1', 'test', 1);
+    const domainId = db.prepare('SELECT id FROM domains WHERE run_id = ?').get('r1').id;
+    db.prepare('INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (1, ?, ?)')
+      .run(domainId, 'pending');
+    pendingAgentId = db.prepare('SELECT id FROM agent_runs WHERE wave_id = 1').get().id;
+  });
+
+  it('times out agent dispatched via transitionAgent (production write path)', () => {
+    // Production path: transitionAgent writes started_at via new Date().toISOString()
+    // which yields a string already terminated with 'Z'.
+    transitionAgent(db, pendingAgentId, 'dispatched', 'initial dispatch');
+
+    const startedAt = db.prepare('SELECT started_at FROM agent_runs WHERE id = ?')
+      .get(pendingAgentId).started_at;
+    assert.ok(startedAt.endsWith('Z'), `started_at must end in Z (got: ${startedAt})`);
+
+    // 31 minutes after the recorded started_at
+    const startedAtMs = new Date(startedAt).getTime();
+    const now = startedAtMs + 31 * 60 * 1000;
+
+    const timedOut = applyTimeoutPolicy(db, 1, 1800000, now);
+    assert.equal(timedOut.length, 1, 'agent dispatched via production path must time out');
+
+    const ar = db.prepare('SELECT status FROM agent_runs WHERE id = ?').get(pendingAgentId);
+    assert.equal(ar.status, 'timed_out');
+    db.close();
+  });
+
+  it('does NOT time out fresh agent dispatched via transitionAgent', () => {
+    transitionAgent(db, pendingAgentId, 'dispatched', 'initial dispatch');
+
+    const startedAt = db.prepare('SELECT started_at FROM agent_runs WHERE id = ?')
+      .get(pendingAgentId).started_at;
+    const startedAtMs = new Date(startedAt).getTime();
+    // 10 minutes after start — well inside the 30 min policy
+    const now = startedAtMs + 10 * 60 * 1000;
+
+    const timedOut = applyTimeoutPolicy(db, 1, 1800000, now);
+    assert.equal(timedOut.length, 0);
+
+    const ar = db.prepare('SELECT status FROM agent_runs WHERE id = ?').get(pendingAgentId);
+    assert.equal(ar.status, 'dispatched');
     db.close();
   });
 });

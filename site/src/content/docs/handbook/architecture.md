@@ -7,21 +7,37 @@ sidebar:
 
 ## Data Flow
 
-```
+<figure>
+  <img
+    src="/testing-os/diagrams/architecture.svg"
+    alt="testing-os ingestion data flow: source-repo workflow builds a JSON submission, dispatches it to testing-os via repository_dispatch, the verifier runs seven steps (schema, field guard, provenance, step results, policy, verdict, record assembly), persistence routes accepted records to records/<org>/<repo>/YYYY/MM/DD/ and rejected records to records/_rejected/, the index rebuilder regenerates latest-by-repo.json / failing.json / stale.json, and read-only consumers (shipcheck Gate F, repo-knowledge sync-dogfood, the portfolio generator, role-os advice bundles) query those indexes via the GitHub raw CDN."
+    style="width: 100%; height: auto;"
+  />
+  <figcaption>End-to-end ingestion data flow. Accepted-path arrows are solid green; the rejected branch is dashed red. Consumers (bottom row) read indexes only — testing-os is the sole write authority.</figcaption>
+</figure>
+
+The same flow as text (terminal-friendly fallback for screen
+readers and CLI viewers):
+
+```text
 Source repo workflow
   → Builds structured submission (JSON)
   → Emits via repository_dispatch to testing-os
 
 testing-os ingestion pipeline
-  → Schema validation (AJV against JSON Schema)
-  → Provenance check (GitHub API — verify run actually happened)
-  → Policy evaluation (enforcement tier, required scenarios, freshness)
-  → Verdict computation (source proposes, verifier confirms or downgrades)
+  → Schema validation (AJV)
+  → Provenance check (GitHub API)
+  → Policy evaluation (enforcement, scenarios, freshness)
+  → Verdict computation (source proposes; verifier confirms
+    or downgrades)
 
   → Accepted: records/<org>/<repo>/YYYY/MM/DD/<run-id>.json
-  → Rejected: records/_rejected/<org>/<repo>/YYYY/MM/DD/<run-id>.json
+  → Rejected: records/_rejected/<org>/<repo>/YYYY/MM/DD/...
 
-  → Index rebuild: indexes/latest-by-repo.json, failing.json, stale.json
+  → Index rebuild:
+      indexes/latest-by-repo.json
+      indexes/failing.json
+      indexes/stale.json
 ```
 
 ## Key Design Decisions
@@ -75,7 +91,17 @@ The index generator (`packages/ingest/rebuild-indexes.js`) produces three files 
 
 ### Atomic Persistence
 
-Records are written atomically: the persist layer writes to a temporary file, then renames it to the final path. Duplicate detection by `run_id` prevents double-writes. Accepted records go to `records/<org>/<repo>/YYYY/MM/DD/`, rejected records to `records/_rejected/<org>/<repo>/YYYY/MM/DD/`.
+Records are written atomically: the persist layer writes to a temporary file, then renames it to the final path. Duplicate detection by `run_id` prevents double-writes (collisions surface as `DUPLICATE_RUN_ID` — see [Error Code Reference](../error-codes/)). Accepted records go to `records/<org>/<repo>/YYYY/MM/DD/`, rejected records to `records/_rejected/<org>/<repo>/YYYY/MM/DD/`.
+
+### Rebuild Outcomes
+
+`packages/ingest/rebuild-indexes.js` returns four arrays per call: `accepted`, `rejected`, `corrupted`, `skipped`.
+
+- `accepted` / `rejected` — record loaded cleanly; routed by `verification.status`.
+- `corrupted` — `JSON.parse` failed on the file. The rebuild logs `[rebuild-indexes] corrupted record skipped: <path> — <error>` to stderr and continues; the record is excluded from all indexes.
+- `skipped` — record loaded but missing `run_id`.
+
+Corruption does not fail the rebuild — the index is silently incomplete until repaired. See [Operating Guide → Corrupted Record Recovery](../operating-guide/#corrupted-record-recovery) for the procedure.
 
 ## Enforcement Tiers
 

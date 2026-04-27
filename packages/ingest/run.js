@@ -22,11 +22,41 @@ import { fileURLToPath } from 'node:url';
 
 import { verify } from '@dogfood-lab/verify';
 import { stubProvenance, githubProvenance } from '@dogfood-lab/verify/validators/provenance.js';
+import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-stage.js';
 import { loadGlobalPolicy, loadRepoPolicy, loadScenarios } from './load-context.js';
 import { isDuplicate, writeRecord } from './persist.js';
 import { rebuildIndexes } from './rebuild-indexes.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Emit a single structured stage-transition log line via the shared helper.
+ *
+ * Pins `component: 'ingest'` so every ingest event is tagged regardless of
+ * caller-supplied fields. Delegates to the canonical helper at
+ * `@dogfood-lab/dogfood-swarm/lib/log-stage.js`, which adds the wave-17
+ * verdict-first human banner (TTY or DOGFOOD_LOG_HUMAN=1) on top of the
+ * NDJSON line that ingest.yml's CI log captures.
+ *
+ * Stages: dispatch_received | context_loaded | verify_complete |
+ * persist_complete | rebuild_indexes_complete | rejected_pre_persist | error.
+ *
+ * @param {string} stage
+ * @param {object} fields - Stage-specific fields. `submission_id` strongly
+ *   recommended. Do NOT pass `stage` as an inner field — it would collide
+ *   with the outer stage name and the spread is last-wins. For "this stage
+ *   failed inside that stage" use `failed_stage` (e.g.
+ *   `logStage('error', { failed_stage: 'rebuild_indexes', ... })`).
+ */
+function logStage(stage, fields = {}) {
+  // Defensive against F-827321-035: strip any caller-supplied `stage:`
+  // before spreading, so the positional `stage` always wins. The shared
+  // helper itself spreads fields last; without this strip, an inner
+  // `stage:` would silently overwrite the outer name and a grep of
+  // `"stage":"error"` across runner logs would miss the failure.
+  const { stage: _ignored, ...safeFields } = fields;
+  sharedLogStage(stage, { component: 'ingest', ...safeFields });
+}
 
 /**
  * Run the full ingestion pipeline.
@@ -53,9 +83,21 @@ export async function ingest(submission, options) {
     );
   }
 
+  const submissionIsObject = submission && typeof submission === 'object' && !Array.isArray(submission);
+  const submissionId = submissionIsObject ? (submission.run_id || null) : null;
+  const submissionRepo = submissionIsObject ? (submission.repo || null) : null;
+
+  logStage('dispatch_received', {
+    submission_id: submissionId,
+    repo: submissionRepo,
+    has_scenario_results: !!(submissionIsObject && submission.scenario_results)
+  });
+
   // 1. Check for duplicate before doing any work
   //    We need a minimal record shape to compute the path for duplicate check
-  if (submission.run_id && submission.repo && submission.timing?.finished_at) {
+  //    Guard against null/non-object submissions — those flow straight to verify()
+  //    which produces a rejection record marked _skipPersist.
+  if (submissionIsObject && submission.run_id && submission.repo && submission.timing?.finished_at) {
     const probeRecord = {
       run_id: submission.run_id,
       repo: submission.repo,
@@ -63,6 +105,10 @@ export async function ingest(submission, options) {
       verification: { status: 'accepted' }
     };
     if (isDuplicate(submission.run_id, probeRecord, repoRoot)) {
+      logStage('rejected_pre_persist', {
+        submission_id: submissionId,
+        reason: 'duplicate'
+      });
       return {
         record: null,
         path: null,
@@ -74,12 +120,18 @@ export async function ingest(submission, options) {
 
   // 2. Load context
   const globalPolicy = loadGlobalPolicy(repoRoot);
-  const repoPolicy = loadRepoPolicy(submission.repo || '', repoRoot);
+  const repoPolicy = loadRepoPolicy(submissionIsObject ? (submission.repo || '') : '', repoRoot);
   const policyVersion = repoPolicy?.policy_version || globalPolicy.policy_version || '1.0.0';
+
+  logStage('context_loaded', {
+    submission_id: submissionId,
+    policy_version: policyVersion,
+    repo_policy_present: !!repoPolicy
+  });
 
   // 3. Load scenario definitions (non-fatal if missing — becomes rejection reason)
   let scenarioErrors = [];
-  if (scenarioFetcher && submission.scenario_results) {
+  if (scenarioFetcher && submissionIsObject && submission.scenario_results) {
     const result = await loadScenarios(submission, scenarioFetcher);
     scenarioErrors = result.errors;
   }
@@ -90,6 +142,13 @@ export async function ingest(submission, options) {
     repoPolicy,
     provenance,
     policyVersion
+  });
+
+  logStage('verify_complete', {
+    submission_id: submissionId,
+    status: record.verification?.status ?? null,
+    rejection_reason_count: record.verification?.rejection_reasons?.length ?? 0,
+    verdict: record.overall_verdict?.verified ?? null
   });
 
   // 4b. Append scenario loading errors to rejection reasons if any
@@ -114,13 +173,50 @@ export async function ingest(submission, options) {
   }
 
   // 5. Persist record
+  //    Verifier marks _skipPersist when input was null/non-object — the stub record
+  //    lacks repo/run_id/timing.finished_at and would crash computeRecordPath().
+  //    Surface the structured rejection cleanly without writing.
+  if (record._skipPersist) {
+    delete record._skipPersist;
+    logStage('rejected_pre_persist', {
+      submission_id: submissionId,
+      reason: 'skip_persist',
+      rejection_reasons: record.verification?.rejection_reasons ?? []
+    });
+    return { record, path: null, written: false, duplicate: false };
+  }
+  const persistStart = Date.now();
   const { path, written } = writeRecord(record, repoRoot);
+  logStage('persist_complete', {
+    submission_id: submissionId,
+    path,
+    written,
+    duplicate: !written,
+    duration_ms: Date.now() - persistStart
+  });
 
   // 6. Rebuild indexes
   if (written) {
+    const rebuildStart = Date.now();
     try {
-      rebuildIndexes(repoRoot);
+      const indexResult = rebuildIndexes(repoRoot);
+      logStage('rebuild_indexes_complete', {
+        submission_id: submissionId,
+        duration_ms: Date.now() - rebuildStart,
+        accepted: indexResult.accepted,
+        rejected: indexResult.rejected,
+        corrupted_count: indexResult.corrupted?.length ?? 0
+      });
     } catch (err) {
+      // failed_stage (not stage) — outer stage='error' must survive the
+      // spread inside the shared logStage helper. F-827321-035: an inner
+      // `stage:` field overwrites the outer name, hiding the error event
+      // from any `"stage":"error"` grep across the runner log.
+      logStage('error', {
+        submission_id: submissionId,
+        failed_stage: 'rebuild_indexes',
+        message: err.message
+      });
       console.error(`WARNING: record persisted but index rebuild failed: ${err.message} — indexes may be stale`);
     }
   }
@@ -215,10 +311,11 @@ if (isMain) {
 
     console.log(JSON.stringify({
       status: result.record.verification.status,
-      run_id: result.record.run_id,
-      verdict: result.record.overall_verdict.verified,
+      run_id: result.record.run_id ?? null,
+      verdict: result.record.overall_verdict?.verified ?? null,
       path: result.path,
-      written: result.written
+      written: result.written,
+      rejection_reasons: result.record.verification.rejection_reasons ?? []
     }));
 
     process.exit(result.record.verification.status === 'accepted' ? 0 : 1);

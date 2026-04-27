@@ -19,6 +19,10 @@ import { getDomains, aredomainsFrozen, freezeDomains, takeDomainSnapshot } from 
 import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../lib/templates.js';
 import { buildPriorMap } from '../lib/fingerprint.js';
 import { createWorktree } from '../lib/worktree.js';
+import { findingsForDomain } from '../lib/findings-filter.js';
+import { transitionAgent } from '../lib/state-machine.js';
+import { IsolationError } from '../lib/errors.js';
+import { logStage } from '../lib/log-stage.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
@@ -94,7 +98,13 @@ export function dispatch(opts) {
     // Only dispatch owned + bridge domains as agents (shared is a zone, not an agent)
     if (domain.ownership_class === 'shared') continue;
 
-    // Create worktree if isolation is enabled
+    // Create worktree if isolation is enabled.
+    //
+    // F-693631-001 (wave-12): the prior bare catch silently fell back to
+    // running the agent in the main repo while the operator believed
+    // --isolate was in effect. Re-emergence of F-742440-007 from wave-1.
+    // Isolation is a contract — fail loud. The CLI is responsible for
+    // catching IsolationError and exiting non-zero.
     let worktreePath = null;
     let worktreeBranch = null;
     if (opts.isolate) {
@@ -107,16 +117,34 @@ export function dispatch(opts) {
         worktreePath = wt.worktreePath;
         worktreeBranch = wt.branch;
       } catch (e) {
-        // Worktree creation failed — continue without isolation
-        worktreePath = null;
-        worktreeBranch = null;
+        logStage('isolate_failed', {
+          err: e.message,
+          runId: opts.runId,
+          waveNumber,
+          domain: domain.name,
+          repoPath: run.local_path,
+        });
+        throw new IsolationError(
+          `--isolate requested but worktree creation failed for domain=${domain.name}: ${e.message}`,
+          { cause: e }
+        );
       }
     }
 
+    // Insert at 'pending' then transition to 'dispatched' through the state
+    // machine. This is the canonical path used by resume.js — it writes
+    // started_at via executeTransition() and emits a `pending → dispatched`
+    // event to agent_state_events, satisfying the state-machine.js header
+    // invariant that "Every agent_run status change MUST go through this
+    // module" / "Every legal transition is logged". Direct INSERT with
+    // status='dispatched' bypassed both, leaving started_at NULL and silently
+    // breaking applyTimeoutPolicy() (F-002109-003 / F-002 symptom).
     const agentResult = db.prepare(`
       INSERT INTO agent_runs (wave_id, domain_id, status, worktree_path, worktree_branch)
-      VALUES (?, ?, 'dispatched', ?, ?)
+      VALUES (?, ?, 'pending', ?, ?)
     `).run(waveId, domain.id, worktreePath, worktreeBranch);
+    const agentRunId = Number(agentResult.lastInsertRowid);
+    transitionAgent(db, agentRunId, 'dispatched', 'initial dispatch');
 
     let prompt;
     const agentWorkDir = worktreePath || run.local_path;
@@ -136,24 +164,12 @@ export function dispatch(opts) {
         prompt = buildAuditPrompt({ ...promptOpts, priorContext });
       }
     } else if (isAmend) {
-      // Get approved findings for this domain
-      const findings = db.prepare(`
-        SELECT * FROM findings
-        WHERE run_id = ? AND status = 'approved'
-        AND file_path IN (
-          SELECT fc.file_path FROM file_claims fc
-          JOIN agent_runs ar ON fc.agent_run_id = ar.id
-          WHERE ar.domain_id = ?
-        )
-      `).all(opts.runId, domain.id);
-
-      // Fallback: get all approved findings that match domain globs
-      const allApproved = findings.length > 0 ? findings :
-        db.prepare(`
-          SELECT * FROM findings WHERE run_id = ? AND status = 'approved'
-        `).all(opts.runId);
-
-      prompt = buildAmendPrompt({ ...promptOpts, findings: allApproved });
+      // Filter approved findings by the agent's owned globs. An empty result is
+      // the correct answer (this domain has no work in this wave) — do NOT fall
+      // back to all-approved, which would feed every fix to every agent and
+      // defeat exclusive file ownership (Law #1). See lib/findings-filter.js.
+      const findings = findingsForDomain(db, opts.runId, domain);
+      prompt = buildAmendPrompt({ ...promptOpts, findings });
     } else {
       prompt = buildAuditPrompt(promptOpts); // generic fallback
     }
@@ -162,7 +178,7 @@ export function dispatch(opts) {
     writeFileSync(promptPath, prompt, 'utf-8');
 
     agents.push({
-      agentRunId: agentResult.lastInsertRowid,
+      agentRunId,
       domain: domain.name,
       domainId: domain.id,
       promptPath,

@@ -2,9 +2,11 @@
  * Write derived candidate findings to disk as YAML files.
  */
 
-import { writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { mkdirSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import yaml from 'js-yaml';
+
+import { atomicWriteFileSync } from '../lib/atomic-write.js';
 
 /**
  * Write a candidate finding to its canonical location.
@@ -33,7 +35,7 @@ export function writeFinding(rootDir, finding) {
     forceQuotes: false
   });
 
-  writeFileSync(filePath, yamlStr, 'utf-8');
+  atomicWriteFileSync(filePath, yamlStr);
   return filePath;
 }
 

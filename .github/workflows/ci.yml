@@ -9,6 +9,14 @@ on:
       - 'tsconfig.base.json'
       - 'tsconfig.json'
       - '.github/workflows/**'
+      # Doc-drift gate (wave 19, Class #11 sweep pattern): any change to a
+      # source-of-truth file (errors.js, schema.js) or to a doc surface
+      # (docs/, site/, PROTOCOL.md) re-runs scripts/check-doc-drift.mjs so
+      # spec drift fails CI in one place rather than rotting silently.
+      - 'docs/**'
+      - 'site/**'
+      - 'swarms/PROTOCOL.md'
+      - 'scripts/**'
   pull_request:
     paths:
       - 'packages/**'
@@ -17,6 +25,10 @@ on:
       - 'tsconfig.base.json'
       - 'tsconfig.json'
       - '.github/workflows/**'
+      - 'docs/**'
+      - 'site/**'
+      - 'swarms/PROTOCOL.md'
+      - 'scripts/**'
   workflow_dispatch:
 
 concurrency:
@@ -28,6 +40,12 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     strategy:
+      # Both Node legs must run to completion so the operator can tell from a
+      # single CI run whether a failure is Node-version-specific (e.g. an
+      # assert.throws matcher tightened in Node 22) or a real cross-version
+      # bug. Default fail-fast: true cancels Node 22 mid-flight when Node 20
+      # fails and costs an extra retry-and-pin cycle every time.
+      fail-fast: false
       matrix:
         node-version: [20, 22]
     steps:
@@ -37,5 +55,17 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: npm
       - run: npm ci
+      # Gate: package.json, package-lock.json (top-level + packages.""), and
+      # README must all agree on the workspace version. Catches the F-178611-015
+      # drift class (lockfile stamped from a prior version) before tests run.
+      - run: npm run sync-version:check
+      # Class #11 sweep gate: assert source-of-truth/doc cross-refs hold.
+      # Catches the F-COORD-004 drift class (error code added to lib/errors.js
+      # without a sibling entry in error-codes.md, status enum added to
+      # schema.js without state-machines.md mention, legacy paths leaking back
+      # into user-facing handbook pages). See scripts/doc-drift-patterns.json
+      # for the 5 active checks; adding a new instance is a config edit.
+      - run: npm run check-doc-drift
+      - run: npm run test:scripts
       - run: npm run build
       - run: npm test

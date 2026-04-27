@@ -22,6 +22,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { validatePayload } from '@dogfood-lab/schemas';
 
 // ULID-like sortable ID (timestamp prefix + random suffix)
 function generateRunId() {
@@ -83,7 +84,12 @@ export function buildSubmission(params) {
 
   const startMs = new Date(startedAt).getTime();
   const endMs = new Date(finishedAt).getTime();
-  const durationMs = (isNaN(endMs - startMs) || (endMs - startMs) < 0) ? null : endMs - startMs;
+  const durationMs = endMs - startMs;
+  // F-882513-002 — schema requires duration_ms to be a non-negative integer when present;
+  // omit it entirely when the timing inputs are malformed (NaN or negative). The previous
+  // `null` produced submissions that the central verifier rejected with a misleading
+  // "invalid duration_ms" instead of letting the missing-field check speak for itself.
+  const hasValidDuration = Number.isFinite(durationMs) && durationMs >= 0;
 
   const submission = {
     schema_version: '1.0.0',
@@ -105,7 +111,7 @@ export function buildSubmission(params) {
     timing: {
       started_at: startedAt,
       finished_at: finishedAt,
-      duration_ms: durationMs
+      ...(hasValidDuration ? { duration_ms: durationMs } : {})
     },
     ...(ciChecks && ciChecks.length > 0 ? { ci_checks: ciChecks } : {}),
     scenario_results: scenarioResults,
@@ -118,39 +124,59 @@ export function buildSubmission(params) {
 
 /**
  * Validate a submission for obvious issues before dispatch.
- * This is a fast local precheck, not a replacement for the central verifier.
+ *
+ * F-246817-006 — this used to be a hand-rolled mirror of a few required-field
+ * checks from dogfood-record-submission.schema.json, missing the step_id
+ * pattern, scenario_id presence, surface enum, execution_mode enum, verdict
+ * enum, and schema_version pattern. Known-bad payloads sailed through and
+ * only failed at the central verifier, wasting a CI run with no local hint.
+ *
+ * It now delegates to {@link validatePayload} from `@dogfood-lab/schemas`
+ * (see packages/schemas/src/validate.ts), so local precheck is identical to
+ * the central verifier. Verifier-owned-field checks remain on top because
+ * Ajv reports them as "additional property" without naming the contract
+ * concept; surfacing them with the explicit "verifier-owned" label keeps
+ * existing operator-facing error messages.
  *
  * @param {object} submission
  * @returns {{ valid: boolean, errors: string[] }}
  */
 export function precheckSubmission(submission) {
+  // F-721047-001 — defensive guard: callers can mistakenly hand precheck a
+  // null/non-object value (e.g. JSON.parse on an empty file returns null,
+  // a typo passes a string). Pre-fix the `field in submission` check on the
+  // very next loop threw a raw TypeError instead of returning the documented
+  // {valid, errors} shape, breaking the CLI's structured error formatter at
+  // lines 207-209. Mirrors wave-8 F-246817-001's clean-rejection philosophy.
+  // Arrays are also rejected: scenario_results is an array but a submission
+  // root must be a plain object.
+  if (submission === null || typeof submission !== 'object' || Array.isArray(submission)) {
+    return {
+      valid: false,
+      errors: ['submission must be a non-null object, not ' + (Array.isArray(submission) ? 'array' : submission === null ? 'null' : typeof submission)]
+    };
+  }
+
   const errors = [];
 
-  if (!submission.schema_version) errors.push('missing schema_version');
-  if (!submission.run_id) errors.push('missing run_id');
-  if (!submission.repo) errors.push('missing repo');
-  if (!submission.ref?.commit_sha) errors.push('missing ref.commit_sha');
-  if (!submission.source?.provider_run_id) errors.push('missing source.provider_run_id');
-  if (!submission.source?.run_url) errors.push('missing source.run_url');
-  if (!submission.timing?.started_at) errors.push('missing timing.started_at');
-  if (!submission.timing?.finished_at) errors.push('missing timing.finished_at');
-
-  if (!submission.scenario_results || submission.scenario_results.length === 0) {
-    errors.push('scenario_results must have at least one entry');
-  }
-
-  if (!submission.overall_verdict || typeof submission.overall_verdict !== 'string') {
-    errors.push('overall_verdict must be a string');
-  }
-
-  // Block verifier-owned fields
+  // Verifier-owned-field checks: surface a precise message before Ajv's
+  // generic "must NOT have additional properties" fires.
   for (const field of VERIFIER_OWNED_FIELDS) {
     if (field in submission) {
       errors.push(`submission must not contain verifier-owned field: ${field}`);
     }
   }
-  if (typeof submission.overall_verdict === 'object') {
+  if (submission && typeof submission.overall_verdict === 'object') {
     errors.push('overall_verdict must be a string, not an object (verifier-owned shape)');
+  }
+
+  // Central schema validation — identical contract to the wire-side verifier.
+  const result = validatePayload('recordSubmission', submission);
+  if (!result.valid) {
+    for (const e of result.errors) {
+      const path = e.path && e.path !== '/' ? e.path : '(root)';
+      errors.push(`${path} ${e.message}`);
+    }
   }
 
   return { valid: errors.length === 0, errors };

@@ -6,6 +6,7 @@ import { mkdirSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node
 import yaml from 'js-yaml';
 
 import { deriveFromRecord, deriveFromRecords, getRuleInventory, RULES } from './derive-findings.js';
+import { getRuleById } from './rules.js';
 import { generateFindingId, computeDedupeKey } from './ids.js';
 import { dedupeWithinBatch, dedupeAgainstExisting } from './dedupe.js';
 import { loadRecordById, loadAllRecords } from './load-records.js';
@@ -635,6 +636,96 @@ describe('Rule inventory', () => {
 });
 
 // ============================================================
+// Regression: F-742442-039 — ruleSchemaRejection.applies precedence
+// ============================================================
+//
+// Original bug on rules.js:329 read `if (!ctx.record.verification?.schema_valid === false)`
+// which JS parses as `(!schema_valid) === false`. For a boolean schema_valid this happens
+// to behave correctly, but for `undefined` it returns false on the negation step then
+// compares `false === false` → true → does NOT short-circuit, so the rule continues to
+// check rejection_reasons. Sister rule on line 368 uses the correct idiom:
+// `if (ctx.record.verification?.policy_valid !== false) return false;`
+//
+// Fix is the one-character semantic change `!x === false` → `x !== false`.
+
+describe('Regression: ruleSchemaRejection.applies operator precedence (F-742442-039)', () => {
+  const rule = getRuleById('rule-schema-rejection');
+
+  it('does NOT fire when schema_valid is undefined (latent landmine pre-fix)', () => {
+    const ctx = {
+      record: {
+        verification: {
+          schema_valid: undefined,
+          rejection_reasons: ['schema:foo']
+        }
+      },
+      rejected: false,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(rule.applies(ctx), false,
+      'Rule must NOT fire when schema_valid is undefined; only fire when explicitly false.');
+  });
+
+  it('does NOT fire when schema_valid is null', () => {
+    const ctx = {
+      record: {
+        verification: {
+          schema_valid: null,
+          rejection_reasons: ['schema:foo']
+        }
+      },
+      rejected: false,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(rule.applies(ctx), false);
+  });
+
+  it('does NOT fire when schema_valid is true', () => {
+    const ctx = {
+      record: {
+        verification: {
+          schema_valid: true,
+          rejection_reasons: ['schema:foo']
+        }
+      },
+      rejected: false,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(rule.applies(ctx), false);
+  });
+
+  it('DOES fire when schema_valid is explicitly false with schema rejection reason', () => {
+    const ctx = {
+      record: {
+        verification: {
+          schema_valid: false,
+          rejection_reasons: ['schema:foo']
+        }
+      },
+      rejected: false,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(rule.applies(ctx), true);
+  });
+
+  // Baseline reference: same shape against rulePolicyRejection (already correct on line 368)
+  it('baseline: rulePolicyRejection.applies behaves the same way on undefined policy_valid', () => {
+    const policyRule = getRuleById('rule-policy-rejection');
+    const ctx = {
+      record: {
+        verification: {
+          policy_valid: undefined,
+          rejection_reasons: ['policy:foo']
+        }
+      },
+      rejected: false,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(policyRule.applies(ctx), false);
+  });
+});
+
+// ============================================================
 // Real record integration tests
 // ============================================================
 
@@ -663,5 +754,270 @@ describe('Integration: real records', () => {
       const result = validateFinding(c);
       assert.equal(result.valid, true, `${c.finding_id} invalid: ${JSON.stringify(result.errors)}`);
     }
+  });
+});
+
+// ============================================================
+// Rule-error surfacing (F-246817-013 regression)
+// ============================================================
+//
+// Bug: deriveFromRecord wrapped each rule in `try { ... } catch {}` with an
+// empty body. A throwing rule produced ZERO candidates and ZERO operator
+// signal. The comment in the source admitted "in a real system this would
+// be logged."
+//
+// Fix: collect per-rule errors into a return value, log to stderr, and surface
+// non-empty ruleErrors via the CLI as a non-zero exit. A derive operation
+// that ate 8 thrown rules MUST NOT report success.
+
+import { deriveFromRecordWithErrors } from './derive-findings.js';
+
+describe('rule-error surfacing (F-246817-013)', () => {
+  // Replace one rule with a throwing stub for the duration of a test.
+  function withThrowingRule(ruleId, fn) {
+    const idx = RULES.findIndex(r => r.ruleId === ruleId);
+    if (idx === -1) throw new Error(`rule not found: ${ruleId}`);
+    const original = RULES[idx];
+    RULES[idx] = {
+      ruleId,
+      description: original.description,
+      applies: () => true,
+      derive: () => { throw new Error('boom from test'); }
+    };
+    try {
+      return fn();
+    } finally {
+      RULES[idx] = original;
+    }
+  }
+
+  it('deriveFromRecordWithErrors returns ruleErrors with ruleId+runId+message', () => {
+    const record = makePassingRecord({ run_id: 'rule-err-001' });
+    const result = withThrowingRule('rule-scenario-step-failure', () => {
+      return deriveFromRecordWithErrors(record);
+    });
+    assert.ok(Array.isArray(result.ruleErrors), 'ruleErrors must be an array');
+    const err = result.ruleErrors.find(e => e.ruleId === 'rule-scenario-step-failure');
+    assert.ok(err, 'ruleErrors must include the throwing rule');
+    assert.equal(err.runId, 'rule-err-001');
+    assert.match(err.message, /boom from test/);
+  });
+
+  it('deriveFromRecord stays back-compat (returns array, does not throw)', () => {
+    const record = makePassingRecord({ run_id: 'rule-err-002' });
+    const candidates = withThrowingRule('rule-scenario-step-failure', () => {
+      // Suppress stderr noise during this assertion.
+      const origErr = console.error;
+      console.error = () => {};
+      try {
+        return deriveFromRecord(record);
+      } finally {
+        console.error = origErr;
+      }
+    });
+    assert.ok(Array.isArray(candidates), 'deriveFromRecord must still return an array');
+  });
+
+  it('deriveFromRecords aggregates ruleErrors across all entries and exposes count in stats', () => {
+    const a = makePassingRecord({ run_id: 'rule-err-a' });
+    const b = makeStepFailureRecord();
+    b.run_id = 'rule-err-b';
+    const result = withThrowingRule('rule-scenario-step-failure', () => {
+      const origErr = console.error;
+      console.error = () => {};
+      try {
+        return deriveFromRecords([
+          { record: a, rejected: false },
+          { record: b, rejected: false }
+        ]);
+      } finally {
+        console.error = origErr;
+      }
+    });
+    assert.ok(Array.isArray(result.ruleErrors));
+    assert.ok(result.ruleErrors.length >= 2, 'at least one error per record');
+    assert.equal(result.stats.ruleErrors, result.ruleErrors.length);
+    const runIds = new Set(result.ruleErrors.map(e => e.runId));
+    assert.ok(runIds.has('rule-err-a'));
+    assert.ok(runIds.has('rule-err-b'));
+  });
+
+  it('stderr receives a [derive] log line per rule throw', () => {
+    const record = makePassingRecord({ run_id: 'rule-err-stderr' });
+    const captured = [];
+    const origErr = console.error;
+    console.error = (...args) => { captured.push(args.join(' ')); };
+    try {
+      withThrowingRule('rule-scenario-step-failure', () => {
+        deriveFromRecord(record);
+      });
+    } finally {
+      console.error = origErr;
+    }
+    const matched = captured.find(line =>
+      line.includes('[derive]') &&
+      line.includes('rule-scenario-step-failure') &&
+      line.includes('rule-err-stderr')
+    );
+    assert.ok(matched, `expected [derive] stderr line, got: ${JSON.stringify(captured)}`);
+  });
+
+  // F-091578-033: behavioral coverage on the operator-facing framing of a
+  // ruleError. The previous tests pin structural fields (ruleId/runId/message)
+  // and the synthetic stub message ('boom from test'). NONE pin the
+  // actionable-hint sub-pattern an operator needs to know "a rule errored,
+  // findings may be incomplete — re-run with a fix" rather than "a generic
+  // exception bubbled up — restart the job."
+  //
+  // The framing lives across two operator surfaces:
+  //   1. The stderr `[derive] rule '<id>' threw on run_id=<id>: <msg>` line
+  //      (derive-findings.js:88-90) — the word "rule" carries the framing.
+  //   2. The synthesized rendering an operator builds from the ruleErrors[]
+  //      shape — `rule=<id>` is the framing word.
+  //
+  // Sub-pattern: /rule|finding|skipped/i — survives rewordings ("rule X
+  // failed", "finding pipeline skipped X", "rule errored") but fails if the
+  // framing collapses to a generic "error" / "exception" message.
+  it('ruleError surface preserves actionable-hint sub-pattern (F-091578-033)', () => {
+    const record = makePassingRecord({ run_id: 'rule-err-actionable' });
+    const captured = [];
+    const origErr = console.error;
+    console.error = (...args) => { captured.push(args.join(' ')); };
+    let result;
+    try {
+      result = withThrowingRule('rule-scenario-step-failure', () => {
+        return deriveFromRecordWithErrors(record);
+      });
+    } finally {
+      console.error = origErr;
+    }
+
+    // (a) The structured ruleErrors[] entry must let an operator-facing
+    // renderer (CLI cli.js:377 builds `rule=<id> run_id=<id> msg=<msg>`)
+    // produce a line that carries the actionable framing.
+    const entry = result.ruleErrors.find(e => e.runId === 'rule-err-actionable');
+    assert.ok(entry, 'ruleErrors must include the failing run');
+    const operatorLine = `rule=${entry.ruleId} run_id=${entry.runId} msg=${entry.message}`;
+    assert.match(operatorLine, /rule|finding|skipped/i,
+      'operator-rendered ruleError line must carry "rule"/"finding"/"skipped" framing so action=re-run-with-fix is legible, not action=restart-job');
+
+    // (b) The stderr [derive] line itself must independently carry the same
+    // sub-pattern — that line is what surfaces in CI logs even when no CLI
+    // wrapper renders the structured array.
+    const derived = captured.find(line => line.includes('[derive]'));
+    assert.ok(derived, `expected [derive] stderr line, got: ${JSON.stringify(captured)}`);
+    assert.match(derived, /rule|finding|skipped/i,
+      '[derive] stderr line must preserve the "rule errored, findings incomplete" framing across rewordings');
+  });
+});
+
+// ============================================================
+// Multi-scenario derivation (F-375053-007 regression)
+// ============================================================
+//
+// Bug: assembleFinding hardcoded `record.scenario_results?.[0]?.execution_mode`
+// and every helper in rules.js (scenarioSurface, scenarioMode, scenarioId,
+// failedSteps, scenarioVerdict) read only index 0. Multi-scenario records
+// emitted findings ONLY from scenario[0]; later scenarios with failed steps
+// emitted nothing, and any finding that DID emit got scenario[0]'s metadata
+// regardless of which scenario it described.
+//
+// Fix: deriveFromRecordWithErrors iterates per-scenario, presenting each rule
+// a per-scenario VIEW of the record so the index-0 helpers see the right
+// scenario. Backward compat: single-scenario records produce identical output.
+// Dedupe collapses any overlap between rules that already iterated all
+// scenarios internally (rule-blocked-scenario, rule-execution-mode-gap).
+
+describe('Multi-scenario derivation (F-375053-007)', () => {
+  /** Three-scenario record: scenario 0 passes, scenario 1 fails on verify-output,
+   *  scenario 2 is blocked. Each scenario uses a different product_surface so
+   *  we can assert findings are tied to the RIGHT scenario's metadata. */
+  function makeMultiScenarioRecord() {
+    return makePassingRecord({
+      run_id: 'multi-scen-001',
+      repo: 'mcp-tool-shop-org/multi-test',
+      scenario_results: [
+        {
+          scenario_id: 'scen-pass',
+          product_surface: 'cli',
+          execution_mode: 'bot',
+          verdict: 'pass',
+          step_results: [{ step_id: 'run-help', status: 'pass' }],
+          evidence: [{ kind: 'log', url: 'https://example.com/log' }]
+        },
+        {
+          scenario_id: 'scen-fail',
+          product_surface: 'mcp-server',
+          execution_mode: 'bot',
+          verdict: 'fail',
+          step_results: [
+            { step_id: 'run-init', status: 'pass' },
+            { step_id: 'verify-output', status: 'fail' }
+          ],
+          evidence: [{ kind: 'log', url: 'https://example.com/log' }]
+        },
+        {
+          scenario_id: 'scen-blocked',
+          product_surface: 'desktop',
+          execution_mode: 'mixed',
+          verdict: 'blocked',
+          blocking_reason: 'GUI runner unavailable',
+          step_results: [{ step_id: 'launch', status: 'blocked' }],
+          evidence: []
+        }
+      ],
+      overall_verdict: { proposed: 'fail', verified: 'fail', downgraded: false }
+    });
+  }
+
+  it('emits step-failure finding for scenario 1 (was hidden behind scenario[0])', () => {
+    const candidates = deriveFromRecord(makeMultiScenarioRecord());
+    const stepFailFindings = candidates.filter(c =>
+      c.derived.rule_id === 'rule-scenario-step-failure'
+    );
+    assert.ok(stepFailFindings.length >= 1,
+      `pre-fix bug: scenario[0] passed so rule-scenario-step-failure produced 0 findings; ` +
+      `post-fix: scenario[1] should emit one. Got ${stepFailFindings.length}.`);
+    // The emitted finding's product_surface must be scenario 1's surface
+    // (mcp-server), not scenario 0's (cli) — proves the per-scenario projection
+    // is feeding the right metadata to the rule.
+    const mcpFinding = stepFailFindings.find(c => c.product_surface === 'mcp-server');
+    assert.ok(mcpFinding,
+      `step-failure finding should carry scenario[1]'s product_surface "mcp-server", ` +
+      `got: ${stepFailFindings.map(c => c.product_surface).join(', ')}`);
+    // And the scenario_ids on the finding should be exactly that scenario's id.
+    assert.deepEqual(mcpFinding.scenario_ids, ['scen-fail']);
+  });
+
+  it('emits blocked-scenario finding for scenario 2', () => {
+    const candidates = deriveFromRecord(makeMultiScenarioRecord());
+    const blocked = candidates.filter(c =>
+      c.derived.rule_id === 'rule-blocked-scenario'
+    );
+    assert.ok(blocked.length >= 1, 'should emit at least one blocked-scenario finding');
+    const blockedScen = blocked.find(c => c.summary.includes('scen-blocked'));
+    assert.ok(blockedScen, `expected finding for scen-blocked, got: ${blocked.map(b => b.summary).join('|')}`);
+  });
+
+  it('emits attestation-gap finding for scenario 2 (mixed mode, no attested_by)', () => {
+    const candidates = deriveFromRecord(makeMultiScenarioRecord());
+    const attestation = candidates.filter(c =>
+      c.derived.rule_id === 'rule-execution-mode-gap'
+    );
+    assert.ok(attestation.length >= 1,
+      `expected attestation-gap finding for mixed-mode scenario 2, got ${attestation.length}`);
+  });
+
+  it('single-scenario record output is unchanged (backward compat)', () => {
+    // Run a single-scenario record through the derive pipeline. The shape
+    // and contents of findings must match what the old (index-0-only) code
+    // would have produced — no extra emissions, same metadata.
+    const single = makeStepFailureRecord();
+    const candidates = deriveFromRecord(single);
+    const stepFail = candidates.find(c => c.derived.rule_id === 'rule-scenario-step-failure');
+    assert.ok(stepFail, 'single-scenario step-failure record must still emit');
+    assert.equal(stepFail.product_surface, 'cli');
+    assert.equal(stepFail.execution_mode, 'bot');
+    assert.deepEqual(stepFail.scenario_ids, ['cli-full-test']);
   });
 });

@@ -4,8 +4,9 @@
  * Events are stored as YAML arrays in reviews/<YYYY>/<date>-finding-review-log.yaml
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, renameSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import yaml from 'js-yaml';
 
 let _eventCounter = 0;
@@ -56,6 +57,19 @@ export function getLogPath(rootDir, date = new Date()) {
 
 /**
  * Append an event to the review log.
+ *
+ * Atomicity: writes the new event list to a unique temp file then renames it
+ * over the canonical log file. `rename` is atomic on POSIX and Windows, so a
+ * concurrent reader sees either the old contents or the new contents — never
+ * a half-written file. This also makes the operation crash-safe: a Ctrl+C
+ * between read and write leaves the original log intact.
+ *
+ * Concurrency caveat: there is still a read-then-write race. Two simultaneous
+ * appends can both read N events, both push their event, both rename — the
+ * second rename wins, dropping the first appender's event. The atomic rename
+ * eliminates the corrupted-file failure mode (worst-case at the previous
+ * implementation), but operators running concurrent reviewers must serialize
+ * via an external lock if no event may be lost.
  */
 export function appendEvent(rootDir, event) {
   const logPath = getLogPath(rootDir);
@@ -70,7 +84,12 @@ export function appendEvent(rootDir, event) {
   }
 
   events.push(event);
-  writeFileSync(logPath, yaml.dump(events, { lineWidth: 120, noRefs: true }), 'utf-8');
+
+  // Atomic write: temp file → rename. Same pattern persist.js + rebuild-indexes.js use.
+  const tmpSuffix = randomBytes(4).toString('hex');
+  const tmpPath = `${logPath}.${tmpSuffix}.tmp`;
+  writeFileSync(tmpPath, yaml.dump(events, { lineWidth: 120, noRefs: true }), 'utf-8');
+  renameSync(tmpPath, logPath);
   return logPath;
 }
 

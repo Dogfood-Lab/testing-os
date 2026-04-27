@@ -11,7 +11,9 @@
  *   swarm status <run-id>            — Control plane status
  *   swarm resume <run-id>            — Redispatch incomplete agents
  *   swarm approve <run-id> [ids]     — Approve findings for amend
- *   swarm findings <run-id> [wave]   — Findings digest for a wave (default: latest)
+ *   swarm findings <run-id> [wave] [--format=text|markdown|json]
+ *                                    — Findings digest for a wave (default: latest).
+ *                                      Format defaults to text on TTY, markdown when piped.
  *   swarm runs                       — List all runs
  */
 
@@ -35,6 +37,7 @@ import {
 } from './lib/domains.js';
 import { setTimeoutPolicy, getTimeoutPolicy } from './lib/state-machine.js';
 import { buildDigest } from './lib/findings-digest.js';
+import { renderTopLevelError } from './lib/error-render.js';
 
 // ── Resolve DB path ──
 // Default: F:\AI\dogfood-labs\swarms\control-plane.db
@@ -497,15 +500,42 @@ function cmdPersist(args) {
 function cmdFindings(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm findings <run-id> [wave-number]');
+    console.error('Usage: swarm findings <run-id> [wave-number] [--format=text|markdown|json]');
     process.exit(1);
   }
-  const waveArg = args[1];
-  const { output } = buildDigest({
+  // First positional after run-id is the wave number ONLY when it's numeric.
+  // Anything else (e.g. a stray `--format=...` if the operator forgets the
+  // wave) is parsed below as a flag rather than misread as a wave id.
+  const waveArg = args[1] && /^\d+$/.test(args[1]) ? args[1] : undefined;
+
+  // F-827321-002 (wave-23) — TTY-aware multi-format renderer.
+  //   --format=text|markdown|json overrides the auto-detect.
+  //   DOGFOOD_FINDINGS_FORMAT env var overrides both (raw|human|json,
+  //   symmetric to wave-17's DOGFOOD_LOG_HUMAN).
+  // Default: text on TTY, markdown when piped/redirected (back-compat for
+  // `swarm findings <run> > digest.md` and CI scrapers).
+  let format;
+  for (const a of args.slice(1)) {
+    const m = a.match(/^--format=(text|markdown|json)$/);
+    if (m) { format = m[1]; break; }
+  }
+  const formatIdx = args.indexOf('--format');
+  if (formatIdx >= 0 && args[formatIdx + 1]) {
+    format = args[formatIdx + 1];
+  }
+
+  const { output, exitCode } = buildDigest({
     runId,
     waveNumber: waveArg ? parseInt(waveArg, 10) : undefined,
+    format,
+    stream: process.stdout,
   });
   console.log(output);
+  // F-091578-034 — exit codes propagate the 3-way digest state so CI gates
+  // can distinguish clean (0), findings-present (1), and audit-pipeline-broken
+  // (2). Operator using `swarm findings` as a CI gate needs the machine
+  // signal AND the visual signal, not just the visual.
+  process.exit(exitCode);
 }
 
 function cmdRuns() {
@@ -564,7 +594,11 @@ Commands:
   status <run-id>            Control plane status
   resume <run-id>            Redispatch incomplete agents
   approve <run-id> [opts]    Approve findings for amend
-  findings <run-id> [wave]   Findings digest for a wave (default: latest)
+  findings <run-id> [wave] [--format=text|markdown|json]
+                             Findings digest for a wave (default: latest).
+                             Format auto-detects: text on TTY, markdown when
+                             piped/redirected. DOGFOOD_FINDINGS_FORMAT env var
+                             (raw|human|json) overrides both.
   runs                       List all runs
 
 Domain commands:
@@ -588,6 +622,6 @@ Phases:
 try {
   commands[command](commandArgs);
 } catch (e) {
-  console.error(`ERROR: ${e.message}`);
+  renderTopLevelError(e);
   process.exit(1);
 }

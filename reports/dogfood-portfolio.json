@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-25T21:21:34.616Z",
+  "generatedAt": "2026-04-27T04:17:52.110Z",
   "coverage": {
     "total_repos": 13,
     "surfaces_covered": 8,
@@ -11,8 +11,11 @@
       "surface": "web",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 29,
+      "freshness_days": 31,
       "scenario": "build-and-verify-site",
+      "scenarios": [
+        "build-and-verify-site"
+      ],
       "run_id": "a11y-demo-site-23619117024-1",
       "finished_at": "2026-03-26T21:33:46Z"
     },
@@ -21,8 +24,11 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 30,
+      "freshness_days": 32,
       "scenario": "resolve-real-loadout",
+      "scenarios": [
+        "resolve-real-loadout"
+      ],
       "run_id": "ai-loadout-23566269375-1",
       "finished_at": "2026-03-25T21:59:20Z"
     },
@@ -31,8 +37,11 @@
       "surface": "mcp-server",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 0,
+      "freshness_days": 2,
       "scenario": "status-preflight-roundtrip",
+      "scenarios": [
+        "status-preflight-roundtrip"
+      ],
       "run_id": "claude-guardian-24922209099-1",
       "finished_at": "2026-04-25T04:09:45Z"
     },
@@ -41,8 +50,11 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 30,
+      "freshness_days": 32,
       "scenario": "init-and-run-pipeline",
+      "scenarios": [
+        "init-and-run-pipeline"
+      ],
       "run_id": "code-batch-23568477306-1",
       "finished_at": "2026-03-25T23:00:15Z"
     },
@@ -51,8 +63,11 @@
       "surface": "desktop",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 36,
+      "freshness_days": 38,
       "scenario": "export-roundtrip-16x16",
+      "scenarios": [
+        "export-roundtrip-16x16"
+      ],
       "run_id": "glyphstudio-23325766223-1",
       "finished_at": "2026-03-20T01:54:44Z"
     },
@@ -61,8 +76,11 @@
       "surface": "plugin",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 29,
+      "freshness_days": 31,
       "scenario": "build-and-test-extension",
+      "scenarios": [
+        "build-and-test-extension"
+      ],
       "run_id": "polyglot-vscode-23619483245-1",
       "finished_at": "2026-03-26T21:43:09Z"
     },
@@ -71,8 +89,11 @@
       "surface": "mcp-server",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 30,
+      "freshness_days": 32,
       "scenario": "crawl-real-repo",
+      "scenarios": [
+        "crawl-real-repo"
+      ],
       "run_id": "repo-crawler-mcp-23571073097-1",
       "finished_at": "2026-03-26T00:22:41Z"
     },
@@ -81,8 +102,11 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 30,
+      "freshness_days": 32,
       "scenario": "self-gate-real-repo",
+      "scenarios": [
+        "self-gate-real-repo"
+      ],
       "run_id": "shipcheck-23571363808-1",
       "finished_at": "2026-03-26T00:32:46Z"
     },
@@ -91,8 +115,11 @@
       "surface": "npm-package",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 29,
+      "freshness_days": 31,
       "scenario": "scaffold-and-verify",
+      "scenarios": [
+        "scaffold-and-verify"
+      ],
       "run_id": "site-theme-23630385933-1",
       "finished_at": "2026-03-27T03:56:32Z"
     },
@@ -101,8 +128,11 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 30,
+      "freshness_days": 32,
       "scenario": "scan-real-mcp-definition",
+      "scenarios": [
+        "scan-real-mcp-definition"
+      ],
       "run_id": "tool-scan-23571932376-1",
       "finished_at": "2026-03-26T00:52:34Z"
     },
@@ -111,8 +141,11 @@
       "surface": "api",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 30,
+      "freshness_days": 32,
       "scenario": "health-and-presets-roundtrip",
+      "scenarios": [
+        "health-and-presets-roundtrip"
+      ],
       "run_id": "vocal-synth-engine-23572047723-1",
       "finished_at": "2026-03-26T00:56:40Z"
     },
@@ -121,8 +154,11 @@
       "surface": "library",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 30,
+      "freshness_days": 32,
       "scenario": "import-and-compile",
+      "scenarios": [
+        "import-and-compile"
+      ],
       "run_id": "voice-soundboard-23572161533-1",
       "finished_at": "2026-03-26T01:00:42Z"
     },
@@ -131,24 +167,87 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 30,
+      "freshness_days": 32,
       "scenario": "profile-real-repo",
+      "scenarios": [
+        "profile-real-repo"
+      ],
       "run_id": "zip-meta-map-23572590802-1",
       "finished_at": "2026-03-26T01:16:09Z"
     }
   ],
   "stale": [
     {
+      "repo": "mcp-tool-shop-org/a11y-demo-site",
+      "surface": "web",
+      "freshness_days": 31,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/ai-loadout",
+      "surface": "cli",
+      "freshness_days": 32,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/code-batch",
+      "surface": "cli",
+      "freshness_days": 32,
+      "max_age_days": 30
+    },
+    {
       "repo": "mcp-tool-shop-org/glyphstudio",
       "surface": "desktop",
-      "freshness_days": 36,
+      "freshness_days": 38,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/polyglot-vscode",
+      "surface": "plugin",
+      "freshness_days": 31,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/repo-crawler-mcp",
+      "surface": "mcp-server",
+      "freshness_days": 32,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/shipcheck",
       "surface": "cli",
-      "freshness_days": 30,
-      "max_age_days": 14
+      "freshness_days": 32,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/site-theme",
+      "surface": "npm-package",
+      "freshness_days": 31,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/tool-scan",
+      "surface": "cli",
+      "freshness_days": 32,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/vocal-synth-engine",
+      "surface": "api",
+      "freshness_days": 32,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/voice-soundboard",
+      "surface": "library",
+      "freshness_days": 32,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/zip-meta-map",
+      "surface": "cli",
+      "freshness_days": 32,
+      "max_age_days": 30
     }
   ],
   "missing": [
@@ -162,5 +261,6 @@
       "surface": "npm-package",
       "enforcement": "required"
     }
-  ]
+  ],
+  "unknown_freshness": []
 }

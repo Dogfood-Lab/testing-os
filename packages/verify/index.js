@@ -23,13 +23,20 @@ import { computeVerdict } from './validators/verdict.js';
  * @returns {Promise<object>} Persisted record (accepted or rejected)
  */
 export async function verify(submission, options) {
-  if (!submission || typeof submission !== 'object') {
+  if (!submission || typeof submission !== 'object' || Array.isArray(submission)) {
     const now = new Date().toISOString();
+    // Null/non-object input cannot drive computeRecordPath() (needs repo + run_id +
+    // timing.finished_at). Mark _skipPersist so the ingest layer surfaces the
+    // rejection without crashing the persist layer with `invalid repo format: undefined`.
     return {
       schema_version: '1.0.0',
+      _skipPersist: true,
       verification: {
         status: 'rejected',
         verified_at: now,
+        provenance_confirmed: false,
+        schema_valid: false,
+        policy_valid: false,
         rejection_reasons: ['submission is null or not an object']
       }
     };
@@ -38,6 +45,27 @@ export async function verify(submission, options) {
   const { globalPolicy, repoPolicy, provenance, policyVersion } = options;
   const now = new Date().toISOString();
   const reasons = [];
+
+  // 0. Cross-field guard: submission.repo MUST match the owner/repo encoded in
+  //    source.run_url. Without this, a submitter can claim
+  //    submission.repo='victim-org/victim-repo' while supplying source.run_url for a
+  //    real, legitimate run from their own repo. Provenance would confirm (the run
+  //    exists), and the persist layer would file the record under victim-org's path
+  //    — a forged "pass" verdict for a repo the submitter does not control.
+  //    Format: https://github.com/{owner}/{repo}/actions/runs/{id}
+  if (submission.repo && submission.source?.run_url) {
+    const m = submission.source.run_url.match(
+      /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/actions\/runs\/\d+$/
+    );
+    if (m) {
+      const sourceRepo = `${m[1]}/${m[2]}`;
+      if (sourceRepo !== submission.repo) {
+        reasons.push(
+          `repo:mismatch: submission.repo (${submission.repo}) does not match source.run_url repo (${sourceRepo})`
+        );
+      }
+    }
+  }
 
   // 1. Schema validation
   let schemaResult = { valid: false, errors: [] };

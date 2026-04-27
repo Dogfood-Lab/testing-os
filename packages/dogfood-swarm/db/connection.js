@@ -14,13 +14,49 @@ import { SCHEMA_SQL, SCHEMA_VERSION, MIGRATIONS_SQL } from './schema.js';
 const pool = new Map();
 
 /**
+ * Default busy-wait window for SQLite writers. Two parallel `swarm`
+ * invocations against the same control-plane.db will hit SQLITE_BUSY on
+ * writer-vs-writer contention; without a busy_timeout the second writer
+ * fails loudly instead of waiting briefly. 5s is generous for the small
+ * transactions the swarm runs (most under 50ms) without masking real
+ * deadlocks.
+ *
+ * Parallel-invocation contract:
+ *   - Multiple `swarm status` / read-only readers: safe (WAL).
+ *   - One writer + N readers: safe (WAL).
+ *   - Two concurrent writers (e.g. `swarm collect` while another process
+ *     runs `swarm advance`): each writer briefly waits up to BUSY_TIMEOUT_MS
+ *     for the other to release its transaction. If you regularly contend
+ *     for >5s, raise this value rather than serialise externally.
+ */
+const BUSY_TIMEOUT_MS = 5000;
+
+/**
  * Open (or reuse) a control-plane database at the given path.
  * Creates the file + schema if it doesn't exist.
+ *
+ * Cached handles are sentinel-checked on reuse — if the underlying file was
+ * removed/replaced/restored from backup mid-process, the cached handle is
+ * dropped and a fresh one is opened. This avoids the POSIX-stale-inode and
+ * Windows-opaque-failure cases where a long-lived handle keeps pointing at
+ * the old file.
+ *
  * @param {string} dbPath — absolute path to the .db file
  * @returns {Database.Database}
  */
 export function openDb(dbPath) {
-  if (pool.has(dbPath)) return pool.get(dbPath);
+  const cached = pool.get(dbPath);
+  if (cached) {
+    try {
+      cached.prepare('SELECT 1').get();
+      return cached;
+    } catch {
+      // Handle is dead (DB file removed/replaced underneath us). Drop and
+      // re-open below. close() may itself throw on a dead handle — tolerate.
+      try { cached.close(); } catch { /* */ }
+      pool.delete(dbPath);
+    }
+  }
 
   const dir = dirname(dbPath);
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true });
@@ -30,6 +66,9 @@ export function openDb(dbPath) {
   // WAL for better concurrent read perf
   db.pragma('journal_mode = WAL');
   db.pragma('foreign_keys = ON');
+  // Give concurrent writers a brief grace window instead of failing loudly
+  // on the first SQLITE_BUSY. See BUSY_TIMEOUT_MS doc above.
+  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
 
   // Apply schema idempotently
   const version = getSchemaVersion(db);
@@ -48,6 +87,8 @@ export function openDb(dbPath) {
   pool.set(dbPath, db);
   return db;
 }
+
+export { BUSY_TIMEOUT_MS };
 
 /**
  * Close a specific DB (or all if no path).

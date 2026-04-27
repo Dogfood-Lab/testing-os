@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/findings",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "description": "Finding contract spine for testing-os. Validates, reads, lists, and queries evidence-bound findings — the fourth contract alongside record, scenario, and policy.",
@@ -12,13 +12,14 @@
     "./derive/*": "./derive/*",
     "./review/*": "./review/*",
     "./synthesis/*": "./synthesis/*",
-    "./advise/*": "./advise/*"
+    "./advise/*": "./advise/*",
+    "./lib/*": "./lib/*"
   },
   "bin": {
     "findings": "./cli.js"
   },
   "scripts": {
-    "test": "node --test findings.test.js derive/derive.test.js review/review.test.js synthesis/synthesis.test.js advise/advise.test.js"
+    "test": "node --test findings.test.js derive/derive.test.js review/review.test.js synthesis/synthesis.test.js advise/advise.test.js lib/atomic-write.test.js"
   },
   "dependencies": {
     "@dogfood-lab/schemas": "*",

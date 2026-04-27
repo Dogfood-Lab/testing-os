@@ -190,12 +190,22 @@ describe('Fingerprint', () => {
   });
 
   it('handles findings without file/line', () => {
+    // Description is intentionally NOT in the fingerprint — see B-BACK-002.
+    // Two `docs` findings with the same (category, no file, no line) are the same
+    // fingerprint regardless of description. To distinguish them, callers should
+    // set rule_id, file, symbol, or line.
     const f1 = { category: 'docs', description: 'README outdated' };
     const f2 = { category: 'docs', description: 'README outdated' };
     const f3 = { category: 'docs', description: 'CHANGELOG missing' };
 
     assert.equal(computeFingerprint(f1), computeFingerprint(f2));
-    assert.notEqual(computeFingerprint(f1), computeFingerprint(f3));
+    // f1 and f3 collapse — both are category=docs with no other identity. To
+    // differentiate, give them rule_ids or file paths:
+    assert.equal(computeFingerprint(f1), computeFingerprint(f3));
+
+    const f4 = { category: 'docs', file: 'README.md' };
+    const f5 = { category: 'docs', file: 'CHANGELOG.md' };
+    assert.notEqual(computeFingerprint(f4), computeFingerprint(f5));
   });
 });
 
@@ -224,18 +234,23 @@ describe('Finding classification', () => {
   });
 
   it('detects fixed findings', () => {
+    // Per B-BACK-003: "fixed" requires positive evidence — caller must declare
+    // that the current wave's scope covered the prior finding's path.
     const current = [];
-    const prior = new Map([['fp-gone', { id: 1, status: 'new', fingerprint: 'fp-gone' }]]);
+    const prior = new Map([
+      ['fp-gone', { id: 1, status: 'new', fingerprint: 'fp-gone', file_path: 'src/server.js' }],
+    ]);
 
-    const result = classifyFindings(current, prior);
+    const result = classifyFindings(current, prior, { scopePaths: ['src/'] });
     assert.equal(result.fixed.length, 1);
+    assert.equal(result.unverified.length, 0);
   });
 
   it('does not mark deferred findings as fixed', () => {
     const current = [];
     const prior = new Map([['fp-defer', { id: 1, status: 'deferred', fingerprint: 'fp-defer' }]]);
 
-    const result = classifyFindings(current, prior);
+    const result = classifyFindings(current, prior, { scopePaths: ['/'] });
     assert.equal(result.fixed.length, 0);
   });
 });
@@ -568,17 +583,23 @@ describe('Wave lifecycle (integration)', () => {
 
     const classified1 = {
       new: [
-        { fingerprint: 'fp-persist', severity: 'HIGH', category: 'bug', description: 'persists' },
-        { fingerprint: 'fp-gone', severity: 'LOW', category: 'quality', description: 'will be fixed' },
+        { fingerprint: 'fp-persist', severity: 'HIGH', category: 'bug', description: 'persists', file: 'src/a.js' },
+        { fingerprint: 'fp-gone', severity: 'LOW', category: 'quality', description: 'will be fixed', file: 'src/b.js' },
       ],
       recurring: [],
       fixed: [],
     };
     upsertFindings(db, RUN_ID, 1, classified1);
 
-    // Wave 2 — fp-persist recurs, fp-gone is fixed, fp-new appears
+    // Wave 2 — fp-persist recurs, fp-gone is fixed, fp-new appears.
+    // Wave 2's scope covers all of src/, so fp-gone (at src/b.js) qualifies as
+    // "fixed" by positive evidence rather than "unverified". See B-BACK-003.
     db.prepare("INSERT INTO waves (run_id, phase, wave_number, status) VALUES (?, 'health-audit-a', 2, 'dispatched')")
       .run(RUN_ID);
+
+    // Patch file_path onto prior rows so the scope check has a path to test.
+    db.prepare(`UPDATE findings SET file_path = 'src/a.js' WHERE fingerprint = 'fp-persist'`).run();
+    db.prepare(`UPDATE findings SET file_path = 'src/b.js' WHERE fingerprint = 'fp-gone'`).run();
 
     const priorMap = buildPriorMap(db, RUN_ID);
     const wave2Findings = [
@@ -586,7 +607,7 @@ describe('Wave lifecycle (integration)', () => {
       { fingerprint: 'fp-new', severity: 'MEDIUM', category: 'security', description: 'new issue' },
     ];
 
-    const classified2 = classifyFindings(wave2Findings, priorMap);
+    const classified2 = classifyFindings(wave2Findings, priorMap, { scopePaths: ['src/'] });
     assert.equal(classified2.new.length, 1);          // fp-new
     assert.equal(classified2.recurring.length, 1);     // fp-persist
     assert.equal(classified2.fixed.length, 1);         // fp-gone

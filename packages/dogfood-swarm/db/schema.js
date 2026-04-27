@@ -246,15 +246,23 @@ export const MIGRATIONS_SQL = [
 /**
  * Valid statuses for each entity.
  */
+// Phase enums must stay in sync with dispatch.js's AUDIT_PHASES /
+// AMEND_PHASES. dispatch.js sets `runs.status = opts.phase` directly, so a
+// `stage-d-audit` dispatch writes 'stage-d-audit' to the status column. SQLite
+// has no enum enforcement so a missing entry here is silent doc-vs-runtime
+// drift (sibling to wave-1 F-742440-012). Adding 'stage-d-audit' and
+// 'stage-d-amend' (introduced in v1.1.0 per CHANGELOG) closes that gap.
+// F-375053-005.
 export const STATUS = {
   run: ['initializing', 'health-audit-a', 'health-audit-b', 'health-audit-c',
         'health-amend-a', 'health-amend-b', 'health-amend-c',
+        'stage-d-audit', 'stage-d-amend',
         'feature-audit', 'feature-execute', 'test', 'treatment', 'complete', 'aborted'],
   wave: ['pending', 'dispatched', 'collecting', 'collected', 'verified', 'advanced', 'failed'],
   agent_run: ['pending', 'dispatched', 'running', 'complete', 'failed',
               'timed_out', 'invalid_output', 'ownership_violation'],
-  finding: ['new', 'recurring', 'approved', 'fixed', 'deferred', 'rejected'],
-  finding_event: ['reported', 'approved', 'fixed', 'deferred', 'rejected', 'recurred'],
+  finding: ['new', 'recurring', 'approved', 'fixed', 'unverified', 'deferred', 'rejected'],
+  finding_event: ['reported', 'approved', 'fixed', 'unverified', 'deferred', 'rejected', 'recurred'],
   ownership_class: ['owned', 'shared', 'bridge'],
   claim_type: ['edit', 'create', 'delete'],
   severity: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],

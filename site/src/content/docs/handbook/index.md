@@ -1,11 +1,11 @@
 ---
 title: Welcome
-description: testing-os handbook — centralized dogfood governance for mcp-tool-shop-org
+description: testing-os handbook — centralized dogfood governance for the Dogfood Lab and mcp-tool-shop-org orgs
 sidebar:
   order: 0
 ---
 
-testing-os is the centralized dogfood evidence system for mcp-tool-shop-org. It proves, with auditable evidence, that each repo was actually exercised in a dogfood-worthy way.
+testing-os is the centralized dogfood evidence system for the [Dogfood Lab](https://github.com/dogfood-lab) and [mcp-tool-shop-org](https://github.com/mcp-tool-shop-org) GitHub orgs — it accepts dispatched submissions from repos under `dogfood-lab/*` and `mcp-tool-shop-org/*` (per the [README threat model](https://github.com/dogfood-lab/testing-os#threat-model)). It proves, with auditable evidence, that each governed repo was actually exercised in a dogfood-worthy way.
 
 ## What This System Does
 
@@ -32,9 +32,13 @@ testing-os is the centralized dogfood evidence system for mcp-tool-shop-org. It 
 
 ## Getting Started
 
+> **Start here →** [Beginner's Guide](./beginners/) walks you through testing-os end-to-end on your first repo. The other pages below are reference material — open them as you need them.
+
 - [Beginner's Guide](./beginners/) -- new to testing-os? start here
 - [Architecture](./architecture/) -- how the system works
 - [Contracts](./contracts/) -- the seven defining contracts
 - [Operating Guide](./operating-guide/) -- day-to-day operations
 - [Integration](./integration/) -- how other systems consume dogfood status
 - [Intelligence Layer](./intelligence-layer/) -- how evidence becomes reusable portfolio memory
+- [State Machines](./state-machines/) -- the three distinct status vocabularies and which layer each one operates at
+- [Error Code Reference](./error-codes/) -- structured error codes surfaced by testing-os CLIs

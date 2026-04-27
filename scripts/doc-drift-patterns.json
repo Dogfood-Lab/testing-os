@@ -1,0 +1,146 @@
+{
+  "$schema": "./doc-drift-patterns.schema.json",
+  "description": "Config for scripts/check-doc-drift.mjs — codifies the Class #11 (multi-occurrence fix completeness) sweep pattern. Each entry is one drift CHECK. Adding a new check is a config edit, not a code edit: append a new object with { id, kind, title, sources?, targets?, patterns?, allowlist?, hint }. The script registers a small set of 'kind' handlers (source-vs-target-coverage, forbidden-pattern-in-targets, self-consistency) and dispatches each entry to the matching handler. New drift CLASSES (entirely new kinds of comparison) need both a config entry AND a new handler; new INSTANCES of an existing class are config-only.",
+  "checks": [
+    {
+      "id": "error-codes",
+      "kind": "source-vs-target-coverage",
+      "title": "All error codes documented",
+      "description": "Every error.code value emitted from packages/**/lib/errors.js (including STATE_MACHINE_<KIND> expansions) must appear in the error-codes handbook page.",
+      "sources": [
+        "packages/dogfood-swarm/lib/errors.js",
+        "packages/ingest/validate-record.js",
+        "packages/ingest/persist.js"
+      ],
+      "sourceExtractors": [
+        {
+          "regex": "this\\.code\\s*=\\s*['\"]([A-Z][A-Z0-9_]+)['\"]",
+          "captureGroup": 1
+        },
+        {
+          "regex": "this\\.code\\s*=\\s*`STATE_MACHINE_\\$\\{opts\\.kind\\}`",
+          "expand": ["STATE_MACHINE_BLOCKED", "STATE_MACHINE_TERMINAL", "STATE_MACHINE_INVALID"]
+        }
+      ],
+      "targets": [
+        "site/src/content/docs/handbook/error-codes.md"
+      ],
+      "hint": "Document the missing error code in site/src/content/docs/handbook/error-codes.md following the existing format (### `CODE_NAME`, Class, Trigger, Message shape, Hint, Operator action)."
+    },
+    {
+      "id": "statuses",
+      "kind": "source-vs-target-coverage",
+      "title": "All STATUS.* enum values documented",
+      "description": "Every status string in the STATUS object exported from packages/dogfood-swarm/db/schema.js must be mentioned somewhere in the state-machines handbook page. The wave classifier states (new/recurring/fixed/unverified/...) and finding-review states (candidate/reviewed/accepted/...) are the public vocabularies operators need named.",
+      "sources": [
+        "packages/dogfood-swarm/db/schema.js"
+      ],
+      "sourceExtractors": [
+        {
+          "kind": "status-enum-evaluator",
+          "module": "packages/dogfood-swarm/db/schema.js",
+          "exportName": "STATUS",
+          "skipKeys": ["claim_type", "ownership_class", "severity", "run", "wave", "agent_run"]
+        }
+      ],
+      "targets": [
+        "site/src/content/docs/handbook/state-machines.md"
+      ],
+      "matchMode": "wholeWord",
+      "allowlist": ["reported", "recurred"],
+      "hint": "Mention the missing status in site/src/content/docs/handbook/state-machines.md. The state-machines page documents PUBLIC state vocabularies (record classification, finding review, wave classification). Internal control-plane plumbing (run/wave/agent_run statuses) is exempt via skipKeys in scripts/doc-drift-patterns.json. If a finding-review or wave-classifier state is genuinely internal-only and shouldn't be documented, add it to the allowlist with a comment explaining why."
+    },
+    {
+      "id": "no-legacy-paths",
+      "kind": "forbidden-pattern-in-targets",
+      "title": "No legacy paths in user-facing docs",
+      "description": "User-facing docs (handbook + docs/) must not contain legacy paths. The README and CLAUDE.md retain explicit historical references on purpose (per CLAUDE.md 'Working with the legacy' section).",
+      "patterns": [
+        {
+          "regex": "mcp-tool-shop-org/dogfood-labs",
+          "label": "legacy repo path"
+        },
+        {
+          "regex": "(?<![\\w/-])dogfood-labs/(?!testing-os)",
+          "label": "legacy npm/dir path"
+        },
+        {
+          "regex": "F:[\\\\/]AI[\\\\/]",
+          "label": "absolute author-machine path"
+        }
+      ],
+      "targets": [
+        "site/src/content/docs/handbook/*.md",
+        "docs/*.md"
+      ],
+      "hint": "Replace the legacy reference with the canonical equivalent (dogfood-lab/testing-os, packages/<name>/, repo-relative path). Historical context belongs in README.md / CLAUDE.md / HANDOFF.md, NOT in user-facing handbook pages."
+    },
+    {
+      "id": "no-version-specific-narrative",
+      "kind": "forbidden-pattern-in-targets",
+      "title": "No version-specific terms that should be parameterized",
+      "description": "Narrative docs should not hardcode counts that move between releases (e.g. '9-Phase' when the protocol is now 10 phases). Code snippets, CHANGELOG, and the version-stamp block in README are exempt.",
+      "patterns": [
+        {
+          "regex": "\\b9-Phase\\b",
+          "label": "stale 9-Phase reference (protocol is 10-phase since Stage D added)"
+        },
+        {
+          "regex": "\\b9 Phase Play\\b",
+          "label": "stale '9 Phase Play' reference"
+        }
+      ],
+      "targets": [
+        "site/src/content/docs/handbook/*.md",
+        "docs/*.md",
+        "swarms/PROTOCOL.md"
+      ],
+      "hint": "Update the count to the current value. If you need to refer to a historical state, scope the reference (e.g. 'pre-Stage-D, the protocol was 9 phases') rather than asserting the current count is wrong."
+    },
+    {
+      "id": "handbook-fence-lang-tags",
+      "kind": "untagged-fence",
+      "title": "Every opening code fence has a language tag",
+      "description": "Stage D wave 23 (D-CI-001 / F-827321-010): every ```fence in site/src/content/docs/handbook/*.md must declare a language so Starlight's Shiki applies syntax highlighting, the copy-button, and consistent border treatment. Bare ``` openers render as plain monospace and read as draft-quality next to tagged blocks. Use ```text for ASCII / CLI output / state diagrams, ```bash / ```yaml / ```json / ```ts for code. The handler walks each target line-by-line, toggling an in-fence flag, and only flags openers — closing fences are correctly bare.",
+      "targets": [
+        "site/src/content/docs/handbook/*.md",
+        "docs/*.md"
+      ],
+      "hint": "Add a language tag to the opening fence: ```text for ASCII diagrams or CLI output, ```bash for shell commands, ```yaml / ```json / ```ts / ```js for code, ```mermaid if/when the Mermaid integration lands. Closing fences stay bare."
+    },
+    {
+      "id": "protocol-stage-self-consistency",
+      "kind": "self-consistency",
+      "title": "PROTOCOL.md stage references are internally consistent",
+      "description": "PROTOCOL.md mentions Stages A–D in the Health Pass plus Phase 5–8 (Feature), Phase 9 (Final), Phase 10 (Full Treatment). Every Stage and Phase referenced in narrative must also be defined as a section/header. Drift here means the title or summary moved without the body following.",
+      "target": "swarms/PROTOCOL.md",
+      "rules": [
+        {
+          "id": "10-phase-title",
+          "must": [
+            { "regex": "10-Phase Play", "min": 1, "label": "title block must reference 10-Phase Play" }
+          ],
+          "mustNot": [
+            { "regex": "## The 9-Phase Play", "label": "old '9-Phase Play' header" }
+          ]
+        },
+        {
+          "id": "stage-d-defined",
+          "must": [
+            { "regex": "Stage D[^-]*[—-][^\\n]*Visual", "min": 1, "label": "Stage D must be defined with 'Visual' lens" },
+            { "regex": "\\*\\*Stage D[^*]+\\*\\*", "min": 1, "label": "Stage D must appear as a bolded entry in the stage list" }
+          ]
+        },
+        {
+          "id": "all-stages-mentioned-in-checklist",
+          "must": [
+            { "regex": "STAGE A", "min": 1, "label": "Stage A in coordinator checklist" },
+            { "regex": "STAGE B", "min": 1, "label": "Stage B in coordinator checklist" },
+            { "regex": "STAGE C", "min": 1, "label": "Stage C in coordinator checklist" }
+          ]
+        }
+      ],
+      "hint": "Update PROTOCOL.md so the title block, the stage list, the per-phase audit lens enumeration, and the coordinator checklist all refer to the same set of stages. Class #11 sweep pattern: fix every occurrence in one pass, never one-by-one."
+    }
+  ]
+}

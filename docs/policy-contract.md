@@ -1,6 +1,6 @@
 # Policy Contract
 
-Policies define the verification rules the central verifier enforces. They are the "law engine" of dogfood-labs.
+Policies define the verification rules the central verifier enforces. They are the "law engine" of testing-os.
 
 ## Two Levels
 

@@ -7,10 +7,16 @@ sidebar:
 
 The intelligence layer turns dogfood evidence into reusable lessons, patterns, recommendations, and doctrine that future projects can inherit.
 
+This page documents the **finding-review state machine** (`candidate → reviewed → accepted → invalidated`). For the record-classification state machine (`accepted` / `rejected` / portfolio buckets) see [Architecture](../architecture/) and [Operating Guide](../operating-guide/). For the wave-classification state machine (`new` / `recurring` / `fixed` / `unverified`) emitted by dogfood-swarm runs, see the [State Machines reference](../state-machines/). The three vocabularies share words but operate on different objects — read the glossary if you have not already.
+
 ## The Learning Loop
 
-```
-record → finding → reviewed memory → pattern/doctrine → future guidance
+```text
+record
+  → finding
+    → reviewed memory
+      → pattern / doctrine
+        → future guidance
 ```
 
 Every step is evidence-bound, deterministic, and auditable. No LLM in the extraction or clustering loop.

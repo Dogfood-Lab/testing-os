@@ -1,6 +1,9 @@
 ---
 import '../styles/global.css';
-import BaseLayout from '@mcptoolshop/site-theme/components/BaseLayout.astro';
+// Local override of @mcptoolshop/site-theme BaseLayout — adds skip-link (WCAG 2.1 SC 2.4.1)
+// and fixes broken favicon.svg link (favicon.svg never shipped in public/).
+// See site/src/components/BaseLayout.astro header for upstream PR tracker.
+import BaseLayout from '../components/BaseLayout.astro';
 import Hero from '@mcptoolshop/site-theme/components/Hero.astro';
 import Section from '@mcptoolshop/site-theme/components/Section.astro';
 import FeatureGrid from '@mcptoolshop/site-theme/components/FeatureGrid.astro';

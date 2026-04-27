@@ -19,6 +19,7 @@
 import { openDb } from '../db/connection.js';
 import { getDomains } from '../lib/domains.js';
 import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../lib/templates.js';
+import { findingsForDomain } from '../lib/findings-filter.js';
 import {
   applyTimeoutPolicy, getTimeoutPolicy,
   isBlocked, isTerminal, isRedispatchable, isInFlight,
@@ -59,12 +60,23 @@ export function resume(opts) {
   const timeoutMs = getTimeoutPolicy(db, opts.runId);
   const timedOutAgents = applyTimeoutPolicy(db, wave.id, timeoutMs, opts.nowMs);
 
-  // Step 2: Read current agent states (after timeout policy applied)
+  // Step 2: Read the LATEST agent_run per domain (after timeout policy applied).
+  //
+  // Repeated `swarm resume` invocations create new agent_run rows per
+  // redispatch (see line 116-119 below). Iterating ALL rows on a second
+  // resume call would re-process the original failed row and INSERT another
+  // redispatch for the same domain, growing agent_runs without bound. The
+  // window function picks the latest row per domain so each domain's current
+  // state drives at most one redispatch per resume call.
   const agentRuns = db.prepare(`
     SELECT ar.*, d.name as domain_name, d.globs
     FROM agent_runs ar
     JOIN domains d ON ar.domain_id = d.id
     WHERE ar.wave_id = ?
+      AND ar.id = (
+        SELECT MAX(ar2.id) FROM agent_runs ar2
+        WHERE ar2.wave_id = ar.wave_id AND ar2.domain_id = ar.domain_id
+      )
   `).all(wave.id);
 
   const report = {
@@ -137,9 +149,10 @@ export function resume(opts) {
       if (wave.phase === 'feature-audit') {
         prompt = buildFeatureAuditPrompt(promptOpts);
       } else if (wave.phase.includes('amend') || wave.phase.includes('execute')) {
-        const findings = db.prepare(
-          "SELECT * FROM findings WHERE run_id = ? AND status = 'approved'"
-        ).all(opts.runId);
+        // Same domain-glob filter as dispatch — see lib/findings-filter.js.
+        // The previous code unconditionally sent every approved finding to
+        // every redispatched agent (F-742440-003).
+        const findings = findingsForDomain(db, opts.runId, { globs });
         prompt = buildAmendPrompt({ ...promptOpts, findings });
       } else {
         prompt = buildAuditPrompt(promptOpts);

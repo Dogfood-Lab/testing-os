@@ -54,6 +54,7 @@ jobs:
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4
 
       - name: Verify deployed site returns 200
+        id: verify
         run: |
           url="${{ steps.deployment.outputs.page_url }}"
           if [ -z "$url" ]; then
@@ -62,13 +63,45 @@ jobs:
           fi
           echo "Probing $url"
           for attempt in 1 2 3 4 5; do
-            status=$(curl -sS -o /dev/null -w "%{http_code}" --max-time 15 "$url" || echo "000")
-            echo "attempt $attempt: HTTP $status"
-            if [ "$status" = "200" ]; then
-              echo "::notice::Pages deploy verified ($url returned 200)"
-              exit 0
-            fi
+            # -L follows redirects (308 trailing-slash enforcement, custom-domain
+            # redirects); %{url_effective} surfaces the final URL in the log so a
+            # real redirect chain is debuggable without re-running locally. Any
+            # 2xx counts as success.
+            response=$(curl -sSL -o /dev/null -w "%{http_code} %{url_effective}" --max-time 15 "$url" || echo "000 -")
+            status=$(echo "$response" | awk '{print $1}')
+            final_url=$(echo "$response" | awk '{print $2}')
+            echo "attempt $attempt: HTTP $status (final: $final_url)"
+            case "$status" in
+              2*)
+                echo "::notice::Pages deploy verified ($url -> $final_url returned $status)"
+                echo "page_url=$url" >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+            esac
             sleep $((attempt * 5))
           done
-          echo "::error::Pages deploy verification failed — $url never returned 200"
+          echo "::error::Pages deploy verification failed — $url never returned 2xx"
           exit 1
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+
+      - name: pa11y accessibility check (WCAG2AA, error-codes handbook page)
+        # Stage D minimum visual regression CI gate (F-827321-030 / D-OUT-003):
+        # Run pa11y against ONE high-value reference page after the deploy has
+        # been verified. WCAG2AA is the bar; we fail on errors, ignore warnings
+        # and notices. Pinning is intentionally via @latest because pa11y is a
+        # one-shot npx invocation here — there is no consumer in the workspace
+        # that needs a lockfile entry, and adding one to root devDependencies
+        # would pull a chromium-puppeteer chain into every `npm ci` for a
+        # check that only ever runs in this workflow leg. If we ever sweep
+        # multiple pages we'll revisit and pin via site/package-lock.json.
+        run: |
+          target="${{ steps.verify.outputs.page_url }}handbook/error-codes/"
+          echo "pa11y target: $target"
+          npx -y pa11y@^8 \
+            --standard WCAG2AA \
+            --reporter cli \
+            --threshold 0 \
+            "$target"

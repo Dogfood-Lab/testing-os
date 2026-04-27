@@ -115,9 +115,12 @@ function buildPatternCandidate(cluster) {
   // Determine pattern kind
   const pattern_kind = classifyPatternKind(issue_kind);
 
-  // Build slug
+  // Build slug — must include every dimension in the cluster key (issue_kind + root_cause_kind),
+  // otherwise two clusters that differ only by root_cause_kind collide on pattern_id and the
+  // second writePattern() silently overwrites the first on disk. Surface is added for readability,
+  // not for uniqueness.
   const surfaceStr = surfaces.size === 1 ? [...surfaces][0] : 'multi-surface';
-  const slug = `${surfaceStr}-${issue_kind}`.replace(/_/g, '-');
+  const slug = `${surfaceStr}-${issue_kind}-${root_cause_kind}`.replace(/_/g, '-');
 
   // Determine strength
   const strength = repos.size >= 3 ? 'strong' : repos.size >= 2 ? 'emerging' : 'emerging';

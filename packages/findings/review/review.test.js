@@ -528,3 +528,88 @@ describe('Reason enforcement', () => {
     assert.ok(REASON_REQUIRED.has('supersede'));
   });
 });
+
+// ── appendEvent atomic write (F-246817-015 regression) ────────
+//
+// Bug: appendEvent did existsSync→read→push→writeFileSync. A crash between
+// the read and the write left the file half-written. Concurrent writers
+// could lose events (read-then-overwrite race), but the new behavior also
+// guarantees the file on disk is never partial.
+//
+// Fix: temp+rename atomic pattern (write to .tmp, then renameSync). On any
+// failure the canonical log file remains intact at its previous contents.
+
+import { writeFileSync as fsWriteSync, readdirSync as fsReadDirSync } from 'node:fs';
+
+describe('appendEvent atomic write (F-246817-015)', () => {
+  const ATOMIC_ROOT = resolve(__dirname, '__test_atomic__');
+  beforeEach(() => {
+    rmSync(ATOMIC_ROOT, { recursive: true, force: true });
+    mkdirSync(ATOMIC_ROOT, { recursive: true });
+  });
+  after(() => {
+    rmSync(ATOMIC_ROOT, { recursive: true, force: true });
+  });
+
+  it('uses temp+rename — no .tmp files remain after a successful append', () => {
+    const event = createEvent({
+      findingId: 'dfind-atomic-001',
+      actor: 'tester',
+      action: 'approve',
+      fromStatus: 'candidate',
+      toStatus: 'approved'
+    });
+    const logPath = appendEvent(ATOMIC_ROOT, event);
+    assert.ok(existsSync(logPath));
+    const dir = dirname(logPath);
+    const files = fsReadDirSync(dir);
+    assert.ok(
+      files.every(f => !f.endsWith('.tmp')),
+      `no .tmp files should remain, got: ${files.join(', ')}`
+    );
+  });
+
+  it('preserves existing log contents when a new event is appended', () => {
+    const e1 = createEvent({
+      findingId: 'dfind-atomic-002',
+      actor: 'first',
+      action: 'approve',
+      fromStatus: 'candidate',
+      toStatus: 'approved'
+    });
+    appendEvent(ATOMIC_ROOT, e1);
+    const e2 = createEvent({
+      findingId: 'dfind-atomic-003',
+      actor: 'second',
+      action: 'approve',
+      fromStatus: 'candidate',
+      toStatus: 'approved'
+    });
+    appendEvent(ATOMIC_ROOT, e2);
+    const all = getAllEvents(ATOMIC_ROOT);
+    assert.equal(all.length, 2);
+    const ids = all.map(e => e.finding_id);
+    assert.ok(ids.includes('dfind-atomic-002'));
+    assert.ok(ids.includes('dfind-atomic-003'));
+  });
+
+  it('serial appends from the same process never corrupt the file', () => {
+    // 20 sequential appends; YAML must remain parseable after each.
+    for (let i = 0; i < 20; i++) {
+      const event = createEvent({
+        findingId: `dfind-atomic-loop-${i}`,
+        actor: 'loop',
+        action: 'approve',
+        fromStatus: 'candidate',
+        toStatus: 'approved'
+      });
+      appendEvent(ATOMIC_ROOT, event);
+    }
+    const all = getAllEvents(ATOMIC_ROOT);
+    assert.equal(all.length, 20);
+    // Every event must be a parsed object with a finding_id.
+    for (const ev of all) {
+      assert.ok(ev.finding_id, `missing finding_id: ${JSON.stringify(ev)}`);
+    }
+  });
+});

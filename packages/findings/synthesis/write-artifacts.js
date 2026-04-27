@@ -2,9 +2,11 @@
  * Write pattern, recommendation, and doctrine artifacts to disk.
  */
 
-import { writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, existsSync, readdirSync, readFileSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import yaml from 'js-yaml';
+
+import { atomicWriteFileSync } from '../lib/atomic-write.js';
 
 /**
  * Write a pattern to disk.
@@ -13,7 +15,7 @@ export function writePattern(rootDir, pattern) {
   const dir = resolve(rootDir, 'patterns');
   mkdirSync(dir, { recursive: true });
   const path = resolve(dir, `${pattern.pattern_id}.yaml`);
-  writeFileSync(path, yaml.dump(JSON.parse(JSON.stringify(pattern)), { lineWidth: 120, noRefs: true }), 'utf-8');
+  atomicWriteFileSync(path, yaml.dump(JSON.parse(JSON.stringify(pattern)), { lineWidth: 120, noRefs: true }));
   return path;
 }
 
@@ -24,7 +26,7 @@ export function writeRecommendation(rootDir, rec) {
   const dir = resolve(rootDir, 'recommendations');
   mkdirSync(dir, { recursive: true });
   const path = resolve(dir, `${rec.recommendation_id}.yaml`);
-  writeFileSync(path, yaml.dump(JSON.parse(JSON.stringify(rec)), { lineWidth: 120, noRefs: true }), 'utf-8');
+  atomicWriteFileSync(path, yaml.dump(JSON.parse(JSON.stringify(rec)), { lineWidth: 120, noRefs: true }));
   return path;
 }
 
@@ -35,7 +37,7 @@ export function writeDoctrine(rootDir, doc) {
   const dir = resolve(rootDir, 'doctrine');
   mkdirSync(dir, { recursive: true });
   const path = resolve(dir, `${doc.doctrine_id}.yaml`);
-  writeFileSync(path, yaml.dump(JSON.parse(JSON.stringify(doc)), { lineWidth: 120, noRefs: true }), 'utf-8');
+  atomicWriteFileSync(path, yaml.dump(JSON.parse(JSON.stringify(doc)), { lineWidth: 120, noRefs: true }));
   return path;
 }
 

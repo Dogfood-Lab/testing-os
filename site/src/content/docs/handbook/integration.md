@@ -46,7 +46,7 @@ The `sync-dogfood` command reads the index and policy files, then upserts struct
 Usage:
 ```bash
 # From local checkout
-rk sync-dogfood --local F:/AI/dogfood-lab/testing-os
+rk sync-dogfood --local ./testing-os
 
 # From GitHub (default)
 rk sync-dogfood

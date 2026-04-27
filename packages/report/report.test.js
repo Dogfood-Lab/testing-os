@@ -78,6 +78,47 @@ describe('submission builder', () => {
   });
 });
 
+// F-882513-002 — duration_ms must be omitted (never null) when timing is invalid,
+// so the result satisfies dogfood-record-submission.schema.json's
+// `duration_ms: { type: 'integer', minimum: 0 }` contract.
+describe('submission timing.duration_ms (F-882513-002)', () => {
+  it('includes duration_ms as positive integer when timing is valid', () => {
+    const sub = buildSubmission(BASE_PARAMS);
+    assert.equal(sub.timing.duration_ms, 60000);
+    assert.equal(Number.isInteger(sub.timing.duration_ms), true);
+  });
+
+  it('omits duration_ms when finishedAt is unparseable (NaN)', () => {
+    const sub = buildSubmission({
+      ...BASE_PARAMS,
+      finishedAt: 'not-a-date'
+    });
+    assert.ok(!('duration_ms' in sub.timing),
+      `duration_ms should be omitted, got ${JSON.stringify(sub.timing.duration_ms)}`);
+  });
+
+  it('omits duration_ms when finishedAt < startedAt (negative)', () => {
+    const sub = buildSubmission({
+      ...BASE_PARAMS,
+      startedAt: '2026-03-19T15:01:00Z',
+      finishedAt: '2026-03-19T15:00:00Z'
+    });
+    assert.ok(!('duration_ms' in sub.timing),
+      `duration_ms should be omitted, got ${JSON.stringify(sub.timing.duration_ms)}`);
+  });
+
+  it('never serializes duration_ms as null', () => {
+    const sub = buildSubmission({
+      ...BASE_PARAMS,
+      finishedAt: 'garbage'
+    });
+    assert.notEqual(sub.timing.duration_ms, null);
+    const json = JSON.stringify(sub);
+    assert.equal(json.includes('"duration_ms":null'), false,
+      'submission JSON must not contain "duration_ms":null');
+  });
+});
+
 // ── Precheck ───────────────────────────────────────────────────
 
 describe('submission precheck', () => {
@@ -133,6 +174,126 @@ describe('submission precheck', () => {
     const result = precheckSubmission(bad);
     assert.equal(result.valid, false);
     assert.ok(result.errors.some(e => e.includes('commit_sha')));
+  });
+
+  // ── F-246817-006 — precheck must mirror the central verifier ─────────
+  //
+  // Pre-fix precheck was a partial mirror of the wire schema and let
+  // known-bad payloads through that the central verifier would reject:
+  //   - step_id pattern '^[a-z0-9][a-z0-9-]*$'
+  //   - product_surface enum
+  //   - execution_mode enum
+  //   - verdict enum
+  //   - schema_version pattern '^\\d+\\.\\d+\\.\\d+$'
+  // After the fix, precheck delegates to validatePayload from
+  // @dogfood-lab/schemas and catches all of these locally.
+
+  it('rejects step_id with capital letters and spaces (pattern, F-246817-006)', () => {
+    const bad = buildSubmission(BASE_PARAMS);
+    bad.scenario_results[0].step_results = [
+      { step_id: 'Verify Schema', status: 'pass' }
+    ];
+    const result = precheckSubmission(bad);
+    assert.equal(result.valid, false,
+      'precheck must reject step_id that fails the schema pattern');
+    assert.ok(result.errors.some(e => e.includes('step_id') || e.includes('pattern')),
+      `error should mention step_id/pattern, got: ${result.errors.join(' | ')}`);
+  });
+
+  it('rejects unknown product_surface (enum, F-246817-006)', () => {
+    const bad = buildSubmission(BASE_PARAMS);
+    bad.scenario_results[0].product_surface = 'mainframe';
+    const result = precheckSubmission(bad);
+    assert.equal(result.valid, false,
+      'precheck must reject product_surface outside the schema enum');
+    assert.ok(result.errors.some(e => e.includes('product_surface') || e.includes('enum')),
+      `error should mention product_surface/enum, got: ${result.errors.join(' | ')}`);
+  });
+
+  it('rejects unknown execution_mode (enum, F-246817-006)', () => {
+    const bad = buildSubmission(BASE_PARAMS);
+    bad.scenario_results[0].execution_mode = 'cyborg';
+    const result = precheckSubmission(bad);
+    assert.equal(result.valid, false,
+      'precheck must reject execution_mode outside the schema enum');
+    assert.ok(result.errors.some(e => e.includes('execution_mode') || e.includes('enum')),
+      `error should mention execution_mode/enum, got: ${result.errors.join(' | ')}`);
+  });
+
+  it('rejects unknown verdict (enum, F-246817-006)', () => {
+    const bad = buildSubmission(BASE_PARAMS);
+    bad.scenario_results[0].verdict = 'meh';
+    const result = precheckSubmission(bad);
+    assert.equal(result.valid, false,
+      'precheck must reject scenario verdict outside the schema enum');
+    assert.ok(result.errors.some(e => e.includes('verdict') || e.includes('enum')),
+      `error should mention verdict/enum, got: ${result.errors.join(' | ')}`);
+  });
+
+  it('rejects malformed schema_version (pattern, F-246817-006)', () => {
+    const bad = buildSubmission(BASE_PARAMS);
+    bad.schema_version = 'one-point-oh';
+    const result = precheckSubmission(bad);
+    assert.equal(result.valid, false,
+      'precheck must reject schema_version that fails the semver pattern');
+    assert.ok(result.errors.some(e => e.includes('schema_version') || e.includes('pattern')),
+      `error should mention schema_version/pattern, got: ${result.errors.join(' | ')}`);
+  });
+
+  it('rejects missing scenario_id (required field, F-246817-006)', () => {
+    const bad = buildSubmission(BASE_PARAMS);
+    delete bad.scenario_results[0].scenario_id;
+    const result = precheckSubmission(bad);
+    assert.equal(result.valid, false,
+      'precheck must reject scenario_results entry missing scenario_id');
+    assert.ok(result.errors.some(e => e.includes('scenario_id')),
+      `error should mention scenario_id, got: ${result.errors.join(' | ')}`);
+  });
+
+  // ── F-721047-001 — null/non-object guard ──────────────────────────────
+  //
+  // Pre-fix `precheckSubmission(null)` threw `TypeError: Cannot use 'in'
+  // operator to search for 'policy_version' in null` because the
+  // VERIFIER_OWNED_FIELDS loop dereferenced the argument before the function
+  // could return its documented {valid, errors} shape. Wave-8 F-246817-001
+  // established the clean-rejection-not-crash philosophy; wave-9 imported
+  // validatePayload but didn't add the null guard. These tests pin the
+  // restored contract.
+
+  it('rejects null submission with structured shape (F-721047-001)', () => {
+    const result = precheckSubmission(null);
+    assert.equal(result.valid, false);
+    assert.ok(Array.isArray(result.errors));
+    assert.ok(result.errors.some(e => e.includes('null')),
+      `error should mention null, got: ${result.errors.join(' | ')}`);
+  });
+
+  it('rejects undefined submission with structured shape (F-721047-001)', () => {
+    const result = precheckSubmission(undefined);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some(e => e.includes('undefined')),
+      `error should mention undefined, got: ${result.errors.join(' | ')}`);
+  });
+
+  it('rejects string submission with structured shape (F-721047-001)', () => {
+    const result = precheckSubmission('not a submission');
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some(e => e.includes('string')),
+      `error should mention string, got: ${result.errors.join(' | ')}`);
+  });
+
+  it('rejects number submission with structured shape (F-721047-001)', () => {
+    const result = precheckSubmission(42);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some(e => e.includes('number')),
+      `error should mention number, got: ${result.errors.join(' | ')}`);
+  });
+
+  it('rejects array submission with structured shape (F-721047-001)', () => {
+    const result = precheckSubmission([]);
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some(e => e.includes('array')),
+      `error should mention array, got: ${result.errors.join(' | ')}`);
   });
 
   it('passes mixed/human submission with attested_by and evidence', () => {

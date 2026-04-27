@@ -27,6 +27,8 @@
  * Blocked statuses can only transition via explicit coordinator override.
  */
 
+import { StateMachineRejectionError } from './errors.js';
+
 /**
  * Allowed transitions: from → [to, to, ...]
  */
@@ -108,7 +110,49 @@ export function transitionAgent(db, agentRunId, toStatus, reason, override = fal
   // Normal path
   const check = canTransition(from, toStatus);
   if (!check.allowed) {
-    throw new Error(`Illegal transition: ${check.reason}`);
+    // F-091578-002: differentiate by source-status class so the CLI's
+    // top-level handler can render a code-specific actionable hint.
+    if (TERMINAL_STATUSES.has(from)) {
+      throw new StateMachineRejectionError(
+        `Agent run ${agentRunId} is '${from}' (terminal — no further transitions). ` +
+        `transitionAgent was invoked on an already-completed agent; this indicates a caller bug.`,
+        {
+          kind: 'TERMINAL',
+          from,
+          to: toStatus,
+          agentRunId,
+          hint: `file a bug — check the call site for a missing 'is already complete' guard before transitionAgent(${agentRunId}, '${toStatus}')`,
+        }
+      );
+    }
+    if (BLOCKED_STATUSES.has(from)) {
+      throw new StateMachineRejectionError(
+        `Agent run ${agentRunId} is in '${from}' (blocked status). ` +
+        `Blocked agents require explicit coordinator override to move.`,
+        {
+          kind: 'BLOCKED',
+          from,
+          to: toStatus,
+          agentRunId,
+          hint: `needs manual override — re-call transitionAgent with override=true and a reason. See state-machine.js header for the blocked-statuses contract.`,
+        }
+      );
+    }
+    const allowed = TRANSITIONS[from] || [];
+    throw new StateMachineRejectionError(
+      `Transition '${from}' → '${toStatus}' is not allowed. ` +
+      `Legal transitions from '${from}': [${allowed.join(', ') || '(none)'}].`,
+      {
+        kind: 'INVALID',
+        from,
+        to: toStatus,
+        agentRunId,
+        allowedTransitions: allowed,
+        hint: allowed.length > 0
+          ? `pick a legal target: ${allowed.join(' | ')}`
+          : `'${from}' has no outbound transitions; check if this status is BLOCKED or TERMINAL`,
+      }
+    );
   }
 
   return executeTransition(db, agentRunId, from, toStatus, reason);
@@ -136,9 +180,28 @@ export function applyTimeoutPolicy(db, waveId, timeoutMs, nowMs) {
   const timedOut = [];
 
   for (const agent of agents) {
-    const startedAt = agent.started_at ? new Date(agent.started_at + 'Z').getTime() : 0;
-    // dispatched with no started_at: use a generous grace period (treat as started_at = 0 → always times out)
-    // dispatched with started_at: check timeout
+    // Defense in depth at the law engine: an agent_run with status in
+    // ('dispatched','running') but a NULL started_at means the state machine
+    // was bypassed somewhere (a direct INSERT, a manual SQL repair, a stale
+    // fixture) — we cannot prove how long it has been running, so we MUST
+    // NOT instant-time-out. Treat as "just dispatched": start the clock now.
+    //
+    // The wave-5 fix to dispatch.js (F-002109-003) closed the production
+    // path that produced this state. This branch is the belt-and-suspenders
+    // guard so a future regression cannot silently re-arm the bug.
+    //
+    // started_at is written by executeTransition() via Date#toISOString(),
+    // which already terminates with 'Z'. Appending another 'Z' yielded NaN
+    // and caused every timeout check to silently no-op. See F-742440-001.
+    if (!agent.started_at) {
+      console.warn(
+        `state-machine: agent ${agent.id} (${agent.domain_name}) has ` +
+        `status=${agent.status} with NULL started_at — invariant broken; ` +
+        `treating as just-dispatched and skipping timeout this pass`
+      );
+      continue;
+    }
+    const startedAt = new Date(agent.started_at).getTime();
     if (now - startedAt > timeoutMs) {
       transitionAgent(db, agent.id, 'timed_out',
         `Exceeded timeout policy: ${Math.round((now - startedAt) / 1000)}s > ${Math.round(timeoutMs / 1000)}s`);

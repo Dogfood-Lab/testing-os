@@ -224,8 +224,16 @@ try {
   execSync(`node "${ingestScript}" --provenance=stub --file "${submissionPath}"`, {
     stdio: ['ignore', 'inherit', 'inherit'],
   });
-} catch {
-  console.error('ERROR: dogfood ingest failed');
+} catch (e) {
+  // F-091578-012 (wave-17): bare 'ERROR: dogfood ingest failed' scrolled past
+  // the operator's eye after the underlying ingest output. Surface the
+  // submission path + a copy-pasteable reproduce command so the operator can
+  // replay the failure with full output isolation.
+  console.error('ERROR [INGEST_FAILED]: dogfood ingest exited non-zero');
+  console.error(`  Submission: ${submissionPath}`);
+  console.error(`  Reproduce:  node "${ingestScript}" --provenance=stub --file "${submissionPath}"`);
+  if (e && e.status != null) console.error(`  Exit code:  ${e.status}`);
+  if (e && e.message) console.error(`  Cause:      ${e.message}`);
   process.exit(1);
 }
 

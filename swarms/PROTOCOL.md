@@ -2,37 +2,40 @@
 
 ## Overview
 
-The Dogfood Swarm Protocol orchestrates parallel Claude Code agents through a 9-phase play that first establishes a clean bill of health, then builds features to production readiness. A human coordinator reads this document and executes it step by step. All artifacts live under `F:\AI\dogfood-lab\testing-os\swarms\<org>--<repo>\`.
+The Dogfood Swarm Protocol orchestrates parallel Claude Code agents through a 10-phase play (Stage A Bug + Stage B Proactive + Stage C Humanization + Stage D Visual Polish, then Feature Pass phases 5-8, Final test phase 9, and Full Treatment phase 10) that first establishes a clean bill of health, then builds features to production readiness, and finally polishes for ship. A human coordinator reads this document and executes it step by step. All artifacts live under `swarms/<org>--<repo>/` (relative to repo root).
 
 ## Prerequisites
 
-- Target repo exists in `mcp-tool-shop-org` (or `mcp-tool-shop` for marketing repos)
-- Local clone at `F:\AI\<repo-name>` with `origin` pointing to the correct remote
+- Target repo exists under `mcp-tool-shop-org` or `dogfood-lab` (or `mcp-tool-shop` for marketing repos)
+- Local clone of the target repo on disk; `origin` points to the correct remote
 - Git working tree clean on the target repo (no uncommitted changes)
 - Save point tag created before first wave for easy revert
 
 ---
 
-## The 9-Phase Play
+<!-- drift-checked by scripts/check-doc-drift.mjs — see Class #11 (multi-occurrence fix completeness). Update all Stage D / 10-Phase mentions together; per-instance fixes are anti-pattern. -->
 
-The protocol has two repeating passes and a final test phase:
+## The 10-Phase Play
 
-- **Health Pass** (Phases 1-4) — Audit and fix bugs, security, code quality, type safety, test coverage, doc accuracy. Repeat until clean bill of health.
+The protocol has two repeating passes plus a final test phase and full treatment:
+
+- **Health Pass** (Phases 1-4) — Audit and fix bugs, security, code quality, type safety, test coverage, doc accuracy across **four pre-feature stages** (A bug/security, B proactive health, C humanization, D visual polish). Repeat until clean bill of health.
 - **Feature Pass** (Phases 5-8) — Audit and build missing capabilities, feature gaps, UX improvements. Repeat until production-ready.
 - **Final** (Phase 9) — Comprehensive test validation.
 - **Full Treatment** (Phase 10) — Shipcheck, branding, landing page, handbook, translations, repo-knowledge DB. The repo is not "done" until it's whole.
 
 ---
 
-## Health Pass (Phases 1-4) — Three stages to clean bill of health
+## Health Pass (Phases 1-4) — Four stages to clean bill of health
 
-The Health Pass has three distinct stages. Each stage uses the same Audit → Review → Amend → Repeat cycle (Phases 1-4), but with a different lens:
+The Health Pass has four distinct stages. Each stage uses the same Audit → Review → Amend → Repeat cycle (Phases 1-4), but with a different lens:
 
 - **Stage A: Bug/Security Fix** — Find and fix defects. Repeat until 0 CRITICAL + 0 HIGH.
 - **Stage B: Proactive Health** — Fresh audit with proactive lens (defensive coding, observability, graceful degradation, future-proofing). Review findings.
 - **Stage C: Humanization** — Amend the proactive findings with emphasis on USER EXPERIENCE: error messages that help, reconnection feedback, responsive layouts, loading states, state persistence, accessibility. This is the bridge between "not broken" and "actually good to use."
+- **Stage D: Visual Polish** — Final pre-feature pass focused on the visual surface: typography/spacing/layout, iconography & assets, color/theming/dark-mode, animated demonstrations, command palette presentation, status bar integration, first-run welcome, settings UI grouping, marketplace/landing-page visuals.
 
-**Key insight:** Proactive health findings are NOT afterthoughts — they represent the gap between "code that works" and "code that respects the user." The humanization amend wave treats these findings with the same rigor as bug fixes because polish IS quality.
+**Key insight:** Proactive health, humanization, and visual polish findings are NOT afterthoughts — they represent the gap between "code that works" and "code that respects the user." The Stage C and Stage D amend waves treat these findings with the same rigor as bug fixes because polish IS quality.
 
 ---
 
@@ -82,11 +85,21 @@ Launch 5 parallel agents, one per domain, to audit all components.
    - State persistence: does the app remember user context across sessions?
    - Accessibility: keyboard navigation, screen reader support, contrast
 
+   **Stage D (Visual Polish):**
+   - Typography, spacing, and layout consistency across surfaces
+   - Iconography and asset quality (logos, screenshots, social cards, favicons)
+   - Color, theming, and dark-mode parity
+   - Animated demonstrations / GIFs / motion
+   - Command palette and status bar presentation (for editor-integrated tools)
+   - First-run welcome and onboarding visuals
+   - Settings UI grouping and labeling
+   - Marketplace listing visuals and landing-page polish
+
 4. Agent output format:
    ```json
    {
      "domain": "backend",
-     "stage": "A|B|C",
+     "stage": "A|B|C|D",
      "findings": [
        {
          "id": "F-001",
@@ -146,7 +159,8 @@ Return to Phase 1 for a fresh audit against the remediated codebase.
 - **Checkpoint with user every 3 iterations** to confirm direction.
 - **Stage A:** Continue until audit returns 0 CRITICAL + 0 HIGH. Then advance to Stage B.
 - **Stage B:** Run one proactive audit cycle. Review findings. Then advance to Stage C.
-- **Stage C:** Amend the proactive findings through the humanization lens. When complete = **clean bill of health**. Proceed to Feature Pass.
+- **Stage C:** Amend the proactive findings through the humanization lens. When complete, proceed to Stage D.
+- **Stage D:** Run one visual-polish audit cycle, then a visual-amend wave. When complete = **clean bill of health**. Proceed to Feature Pass.
 
 ---
 
@@ -280,7 +294,7 @@ After Phase 7 (post-deploy verification) passes:
 3. **Severity Triage** — All findings are triaged CRITICAL/HIGH/MEDIUM/LOW. Remediation follows severity order.
 4. **Build After Every Wave** — Build must pass after every amend/execution wave (lint + typecheck + tests).
 5. **Save Point** — Tag before first wave for easy revert.
-6. **Three-Stage Health** — Stage A fixes bugs/security, Stage B applies proactive hardening, Stage C humanizes UX. All three complete before features.
+6. **Four-Stage Pre-Feature** — Stage A fixes bugs/security, Stage B applies proactive hardening, Stage C humanizes behavior/text, Stage D polishes visuals. All four complete before features.
 7. **Health Before Features** — Feature execution only begins after clean bill of health.
 8. **User Reviews First** — User reviews feature audit BEFORE execution begins. No code without approval.
 9. **Manifest Checkpoint** — `manifest.json` is the single source of swarm state for resumability.
@@ -312,7 +326,7 @@ Adjust domains to match the repo's architecture. The key constraint is that ever
   "commit_sha": "<HEAD commit>",
   "branch": "main",
   "started_at": "<ISO 8601>",
-  "status": "health-audit-a|health-audit-b|health-audit-c|review|amend|feature-audit|feature-review|execution|test|treatment|complete",
+  "status": "health-audit-a|health-audit-b|health-audit-c|health-audit-d|review|amend|feature-audit|feature-review|execution|test|treatment|complete",
   "save_point_tag": "swarm-save-<timestamp>",
   "health_waves_completed": 0,
   "feature_waves_completed": 0,
@@ -367,32 +381,39 @@ HEALTH PASS — STAGE C (Humanization)
 11. [ ] Launch 5 amend agents to fix proactive findings with UX emphasis
 12. [ ] Focus: error messages, reconnection feedback, loading states, state persistence, accessibility
 13. [ ] Verify build passes
-14. [ ] Clean bill of health confirmed — proceed to Feature Pass
+14. [ ] Stage C complete — proceed to Stage D
+
+HEALTH PASS — STAGE D (Visual Polish)
+15. [ ] Launch 5 visual-polish audit agents (typography/spacing, iconography, color/theming, motion, command palette, status bar, first-run, settings UI, marketplace visuals)
+16. [ ] Present visual findings to user for approval
+17. [ ] Launch 5 stage-d-amend agents with exclusive file ownership
+18. [ ] Verify build passes
+19. [ ] Clean bill of health confirmed — proceed to Feature Pass
 
 FEATURE PASS
- 9. [ ] Launch 5 feature audit agents
-10. [ ] Present feature findings to user for approval
-11. [ ] Launch 5 execution agents for approved features
-12. [ ] Verify build passes
-13. [ ] Repeat until production-ready
-14. [ ] Checkpoint with user every 3 iterations
+20. [ ] Launch 5 feature audit agents
+21. [ ] Present feature findings to user for approval
+22. [ ] Launch 5 execution agents for approved features
+23. [ ] Verify build passes
+24. [ ] Repeat until production-ready
+25. [ ] Checkpoint with user every 3 iterations
 
 FINAL
-15. [ ] Run comprehensive test pass
-16. [ ] Record final test count and pass rate
+26. [ ] Run comprehensive test pass
+27. [ ] Record final test count and pass rate
 
 FULL TREATMENT (Phase 10)
-17. [ ] Read full-treatment.md + handbook-playbook.md
-18. [ ] Shipcheck: npx @mcptoolshop/shipcheck audit (must exit 0)
-19. [ ] Version bump (v0.x → v1.0.0, or patch bump)
-20. [ ] Logo to brand repo, README finalized
-21. [ ] Hand user translation command (user runs locally)
-22. [ ] Scaffold landing page (site-theme init)
-23. [ ] Scaffold + write handbook (3-7 pages from README)
-24. [ ] Build + verify site: npm run build in site/
-25. [ ] GitHub metadata: description, homepage, topics
-26. [ ] Repo-knowledge DB: scan, thesis, architecture, relationships
-27. [ ] Commit + deploy (explicit staging, never git add .)
-28. [ ] Post-deploy verify: landing page, handbook, pagefind, CI green
-29. [ ] Mark manifest status: "complete"
+28. [ ] Read full-treatment.md + handbook-playbook.md
+29. [ ] Shipcheck: npx @mcptoolshop/shipcheck audit (must exit 0)
+30. [ ] Version bump (v0.x → v1.0.0, or patch bump)
+31. [ ] Logo to brand repo, README finalized
+32. [ ] Hand user translation command (user runs locally)
+33. [ ] Scaffold landing page (site-theme init)
+34. [ ] Scaffold + write handbook (3-7 pages from README)
+35. [ ] Build + verify site: npm run build in site/
+36. [ ] GitHub metadata: description, homepage, topics
+37. [ ] Repo-knowledge DB: scan, thesis, architecture, relationships
+38. [ ] Commit + deploy (explicit staging, never git add .)
+39. [ ] Post-deploy verify: landing page, handbook, pagefind, CI green
+40. [ ] Mark manifest status: "complete"
 ```

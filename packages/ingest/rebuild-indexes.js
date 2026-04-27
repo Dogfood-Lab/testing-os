@@ -36,26 +36,32 @@ function findJsonFiles(dir) {
 }
 
 /**
- * Load and parse a record file. Returns null on parse failure.
+ * Load and parse a record file.
  *
  * @param {string} filePath
- * @returns {object|null}
+ * @returns {{ record: object|null, error: string|null }}
  */
 function loadRecord(filePath) {
   try {
-    return JSON.parse(readFileSync(filePath, 'utf-8'));
-  } catch {
-    return null;
+    return { record: JSON.parse(readFileSync(filePath, 'utf-8')), error: null };
+  } catch (err) {
+    return { record: null, error: err && err.message ? err.message : String(err) };
   }
 }
 
 /**
  * Rebuild all indexes from the records directory.
  *
+ * Corrupted records (parse failure) and records missing run_id are surfaced
+ * via the returned `corrupted` and `skipped` arrays AND logged to stderr so
+ * operators see them. The function does NOT crash on a single bad file —
+ * the index must keep building so the rest of the portfolio stays current —
+ * but the bad files are NOT silently dropped.
+ *
  * @param {string} repoRoot - Absolute path to dogfood-labs repo root
  * @param {object} [options]
  * @param {number} [options.staleDays=30] - Days after which a surface is stale
- * @returns {{ latestByRepo: object, failing: object[], stale: object[] }}
+ * @returns {{ latestByRepo: object, failing: object[], stale: object[], accepted: number, rejected: number, corrupted: Array<{ path: string, error: string }>, skipped: Array<{ path: string, reason: string }> }}
  */
 export function rebuildIndexes(repoRoot, options = {}) {
   const { staleDays = 30 } = options;
@@ -72,13 +78,24 @@ export function rebuildIndexes(repoRoot, options = {}) {
   const rejectedFiles = findJsonFiles(join(repoRoot, 'records', '_rejected'));
 
   const allRecords = [];
+  const corrupted = [];
+  const skipped = [];
 
   for (const f of [...acceptedFiles, ...rejectedFiles]) {
-    const record = loadRecord(f);
-    if (record && record.run_id) {
-      record._path = relative(repoRoot, f);
-      allRecords.push(record);
+    const relPath = relative(repoRoot, f);
+    const { record, error } = loadRecord(f);
+    if (error) {
+      corrupted.push({ path: relPath, error });
+      console.error(`[rebuild-indexes] corrupted record skipped: ${relPath} — ${error}`);
+      continue;
     }
+    if (!record || !record.run_id) {
+      skipped.push({ path: relPath, reason: 'missing run_id' });
+      console.error(`[rebuild-indexes] record skipped (missing run_id): ${relPath}`);
+      continue;
+    }
+    record._path = relPath;
+    allRecords.push(record);
   }
 
   // --- latest-by-repo.json ---
@@ -96,7 +113,16 @@ export function rebuildIndexes(repoRoot, options = {}) {
       const existing = latestByRepo[repo][surface];
 
       const finishedAt = record.timing?.finished_at;
-      if (!existing || finishedAt > existing.finished_at) {
+      // Compare timestamps numerically. ISO 8601 lex-compare only agrees with
+      // chronological order when both strings share identical precision and
+      // timezone format — `2026-03-19T15:45:12Z` lex-compares AFTER
+      // `2026-03-19T15:45:12.500Z` (because `Z` (0x5A) > `.` (0x2E)), so
+      // mixed-precision timestamps would pick the wrong "latest." Date.parse
+      // normalizes to ms-since-epoch; NaN (bad/missing) is treated as oldest.
+      const finishedMs = finishedAt ? new Date(finishedAt).getTime() : NaN;
+      const existingMs = existing?.finished_at ? new Date(existing.finished_at).getTime() : NaN;
+      const isNewer = !existing || (Number.isFinite(finishedMs) && (!Number.isFinite(existingMs) || finishedMs > existingMs));
+      if (isNewer) {
         latestByRepo[repo][surface] = {
           run_id: record.run_id,
           verified: record.overall_verdict?.verified,
@@ -130,14 +156,21 @@ export function rebuildIndexes(repoRoot, options = {}) {
   // --- stale.json ---
   // Surfaces where the latest accepted record is older than staleDays
   const stale = [];
-  const cutoff = new Date(Date.now() - staleDays * 24 * 60 * 60 * 1000).toISOString();
+  const cutoffMs = Date.now() - staleDays * 24 * 60 * 60 * 1000;
 
   for (const [repo, surfaces] of Object.entries(latestByRepo)) {
     for (const [surface, entry] of Object.entries(surfaces)) {
-      if (entry.finished_at < cutoff) {
-        const ageDays = Math.floor(
-          (Date.now() - new Date(entry.finished_at).getTime()) / (24 * 60 * 60 * 1000)
-        );
+      // Compare numerically — see latest-by-repo block above for the
+      // mixed-precision lex-compare hazard. A missing/unparseable
+      // finished_at is treated as stale (NaN < cutoff is false in lex,
+      // hiding records with no usable timing — the original behavior
+      // silently dropped them from stale-detection).
+      const entryMs = entry.finished_at ? new Date(entry.finished_at).getTime() : NaN;
+      const isStale = !Number.isFinite(entryMs) || entryMs < cutoffMs;
+      if (isStale) {
+        const ageDays = Number.isFinite(entryMs)
+          ? Math.floor((Date.now() - entryMs) / (24 * 60 * 60 * 1000))
+          : null;
         stale.push({
           repo,
           surface,
@@ -167,5 +200,13 @@ export function rebuildIndexes(repoRoot, options = {}) {
   writeFileSync(staleTmp, JSON.stringify(stale, null, 2) + '\n', 'utf-8');
   renameSync(staleTmp, stalePath);
 
-  return { latestByRepo, failing, stale };
+  return {
+    latestByRepo,
+    failing,
+    stale,
+    accepted: acceptedFiles.length,
+    rejected: rejectedFiles.length,
+    corrupted,
+    skipped
+  };
 }

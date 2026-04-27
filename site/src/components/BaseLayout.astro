@@ -1,0 +1,183 @@
+---
+// TEMPORARY OVERRIDE: BaseLayout from @mcptoolshop/site-theme is missing two fixes.
+//
+//   1. WCAG 2.1 SC 2.4.1 (Bypass Blocks, Level A) — no skip-link to main content
+//      means keyboard users tab through the brand link, every nav item, npm link,
+//      and GitHub link before reaching page content on every navigation.
+//   2. <link rel="icon" type="image/svg+xml" href={base}favicon.svg /> 404s on
+//      every page load — the public/ directory only ships logo.png.
+//
+// Upstream issue/PR: <https://github.com/mcp-tool-shop-org/site-theme/issues> (queued; URL pending file)
+// Remove this override once @mcptoolshop/site-theme >= <next-version> ships
+// upstream skip-link + a favicon prop.
+//
+// This wrapper is a verbatim fork of the upstream component plus:
+//   - skip-link as the first focusable element in <body>
+//   - id="main-content" on <main> so the skip-link target resolves
+//   - favicon link rewritten to point at the shipped logo.png
+
+interface Props {
+  title: string;
+  description: string;
+  logoBadge: string;
+  brandName: string;
+  nav?: { href: string; label: string }[];
+  repoUrl: string;
+  npmUrl?: string;
+  /** Footer text — accepts raw HTML. Sanitize if sourced from user input. */
+  footerText: string;
+}
+
+const {
+  title,
+  description,
+  logoBadge,
+  brandName,
+  nav = [],
+  repoUrl,
+  npmUrl,
+  footerText,
+} = Astro.props;
+
+const base = import.meta.env.BASE_URL.endsWith('/') ? import.meta.env.BASE_URL : import.meta.env.BASE_URL + '/';
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content={description} />
+    <link rel="icon" type="image/png" href={`${base}logo.png`} />
+    <title>{title}</title>
+  </head>
+
+  <body class="min-h-screen bg-surface text-heading antialiased">
+    <a href="#main-content" class="skip-link">Skip to main content</a>
+
+    <div class="mx-auto max-w-6xl px-4">
+      <header class="flex items-center justify-between py-6">
+        <a href={base} class="flex items-center gap-2 font-semibold tracking-tight">
+          <span class="inline-flex h-8 w-8 items-center justify-center rounded-xl bg-surface-strong">
+            {logoBadge}
+          </span>
+          <span>{brandName}</span>
+        </a>
+
+        <nav aria-label="Main navigation" class="hidden items-center gap-6 text-sm text-muted md:flex">
+          {nav.map((item: { href: string; label: string }) => (
+            <a href={item.href} class="hover:text-heading">{item.label}</a>
+          ))}
+        </nav>
+
+        <div class="flex items-center gap-3">
+          {npmUrl && (
+            <a
+              class="hidden rounded-xl border border-edge px-4 py-2 text-sm text-body hover:bg-surface-raised md:inline-flex"
+              href={npmUrl}
+              target="_blank"
+              rel="noreferrer"
+            >
+              npm
+            </a>
+          )}
+          <a
+            class="inline-flex rounded-xl bg-action px-4 py-2 text-sm font-medium text-action-text hover:bg-action-hover"
+            href={repoUrl}
+            target="_blank"
+            rel="noreferrer"
+          >
+            GitHub
+          </a>
+
+          {/*
+            Mobile nav disclosure (Stage D wave 23, D-DOCS-002 / F-827321-018).
+            Below the `md:` breakpoint (768px) the inline nav above is hidden,
+            and on phones the GitHub button was the ONLY navigation. This
+            <details> reveals the same `nav[]` items as a stacked list — no JS
+            state to manage, native disclosure widget, keyboard accessible by
+            default. The `summary` is a 3-line hamburger SVG (no icon-font dep,
+            inlined so first paint has it). md:hidden so desktop is unchanged.
+          */}
+          <details class="relative md:hidden">
+            <summary
+              aria-label="Open menu"
+              class="inline-flex cursor-pointer list-none items-center justify-center rounded-xl border border-edge p-2 text-body hover:bg-surface-raised [&::-webkit-details-marker]:hidden"
+            >
+              <svg
+                xmlns="http://www.w3.org/2000/svg"
+                width="20"
+                height="20"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+                aria-hidden="true"
+              >
+                <line x1="3" y1="6" x2="21" y2="6" />
+                <line x1="3" y1="12" x2="21" y2="12" />
+                <line x1="3" y1="18" x2="21" y2="18" />
+              </svg>
+            </summary>
+            <nav
+              aria-label="Mobile navigation"
+              class="absolute right-0 top-full z-20 mt-2 flex min-w-[10rem] flex-col gap-1 rounded-xl border border-edge bg-surface-raised p-3 text-sm text-body shadow-lg"
+            >
+              {nav.map((item: { href: string; label: string }) => (
+                <a href={item.href} class="rounded-md px-3 py-2 hover:bg-surface-strong hover:text-heading">{item.label}</a>
+              ))}
+              {npmUrl && (
+                <a class="rounded-md px-3 py-2 hover:bg-surface-strong hover:text-heading" href={npmUrl} target="_blank" rel="noreferrer">npm</a>
+              )}
+            </nav>
+          </details>
+        </div>
+      </header>
+
+      <main id="main-content" class="pb-24">
+        <slot />
+      </main>
+
+      <footer class="border-t border-edge-subtle py-10 text-sm text-dim">
+        <div class="flex flex-col justify-between gap-4 md:flex-row">
+          <p set:html={footerText} />
+          <nav aria-label="Footer links" class="flex gap-4">
+            {npmUrl && (
+              <a class="hover:text-body" href={npmUrl} target="_blank" rel="noreferrer">npm</a>
+            )}
+            <a class="hover:text-body" href={repoUrl} target="_blank" rel="noreferrer">GitHub</a>
+            <a class="hover:text-body" href="https://opensource.org/license/mit/" target="_blank" rel="noreferrer">License</a>
+          </nav>
+        </div>
+      </footer>
+    </div>
+
+    <style>
+      /* Skip-link: visually hidden until keyboard focus, then visible at top-left.
+         Pattern follows WCAG 2.1 SC 2.4.1 + Starlight's own SkipLink.astro convention. */
+      .skip-link {
+        position: absolute;
+        top: 0;
+        left: 0;
+        padding: 0.75rem 1rem;
+        background: var(--color-action, #3b82f6);
+        color: var(--color-action-text, #ffffff);
+        font-size: 0.875rem;
+        font-weight: 500;
+        text-decoration: none;
+        border-bottom-right-radius: 0.5rem;
+        transform: translateY(-100%);
+        transition: transform 120ms ease-out;
+        z-index: 1000;
+      }
+      .skip-link:focus,
+      .skip-link:focus-visible {
+        transform: translateY(0);
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+      }
+    </style>
+  </body>
+</html>

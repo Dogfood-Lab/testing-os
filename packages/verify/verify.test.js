@@ -10,7 +10,7 @@ import { validateSubmissionSchema } from './validators/schema.js';
 import { validateStepResults } from './validators/steps.js';
 import { validatePolicy } from './validators/policy.js';
 import { computeVerdict } from './validators/verdict.js';
-import { stubProvenance, rejectingProvenance } from './validators/provenance.js';
+import { stubProvenance, rejectingProvenance, githubProvenance } from './validators/provenance.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = resolve(__dirname, 'fixtures');
@@ -343,5 +343,252 @@ describe('full verifier pipeline (pilot 0)', () => {
     assert.deepEqual(record.timing, pilot0.timing);
     assert.deepEqual(record.ci_checks, pilot0.ci_checks);
     assert.equal(record.notes, pilot0.notes);
+  });
+});
+
+// ── githubProvenance run.status guard (F-002109-026) ───────────
+
+describe('githubProvenance requires completed runs', () => {
+  const ORIG_FETCH = globalThis.fetch;
+  const SOURCE = {
+    provider: 'github',
+    provider_run_id: '9123456789',
+    run_url: 'https://github.com/owner/repo/actions/runs/9123456789',
+    repo: 'owner/repo',
+    commit_sha: 'c5d6c4e0000000000000000000000000deadbeef'
+  };
+
+  function mockRun(overrides) {
+    return {
+      id: 9123456789,
+      status: 'completed',
+      conclusion: 'success',
+      head_sha: 'c5d6c4e0000000000000000000000000deadbeef',
+      repository: { full_name: 'owner/repo' },
+      ...overrides
+    };
+  }
+
+  function mockFetch(run) {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => run
+    });
+  }
+
+  function restoreFetch() {
+    globalThis.fetch = ORIG_FETCH;
+  }
+
+  it('rejects runs with status: queued', async () => {
+    mockFetch(mockRun({ status: 'queued', conclusion: null }));
+    try {
+      const ok = await githubProvenance('token').confirm(SOURCE);
+      assert.equal(ok, false, 'queued run must not be confirmed');
+    } finally { restoreFetch(); }
+  });
+
+  it('rejects runs with status: in_progress', async () => {
+    mockFetch(mockRun({ status: 'in_progress', conclusion: null }));
+    try {
+      const ok = await githubProvenance('token').confirm(SOURCE);
+      assert.equal(ok, false, 'in_progress run must not be confirmed');
+    } finally { restoreFetch(); }
+  });
+
+  it('rejects runs with status: waiting', async () => {
+    mockFetch(mockRun({ status: 'waiting', conclusion: null }));
+    try {
+      const ok = await githubProvenance('token').confirm(SOURCE);
+      assert.equal(ok, false, 'waiting run must not be confirmed');
+    } finally { restoreFetch(); }
+  });
+
+  it('accepts runs with status: completed', async () => {
+    mockFetch(mockRun({ status: 'completed', conclusion: 'success' }));
+    try {
+      const ok = await githubProvenance('token').confirm(SOURCE);
+      assert.equal(ok, true, 'completed run must be confirmed');
+    } finally { restoreFetch(); }
+  });
+
+  it('accepts completed runs even when conclusion is failure (verifier confirms run RAN, not that it passed — pass/fail is a separate signal)', async () => {
+    // Document the contract decision: status === 'completed' is the gate;
+    // run-pass-or-fail is conveyed elsewhere (CI checks, scenario verdicts).
+    mockFetch(mockRun({ status: 'completed', conclusion: 'failure' }));
+    try {
+      const ok = await githubProvenance('token').confirm(SOURCE);
+      assert.equal(ok, true, 'verifier confirms run executed; pass/fail is a separate signal');
+    } finally { restoreFetch(); }
+  });
+});
+
+// ── Cross-org forgery guard (F-002109-025) ─────────────────────
+
+describe('cross-org forgery guard', () => {
+  it('rejects when submission.repo does not match submission.source.repo', async () => {
+    // A submitter claims victim-org/victim-repo but supplies a real run from their own repo.
+    // Provenance might pass (the run exists, source.repo matches itself), but the
+    // verifier MUST reject before persistence so the record cannot be filed under victim org.
+    const forged = structuredClone(pilot0);
+    forged.repo = 'victim-org/victim-repo';
+    // Leave source.repo as the original mcp-tool-shop-org/dogfood-labs (mismatch)
+
+    const record = await verify(forged, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.status, 'rejected');
+    assert.ok(
+      record.verification.rejection_reasons.some(r => r.includes('repo:mismatch')),
+      `expected repo:mismatch reason, got: ${JSON.stringify(record.verification.rejection_reasons)}`
+    );
+  });
+
+  it('accepts when submission.repo matches source.repo', async () => {
+    // pilot0 already has matching repos — sanity check the guard does not fire on legitimate input
+    const record = await verify(pilot0, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+    assert.ok(
+      !record.verification.rejection_reasons.some(r => r.includes('repo:mismatch')),
+      'repo:mismatch should NOT fire when repos agree'
+    );
+  });
+});
+
+// ── Null/non-object submission cleanly rejected (F-002109-027) ─
+
+describe('null submission produces persistable rejection record', () => {
+  it('returns a rejection record with all fields needed for clean persistence', async () => {
+    const record = await verify(null, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.status, 'rejected');
+    assert.ok(
+      record.verification.rejection_reasons.some(r => r.includes('null or not an object')),
+      `expected null-input reason, got: ${JSON.stringify(record.verification.rejection_reasons)}`
+    );
+    // The rejection record must carry a sentinel `_skipPersist` marker OR
+    // contain enough fields to flow through computeRecordPath without throwing.
+    // We pick the explicit-skip approach: ingest reads this and skips writeRecord.
+    assert.equal(record._skipPersist, true,
+      'null-input rejection should be marked _skipPersist so persist layer is bypassed');
+  });
+
+  it('handles non-object input (string, number, array) the same way', async () => {
+    for (const bad of ['string', 42, ['array']]) {
+      const record = await verify(bad, {
+        globalPolicy,
+        repoPolicy,
+        provenance: stubProvenance,
+        policyVersion: '1.0.0'
+      });
+      assert.equal(record.verification.status, 'rejected');
+      assert.equal(record._skipPersist, true);
+    }
+  });
+});
+
+// ── githubProvenance fetch timeout (F-246817-014 regression) ──
+//
+// Bug: githubProvenance called fetch() with no AbortController and no timeout.
+// A hung GitHub API call would block the verifier indefinitely (until the
+// surrounding GitHub Actions runner timed out, default 6h). The wrapping
+// `try { ... } catch { return false; }` did NOT catch hangs — only thrown
+// errors. Operators saw nothing in the logs.
+//
+// Fix: wrap fetch in AbortController with a 30s default timeout. On AbortError
+// throw 'provenance: GitHub API timeout after Nms' so the verifier records it
+// in rejection_reasons via its existing catch.
+
+describe('githubProvenance fetch timeout (F-246817-014)', () => {
+  // A fetch impl that never resolves until we abort it.
+  function makeHangingFetch() {
+    return function hangingFetch(_url, opts) {
+      return new Promise((_resolve, reject) => {
+        if (opts && opts.signal) {
+          opts.signal.addEventListener('abort', () => {
+            const err = new Error('aborted');
+            err.name = 'AbortError';
+            reject(err);
+          });
+        }
+        // Never resolves on its own.
+      });
+    };
+  }
+
+  it('throws timeout error when fetch hangs longer than timeoutMs', async () => {
+    const adapter = githubProvenance('test-token', {
+      timeoutMs: 50,
+      fetchImpl: makeHangingFetch()
+    });
+    const source = {
+      provider: 'github',
+      provider_run_id: '12345',
+      run_url: 'https://github.com/owner/repo/actions/runs/12345'
+    };
+    const start = Date.now();
+    await assert.rejects(
+      adapter.confirm(source),
+      err => {
+        assert.match(err.message, /provenance: GitHub API timeout/);
+        assert.match(err.message, /50ms/);
+        return true;
+      }
+    );
+    const elapsed = Date.now() - start;
+    // Should fire close to the timeout, not block forever.
+    assert.ok(elapsed < 5000, `expected fast abort, took ${elapsed}ms`);
+  });
+
+  it('does NOT throw when fetch returns a normal response within timeout', async () => {
+    const fakeRun = {
+      id: 99,
+      status: 'completed',
+      head_sha: 'a'.repeat(40),
+      repository: { full_name: 'owner/repo' }
+    };
+    const fastFetch = async () => ({
+      ok: true,
+      json: async () => fakeRun
+    });
+    const adapter = githubProvenance('test-token', {
+      timeoutMs: 1000,
+      fetchImpl: fastFetch
+    });
+    const result = await adapter.confirm({
+      provider: 'github',
+      provider_run_id: '99',
+      run_url: 'https://github.com/owner/repo/actions/runs/99',
+      commit_sha: 'a'.repeat(40),
+      repo: 'owner/repo'
+    });
+    assert.equal(result, true);
+  });
+
+  it('returns false (not throws) on non-AbortError fetch failures', async () => {
+    const failingFetch = async () => { throw new Error('connection refused'); };
+    const adapter = githubProvenance('test-token', {
+      timeoutMs: 1000,
+      fetchImpl: failingFetch
+    });
+    const result = await adapter.confirm({
+      provider: 'github',
+      provider_run_id: '1',
+      run_url: 'https://github.com/owner/repo/actions/runs/1'
+    });
+    assert.equal(result, false);
   });
 });

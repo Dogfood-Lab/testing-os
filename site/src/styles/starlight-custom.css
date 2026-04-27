@@ -1,8 +1,20 @@
-/* Starlight dark theme — blue accent (matches testing-os cube logo) */
+/* Starlight dark theme — green accent.
+ *
+ * Verified against site/public/logo.png on 2026-04-26 (Stage D wave 23,
+ * D-DOCS-003 / F-827321-019). The logo's terminal-prompt mark (`>` glyph)
+ * and the "< TEST EVERYTHING />" underline are emerald; the prior comment
+ * here claimed "blue (matches the cube logo)" which the file disproved.
+ *
+ * Accent token kept lockstep with @mcptoolshop/site-theme's
+ * `--color-accent: #34d399` (theme.css) so the landing-page hero badge,
+ * status indicators, and the handbook's links / focus rings render the
+ * same hue. Scripts/check-accent-color.test.mjs asserts this lockstep —
+ * change either side, the test fails until both update together.
+ */
 :root {
-  --sl-color-accent-low: #1e1b4b;
-  --sl-color-accent: #3b82f6;
-  --sl-color-accent-high: #93c5fd;
+  --sl-color-accent-low: #064e3b;   /* emerald-900 — sidebar accent low */
+  --sl-color-accent: #34d399;       /* emerald-400 — link / focus accent (matches logo + theme.css) */
+  --sl-color-accent-high: #a7f3d0;  /* emerald-200 — hover / high-contrast variant */
 }
 
 html[data-theme='dark'] {

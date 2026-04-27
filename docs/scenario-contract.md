@@ -1,10 +1,10 @@
 # Scenario Contract
 
-Scenarios define what constitutes a real dogfood exercise. They live in source repos, not in dogfood-labs.
+Scenarios define what constitutes a real dogfood exercise. They live in source repos, not in testing-os.
 
 ## Location
 
-```
+```text
 <source-repo>/
   dogfood/
     scenarios/
@@ -17,8 +17,8 @@ Scenarios define what constitutes a real dogfood exercise. They live in source r
 | Concern | Owner | Location |
 |---------|-------|----------|
 | What steps to exercise | Source repo | `dogfood/scenarios/*.yaml` |
-| Which scenarios are required | dogfood-labs | `policies/repos/<org>/<repo>.yaml` |
-| What a valid result looks like | dogfood-labs | `schemas/scenario.schema.json` |
+| Which scenarios are required | testing-os | `policies/repos/<org>/<repo>.yaml` |
+| What a valid result looks like | testing-os | `packages/schemas/src/json/scenario.schema.json` |
 
 Source repos define product truth. Central policy decides which truths are mandatory.
 

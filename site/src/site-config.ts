@@ -18,7 +18,7 @@ export const config: SiteConfig = {
     previews: [
       { label: 'Verify', code: 'npm run verify' },
       { label: 'Portfolio', code: 'node packages/portfolio/generate.js' },
-      { label: 'Sync', code: 'rk sync-dogfood --local F:/AI/dogfood-lab/testing-os' },
+      { label: 'Sync', code: 'rk sync-dogfood --local <path-to-clone>' },
     ],
   },
 

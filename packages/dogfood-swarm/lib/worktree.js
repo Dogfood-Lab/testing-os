@@ -16,7 +16,7 @@
  */
 
 import { execSync } from 'node:child_process';
-import { existsSync, mkdirSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 /**
@@ -170,12 +170,27 @@ function git(cwd, cmd) {
   return execSync(`git ${cmd}`, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
-function ensureGitignore(repoPath) {
+/**
+ * Ensure .swarm/ is in the repo's .gitignore. Pure-Node fs only — no shell.
+ *
+ * Originally used `execSync('cat ...')` + `execSync('echo ... >>')`, which
+ * inherits the platform shell. On Windows cmd.exe `cat` does not exist, the
+ * call throws "cat is not recognized", the catch in createWorktree swallows
+ * the error, and the agent runs without isolation. `echo` on cmd also writes
+ * a literal trailing space + CRLF that corrupts the file. Wave-1 fixed this
+ * upstream; the testing-os monorepo migration regressed it. This is the
+ * defense-in-depth fix carrying that wave-1 pattern into every copy.
+ */
+export function ensureGitignore(repoPath) {
   const gitignorePath = join(repoPath, '.gitignore');
-  if (existsSync(gitignorePath)) {
-    const content = execSync(`cat "${gitignorePath}"`, { encoding: 'utf-8', cwd: repoPath });
-    if (!content.includes('.swarm/')) {
-      execSync(`echo ".swarm/" >> "${gitignorePath}"`, { cwd: repoPath });
-    }
-  }
+  if (!existsSync(gitignorePath)) return;
+
+  const content = readFileSync(gitignorePath, 'utf-8');
+  if (content.includes('.swarm/')) return;
+
+  // Preserve any existing trailing newline; only inject one if the file
+  // doesn't already end with `\n`. Always append a final `\n` so subsequent
+  // appenders behave the same way.
+  const prefix = content.length === 0 || content.endsWith('\n') ? '' : '\n';
+  appendFileSync(gitignorePath, `${prefix}.swarm/\n`, 'utf-8');
 }

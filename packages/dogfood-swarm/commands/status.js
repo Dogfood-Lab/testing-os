@@ -101,7 +101,10 @@ export function status(opts) {
   const timeoutPolicy = getTimeoutPolicy(db, opts.runId);
 
   // Compute advanceability + next action
-  const assessment = computeAssessment(currentWave, currentAgents, openBySeverity, blockedAgents, inFlightAgents);
+  const assessment = computeAssessment(
+    currentWave, currentAgents, openBySeverity, blockedAgents, inFlightAgents,
+    { runId: opts.runId }
+  );
 
   return {
     run: {
@@ -251,17 +254,50 @@ const STATUS_ICONS = {
   ownership_violation: 'VIOL',
 };
 
-function computeAssessment(wave, agents, openBySeverity, blocked, inFlight) {
+/**
+ * F-091578-010 (wave-17): build a status-specific actionable hint when a
+ * blocked agent has no `error_message`. The bare 'needs manual fix' fallback
+ * was Mike's textbook "wrong shape" anti-pattern — this surfaces what's
+ * known (status, domain, run, wave) and a copy-pasteable next step.
+ *
+ * Exported for direct unit testing without spinning up an entire wave.
+ */
+export function blockerHintForStatus(status, ctx = {}) {
+  const { runId, waveNumber, domain } = ctx;
+  switch (status) {
+    case 'invalid_output':
+      return [
+        `output JSON failed schema validation`,
+        runId && waveNumber && domain
+          ? `re-run with the prompt at swarms/${runId}/wave-${waveNumber}/${domain}.md and ensure required fields are present`
+          : `re-run with the agent prompt and ensure required fields are present`,
+        `inspect parse errors with \`swarm receipt ${runId ?? '<run>'} ${waveNumber ?? '<wave>'}\``,
+      ].join('; ');
+    case 'ownership_violation':
+      return [
+        `agent edited files outside its domain`,
+        `revert out-of-domain edits in the agent worktree, then re-collect`,
+      ].join('; ');
+    default:
+      return `agent in '${status}' with no recoverable error — inspect with \`swarm receipt ${runId ?? '<run>'} ${waveNumber ?? '<wave>'}\``;
+  }
+}
+
+function computeAssessment(wave, agents, openBySeverity, blocked, inFlight, ctx = {}) {
   if (!wave) {
     return { state: 'NO WAVE', blockers: [], nextAction: 'Run `swarm dispatch <run-id> <phase>`' };
   }
 
   const blockers = [];
+  const hintCtx = { runId: ctx.runId, waveNumber: wave.wave_number };
 
   // Blocked agents
   if (blocked.length > 0) {
     for (const a of blocked) {
-      blockers.push(`${a.domain_name}: ${a.status} — ${a.error_message || 'needs manual fix'}`);
+      const reason = a.error_message
+        ? a.error_message
+        : blockerHintForStatus(a.status, { ...hintCtx, domain: a.domain_name });
+      blockers.push(`${a.domain_name}: ${a.status} — ${reason}`);
     }
   }
 

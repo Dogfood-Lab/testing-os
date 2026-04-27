@@ -5,7 +5,7 @@
  * with state-machine enforcement, event logging, and artifact mutation.
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import yaml from 'js-yaml';
 
@@ -13,6 +13,7 @@ import { validateTransition, ACTION_TARGET_STATUS, REASON_REQUIRED, REQUIRES_ACC
 import { createEvent, appendEvent } from './event-log.js';
 import { parseFinding } from '../validate.js';
 import { findById, loadFindings } from '../reader.js';
+import { atomicWriteFileSync } from '../lib/atomic-write.js';
 
 /**
  * Perform a review action on a finding.
@@ -137,7 +138,7 @@ export function performAction(rootDir, params) {
 
   // Persist: update finding artifact
   const clean = JSON.parse(JSON.stringify(finding));
-  writeFileSync(filePath, yaml.dump(clean, { lineWidth: 120, noRefs: true }), 'utf-8');
+  atomicWriteFileSync(filePath, yaml.dump(clean, { lineWidth: 120, noRefs: true }));
 
   // Persist: append event to log
   appendEvent(rootDir, event);
@@ -221,7 +222,7 @@ export function performMerge(rootDir, params) {
 
   // Write canonical
   const cleanCanonical = JSON.parse(JSON.stringify(canonical));
-  writeFileSync(canonicalResult.path, yaml.dump(cleanCanonical, { lineWidth: 120, noRefs: true }), 'utf-8');
+  atomicWriteFileSync(canonicalResult.path, yaml.dump(cleanCanonical, { lineWidth: 120, noRefs: true }));
 
   // Mark source findings as rejected/superseded
   const events = [];

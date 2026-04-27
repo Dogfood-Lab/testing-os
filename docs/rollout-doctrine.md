@@ -80,7 +80,7 @@ Every repo has its own argument shape. Positional args, subcommands, flag names 
 ## Read-after-write timing
 
 **Gate F reads via raw.githubusercontent.com, which has a CDN cache (3–5 minutes).**
-After a fresh ingestion, the dogfood-labs index is updated immediately in git. However, Gate F fetches the index via the GitHub raw content CDN, which may serve stale data for up to 5 minutes. This is an operational timing seam, not a product failure.
+After a fresh ingestion, the testing-os index is updated immediately in git. However, Gate F fetches the index via the GitHub raw content CDN, which may serve stale data for up to 5 minutes. This is an operational timing seam, not a product failure.
 
 Operators should expect:
 - Fresh ingestion → git shows pass immediately

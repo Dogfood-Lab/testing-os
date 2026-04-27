@@ -58,3 +58,12 @@ export const allSchemas = {
 } as const;
 
 export type SchemaName = keyof typeof allSchemas;
+
+export {
+  compileSchema,
+  validatePayload,
+  createAjv,
+  _resetValidatorCacheForTests,
+  type ValidationError,
+  type ValidationResult,
+} from './validate.js';

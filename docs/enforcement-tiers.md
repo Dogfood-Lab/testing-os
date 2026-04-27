@@ -48,11 +48,13 @@ enforcement:
          min_evidence_count: 1
    ```
 
-2. Create the dogfood workflow in the source repo (`.github/workflows/dogfood.yml`) that dispatches to dogfood-labs on success.
+2. Create the dogfood workflow in the source repo (`.github/workflows/dogfood.yml`) that dispatches to testing-os (`dogfood-lab/testing-os`) on success.
 
-3. Run the workflow once to seed the first record.
+3. **Add the `DOGFOOD_TOKEN` secret to the consumer repo.** Mint a fine-grained PAT (or GitHub App token) with **`contents: write`** scoped to `dogfood-lab/testing-os`, then configure it under the consumer's **Settings → Secrets and variables → Actions** as `DOGFOOD_TOKEN`. Without it, the consumer's `dogfood.yml` runs green but the dispatch step skips with a `DOGFOOD_TOKEN not set` warning and the workflow appears successful while no record reaches testing-os — the most common silent-failure mode for new repos. See [GitHub docs on fine-grained PATs](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#creating-a-fine-grained-personal-access-token).
 
-4. Verify: `npx @mcptoolshop/shipcheck dogfood --repo org/repo --surface <surface>`
+4. Run the workflow once to seed the first record.
+
+5. Verify: `npx @mcptoolshop/shipcheck dogfood --repo org/repo --surface <surface>`
 
 ## When to use warn-only
 
@@ -68,7 +70,7 @@ enforcement:
 
 ## Promotion path
 
-```
+```text
 exempt → warn-only → required
 ```
 

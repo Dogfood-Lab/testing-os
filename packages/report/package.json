@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/report",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "description": "Submission builder for testing-os — turns swarm/run results into the JSON envelope expected by the verifier.",
@@ -11,6 +11,9 @@
   },
   "scripts": {
     "test": "node --test"
+  },
+  "dependencies": {
+    "@dogfood-lab/schemas": "*"
   },
   "engines": {
     "node": ">=20"

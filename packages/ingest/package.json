@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/ingest",
-  "version": "1.1.1",
+  "version": "1.1.2",
   "private": true,
   "type": "module",
   "description": "Ingestion pipeline for testing-os. Thin glue: dispatch → verifier → persist → indexes.",
@@ -10,7 +10,11 @@
     "ingest": "node run.js"
   },
   "dependencies": {
+    "@dogfood-lab/dogfood-swarm": "*",
+    "@dogfood-lab/schemas": "*",
     "@dogfood-lab/verify": "*",
+    "ajv": "^8.18.0",
+    "ajv-formats": "^3.0.1",
     "js-yaml": "^4.1.0"
   },
   "engines": {
