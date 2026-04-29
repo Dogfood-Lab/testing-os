@@ -41,6 +41,23 @@ This page documents the **record classification + portfolio bucket** state machi
 8. Run the workflow, verify ingestion produces an accepted record, confirm the repo appears in `indexes/latest-by-repo.json`
 9. Run `npx @mcptoolshop/shipcheck dogfood --repo <org>/<repo> --surface <surface>` on the source repo to confirm Gate F passes (the `dogfood` subcommand is the freshness/Gate F check; `audit` is the SHIP_GATE.md tracker for hard gates A–D)
 
+## Filesystem Requirements
+
+testing-os assumes POSIX `link(2)` semantics for atomic publication in the file-lock CAS (`packages/findings/lib/file-lock.js`, shipped in v1.1.5). All major dev/CI filesystems support this:
+
+| Filesystem | Hardlinks | Status |
+|---|---|---|
+| APFS (macOS) | yes | supported |
+| HFS+ (legacy macOS) | yes | supported |
+| ext4 (Linux) | yes | supported (CI baseline) |
+| NTFS (Windows) | yes | supported |
+| **exFAT** | **no** | **NOT supported** — `linkSync` throws `ENOTSUP` |
+| FAT32 | no | not supported |
+
+The failure mode on exFAT is loud: callers see `ENOTSUP: operation not supported on socket, link ...` from `findings/lib/file-lock.js:atomicCreateLock`. Production code paths that write to a review log on exFAT will throw at the user rather than silently degrade.
+
+**Common operator gotcha:** cross-platform external SSDs (e.g., Samsung T7/T9, SanDisk Extreme) are typically formatted exFAT for Windows + macOS interop. Clone testing-os to local APFS/HFS+/ext4 instead. The Session G validation matrix at [`docs/m5-validation-2026-04-29.md`](https://github.com/dogfood-lab/testing-os/blob/main/docs/m5-validation-2026-04-29.md) walks through the full APFS-vs-exFAT comparison.
+
 ## Running Ingestion Locally
 
 The ingestion CLI (`packages/ingest/run.js`) requires an explicit `--provenance` flag:

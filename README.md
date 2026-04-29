@@ -40,7 +40,11 @@
 
 ## Status
 
-**v1.1.1** — patch release (2026-04-26) on top of the v1.0.0 cut from 2026-04-25, the first stable release after the migration from `mcp-tool-shop-org/dogfood-labs`. Fixes two Stage D dispatch blockers (validator stage enum + template stage-letter extraction) shipped in v1.1.0. Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Packages are not currently published to npm — see [Versioning](#versioning) for the publish status. To consume locally, clone the repo and use `file:` workspace links, or fetch the generated indexes via `raw.githubusercontent.com` (see the handbook's Integration page). See [CHANGELOG.md](CHANGELOG.md) for the v1.1.1 patch notes.
+**v1.1.7** — final version of the Phase 7 dogfood swarm (Option I — ship-and-stop, 2026-04-27). Cumulative output across the swarm: ~31 waves, ~115 verified-holding fixes, 14 audit-coverage classes, 5 cross-pollination chains, 965/965 tests, methodology evidence at 5 layers. The authoritative catalog with cross-swarm takeaways and the 7-session post-swarm roadmap (Sessions A–G) is at [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
+
+Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Packages are `private: true`; npm publish is a separate decision per package. To consume locally, clone the repo and use `file:` workspace links, or fetch the generated indexes via `raw.githubusercontent.com` (see the handbook's Integration page).
+
+**Platform:** validated end-to-end on Darwin/APFS as part of Session G ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)). See [Local Development](#local-development) for supported filesystems. Per-version detail in [CHANGELOG.md](CHANGELOG.md).
 
 ## Threat Model
 
@@ -93,7 +97,9 @@ npm test            # vitest for schemas, node --test for the rest
 npm run verify      # build + test (canonical pre-commit check)
 ```
 
-Requires Node ≥ 20.
+Requires Node ≥ 20. CI matrix runs Node 20 + 22 on `ubuntu-latest`; locally validated on Node 25.
+
+**Supported filesystems:** APFS, HFS+, ext4 (CI baseline), NTFS — anything that implements POSIX `link(2)`. **Not supported:** exFAT, FAT32. The file-lock CAS in [`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js) requires hardlink semantics for atomic publication; on exFAT, `linkSync` throws `ENOTSUP` (loud, not silent). Common gotcha: cross-platform external SSDs are often formatted exFAT — clone the repo to local APFS/HFS+ instead. See [`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md) for the full Session G validation matrix.
 
 ## Versioning
 
