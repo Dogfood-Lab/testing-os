@@ -33,7 +33,7 @@
     "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.6"
   },
   "author": "mcp-tool-shop",
   "license": "MIT",

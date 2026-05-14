@@ -36,7 +36,7 @@
     "@types/node": "^25.3.5",
     "@vitest/coverage-v8": "^3.2.4",
     "typescript": "^5.7.0",
-    "vitest": "^3.0.0"
+    "vitest": "^4.1.6"
   },
   "overrides": {
     "fast-uri": "^3.1.2"
