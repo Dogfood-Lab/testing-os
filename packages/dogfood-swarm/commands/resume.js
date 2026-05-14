@@ -231,10 +231,11 @@ export function formatResume(r) {
   }
 
   if (r.manual_fix.length > 0) {
-    lines.push(`Blocked — manual fix required (${r.manual_fix.length}):`);
+    lines.push(`Blocked — manual fix or \`swarm revalidate\` required (${r.manual_fix.length}):`);
     for (const a of r.manual_fix) {
       lines.push(`  [STOP] ${a.domain} — ${a.status}: ${a.error || 'no details'}`);
     }
+    lines.push(`  Recovery: \`swarm revalidate <run-id> --reason "<text>" --domain=<domain>:<corrected.json> --apply\` (lawful override; dry-run without --apply).`);
   }
 
   return lines.join('\n');

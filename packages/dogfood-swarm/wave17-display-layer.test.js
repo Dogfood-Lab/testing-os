@@ -167,7 +167,11 @@ describe('F-091578-002 — transitionAgent throws typed rejection per kind', () 
     db.close();
   });
 
-  it('BLOCKED — invalid_output rejection surfaces manual-override hint', () => {
+  it('BLOCKED — invalid_output rejection names swarm revalidate as recovery verb', () => {
+    // C-FAIL-001 (Stage C amend, 2026-05-14): the BLOCKED hint was
+    // previously "manual override — re-call transitionAgent with override=true"
+    // — an internal-API directive the operator could not act on at the CLI.
+    // The verb shipped in 80a22d5; the hint now names it explicitly.
     transitionAgent(db, 1, 'dispatched');
     db.prepare("UPDATE agent_runs SET status = 'invalid_output' WHERE id = 1").run();
 
@@ -181,7 +185,9 @@ describe('F-091578-002 — transitionAgent throws typed rejection per kind', () 
     assert.equal(thrown.kind, 'BLOCKED');
     assert.equal(thrown.from, 'invalid_output');
     assert.match(thrown.message, /blocked/);
-    assert.match(thrown.hint, /manual override/);
+    assert.match(thrown.hint, /swarm revalidate/);
+    assert.match(thrown.hint, /--apply/);
+    // Library-level pointer still preserved for code-readers.
     assert.match(thrown.hint, /override=true/);
     db.close();
   });
@@ -219,7 +225,8 @@ describe('F-091578-002 — transitionAgent throws typed rejection per kind', () 
     const joined = out.join('\n');
 
     assert.match(joined, /ERROR \[STATE_MACHINE_BLOCKED\]/);
-    assert.match(joined, /Next:.*manual override/);
+    // C-FAIL-001: rendered hint names `swarm revalidate` as the recovery verb.
+    assert.match(joined, /Next:.*swarm revalidate/);
     assert.match(joined, /Agent run: 1/);
     db.close();
   });
@@ -230,19 +237,25 @@ describe('F-091578-002 — transitionAgent throws typed rejection per kind', () 
 // ═══════════════════════════════════════════
 
 describe('F-091578-010 — blockerHintForStatus surfaces structured what-broke', () => {
-  it('invalid_output surfaces re-run command + receipt inspection', () => {
+  // C-FAIL-002 (Stage C amend, 2026-05-14): the recovery path for
+  // invalid_output / ownership_violation is `swarm revalidate`, not a
+  // prompt re-run. Earlier assertions named the re-run path; the verb
+  // shipped in 80a22d5 and the prose now points at it.
+  it('invalid_output surfaces revalidate command + receipt inspection', () => {
     const hint = blockerHintForStatus('invalid_output', {
       runId: 'r-abc',
       waveNumber: 12,
       domain: 'backend',
     });
     assert.match(hint, /schema validation/);
-    assert.match(hint, /swarms\/r-abc\/wave-12\/backend\.md/);
+    assert.match(hint, /swarm revalidate r-abc/);
+    assert.match(hint, /--domain=backend:/);
+    assert.match(hint, /--apply/);
     assert.match(hint, /swarm receipt r-abc 12/);
     assert.doesNotMatch(hint, /needs manual fix/);
   });
 
-  it('ownership_violation surfaces revert + re-collect path', () => {
+  it('ownership_violation surfaces revalidate + re-collect path', () => {
     const hint = blockerHintForStatus('ownership_violation', {
       runId: 'r-abc',
       waveNumber: 12,
@@ -250,6 +263,8 @@ describe('F-091578-010 — blockerHintForStatus surfaces structured what-broke',
     });
     assert.match(hint, /outside its domain/);
     assert.match(hint, /revert.*re-collect/);
+    assert.match(hint, /swarm revalidate r-abc/);
+    assert.match(hint, /--domain=frontend:/);
   });
 });
 

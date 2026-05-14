@@ -103,7 +103,11 @@ export function status(opts) {
   // Compute advanceability + next action
   const assessment = computeAssessment(
     currentWave, currentAgents, openBySeverity, blockedAgents, inFlightAgents,
-    { runId: opts.runId }
+    {
+      runId: opts.runId,
+      savePointTag: run.save_point_tag,
+      lastVerificationPassed: lastReceipt ? !!lastReceipt.passed : null,
+    }
   );
 
   return {
@@ -130,6 +134,7 @@ export function status(opts) {
         phase: currentWave.phase,
         status: currentWave.status,
         domainSnapshotId: currentWave.domain_snapshot_id,
+        serialVerifyRequired: !!currentWave.serial_verify_required,
       } : null,
     },
     agents: currentAgents.map(a => ({
@@ -177,6 +182,9 @@ export function formatStatus(s) {
   lines.push(`Repo:    ${s.run.repo}`);
   lines.push(`Status:  ${s.run.status}`);
   lines.push(`Branch:  ${s.run.branch} @ ${s.run.commitSha?.slice(0, 8)}`);
+  if (s.run.savePointTag) {
+    lines.push(`Save point: ${s.run.savePointTag}  (rollback: git reset --hard ${s.run.savePointTag})`);
+  }
   lines.push(`Timeout: ${s.run.timeoutPolicy}`);
   lines.push('');
 
@@ -268,15 +276,13 @@ export function blockerHintForStatus(status, ctx = {}) {
     case 'invalid_output':
       return [
         `output JSON failed schema validation`,
-        runId && waveNumber && domain
-          ? `re-run with the prompt at swarms/${runId}/wave-${waveNumber}/${domain}.md and ensure required fields are present`
-          : `re-run with the agent prompt and ensure required fields are present`,
+        `correct the output JSON on disk, then \`swarm revalidate ${runId ?? '<run-id>'} --reason "<text>" --domain=${domain ?? '<domain>'}:<corrected.json> --apply\` (dry-run without --apply)`,
         `inspect parse errors with \`swarm receipt ${runId ?? '<run>'} ${waveNumber ?? '<wave>'}\``,
       ].join('; ');
     case 'ownership_violation':
       return [
         `agent edited files outside its domain`,
-        `revert out-of-domain edits in the agent worktree, then re-collect`,
+        `either revert out-of-domain edits and re-collect, OR fix files_changed in the output JSON and \`swarm revalidate ${runId ?? '<run-id>'} --reason "<text>" --domain=${domain ?? '<domain>'}:<corrected.json> --apply\``,
       ].join('; ');
     default:
       return `agent in '${status}' with no recoverable error — inspect with \`swarm receipt ${runId ?? '<run>'} ${waveNumber ?? '<wave>'}\``;
@@ -340,6 +346,21 @@ function computeAssessment(wave, agents, openBySeverity, blocked, inFlight, ctx 
   }
 
   if (wave.status === 'collected' || wave.status === 'verified') {
+    // TRUTH-001: serial-verify discipline — if the wave was dispatched with
+    // --skip-verify and the coordinator's authoritative cumulative-tree verify
+    // has not landed (no passing verification_receipts row), refuse to claim
+    // READY TO ADVANCE. The wave is `collected`, not verified. The literal
+    // string "Wave complete" was false in this state (PROTOCOL.md §Serial
+    // final verification names the coordinator's verify as the authoritative
+    // pass). State distinguishes "collected but serial-verify pending" from
+    // "collected and verified".
+    if (wave.serial_verify_required && ctx.lastVerificationPassed !== true) {
+      return {
+        state: 'VERIFY REQUIRED',
+        blockers,
+        nextAction: 'Run `npm run verify` against the cumulative tree (one serial pass — see PROTOCOL.md §Serial final verification). Advancing without it skips the authoritative verification for this wave.',
+      };
+    }
     // Check severity gates
     if (wave.phase.startsWith('health-audit-a') && (openBySeverity.CRITICAL > 0 || openBySeverity.HIGH > 0)) {
       return {
@@ -356,10 +377,21 @@ function computeAssessment(wave, agents, openBySeverity, blocked, inFlight, ctx 
   }
 
   if (wave.status === 'failed') {
+    // OPF-1: when any agent_run is in a BLOCKED status (invalid_output /
+    // ownership_violation), the lawful repair primitive is `swarm revalidate`
+    // (commit 80a22d5). The wave-rollback path stays available for
+    // unsalvageable waves but is the heavyweight option.
+    if (blocked.length > 0) {
+      return {
+        state: 'WAVE FAILED',
+        blockers,
+        nextAction: `If the agent outputs are correctable in place: \`swarm revalidate ${ctx.runId ?? '<run-id>'} --reason "<text>" --domain=<name>:<corrected.json> --apply\` (wave flips back to collected when every agent reaches complete). If unsalvageable: \`git reset --hard ${ctx.savePointTag ?? '<save-point-tag>'}\` and re-dispatch.`,
+      };
+    }
     return {
       state: 'WAVE FAILED',
       blockers,
-      nextAction: 'Inspect failures. Fix and re-collect, or dispatch a new wave.',
+      nextAction: `Inspect failures. \`git reset --hard ${ctx.savePointTag ?? '<save-point-tag>'}\` and re-dispatch, or salvage with explicit justification.`,
     };
   }
 

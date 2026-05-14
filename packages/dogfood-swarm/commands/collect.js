@@ -114,7 +114,29 @@ export function collect(opts) {
     SELECT * FROM waves WHERE run_id = ? AND status = 'dispatched'
     ORDER BY wave_number DESC LIMIT 1
   `).get(opts.runId);
-  if (!wave) throw new Error('No dispatched wave found. Run `swarm dispatch` first.');
+  if (!wave) {
+    // OPF-3: surface the most-recent non-dispatched wave's status so the
+    // operator does not face a dead end. A `failed` wave is the
+    // `swarm revalidate` happy path; `collected` is already advanced; etc.
+    const latest = db.prepare(`
+      SELECT wave_number, phase, status FROM waves WHERE run_id = ?
+      ORDER BY wave_number DESC LIMIT 1
+    `).get(opts.runId);
+    if (latest && latest.status === 'failed') {
+      throw new Error(
+        `No dispatched wave found. The most recent wave (${latest.wave_number}, ${latest.phase}) is in '${latest.status}'. ` +
+        `For invalid_output / ownership_violation recovery, use \`swarm revalidate ${opts.runId} --reason "<text>" --domain=<name>:<corrected.json> --apply\`. ` +
+        `For full diagnostics: \`swarm status ${opts.runId}\`.`
+      );
+    }
+    if (latest) {
+      throw new Error(
+        `No dispatched wave found. The most recent wave (${latest.wave_number}, ${latest.phase}) is in '${latest.status}'. ` +
+        `Use \`swarm status ${opts.runId}\` for full diagnostics, or \`swarm dispatch ${opts.runId} <phase>\` to start a new wave.`
+      );
+    }
+    throw new Error('No dispatched wave found. Run `swarm dispatch` first.');
+  }
 
   const isAudit = AUDIT_PHASES.includes(wave.phase);
   const isAmend = AMEND_PHASES.includes(wave.phase);
@@ -426,12 +448,19 @@ export function collect(opts) {
     };
   }
 
-  // Update wave status
+  // Update wave status. TRUTH-001 / TRUTH-003: also persist
+  // serial_verify_required so `swarm status` and downstream readers can see
+  // the discipline signal after collect's stdout hint scrolls past.
   const hasViolations = report.violations.length > 0;
   const hasErrors = report.validation_errors.length > 0;
   const waveStatus = hasViolations || hasErrors ? 'failed' : 'collected';
-  db.prepare('UPDATE waves SET status = ?, completed_at = datetime(?) WHERE id = ?')
-    .run(waveStatus, 'now', wave.id);
+  // OPF-3: name the dispatched → <waveStatus> transition explicitly so the
+  // operator does not have to infer it from a subsequent `No dispatched wave
+  // found` error.
+  report.waveStatusBefore = 'dispatched';
+  report.waveStatusAfter = waveStatus;
+  db.prepare('UPDATE waves SET status = ?, serial_verify_required = ?, completed_at = datetime(?) WHERE id = ?')
+    .run(waveStatus, report.serial_verify_required ? 1 : 0, 'now', wave.id);
 
   // Generate summary
   report.summary = buildSummary(db, opts.runId, wave, report);
@@ -458,10 +487,21 @@ function buildSummary(db, runId, wave, report) {
     .map(a => `  ${a.domain}: ${a.status}${a.findings_count ? ` (${a.findings_count} findings)` : ''}${a.errors.length ? ` [ERRORS: ${a.errors.length}]` : ''}`)
     .join('\n');
 
-  return `Wave ${wave.wave_number} (${wave.phase}):
+  // OPF-3: surface the wave-status transition in the summary header so the
+  // dispatched → failed flip is not silent. Subsequent `swarm collect` calls
+  // that hit `No dispatched wave found` (see CLI handler in cli.js) can then
+  // name `swarm revalidate` as the recovery path.
+  const transitionLine = report.waveStatusBefore && report.waveStatusAfter
+    ? `\n  Wave status: ${report.waveStatusBefore} → ${report.waveStatusAfter}`
+    : '';
+  const revalidateHint = report.waveStatusAfter === 'failed'
+    ? `\n  Recovery: \`swarm revalidate ${runId} --reason "<text>" --domain=<name>:<corrected.json> --apply\` (dry-run without --apply).`
+    : '';
+
+  return `Wave ${wave.wave_number} (${wave.phase}):${transitionLine}
   CRITICAL: ${bySeverity.CRITICAL}  HIGH: ${bySeverity.HIGH}  MEDIUM: ${bySeverity.MEDIUM}  LOW: ${bySeverity.LOW}
   New: ${report.findings.new}  Recurring: ${report.findings.recurring}  Fixed: ${report.findings.fixed}
-  Violations: ${report.violations.length}
+  Violations: ${report.violations.length}${revalidateHint}
 
 Agents:
 ${agentSummary}`;

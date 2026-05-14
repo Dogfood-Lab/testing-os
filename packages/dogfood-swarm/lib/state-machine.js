@@ -134,7 +134,7 @@ export function transitionAgent(db, agentRunId, toStatus, reason, override = fal
           from,
           to: toStatus,
           agentRunId,
-          hint: `needs manual override — re-call transitionAgent with override=true and a reason. See state-machine.js header for the blocked-statuses contract.`,
+          hint: `agent_run ${agentRunId} is blocked ('${from}'); correct the output JSON on disk, then run \`swarm revalidate <run-id> --reason "<text>" --domain=<domain>:<corrected.json> --apply\` to repair lawfully (dry-run without --apply). Library-level: transitionAgent(... override=true) writes the audit row to agent_state_events.`,
         }
       );
     }

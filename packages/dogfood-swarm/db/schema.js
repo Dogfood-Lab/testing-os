@@ -28,14 +28,21 @@ CREATE TABLE IF NOT EXISTS runs (
 -- A wave within a run (audit, amend, feature, etc.)
 -- ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS waves (
-  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id              TEXT    NOT NULL REFERENCES runs(id),
-  phase               TEXT    NOT NULL,
-  wave_number         INTEGER NOT NULL,
-  status              TEXT    NOT NULL DEFAULT 'pending',
-  domain_snapshot_id  TEXT,
-  created_at          TEXT    NOT NULL DEFAULT (datetime('now')),
-  completed_at        TEXT,
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id                 TEXT    NOT NULL REFERENCES runs(id),
+  phase                  TEXT    NOT NULL,
+  wave_number            INTEGER NOT NULL,
+  status                 TEXT    NOT NULL DEFAULT 'pending',
+  domain_snapshot_id     TEXT,
+  -- TRUTH-001: serial-verify discipline signal. Set by collect.js when any
+  -- agent_run in the wave emitted verification_skipped: true (the
+  -- --skip-verify discipline path). Read by swarm status to refuse claiming
+  -- READY TO ADVANCE until the coordinators cumulative-tree verify has
+  -- landed. Persistence so the discipline signal does not disappear when the
+  -- collect-time stdout hint scrolls past.
+  serial_verify_required INTEGER NOT NULL DEFAULT 0,
+  created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+  completed_at           TEXT,
   UNIQUE(run_id, wave_number)
 );
 
@@ -257,6 +264,10 @@ export const MIGRATIONS_SQL = [
   "ALTER TABLE findings ADD COLUMN cross_ref TEXT",
   "ALTER TABLE findings ADD COLUMN coordinator_resolved INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE findings ADD COLUMN verified_via_evidence TEXT",
+  // TRUTH-001: waves: persisted serial-verify discipline signal so `swarm
+  // status` can refuse READY TO ADVANCE when --skip-verify was used and the
+  // coordinator's authoritative cumulative-tree verify has not landed.
+  "ALTER TABLE waves ADD COLUMN serial_verify_required INTEGER NOT NULL DEFAULT 0",
 ];
 
 /**

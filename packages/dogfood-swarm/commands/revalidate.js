@@ -343,12 +343,49 @@ export function revalidate(opts) {
   const skipCount = report.skipped.length;
 
   if (apply) {
+    // TRUTH-002: when the wave stays `failed`, the operator's natural read of
+    // `Repaired: N` + clean exit code is "wave recovered." That is false when
+    // any latest agent_run remains in a blocked status. Surface the
+    // wave-stays-failed contract explicitly (mirror the dry-run summary's
+    // `collected (only if ALL agents repaired)` rule disclosure) and count
+    // any blocked agent_runs the operator did NOT pass via --domain so the
+    // unaddressed bucket is visible.
+    const partialNotRecovered =
+      report.waveStatusBefore === 'failed' && report.waveStatusAfter === 'failed';
+    let stillBlockedCount = 0;
+    let unaddressedCount = 0;
+    if (partialNotRecovered) {
+      const repairedIds = new Set(report.repairs.filter(r => r.applied).map(r => r.agent_run_id));
+      const submittedDomains = new Set(Object.keys(outputs || {}));
+      const stillBlocked = db.prepare(`
+        SELECT ar.id, d.name as domain_name, ar.status FROM agent_runs ar
+        JOIN domains d ON ar.domain_id = d.id
+        WHERE ar.wave_id = ?
+          AND ar.id = (
+            SELECT MAX(ar2.id) FROM agent_runs ar2
+            WHERE ar2.wave_id = ar.wave_id AND ar2.domain_id = ar.domain_id
+          )
+          AND ar.status != 'complete'
+      `).all(wave.id);
+      stillBlockedCount = stillBlocked.length;
+      unaddressedCount = stillBlocked.filter(
+        b => !submittedDomains.has(b.domain_name) && !repairedIds.has(b.id)
+      ).length;
+    }
+
+    const recoveryClause = partialNotRecovered
+      ? `\n  Wave NOT recovered: ${stillBlockedCount} agent_run(s) remain blocked. ` +
+        `(Wave flips to collected only when every latest agent_run is complete; ` +
+        `${unaddressedCount} blocked agent_run(s) were not in the --domain set — ` +
+        `inspect with \`swarm status ${runId}\`.)`
+      : '';
+
     report.summary =
       `Revalidate (APPLIED) — Wave ${wave.wave_number} (${wave.phase}):\n` +
       `  Repaired: ${repairCount} agent_run(s)\n` +
       `  Refused:  ${refusalCount}\n` +
       `  Skipped:  ${skipCount}\n` +
-      `  Wave status: ${report.waveStatusBefore} → ${report.waveStatusAfter}\n` +
+      `  Wave status: ${report.waveStatusBefore} → ${report.waveStatusAfter}${recoveryClause}\n` +
       `  Reason: ${reason}`;
   } else {
     report.summary =
