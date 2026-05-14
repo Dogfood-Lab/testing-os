@@ -4,6 +4,14 @@ All notable changes to `testing-os` are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [1.2.2] — 2026-05-14
+
+**Bump `better-sqlite3` runtime dependency from `^11.0.0` to `^12.10.0`** ([#25](https://github.com/dogfood-lab/testing-os/pull/25)). `@dogfood-lab/dogfood-swarm` now bundles SQLite 3.53.1 (was 3.50.x). Native prebuilds added for Node.js v26; prebuilds dropped for Node.js v20 + v23. The repo's CI matrix is Node 22 + 24, so internal verification is unaffected, but consumers running `@dogfood-lab/dogfood-swarm` on Node 20 will now need to build the native binding from source. The repo's `engines.node` field remains `">=20"` — tightening to `">=22"` is tracked as a follow-up.
+
+**Dev-only:** `vitest` and `@vitest/coverage-v8` bumped from `3.2.4` to `4.1.6` ([#21](https://github.com/dogfood-lab/testing-os/pull/21), [#24](https://github.com/dogfood-lab/testing-os/pull/24)). Test runtime only; no published-package impact.
+
+**Verification:** `npm run verify` 1105/1105/0 (byte-identical to v1.2.1); targeted transaction-semantics tests (`wave-state-machine.test.js`, `revalidate.test.js`, `rewind.test.js`, `redrive.test.js`) pass 118/118; SQLite native binding loads and reports `sqlite_version() = 3.53.1` on Node 22.21.1.
+
 ## [1.2.1] — 2026-05-14
 
 **Add testing-os logo to every per-package README.** The v1.2.0 publish shipped `@dogfood-lab/schemas`, `@dogfood-lab/verify`, and `@dogfood-lab/report` to npm before the logo got added to their READMEs — those three v1.2.0 packages render on their npm pages without the logo. v1.2.1 lockstep bump prepends the canonical logo (via `raw.githubusercontent.com` absolute URL so it renders cross-context) to all 7 per-package READMEs and re-publishes all 6 publishing packages. No code changes; this is a documentation-only patch release.

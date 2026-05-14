@@ -20,7 +20,7 @@
 *Protocolos, armazenamentos de evidências e ciclos de aprendizado para software com assistência de IA.*
 
 <!-- version:start -->
-**v1.2.0** — 7 pacotes (`@dogfood-lab/*`), conjunto de testes abrangente para todo o projeto, receptor de ingestão ativo, manual publicado.
+**v1.2.2** — 7 pacotes (`@dogfood-lab/*`), conjunto de testes abrangente para todo o projeto, receptor de ingestão ativo, manual publicado.
 <!-- version:end -->
 
 📖 **[Leia o manual →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -40,7 +40,7 @@
 
 ## Status
 
-**v1.2.1** — Lançamento de correção que adiciona o logotipo "testing-os" a cada arquivo README de cada pacote, para que ele seja exibido em cada página do npm. (Na versão v1.2.0, três pacotes foram lançados no mesmo dia sem o logotipo; a versão v1.2.1 corrige esse problema em todos os 6 pacotes). Todos os recursos da Fase 5 foram mantidos da versão v1.2.0: máquina de estados de nível de onda + contrato de recuperação "Three R's" (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + verbo de rastreamento de auditoria `swarm history` + verificação de saúde nas fases A a D com 0 CRÍTICO / 0 ALTO. Seis pacotes foram publicados sob o nome `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1105 testes.** Total acumulado ao longo do ciclo de vida do repositório (desde a versão v1.0.0, corte de 2026-04-25): o "dogfood swarm" da Fase 7 (aproximadamente 31 ondas, aproximadamente 115 correções verificadas e implementadas, 14 classes de cobertura de auditoria) e agora o ciclo de lançamento inicial no npm da versão v1.2.x. Catálogo completo do "swarm": [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
+**v1.2.2** — Lançamento de correção de tempo de execução, atualizando a biblioteca `better-sqlite3` de `^11.0.0` para `^12.10.0` (o pacote `@dogfood-lab/dogfood-swarm` agora inclui o SQLite versão 3.53.1, anteriormente 3.50.x). As ferramentas de teste também foram atualizadas: `vitest` + `@vitest/coverage-v8` de `3.2.4` para `4.1.6` (apenas para desenvolvimento, sem impacto nos pacotes publicados). Todos os recursos da Fase 5 foram mantidos a partir da versão v1.2.0: máquina de estados no nível da "onda" + contrato de recuperação "Three R's" (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + verbo de rastreamento de auditoria `swarm history` + verificação de saúde nas fases A–D com 0 CRÍTICO / 0 ALTO. Seis pacotes foram publicados sob o nome `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1105 testes.** Total acumulado ao longo do ciclo de vida do repositório (a partir da versão v1.0.0, corte de 2026-04-25): o "dogfood swarm" da Fase 7 (aproximadamente 31 "ondas", aproximadamente 115 correções verificadas e implementadas, 14 classes de cobertura de auditoria) e o ciclo inicial de publicação no npm da versão v1.2.x. Catálogo completo do "swarm": [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
 
 O receptor está ativo: os fluxos de trabalho `dogfood.yml` em repositórios clientes são enviados para este repositório, e o arquivo [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commita os registros resultantes e os índices de volta para o branch `main`. O manual está disponível em [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Instalação principal: `npm install -g @dogfood-lab/dogfood-swarm`. O lado do receptor continua sendo consumido por meio de envio — veja a página de Integração do manual.
 

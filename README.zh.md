@@ -20,7 +20,7 @@
 *用于人工智能辅助软件的协议、证据存储和学习循环。*
 
 <!-- version:start -->
-**v1.2.1** — 包含 7 个包 (`@dogfood-lab/*`)，工作区范围的测试套件，实时数据接收器，用户手册已部署。
+**v1.2.2** — 包含 7 个包 (`@dogfood-lab/*`)，工作区范围的测试套件，实时数据接收器，用户手册已部署。
 <!-- version:end -->
 
 📖 **[阅读用户手册 →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -40,7 +40,7 @@
 
 ## 状态
 
-**v1.2.1** — 补丁版本，为每个包的 README 添加了 testing-os 徽标，以便在每个 npm 页面上显示（v1.2.0 同一天发布了三个没有徽标的包 — v1.2.1 的同步更新修复了所有 6 个包）。所有第五阶段的功能都继承自 v1.2.0：波级别状态机 + 三个 R 的恢复协议 (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + `swarm history` 审计跟踪功能 + A–D 阶段的健康性检查（0 个关键错误 / 0 个高优先级错误）。六个包发布在 `@dogfood-lab` 下：`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`。 **1105 个测试用例。** 自 v1.0.0 以来，在整个仓库的生命周期内（截至 2026-04-25）：第七阶段的 dogfood 集群（约 31 个波次，约 115 个已验证的修复，14 个审计覆盖类），以及现在是 v1.2.x 的第一个 npm 发布阶段。权威集群目录：[`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)。
+**v1.2.2** 版本 — 运行时补丁发布，将 `better-sqlite3` 从 `^11.0.0` 升级到 `^12.10.0`（`@dogfood-lab/dogfood-swarm` 现在包含 SQLite 3.53.1 版本，之前是 3.50.x 版本）。测试运行时工具也已更新：`vitest` 和 `@vitest/coverage-v8` 从 `3.2.4` 升级到 `4.1.6`（仅影响开发环境，不影响已发布的软件包）。所有第五阶段的功能均继承自 v1.2.0 版本：波形级别的状态机 + 三个 R 的恢复合约（`swarm revalidate`、`swarm rewind`、`swarm redrive`）+ `swarm history` 审计跟踪功能 + A–D 阶段的健康状态检查，均达到 0 个关键问题 / 0 个高危问题。共有六个软件包在 `@dogfood-lab` 下发布：`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`。**1105/1105 个测试通过。** 累积测试结果涵盖整个代码库的生命周期（自 v1.0.0 版本发布于 2026年4月25日）：第七阶段的内部测试环境（约 31 个波形，约 115 个已验证的修复，14 个审计覆盖类别）以及 v1.2.x 版本的首次 npm 发布过程。权威的内部测试环境目录：[`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)。
 
 数据接收器已启用：客户端仓库中的 `dogfood.yml` 工作流会发送到此仓库，并且 [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) 提交将生成的记录和索引回写到 `main` 分支。用户手册已部署在 [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/)。 快速安装：`npm install -g @dogfood-lab/dogfood-swarm`。 客户端通过分发方式进行消费，详情请参阅用户手册的“集成”页面。
 
