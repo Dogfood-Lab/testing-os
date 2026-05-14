@@ -24,6 +24,7 @@ import { existsSync } from 'node:fs';
 import { init } from './commands/init.js';
 import { dispatch } from './commands/dispatch.js';
 import { collect } from './commands/collect.js';
+import { revalidate, formatRevalidate } from './commands/revalidate.js';
 import { status, formatStatus } from './commands/status.js';
 import { resume, formatResume } from './commands/resume.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
@@ -282,6 +283,56 @@ function cmdCollect(args) {
   }
 
   console.log(`Next: swarm status ${runId}`);
+}
+
+function cmdRevalidate(args) {
+  const runId = args[0];
+  if (!runId) {
+    console.error('Usage: swarm revalidate <run-id> --reason "<text>" --domain=name:path [--domain=name:path ...] [--apply]');
+    process.exit(1);
+  }
+
+  const outputs = {};
+  for (const arg of args.slice(1)) {
+    const m = arg.match(/^--domain=([^:]+):(.+)$/);
+    if (m) outputs[m[1]] = resolve(m[2]);
+  }
+
+  let reason = '';
+  const reasonIdx = args.indexOf('--reason');
+  if (reasonIdx >= 0 && args[reasonIdx + 1]) reason = args[reasonIdx + 1];
+  for (const a of args) {
+    const m = a.match(/^--reason=(.+)$/s);
+    if (m) reason = m[1];
+  }
+
+  const apply = args.includes('--apply');
+
+  if (!reason || !reason.trim()) {
+    console.error('revalidate: --reason "<text>" is required (non-empty)');
+    process.exit(1);
+  }
+
+  if (Object.keys(outputs).length === 0) {
+    console.error('revalidate: at least one --domain=name:path is required');
+    process.exit(1);
+  }
+
+  const result = revalidate({
+    runId,
+    dbPath: getDbPath(),
+    outputs,
+    reason,
+    apply,
+  });
+
+  process.stdout.write(formatRevalidate(result));
+
+  if (apply) {
+    console.log(`\nNext: swarm status ${runId}`);
+  } else {
+    console.log('\nDry-run only — re-run with --apply to mutate the control plane.');
+  }
 }
 
 function cmdStatus(args) {
@@ -693,6 +744,7 @@ const commands = {
   domains: cmdDomains,
   dispatch: cmdDispatch,
   collect: cmdCollect,
+  revalidate: cmdRevalidate,
   verify: cmdVerify,
   'verify-fixed': cmdVerifyFixed,
   'verify-recurring': cmdVerifyRecurring,
@@ -716,6 +768,19 @@ Commands:
   domains <run-id> [opts]    Show, edit, freeze, unfreeze domain map
   dispatch <run-id> <phase>  Create wave + agent prompts
   collect <run-id> [opts]    Validate, enforce ownership, merge
+  revalidate <run-id> [opts] Lawful recovery for blocked agent_runs
+                             (invalid_output / ownership_violation). Wraps the
+                             override path that exists in state-machine.js but
+                             had no operator surface. Dry-run by default;
+                             --apply required to mutate; --reason required.
+                             Usage: swarm revalidate <run-id> --reason "<text>"
+                             --domain=name:path [--domain=name:path ...] [--apply]
+                             Re-runs the same validators as 'collect'; on pass,
+                             transitions agent to 'complete' with override and
+                             reason recorded in agent_state_events. If every
+                             agent_run in the wave is then 'complete' and the
+                             wave was 'failed', flips wave to 'collected' in
+                             the same transaction.
   verify <run-id> [opts]     Run build verification (auto-detect or --adapter)
   verify-fixed <run-id> [opts]
                              Re-audit findings marked [fixed]; classify into
