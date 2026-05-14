@@ -81,13 +81,14 @@ describe('wave-state-machine — transition table shape', () => {
     assert.ok(isTerminal('advanced'));
   });
 
-  it('legacy "pending" + "collecting" have only the rewind escape hatch', () => {
+  it('legacy "pending" + "collecting" have the rewind exit + the 5B-2 redrive exit', () => {
     // Phase 5B-1 added `aborted_for_rewind` as the universal terminal so a
     // rewind against a save-point tag can lawfully tear down any non-terminal
-    // wave. Before 5B-1 these had no outbound edges at all; now both have
-    // exactly one — the rewind exit.
-    assert.deepEqual(TRANSITIONS.pending, ['aborted_for_rewind']);
-    assert.deepEqual(TRANSITIONS.collecting, ['aborted_for_rewind']);
+    // wave. Phase 5B-2 added `dispatched` so a redrive can resume the
+    // unfinished portion of a wave at the same wave_id. Before 5B-1 these
+    // had no outbound edges at all.
+    assert.deepEqual(TRANSITIONS.pending.sort(), ['aborted_for_rewind', 'dispatched']);
+    assert.deepEqual(TRANSITIONS.collecting.sort(), ['aborted_for_rewind', 'dispatched']);
   });
 });
 
@@ -112,9 +113,15 @@ describe('wave-state-machine — canTransition', () => {
     assert.equal(r.allowed, false);
     assert.match(r.reason, /not allowed/);
   });
-  it('rejects collected → dispatched (no edge)', () => {
-    const r = canTransition('collected', 'dispatched');
-    assert.equal(r.allowed, false);
+  it('Phase 5B-2 allows collected → dispatched (redrive edge)', () => {
+    // Pre-5B-2 this edge did not exist (the test asserted reject). Phase 5B-2
+    // adds it so `swarm redrive` can resume a collected-but-not-advanced
+    // wave's unfinished agent_runs at the same wave_id.
+    assert.deepEqual(canTransition('collected', 'dispatched'), { allowed: true });
+  });
+
+  it('Phase 5B-2 allows verified → dispatched (redrive edge)', () => {
+    assert.deepEqual(canTransition('verified', 'dispatched'), { allowed: true });
   });
   it('rejects "advanced" outbound (terminal)', () => {
     const r = canTransition('advanced', 'collected');
@@ -296,6 +303,46 @@ describe('wave-state-machine — override path', () => {
     // canTransition path. dispatched → collected is legal, so it succeeds.
     const r = transitionWave(db2, w2, 'collected', 'override but legal anyway', true);
     assert.equal(r.to, 'collected');
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Phase 5B-1 fold-in (T1): aborted_for_rewind terminal pins
+// ──────────────────────────────────────────────────────────────
+// The 5B-1 re-audit surfaced that the new `aborted_for_rewind` terminal
+// status's outbound contract was not pinned explicitly. These tests assert
+// the empty outbound array, the TERMINAL_STATUSES membership, and that
+// transitionWave rejects every escape attempt (including override) with
+// kind=TERMINAL. The same shape lands in hardening.test.js for agents.
+
+describe('wave-state-machine — aborted_for_rewind terminal pins (5B-1 fold-in)', () => {
+  it('TRANSITIONS["aborted_for_rewind"] is an empty outbound array', () => {
+    assert.deepEqual(TRANSITIONS.aborted_for_rewind, []);
+  });
+
+  it('TERMINAL_STATUSES.has("aborted_for_rewind") === true', () => {
+    assert.equal(TERMINAL_STATUSES.has('aborted_for_rewind'), true);
+    assert.equal(isTerminal('aborted_for_rewind'), true);
+  });
+
+  it('canTransition from aborted_for_rewind to dispatched is rejected as terminal', () => {
+    const r = canTransition('aborted_for_rewind', 'dispatched');
+    assert.equal(r.allowed, false);
+    assert.match(r.reason, /terminal/);
+  });
+
+  it('transitionWave aborted_for_rewind → dispatched rejects with kind=TERMINAL even with override', () => {
+    const db = openMemoryDb();
+    const waveId = seedWave(db, 'dispatched');
+    // Land aborted_for_rewind via the rewind path (override from dispatched).
+    transitionWave(db, waveId, 'aborted_for_rewind', 'rewind: tear down', true);
+    // Now any escape attempt — including override — must be refused with
+    // kind=TERMINAL. The override branch only fires for BLOCKED sources;
+    // TERMINAL sources have no escape, override or no.
+    assert.throws(
+      () => transitionWave(db, waveId, 'dispatched', 'try to redrive a torn-down wave', true),
+      (err) => err.code === 'STATE_MACHINE_TERMINAL' && /terminal/.test(err.message)
+    );
   });
 });
 

@@ -190,6 +190,21 @@ export function rewind(opts) {
     WHERE ar.status NOT IN (${[...AGENT_TERMINAL_STATUSES].map(() => '?').join(',')})
   `).all(...AGENT_TERMINAL_STATUSES);
 
+  // 5B-1 fold-in (T4): preserved-count surface. The plan summary names what
+  // rewind LEFT ALONE (terminal rows survive byte-identical) alongside what
+  // it tore down. The operator's mental model is "rewind erases the failure
+  // tail but preserves history" — the surface should reflect that, not just
+  // the affected count.
+  const preservedWaveCount = db.prepare(
+    'SELECT COUNT(*) AS n FROM waves WHERE status IN (' +
+    [...WAVE_TERMINAL_STATUSES].map(() => '?').join(',') + ')'
+  ).get(...WAVE_TERMINAL_STATUSES).n;
+
+  const preservedAgentRunCount = db.prepare(
+    'SELECT COUNT(*) AS n FROM agent_runs WHERE status IN (' +
+    [...AGENT_TERMINAL_STATUSES].map(() => '?').join(',') + ')'
+  ).get(...AGENT_TERMINAL_STATUSES).n;
+
   // Build the plan. Each entry carries the planned transition so the
   // operator can audit before --apply.
   const planned_waves = waves.map(w => ({
@@ -230,6 +245,8 @@ export function rewind(opts) {
     reasonRecorded: reasonPrefixed,
     planned_waves,
     planned_agent_runs,
+    preserved_wave_count: preservedWaveCount,
+    preserved_agent_run_count: preservedAgentRunCount,
     git_reset_done: false,
     db_transaction_done: false,
     headShaAfter: null,
@@ -417,6 +434,11 @@ function formatPlanSummary(report) {
   }
   lines.push(`  Affected waves:      ${report.planned_waves.length}`);
   lines.push(`  Affected agent_runs: ${report.planned_agent_runs.length}`);
+  // 5B-1 fold-in (T4): name preserved counts so the operator sees what
+  // survives the rewind alongside what is torn down. Terminal rows (advanced
+  // waves, complete agent_runs, prior aborted_for_rewind entries) survive
+  // byte-identical; the surface here makes that explicit.
+  lines.push(`  Preserved: ${report.preserved_wave_count} terminal waves, ${report.preserved_agent_run_count} terminal agent_runs (unchanged)`);
   if (report.apply) {
     lines.push(`  Reason recorded: "${report.reasonRecorded}"`);
   } else {

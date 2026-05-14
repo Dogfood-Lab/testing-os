@@ -377,6 +377,112 @@ describe('rewind — uncommitted-changes guard', () => {
 });
 
 // ──────────────────────────────────────────────────────────────
+// 5B-1 fold-in (T3): combined-corner tests for --force + --force-arbitrary-ref
+// ──────────────────────────────────────────────────────────────
+// The destructive opt-in surface has two independent flags. The 5B-1 audit
+// surfaced that the per-flag positive paths were tested but the four corners
+// of their combination were not pinned. These four tests close the matrix.
+
+describe('rewind — T3: force-flag combined corners', () => {
+  it('arbitrary-tag + dirty tree → refused naming the missing flags', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      writeFileSync(join(tempDir, 'README.md'), '# fixture\n\nlocal junk\n', 'utf-8');
+      // First guard triggered is the tag-scope guard (it runs before the
+      // dirty-tree guard). The operator needs to see at least the first
+      // refusal to know what to fix; the error mentions --force-arbitrary-ref.
+      // A second invocation (after passing --force-arbitrary-ref alone) then
+      // triggers the dirty-tree guard, demonstrating both errors are
+      // reachable from this corner.
+      assert.throws(
+        () => rewind({
+          savePointTag: 'arbitrary-tag',
+          reason: 'r',
+          cwd: tempDir,
+          dbPath,
+        }),
+        /swarm-save-\*.*--force-arbitrary-ref/s,
+      );
+      // After passing arbitrary-ref alone, the dirty-tree guard fires next.
+      assert.throws(
+        () => rewind({
+          savePointTag: 'arbitrary-tag',
+          reason: 'r',
+          cwd: tempDir,
+          dbPath,
+          forceArbitraryRef: true,
+        }),
+        /uncommitted changes.*--force/s,
+      );
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('--force-arbitrary-ref alone + clean tree on arbitrary tag → accepted', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      // Working tree is clean (fixture sets it that way). Operator opts into
+      // the arbitrary-ref scope with --force-arbitrary-ref alone.
+      const r = rewind({
+        savePointTag: 'arbitrary-tag',
+        reason: 'arbitrary ref opt-in alone',
+        cwd: tempDir,
+        dbPath,
+        forceArbitraryRef: true,
+      });
+      assert.equal(r.dryRun, true);
+      assert.equal(r.forceArbitraryRef, true);
+      assert.equal(r.force, false);
+      assert.equal(r.workingTreeWasDirty, false);
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('--force alone + dirty tree on swarm-save tag → accepted', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      writeFileSync(join(tempDir, 'README.md'), '# fixture\n\ndirty\n', 'utf-8');
+      const r = rewind({
+        savePointTag: 'swarm-save-fixture-1',
+        reason: 'force alone',
+        cwd: tempDir,
+        dbPath,
+        force: true,
+      });
+      assert.equal(r.dryRun, true);
+      assert.equal(r.force, true);
+      assert.equal(r.forceArbitraryRef, false);
+      assert.equal(r.workingTreeWasDirty, true);
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('BOTH flags + arbitrary tag + dirty tree → accepted', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      writeFileSync(join(tempDir, 'README.md'), '# fixture\n\ndirty\n', 'utf-8');
+      const r = rewind({
+        savePointTag: 'arbitrary-tag',
+        reason: 'both flags',
+        cwd: tempDir,
+        dbPath,
+        force: true,
+        forceArbitraryRef: true,
+      });
+      assert.equal(r.dryRun, true);
+      assert.equal(r.force, true);
+      assert.equal(r.forceArbitraryRef, true);
+      assert.equal(r.workingTreeWasDirty, true);
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
 // Dry-run vs apply
 // ──────────────────────────────────────────────────────────────
 
@@ -710,6 +816,72 @@ describe('rewind — design-call surfacing in report', () => {
         assert.ok(dc.reasoning && dc.reasoning.length > 50,
           `design call ${dc.name} missing substantive reasoning`);
       }
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// 5B-1 fold-in (T4): preserved-count surface on rewind summary
+// ──────────────────────────────────────────────────────────────
+// Rewind names what survives the tear-down alongside what is torn down.
+// Terminal rows (advanced waves, complete agent_runs, prior aborted_for_rewind
+// rows) are preserved byte-identical; the plan summary surface names the
+// counts so an operator scanning the dry-run output sees both halves.
+
+describe('rewind — T4: preserved-count surface in summary', () => {
+  it('summary names "Preserved: N terminal waves, M terminal agent_runs"', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      // Build a mixed state: one advanced wave + one complete agent
+      // (preserved), one dispatched wave + two non-terminal agents
+      // (affected).
+      const db = openDb(dbPath);
+      const wAdv = db.prepare(`
+        INSERT INTO waves (run_id, phase, wave_number, status, domain_snapshot_id)
+        VALUES ('r1', 'health-audit-a', 1, 'collected', 'snap1')
+      `).run();
+      const advancedWaveId = Number(wAdv.lastInsertRowid);
+      transitionWave(db, advancedWaveId, 'advanced', 'promotion');
+
+      const domains = db.prepare('SELECT id FROM domains WHERE run_id = ?').all('r1');
+      const arAdv = db.prepare(`
+        INSERT INTO agent_runs (wave_id, domain_id, status)
+        VALUES (?, ?, 'dispatched')
+      `).run(advancedWaveId, domains[0].id);
+      transitionAgent(db, Number(arAdv.lastInsertRowid), 'complete');
+
+      // Non-terminal wave + agents
+      const wAlive = db.prepare(`
+        INSERT INTO waves (run_id, phase, wave_number, status, domain_snapshot_id)
+        VALUES ('r1', 'health-audit-b', 2, 'dispatched', 'snap1')
+      `).run();
+      const aliveWaveId = Number(wAlive.lastInsertRowid);
+      db.prepare(`
+        INSERT INTO agent_runs (wave_id, domain_id, status)
+        VALUES (?, ?, 'dispatched')
+      `).run(aliveWaveId, domains[0].id);
+      db.prepare(`
+        INSERT INTO agent_runs (wave_id, domain_id, status)
+        VALUES (?, ?, 'invalid_output')
+      `).run(aliveWaveId, domains[1].id);
+      closeDb(dbPath);
+
+      const r = rewind({
+        savePointTag: 'swarm-save-fixture-1',
+        reason: 'preserved-count check',
+        cwd: tempDir,
+        dbPath,
+      });
+
+      assert.equal(r.preserved_wave_count, 1, '1 advanced wave should be preserved');
+      assert.equal(r.preserved_agent_run_count, 1, '1 complete agent_run should be preserved');
+      assert.equal(r.planned_waves.length, 1, '1 dispatched wave is affected');
+      assert.equal(r.planned_agent_runs.length, 2, '2 non-terminal agent_runs are affected');
+
+      // Surface assertion: the preserved-count line is present in the summary.
+      assert.match(r.summary, /Preserved:\s+1 terminal waves,\s+1 terminal agent_runs/);
     } finally {
       teardown(tempDir, dbPath);
     }

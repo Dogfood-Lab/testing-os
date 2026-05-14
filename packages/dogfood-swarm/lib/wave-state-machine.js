@@ -59,6 +59,15 @@
  * carries the `rewind:` reason prefix (mirroring `revalidate:` on the recovery
  * path), so an inspector can prove the wave was lawfully torn down rather than
  * silently dropped when the working tree was reset.
+ *
+ * Phase 5B-2 (redrive) addition: every non-terminal source gains a transition
+ * back to 'dispatched' so `swarm redrive` can resume a wave's failure tail at
+ * the same wave_id (Step Functions Redrive semantics — completed receipts
+ * preserved byte-identical, only the unfinished portion put back into flight).
+ * The override path covers 'failed' (BLOCKED); the normal path covers everything
+ * else. Terminal 'advanced' / 'aborted_for_rewind' waves are REFUSED — promotion
+ * records and lawfully-torn-down waves are immutable. The audit row carries the
+ * `redrive:` reason prefix (mirroring `rewind:` / `revalidate:` on those paths).
  */
 
 import { StateMachineRejectionError } from './errors.js';
@@ -71,13 +80,13 @@ import { StateMachineRejectionError } from './errors.js';
  * factor into the enum — those are fixture setup, not state transitions.
  */
 const TRANSITIONS = {
-  pending:    ['aborted_for_rewind'],
+  pending:    ['dispatched', 'aborted_for_rewind'],
   dispatched: ['collected', 'failed', 'aborted_for_rewind'],
-  collected:  ['verified', 'advanced', 'aborted_for_rewind'],
-  verified:   ['advanced', 'aborted_for_rewind'],
+  collected:  ['verified', 'advanced', 'dispatched', 'aborted_for_rewind'],
+  verified:   ['advanced', 'dispatched', 'aborted_for_rewind'],
   advanced:   [],
-  failed:     ['aborted_for_rewind'],
-  collecting: ['aborted_for_rewind'],
+  failed:     ['dispatched', 'aborted_for_rewind'],
+  collecting: ['dispatched', 'aborted_for_rewind'],
   aborted_for_rewind: [],
 };
 

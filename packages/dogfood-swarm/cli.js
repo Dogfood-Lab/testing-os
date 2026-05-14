@@ -11,6 +11,9 @@
  *   swarm status <run-id>            — Control plane status
  *   swarm resume <run-id>            — Redispatch incomplete agents
  *   swarm history <wave-id>          — wave_state_events transition chain
+ *   swarm redrive <wave-id> --reason "<text>" [--apply]
+ *                                    — Resume an in-flight wave at the same
+ *                                      wave_id (preserves completed receipts)
  *   swarm approve <run-id> [ids]     — Approve findings for amend
  *   swarm findings <run-id> [wave] [--format=text|markdown|json]
  *                                    — Findings digest for a wave (default: latest).
@@ -30,6 +33,7 @@ import { status, formatStatus } from './commands/status.js';
 import { resume, formatResume } from './commands/resume.js';
 import { history, formatHistory } from './commands/history.js';
 import { rewind, formatRewind } from './commands/rewind.js';
+import { redrive, formatRedrive } from './commands/redrive.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
@@ -459,6 +463,78 @@ function cmdRewind(args) {
   }
 }
 
+function cmdRedrive(args) {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Usage: swarm redrive <wave-id> --reason "<text>" [--apply]');
+    console.log('');
+    console.log('Lawful Redrive: Step Functions Redrive semantics on the swarm control plane.');
+    console.log('Same wave_id, completed work preserved byte-identical, only eligible failed/');
+    console.log('unstarted agent_runs made re-dispatchable. Dry-run by default; --apply mutates.');
+    console.log('');
+    console.log('Required:');
+    console.log('  <wave-id>                 Positive integer (waves.id)');
+    console.log('  --reason "<text>"         Non-empty audit reason (recorded with redrive: prefix)');
+    console.log('');
+    console.log('Optional:');
+    console.log('  --apply                   Mutate (default: dry-run preview)');
+    console.log('');
+    console.log('Eligibility (per agent_run source status):');
+    console.log('  complete             -> PRESERVED (receipt unchanged)');
+    console.log('  pending, dispatched  -> ELIGIBLE (redriven to dispatched)');
+    console.log('  failed, timed_out    -> ELIGIBLE (redriven to dispatched)');
+    console.log('  invalid_output       -> REFUSED  (use `swarm revalidate` instead)');
+    console.log('  ownership_violation  -> REFUSED  (operator unblocks first)');
+    console.log('  aborted_for_rewind   -> REFUSED  (terminal; run a fresh wave)');
+    console.log('  running              -> REFUSED  (let timeout fire, then redrive)');
+    return;
+  }
+
+  const waveIdArg = args[0];
+  if (!waveIdArg || waveIdArg.startsWith('--')) {
+    console.error('Usage: swarm redrive <wave-id> --reason "<text>" [--apply]');
+    process.exit(1);
+  }
+
+  let reason = '';
+  const reasonIdx = args.indexOf('--reason');
+  if (reasonIdx >= 0 && args[reasonIdx + 1]) reason = args[reasonIdx + 1];
+  for (const a of args) {
+    const m = a.match(/^--reason=(.+)$/s);
+    if (m) reason = m[1];
+  }
+
+  if (!reason || !reason.trim()) {
+    console.error('redrive: --reason "<text>" is required (non-empty)');
+    process.exit(1);
+  }
+
+  const apply = args.includes('--apply');
+
+  let result;
+  try {
+    result = redrive({
+      waveId: waveIdArg,
+      reason,
+      dbPath: getDbPath(),
+      apply,
+    });
+  } catch (e) {
+    if (e.code === 'WAVE_NOT_FOUND' || e.code === 'WAVE_TERMINAL' || /wave-id.*positive integer/.test(e.message)) {
+      console.error(e.message);
+      process.exit(1);
+    }
+    throw e;
+  }
+
+  process.stdout.write(formatRedrive(result));
+
+  if (apply) {
+    console.log('\nRedrive applied. Inspect with `swarm status <run-id>` / `swarm history <wave-id>`.');
+  } else {
+    console.log('\nDry-run only — re-run with --apply to mutate the control plane.');
+  }
+}
+
 function cmdHistory(args) {
   if (args.includes('--help') || args.includes('-h')) {
     console.log('Usage: swarm history <wave-id>');
@@ -873,6 +949,7 @@ const commands = {
   collect: cmdCollect,
   revalidate: cmdRevalidate,
   rewind: cmdRewind,
+  redrive: cmdRedrive,
   verify: cmdVerify,
   'verify-fixed': cmdVerifyFixed,
   'verify-recurring': cmdVerifyRecurring,
@@ -934,6 +1011,17 @@ Commands:
                              row (status -> aborted_for_rewind, reason prefix
                              rewind:). Terminal rows (advanced waves, complete
                              agents) are preserved unchanged.
+  redrive <wave-id> --reason "<text>" [--apply]
+                             Lawful Redrive: Step Functions Redrive semantics on
+                             the swarm control plane. Same wave_id, completed
+                             receipts preserved byte-identical, only eligible
+                             failed/unstarted agent_runs made re-dispatchable
+                             (status -> dispatched). Refused for invalid_output
+                             (use revalidate), ownership_violation (operator
+                             unblocks), aborted_for_rewind (run a fresh wave),
+                             running (let timeout fire). Dry-run by default;
+                             --apply mutates. Audit row in wave_state_events +
+                             agent_state_events with redrive: reason prefix.
   verify <run-id> [opts]     Run build verification (auto-detect or --adapter)
   verify-fixed <run-id> [opts]
                              Re-audit findings marked [fixed]; classify into

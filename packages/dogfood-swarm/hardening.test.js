@@ -16,7 +16,7 @@ import {
   canTransition, transitionAgent, applyTimeoutPolicy,
   getTimeoutPolicy, setTimeoutPolicy, getTransitionHistory,
   isBlocked, isTerminal, isRedispatchable, isInFlight,
-  TRANSITIONS, BLOCKED_STATUSES,
+  TRANSITIONS, BLOCKED_STATUSES, TERMINAL_STATUSES,
 } from './lib/state-machine.js';
 
 // ═══════════════════════════════════════════
@@ -170,6 +170,51 @@ describe('State machine — transitionAgent', () => {
     db.prepare("UPDATE agent_runs SET status = 'invalid_output' WHERE id = 1").run();
 
     assert.throws(() => transitionAgent(db, 1, 'dispatched', null, true), /requires a reason/);
+    db.close();
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// Phase 5B-1 fold-in (T1): aborted_for_rewind terminal pins (agent)
+// ──────────────────────────────────────────────────────────────
+// Sibling of the wave-state-machine.test.js T1 block. Pins the agent-side
+// outbound contract for the new terminal status so a future regression
+// reanimating an aborted agent_run breaks the build at this assertion.
+
+describe('State machine — aborted_for_rewind terminal pins (5B-1 fold-in)', () => {
+  it('TRANSITIONS["aborted_for_rewind"] is an empty outbound array', () => {
+    assert.deepEqual(TRANSITIONS.aborted_for_rewind, []);
+  });
+
+  it('TERMINAL_STATUSES.has("aborted_for_rewind") === true', () => {
+    assert.equal(TERMINAL_STATUSES.has('aborted_for_rewind'), true);
+    assert.equal(isTerminal('aborted_for_rewind'), true);
+  });
+
+  it('canTransition from aborted_for_rewind to dispatched is rejected as terminal', () => {
+    const r = canTransition('aborted_for_rewind', 'dispatched');
+    assert.equal(r.allowed, false);
+    assert.match(r.reason, /terminal/);
+  });
+
+  it('transitionAgent aborted_for_rewind → dispatched rejects with kind=TERMINAL even with override', () => {
+    const db = openMemoryDb();
+    db.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+      .run('r1', 'org/r', '/tmp/r', 'a'.repeat(40));
+    saveDomainDraft(db, 'r1', [{ name: 'backend', globs: ['src/**'], ownership_class: 'owned' }]);
+    db.prepare("INSERT INTO waves (run_id, phase, wave_number) VALUES (?, 'test', 1)").run('r1');
+    const domainId = db.prepare('SELECT id FROM domains WHERE run_id = ?').get('r1').id;
+    db.prepare('INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (1, ?, ?)')
+      .run(domainId, 'dispatched');
+    // Land aborted_for_rewind via the override path (rewind from a non-terminal source).
+    transitionAgent(db, 1, 'aborted_for_rewind', 'rewind: tear down', true);
+    // Any escape attempt — including override — must be refused with
+    // kind=TERMINAL. The override branch only fires for BLOCKED sources;
+    // TERMINAL sources have no escape.
+    assert.throws(
+      () => transitionAgent(db, 1, 'dispatched', 'try to redrive a torn-down agent', true),
+      (err) => err.code === 'STATE_MACHINE_TERMINAL' && /terminal/.test(err.message)
+    );
     db.close();
   });
 });
