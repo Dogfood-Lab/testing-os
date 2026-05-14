@@ -148,6 +148,12 @@ export function buildReceipt(opts) {
       domain_snapshot_id: wave.domain_snapshot_id,
       created_at: wave.created_at,
       completed_at: wave.completed_at,
+      // TRUTH-003: persisted serial-verify discipline signal. Surfacing
+      // here rather than collapsing under `verification` keeps the receipt
+      // an honest read of DB truth even when no verification_receipts row
+      // exists for the wave (the legacy `verification: null` shape hid
+      // exactly the situation the operator needs to see).
+      serial_verify_required: !!wave.serial_verify_required,
     },
     agents: agentRuns.map(ar => ({
       domain: ar.domain_name,
@@ -157,6 +163,8 @@ export function buildReceipt(opts) {
       completed_at: ar.completed_at,
       output_path: ar.output_path,
       error: ar.error_message,
+      // TRUTH-003: per-agent verify-skipped truth for forensic readers.
+      verification_skipped: !!ar.verification_skipped,
     })),
     state_transitions: stateEvents.map(e => ({
       domain: e.domain_name,
@@ -239,16 +247,22 @@ function formatReceiptMarkdown(r) {
   lines.push(`**Repo:** ${r.run.repo} (${r.run.branch} @ ${r.run.commit_sha?.slice(0, 8)})`);
   lines.push(`**Wave status:** ${r.wave.status}`);
   lines.push(`**Domain snapshot:** ${r.wave.domain_snapshot_id || 'none'}`);
+  // TRUTH-003: surface the wave-level discipline signal so the operator
+  // reading the receipt sees the same truth `swarm status` did.
+  lines.push(`**Serial verify required:** ${r.wave.serial_verify_required ? 'yes' : 'no'}`);
   lines.push(`**Generated:** ${r.generated_at}`);
   lines.push('');
 
-  // Agents table
+  // Agents table — TRUTH-003 adds a `Verify skipped` column so the
+  // per-agent identity (which agent skipped, which didn't) is not lost in
+  // the wave aggregate.
   lines.push('## Agents');
   lines.push('');
-  lines.push('| Domain | Ownership | Status | Error |');
-  lines.push('|--------|-----------|--------|-------|');
+  lines.push('| Domain | Ownership | Status | Verify skipped | Error |');
+  lines.push('|--------|-----------|--------|----------------|-------|');
   for (const a of r.agents) {
-    lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${a.error || '—'} |`);
+    const skipped = a.verification_skipped ? 'yes' : 'no';
+    lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${skipped} | ${a.error || '—'} |`);
   }
   lines.push('');
 

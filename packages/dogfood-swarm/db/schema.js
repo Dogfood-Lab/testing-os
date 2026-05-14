@@ -64,16 +64,23 @@ CREATE TABLE IF NOT EXISTS domains (
 -- Per-wave, per-domain agent execution state
 -- ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS agent_runs (
-  id              INTEGER PRIMARY KEY AUTOINCREMENT,
-  wave_id         INTEGER NOT NULL REFERENCES waves(id),
-  domain_id       INTEGER NOT NULL REFERENCES domains(id),
-  status          TEXT    NOT NULL DEFAULT 'pending',
-  output_path     TEXT,
-  worktree_path   TEXT,
-  worktree_branch TEXT,
-  started_at      TEXT,
-  completed_at    TEXT,
-  error_message   TEXT
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  wave_id              INTEGER NOT NULL REFERENCES waves(id),
+  domain_id            INTEGER NOT NULL REFERENCES domains(id),
+  status               TEXT    NOT NULL DEFAULT 'pending',
+  output_path          TEXT,
+  worktree_path        TEXT,
+  worktree_branch      TEXT,
+  started_at           TEXT,
+  completed_at         TEXT,
+  error_message        TEXT,
+  -- TRUTH-003: per-agent serial-verify discipline signal. Mirrors the
+  -- wave-level waves.serial_verify_required column but captures forensic
+  -- truth at the agent identity (which agent skipped, which didn't) so the
+  -- wave receipt can render per-row instead of collapsing to the wave
+  -- aggregate. Set by collect.js when the agent output JSON carries
+  -- verification_skipped=true.
+  verification_skipped INTEGER NOT NULL DEFAULT 0
 );
 
 -- ───────────────────────────────────────────
@@ -268,6 +275,11 @@ export const MIGRATIONS_SQL = [
   // status` can refuse READY TO ADVANCE when --skip-verify was used and the
   // coordinator's authoritative cumulative-tree verify has not landed.
   "ALTER TABLE waves ADD COLUMN serial_verify_required INTEGER NOT NULL DEFAULT 0",
+  // TRUTH-003: agent_runs: per-agent serial-verify signal so the wave
+  // receipt can render which specific agent skipped verify rather than
+  // collapsing to the wave aggregate. Composes with the wave-level column;
+  // legacy single-agent semantics keep the default 0.
+  "ALTER TABLE agent_runs ADD COLUMN verification_skipped INTEGER NOT NULL DEFAULT 0",
 ];
 
 /**

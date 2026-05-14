@@ -385,9 +385,18 @@ export function collect(opts) {
     // falsy/absent = legacy single-agent semantics. A single skipped agent
     // is enough to require the coordinator's serial verify pass — partial
     // parallel discipline still left some agents seeing the cumulative tree.
+    //
+    // TRUTH-003: write the per-agent flag to agent_runs so the wave receipt
+    // can render forensic truth at the agent identity (the wave aggregate
+    // loses which specific agent skipped). Targeted at the latest agent_run
+    // row for this domain — `ar.id` is the row selected at the top of the
+    // loop by the latest-per-(wave, domain) filter, so historical rows are
+    // untouched.
     if (output.verification_skipped === true) {
       agentReport.verification_skipped = true;
       report.serial_verify_required = true;
+      db.prepare('UPDATE agent_runs SET verification_skipped = 1 WHERE id = ?')
+        .run(ar.id);
     }
 
     report.agents.push(agentReport);
