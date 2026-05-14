@@ -215,6 +215,11 @@ function cmdDispatch(args) {
 
   const autoFreeze = args.includes('--auto-freeze');
   const isolate = args.includes('--isolate');
+  // Item 5: parallel-wave verification discipline. When set, agent prompts
+  // include the directive to skip per-agent `npm test`/`npm run verify` and
+  // emit `verification_skipped: true` in their output JSON. Coordinator runs
+  // ONE serial verify after `swarm collect` against the cumulative tree.
+  const skipVerify = args.includes('--skip-verify');
 
   const result = dispatch({
     runId,
@@ -223,6 +228,7 @@ function cmdDispatch(args) {
     outputDir: getOutputDir(runId),
     autoFreeze,
     isolate,
+    skipVerify,
   });
 
   console.log(`\nWave ${result.waveNumber} dispatched (${result.phase})`);
@@ -279,6 +285,20 @@ function cmdCollect(args) {
     for (const e of result.validation_errors) {
       console.log(`  ${e.domain}: ${e.errors ? e.errors.join('; ') : e.error}`);
     }
+    console.log('');
+  }
+
+  // Item 5 (Phase 2-B verification-discipline): when any amend agent dispatched
+  // with --skip-verify carried `verification_skipped: true`, the per-agent
+  // verify pass was deliberately deferred so parallel agents do not observe
+  // cumulative-tree measurement artifacts. The coordinator now runs ONE
+  // serial verify against the post-merge tree before promoting. Surface this
+  // as a Next-step hint, not a hidden side-effect.
+  if (result.serial_verify_required) {
+    console.log('SERIAL VERIFY REQUIRED:');
+    console.log('  One or more agents skipped per-agent verification per the parallel-wave');
+    console.log('  discipline. Run a single `npm run verify` against the cumulative tree');
+    console.log('  before advancing the wave. See swarms/PROTOCOL.md §Serial final verification.');
     console.log('');
   }
 
@@ -767,6 +787,14 @@ Commands:
   init <repo-path>           Create run, detect domains
   domains <run-id> [opts]    Show, edit, freeze, unfreeze domain map
   dispatch <run-id> <phase>  Create wave + agent prompts
+                             Flags: --auto-freeze, --isolate, --skip-verify
+                             --skip-verify (amend phases): append the parallel-
+                             wave directive to amend prompts so agents skip
+                             per-agent npm test. Coordinator runs one serial
+                             verify after `swarm collect` instead. Eliminates
+                             cumulative-tree measurement artifacts when N
+                             agents run verify concurrently. PROTOCOL.md
+                             §Serial final verification.
   collect <run-id> [opts]    Validate, enforce ownership, merge
   revalidate <run-id> [opts] Lawful recovery for blocked agent_runs
                              (invalid_output / ownership_violation). Wraps the

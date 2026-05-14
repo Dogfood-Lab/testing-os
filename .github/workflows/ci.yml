@@ -82,6 +82,12 @@ jobs:
       # into user-facing handbook pages). See scripts/doc-drift-patterns.json
       # for the 5 active checks; adding a new instance is a config edit.
       - run: npm run check-doc-drift
+      # VD-NEW-2 (Phase 2-B verification-discipline): `npm run verify` runs
+      # check-regression-pins as the third gate; CI was missing it. The local
+      # vs. CI chain drift meant an operator who relied on green CI to bless a
+      # push could land a regression-pin drift that local pre-commit would
+      # have caught. scripts/check-finding-regression-pins.mjs.
+      - run: npm run check-regression-pins
       - run: npm run test:scripts
       - run: npm run build
       - run: npm test

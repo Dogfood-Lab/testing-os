@@ -110,7 +110,7 @@ The state machine refused an illegal transition; persistent state is consistent.
   - **`STATE_MACHINE_TERMINAL`** — the agent is in a terminal state (`complete`, `rejected`, etc.) — no transitions allowed. Caller bug — something tried to advance an already-finished agent.
   - **`STATE_MACHINE_INVALID`** — the transition is missing from the `TRANSITIONS` table. Legitimate disallowed transition (e.g. `idle → complete` skipping `running`).
 - **Message shape:** `Illegal transition <from> → <to>: <reason>` with explicit kind in `e.code`.
-- **Hint:** `e.hint` is set per-kind by the throwing site (e.g. "use `swarm override` to force …" for BLOCKED, "this agent is already complete; check why the caller tried to re-advance it" for TERMINAL).
+- **Hint:** `e.hint` is set per-kind by the throwing site (e.g. "use `swarm revalidate` to lawfully recover from blocked states" for BLOCKED, "this agent is already complete; check why the caller tried to re-advance it" for TERMINAL).
 - **Carries:** `kind`, `from`, `to`, `agentRunId`, `allowedTransitions[]` (legal `to` set from the current `from`).
 - **Operator action:**
   - **BLOCKED:** look at the `Next:` hint — usually points at an override flag or a missing prerequisite.

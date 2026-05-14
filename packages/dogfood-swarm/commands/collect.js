@@ -22,6 +22,7 @@ import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } f
 import { transitionAgent, canTransition } from '../lib/state-machine.js';
 import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
+import { getActualTouchedFiles, diffReportedVsActual } from '../lib/git-touched-files.js';
 import { randomBytes } from 'node:crypto';
 
 /**
@@ -146,6 +147,12 @@ export function collect(opts) {
     findings: { new: 0, recurring: 0, fixed: 0, unverified: 0 },
     violations: [],
     validation_errors: [],
+    // Item 5 (Phase 2-B verification-discipline): when any amend agent set
+    // `verification_skipped: true` in its output JSON, the wave was dispatched
+    // under the serial-final-verify discipline. The coordinator must run a
+    // single `npm run verify` against the cumulative tree before promoting
+    // the wave to `collected`. The CLI surfaces this as a Next-step hint.
+    serial_verify_required: false,
     summary: null,
   };
 
@@ -264,33 +271,73 @@ export function collect(opts) {
       VALUES (?, ?, ?, ?)
     `).run(ar.id, isAudit ? 'audit_output' : 'amend_output', outputPath, contentHash);
 
-    // Check ownership for amend waves
-    if (isAmend && output.files_changed?.length > 0) {
-      const ownership = checkOwnership(db, opts.runId, domain.name, output.files_changed);
-      if (ownership.violations.length > 0) {
-        agentReport.status = 'ownership_violation';
-        agentReport.violations = ownership.violations;
-        const violMsg = `Out-of-domain edits: ${ownership.violations.map(v => v.file).join(', ')}`;
-        tryTransition(db, ar.id, 'ownership_violation', violMsg, domain.name);
-        db.prepare('UPDATE agent_runs SET error_message = ? WHERE id = ?')
-          .run(violMsg, ar.id);
+    // Check ownership for amend waves.
+    //
+    // VD-NEW-1 (Phase 2-B verification-discipline): ownership is grounded in
+    // the **independently-computed** touched-file set, not the agent's
+    // self-reported `files_changed`. The agent's list is a verifier-in-the-
+    // thing-being-verified surface (Class #14) — an agent that under-reports
+    // `files_changed` would bypass ownership enforcement.
+    //
+    // Sourcing: the agent worktree (if --isolate was used) or run.local_path.
+    // We probe `git status --porcelain` + `git diff --name-only HEAD` via
+    // lib/git-touched-files.js, then run checkOwnership against the union
+    // (actual ∪ reported). The union semantics preserves backwards-compat
+    // for legacy outputs where files_changed lists files outside the
+    // worktree's HEAD diff (e.g. an amend that reverted edits before
+    // reporting). When git is unavailable (no .git), we fall back to the
+    // agent's self-report and surface the degradation in the report.
+    if (isAmend && output.files_changed !== undefined) {
+      const worktree = ar.worktree_path || run.local_path;
+      const actualTouched = getActualTouchedFiles(worktree);
+      const reported = Array.isArray(output.files_changed) ? output.files_changed : [];
+      const divergence = diffReportedVsActual(reported, actualTouched.all);
 
-        // Record file claims with violations
-        for (const v of ownership.violations) {
-          db.prepare(`
-            INSERT INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
-            VALUES (?, ?, 'edit', ?, 1)
-          `).run(ar.id, v.file, domain.id);
-        }
-        report.violations.push(...ownership.violations);
+      const ownershipSet = new Set([
+        ...reported.map(p => p.replace(/\\/g, '/')),
+        ...actualTouched.all,
+      ]);
+      const filesForOwnership = Array.from(ownershipSet);
+
+      // Non-blocking divergence finding — operator-visible, but the
+      // ownership check below remains the gate.
+      if (!divergence.match && !actualTouched.unavailable) {
+        agentReport.files_changed_divergence = {
+          missing_from_report: divergence.missing_from_report,
+          extra_in_report: divergence.extra_in_report,
+        };
+      }
+      if (actualTouched.unavailable) {
+        agentReport.files_changed_divergence = { unavailable: true, reason: 'git probe failed; ownership check used agent self-report only' };
       }
 
-      // Record valid file claims
-      for (const v of (ownership.valid || [])) {
-        db.prepare(`
-          INSERT OR IGNORE INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
-          VALUES (?, ?, 'edit', ?, 0)
-        `).run(ar.id, v.file, domain.id);
+      if (filesForOwnership.length > 0) {
+        const ownership = checkOwnership(db, opts.runId, domain.name, filesForOwnership);
+        if (ownership.violations.length > 0) {
+          agentReport.status = 'ownership_violation';
+          agentReport.violations = ownership.violations;
+          const violMsg = `Out-of-domain edits: ${ownership.violations.map(v => v.file).join(', ')}`;
+          tryTransition(db, ar.id, 'ownership_violation', violMsg, domain.name);
+          db.prepare('UPDATE agent_runs SET error_message = ? WHERE id = ?')
+            .run(violMsg, ar.id);
+
+          // Record file claims with violations
+          for (const v of ownership.violations) {
+            db.prepare(`
+              INSERT INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
+              VALUES (?, ?, 'edit', ?, 1)
+            `).run(ar.id, v.file, domain.id);
+          }
+          report.violations.push(...ownership.violations);
+        }
+
+        // Record valid file claims
+        for (const v of (ownership.valid || [])) {
+          db.prepare(`
+            INSERT OR IGNORE INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
+            VALUES (?, ?, 'edit', ?, 0)
+          `).run(ar.id, v.file, domain.id);
+        }
       }
     }
 
@@ -309,6 +356,16 @@ export function collect(opts) {
       tryTransition(db, ar.id, 'complete', 'Output collected and validated', domain.name);
       db.prepare('UPDATE agent_runs SET output_path = ? WHERE id = ?')
         .run(outputPath, ar.id);
+    }
+
+    // Item 5: propagate the per-agent `verification_skipped` flag into the
+    // wave-level coordination signal. The schema declares this as optional;
+    // falsy/absent = legacy single-agent semantics. A single skipped agent
+    // is enough to require the coordinator's serial verify pass — partial
+    // parallel discipline still left some agents seeing the cumulative tree.
+    if (output.verification_skipped === true) {
+      agentReport.verification_skipped = true;
+      report.serial_verify_required = true;
     }
 
     report.agents.push(agentReport);

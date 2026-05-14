@@ -41,6 +41,37 @@ function mintCorrelationId() {
 }
 
 /**
+ * Item 5 (Phase 2-B verification-discipline): the parallel-wave discipline
+ * directive appended to amend prompts when --skip-verify is set. Tells the
+ * agent NOT to run `npm test` / `npm run verify` (those reads observe the
+ * cumulative tree as other parallel agents are still landing edits — a
+ * Class #14 verifier-vantage-point limit). Agent emits
+ * `verification_skipped: true` in its output JSON to mark the contract;
+ * `commands/collect.js` propagates this into `report.serial_verify_required`
+ * and the CLI surfaces the Next-step hint.
+ */
+const SKIP_VERIFY_DIRECTIVE = `
+
+## Verification discipline (parallel-wave)
+
+This wave is running under the **serial-final-verify** discipline. Other agents are landing edits in parallel; running \`npm test\` / \`npm run verify\` from your worktree right now would observe a cumulative tree that is still in motion, producing measurement artifacts (e.g. a test that fails because a sibling agent hasn't yet landed its half of a coordinated fix).
+
+**Do NOT run per-agent verification.** Make your edits, write your output JSON, and stop. The coordinator runs ONE \`npm run verify\` against the cumulative tree after \`swarm collect\` (PROTOCOL.md §Serial final verification).
+
+Set \`verification_skipped: true\` at the top level of your output JSON to make the contract explicit:
+
+\`\`\`json
+{
+  "domain": "...",
+  "summary": "...",
+  "fixes": [...],
+  "files_changed": [...],
+  "verification_skipped": true
+}
+\`\`\`
+`;
+
+/**
  * @param {object} opts
  * @param {string} opts.runId
  * @param {string} opts.phase
@@ -48,6 +79,9 @@ function mintCorrelationId() {
  * @param {string} opts.outputDir — where to write prompt files
  * @param {boolean} [opts.autoFreeze] — freeze domains if still draft
  * @param {boolean} [opts.isolate] — create per-agent worktrees
+ * @param {boolean} [opts.skipVerify] — append the parallel-wave serial-final-
+ *   verify directive to amend prompts (Item 5; tells agents not to run
+ *   per-agent npm test, coordinator runs one verify at end)
  * @returns {object} — { waveId, waveNumber, agents, promptDir }
  */
 export function dispatch(opts) {
@@ -167,11 +201,18 @@ export function dispatch(opts) {
 
     let prompt;
     const agentWorkDir = worktreePath || run.local_path;
+    // Thread ownership_class + the frozen snapshotId into the prompt so the
+    // dispatched agent sees the SAME ownership facts that collect-time
+    // checkOwnership() will enforce against (Stage B Item 4). Closes the
+    // brief-vs-frozen-state parallel-authority drift that triggered the
+    // wave-2 ci-tooling revalidate refusal.
     const promptOpts = {
       repoPath: agentWorkDir,
       repo: run.repo,
       domainName: domain.name,
       globs: domain.globs,
+      ownershipClass: domain.ownership_class,
+      domainSnapshotId: snapshot.snapshotId,
       phase: opts.phase,
       waveNumber,
     };
@@ -189,6 +230,11 @@ export function dispatch(opts) {
       // defeat exclusive file ownership (Law #1). See lib/findings-filter.js.
       const findings = findingsForDomain(db, opts.runId, domain);
       prompt = buildAmendPrompt({ ...promptOpts, findings });
+      // Item 5: amend prompts are the verification-discipline carrier — audit
+      // prompts don't run tests anyway. Append the parallel-wave directive
+      // when --skip-verify is set so the agent skips per-agent verify and
+      // marks `verification_skipped: true` in its output JSON.
+      if (opts.skipVerify) prompt += SKIP_VERIFY_DIRECTIVE;
     } else {
       prompt = buildAuditPrompt(promptOpts); // generic fallback
     }

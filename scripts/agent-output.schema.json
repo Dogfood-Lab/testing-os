@@ -46,6 +46,11 @@
       "type": "array",
       "items": { "$ref": "#/$defs/skip" },
       "description": "Findings/features skipped with a reason. Cross-domain dependencies, blocked-on items, etc."
+    },
+    "verification_skipped": {
+      "type": "boolean",
+      "default": false,
+      "description": "Set true when the agent skipped per-agent verification per the parallel-wave serial-final-verify discipline (PROTOCOL.md §Serial final verification). Coordinator runs a single `npm run verify` against the cumulative tree at collect time. False or absent = agent ran its own verify (legacy single-agent waves, manual dispatch)."
     }
   },
   "$defs": {

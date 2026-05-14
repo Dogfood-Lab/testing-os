@@ -3,7 +3,182 @@
  *
  * Generates ready-to-use prompts for each domain agent in a wave.
  * Templates embed: repo path, domain scope, file list, phase lens, output format.
+ *
+ * Authority discipline (Stage B Item 1 + Item 4):
+ * The output-shape contract appended to every prompt is DERIVED FROM
+ * scripts/agent-output.schema.json — not hand-typed parallel to it. The
+ * worked-example JSON below the contract block stays as a worked example,
+ * but the schema fragment is the load-bearing reference. Same root-cause
+ * group as Item 4: brief-vs-frozen-state parallel authority. Pact-style
+ * contract test in dispatch-prompt-schema.test.js asserts the schema
+ * fragment is present in every generated prompt.
  */
+
+import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+
+// Resolve agent-output.schema.json the SAME way validate-agent-output.js does
+// (packages/dogfood-swarm/lib → ../../../scripts). If/when the schema graduates
+// to @dogfood-lab/schemas, both modules switch in lockstep to a
+// createRequire('@dogfood-lab/schemas/...') resolution. createRequire is
+// imported here so future refactors can pivot without re-plumbing.
+// eslint-disable-next-line no-unused-vars
+const _require = createRequire(import.meta.url);
+const SCHEMA_PATH = join(__dirname, '..', '..', '..', 'scripts', 'agent-output.schema.json');
+
+let _canonicalSchema = null;
+function getCanonicalSchema() {
+  if (_canonicalSchema) return _canonicalSchema;
+  _canonicalSchema = JSON.parse(readFileSync(SCHEMA_PATH, 'utf-8'));
+  return _canonicalSchema;
+}
+
+/**
+ * Render the audit-output contract block (envelope + finding $def) directly
+ * from the canonical schema. The text below the `## Output schema (canonical,
+ * derived from agent-output.schema.json)` header is the load-bearing
+ * reference; the worked-example JSON in `## Output Format` is illustrative.
+ *
+ * @returns {string}
+ */
+function renderAuditOutputContract() {
+  const schema = getCanonicalSchema();
+  const finding = schema.$defs.finding;
+  const severityEnum = finding.properties.severity.enum.join(' | ');
+  const categoryEnum = finding.properties.category.enum.join(' | ');
+  return `## Output schema (canonical, derived from agent-output.schema.json)
+
+The output JSON envelope below is enforced at write time by the collect-stage
+schema gate (validate-agent-output.js). Schema \`$id\`: \`${schema.$id}\`.
+
+Envelope (required keys):
+- \`domain\`: string, minLength 1
+- \`summary\`: string, minLength 1
+
+Audit envelope adds:
+- \`stage\`: one of [${schema.properties.stage.enum.join(', ')}]
+- \`findings\`: array of finding objects
+
+Each finding object (required keys: ${finding.required.join(', ')}):
+- \`id\`: string, minLength 1
+- \`severity\`: one of [${severityEnum}]
+- \`category\`: one of [${categoryEnum}]
+- \`description\`: string, minLength 1
+- \`file\`, \`line\`, \`symbol\`, \`recommendation\`, \`rule_id\` are optional
+`;
+}
+
+/**
+ * Render the amend-output contract block (envelope + fix $def) directly
+ * from the canonical schema.
+ *
+ * @returns {string}
+ */
+function renderAmendOutputContract() {
+  const schema = getCanonicalSchema();
+  const fix = schema.$defs.fix;
+  const skip = schema.$defs.skip;
+  return `## Output schema (canonical, derived from agent-output.schema.json)
+
+The output JSON envelope below is enforced at write time by the collect-stage
+schema gate (validate-agent-output.js). Schema \`$id\`: \`${schema.$id}\`.
+
+Envelope (required keys):
+- \`domain\`: string, minLength 1
+- \`summary\`: string, minLength 1
+
+Amend envelope adds:
+- \`fixes\`: array of fix objects
+- \`files_changed\`: array of strings (files the agent edited)
+- \`skipped\`: array of skip objects (optional)
+
+Each fix object (required keys: ${fix.required.join(', ')}):
+- \`finding_id\`: string, minLength 1
+- \`description\`: string, minLength 1
+- \`file\`: string (optional)
+
+Each skip object (required keys: ${skip.required.join(', ')}):
+- \`finding_id\`: string, minLength 1
+- \`reason\`: string, minLength 1
+`;
+}
+
+/**
+ * Render the feature-output contract block (envelope + feature $def) directly
+ * from the canonical schema.
+ *
+ * @returns {string}
+ */
+function renderFeatureOutputContract() {
+  const schema = getCanonicalSchema();
+  const feature = schema.$defs.feature;
+  const priorityEnum = feature.properties.priority.enum.join(' | ');
+  const categoryEnum = feature.properties.category.enum.join(' | ');
+  const effortEnum = feature.properties.effort.enum.join(' | ');
+  return `## Output schema (canonical, derived from agent-output.schema.json)
+
+The output JSON envelope below is enforced at write time by the collect-stage
+schema gate (validate-agent-output.js). Schema \`$id\`: \`${schema.$id}\`.
+
+Envelope (required keys):
+- \`domain\`: string, minLength 1
+- \`summary\`: string, minLength 1
+
+Feature envelope adds:
+- \`features\`: array of feature objects
+
+Each feature object (required keys: ${feature.required.join(', ')}):
+- \`id\`: string matching pattern \`${feature.properties.id.pattern}\`
+- \`priority\`: one of [${priorityEnum}]
+- \`category\`: one of [${categoryEnum}]
+- \`description\`: string, minLength 1
+- \`use_case\`, \`evidence_base\`, \`scope[]\`, \`cross_ref\`, \`recommendation\` optional
+- \`effort\`: one of [${effortEnum}] (optional)
+`;
+}
+
+/**
+ * Render the per-domain ownership block — globs + ownership class + (optional)
+ * frozen-snapshot ID. Agents read the SAME ownership facts the collect-time
+ * checkOwnership() will enforce against, not a paraphrased coordinator brief.
+ *
+ * Stage B Item 4: closes the brief-vs-frozen-state asymmetry that triggered
+ * the wave-2 ci-tooling revalidate refusal. The coordinator brief continues
+ * to be the operator-readable summary, but the prompt itself is now
+ * self-sufficient.
+ *
+ * @param {string[]} globs
+ * @param {string} [ownershipClass]
+ * @param {string} [domainSnapshotId]
+ * @returns {string}
+ */
+function renderDomainContract(globs, ownershipClass, domainSnapshotId) {
+  const lines = [];
+  lines.push('## Your domain (canonical, derived from frozen map)');
+  lines.push('');
+  lines.push('These globs are the frozen-snapshot authority. If the coordinator');
+  lines.push('brief lists different files or scopes, the snapshot wins —');
+  lines.push('collect-time `checkOwnership()` enforces against the snapshot.');
+  lines.push('');
+  if (ownershipClass) {
+    lines.push(`Ownership class: \`${ownershipClass}\``);
+  }
+  if (domainSnapshotId) {
+    lines.push(`Domain snapshot ID: \`${domainSnapshotId}\``);
+  }
+  lines.push('');
+  lines.push('Owned globs:');
+  lines.push('');
+  lines.push('```');
+  lines.push(globs.join('\n'));
+  lines.push('```');
+  return lines.join('\n');
+}
 
 /**
  * Maps phase name → audit-output stage letter.
@@ -96,6 +271,8 @@ Prioritize by impact. Estimate effort (small/medium/large).`,
  * @param {string[]} opts.globs — glob patterns for this domain
  * @param {string} opts.phase — wave phase
  * @param {number} opts.waveNumber — current wave number
+ * @param {string} [opts.ownershipClass] — domain ownership class (owned/shared/bridge)
+ * @param {string} [opts.domainSnapshotId] — frozen domain snapshot id
  * @param {string} [opts.priorContext] — findings from prior waves to avoid re-reporting
  * @returns {string}
  */
@@ -107,12 +284,21 @@ export function buildAuditPrompt(opts) {
     ? `\n## Prior Findings (do NOT re-report these)\n\n${opts.priorContext}\n`
     : '';
 
+  const domainContract = renderDomainContract(
+    opts.globs,
+    opts.ownershipClass,
+    opts.domainSnapshotId,
+  );
+  const outputContract = renderAuditOutputContract();
+
   return `# Swarm Audit — ${lens.label}
 
 **Repo:** ${opts.repo}
 **Path:** ${opts.repoPath}
 **Domain:** ${opts.domainName}
 **Wave:** ${opts.waveNumber}
+
+${domainContract}
 
 ## Your Scope
 
@@ -128,9 +314,12 @@ ${opts.globs.join('\n')}
 
 ${lens.instruction}
 ${priorSection}
+${outputContract}
+
 ## Output Format
 
-Respond with ONLY a JSON object (no markdown fences, no commentary):
+Respond with ONLY a JSON object (no markdown fences, no commentary). The worked
+example below illustrates shape; the canonical contract above is load-bearing:
 
 \`\`\`json
 {
@@ -157,11 +346,30 @@ Be thorough. Every finding must have a severity and a concrete recommendation.`;
 
 /**
  * Build an amend prompt for a domain agent.
+ *
+ * @param {object} opts
+ * @param {string} opts.repoPath
+ * @param {string} opts.repo
+ * @param {string} opts.domainName
+ * @param {string[]} opts.globs
+ * @param {string} opts.phase
+ * @param {number} opts.waveNumber
+ * @param {Array<object>} opts.findings — approved findings filtered for this domain
+ * @param {string} [opts.ownershipClass]
+ * @param {string} [opts.domainSnapshotId]
+ * @returns {string}
  */
 export function buildAmendPrompt(opts) {
   const findingsList = opts.findings
     .map(f => `- [${f.severity}] ${f.finding_id}: ${f.description} (${f.file_path || 'no file'}:${f.line_number || '?'})${f.recommendation ? '\n  Fix: ' + f.recommendation : ''}`)
     .join('\n');
+
+  const domainContract = renderDomainContract(
+    opts.globs,
+    opts.ownershipClass,
+    opts.domainSnapshotId,
+  );
+  const outputContract = renderAmendOutputContract();
 
   return `# Swarm Amend — Fix Approved Findings
 
@@ -169,6 +377,8 @@ export function buildAmendPrompt(opts) {
 **Path:** ${opts.repoPath}
 **Domain:** ${opts.domainName}
 **Wave:** ${opts.waveNumber}
+
+${domainContract}
 
 ## Your Scope
 
@@ -184,9 +394,12 @@ ${opts.globs.join('\n')}
 
 ${findingsList}
 
+${outputContract}
+
 ## Output Format
 
-After making fixes, respond with ONLY a JSON object:
+After making fixes, respond with ONLY a JSON object. The worked example below
+illustrates shape; the canonical contract above is load-bearing:
 
 \`\`\`json
 {
@@ -212,9 +425,26 @@ After making fixes, respond with ONLY a JSON object:
 
 /**
  * Build a feature audit prompt for a domain agent.
+ *
+ * @param {object} opts
+ * @param {string} opts.repoPath
+ * @param {string} opts.repo
+ * @param {string} opts.domainName
+ * @param {string[]} opts.globs
+ * @param {number} opts.waveNumber
+ * @param {string} [opts.ownershipClass]
+ * @param {string} [opts.domainSnapshotId]
+ * @returns {string}
  */
 export function buildFeatureAuditPrompt(opts) {
   const lens = STAGE_LENS['feature-audit'];
+
+  const domainContract = renderDomainContract(
+    opts.globs,
+    opts.ownershipClass,
+    opts.domainSnapshotId,
+  );
+  const outputContract = renderFeatureOutputContract();
 
   return `# Swarm Feature Audit
 
@@ -222,6 +452,8 @@ export function buildFeatureAuditPrompt(opts) {
 **Path:** ${opts.repoPath}
 **Domain:** ${opts.domainName}
 **Wave:** ${opts.waveNumber}
+
+${domainContract}
 
 ## Your Scope
 
@@ -237,9 +469,12 @@ ${opts.globs.join('\n')}
 
 ${lens.instruction}
 
+${outputContract}
+
 ## Output Format
 
-Respond with ONLY a JSON object:
+Respond with ONLY a JSON object. The worked example below illustrates shape;
+the canonical contract above is load-bearing:
 
 \`\`\`json
 {

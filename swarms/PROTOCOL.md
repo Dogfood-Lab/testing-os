@@ -287,6 +287,19 @@ After Phase 7 (post-deploy verification) passes:
 
 ---
 
+## Serial final verification after parallel agents
+
+When parallel agents each run `npm test` / `npm run verify` against a worktree containing other agents' WIP edits, the verify reads against cumulative state. Sibling agents see "failures" that are not contract violations but measurement artifacts: an integration test fails because backend hasn't yet landed its half of a coordinated fix; `check-regression-pins` fails because the source pin landed and the sibling pin hasn't yet. This is a Class #14 fractal at the verifier layer — the verifier is in the thing being verified.
+
+The serial-final-verify discipline closes the gap:
+
+1. **Coordinator dispatches with `--skip-verify`** when running an amend wave with parallel agents: `swarm dispatch <run-id> health-amend-a --skip-verify` (see `packages/dogfood-swarm/commands/dispatch.js` SKIP_VERIFY_DIRECTIVE).
+2. **Agents make edits, write their output JSON, and stop.** No per-agent `npm test`. Agents emit `verification_skipped: true` at the top level of their output JSON to make the contract explicit (`scripts/agent-output.schema.json` `verification_skipped`).
+3. **`swarm collect` propagates the flag.** When any agent marks `verification_skipped: true`, the collect report sets `serial_verify_required: true` and the CLI surfaces a Next-step hint (`packages/dogfood-swarm/commands/collect.js` `serial_verify_required`).
+4. **Coordinator runs ONE `npm run verify` against the cumulative tree** before promoting the wave. This is the only authoritative verification for the wave.
+
+Skip the directive when dispatching a single-agent wave or when agents are not running in parallel — the per-agent verify is then a legitimate independent check, not a vantage-point artifact.
+
 ## Recovery from blocked agent_runs: `swarm revalidate`
 
 Sometimes an amend wave's `swarm collect` rejects every agent's output for a schema or ownership reason that is real but **recoverable**: the agent did the work, the work is correct on disk, the JSON envelope drifted from the canonical shape (`fixes_applied` vs `fixes`; `files_edited` vs `files_changed`), or the coordinator-frozen domain map omitted a glob the brief told the agent to edit. In those cases the four `agent_runs` move to a blocked status, the wave moves to `failed`, and nothing in the audit lane offers a path back. The lawful recovery verb for that exact shape is `swarm revalidate`.
