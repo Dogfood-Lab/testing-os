@@ -148,12 +148,22 @@ describe('F-827321-035 — outer stage survives the spread', () => {
     );
   });
 
-  it('ingest wrapper strips inner `stage:` so the outer name always wins', async () => {
-    // End-to-end: import the shared helper directly and confirm that
-    // when called the way ingest's wrapper calls it (with stage stripped),
-    // the emitted JSON carries the outer stage. We can't easily import
-    // ingest's private wrapper, so we replicate its strip behavior here
-    // and verify the contract holds.
+  it('shared logStage with stripped fields produces a JSON line where outer stage wins (runtime co-location of the source-check contract)', async () => {
+    // F-W1-TEST-011: this is a CO-LOCATED reproduction of the strip
+    // pattern, NOT an end-to-end test of ingest's private wrapper. The
+    // wrapper at packages/ingest/run.js (function `logStage`) is not
+    // exported, so this suite cannot drive it directly. The regex-based
+    // source check immediately above (`logStage(...)` source audit) is
+    // the AUTHORITATIVE enforcement that ingest never passes `stage:`
+    // into the shared helper. This runtime check exists only to pin the
+    // shared helper's contract: when the caller has stripped `stage:`
+    // before delegation, the outer positional stage survives.
+    //
+    // The previous comment framed this as "covers the runtime contract
+    // complementarily" — that framing was misleading. The runtime
+    // contract for the *wrapper* is enforced by the source check; this
+    // test pins the *shared helper's* contract. Both are needed; neither
+    // alone is sufficient.
     const { logStage: sharedLogStage } = await import(
       '@dogfood-lab/dogfood-swarm/lib/log-stage.js'
     );
@@ -166,14 +176,15 @@ describe('F-827321-035 — outer stage survives the spread', () => {
     };
 
     try {
-      // Replicate ingest wrapper: strip caller's inner `stage:` before
-      // delegating. If the wrapper ever stops doing this, the assertion
-      // below catches it via the run.js source check above; this test
-      // covers the runtime contract complementarily.
+      // The wrapper's contract (enforced above) is "strip caller's
+      // inner `stage:` before delegating". Here we replay what the
+      // wrapper does and confirm the shared helper honors the outer
+      // positional stage. If the shared helper ever changes to let
+      // caller fields overwrite the positional stage, this test fails.
       const callerFields = {
         component: 'ingest',
         submission_id: 's-001',
-        stage: 'rebuild_indexes', // intentional collision
+        stage: 'rebuild_indexes', // intentional collision — wrapper would strip this
         message: 'simulated failure',
       };
       const { stage: _ignored, ...safe } = callerFields;
@@ -182,14 +193,13 @@ describe('F-827321-035 — outer stage survives the spread', () => {
       process.stderr.write = origErr;
     }
 
-    // Find the JSON line on stderr (banner may follow at TTY).
     const jsonLine = captured.find(c => c.trim().startsWith('{'));
     assert.ok(jsonLine, 'expected a JSON line on stderr');
     const parsed = JSON.parse(jsonLine.trim());
 
     assert.equal(
       parsed.stage, 'error',
-      'outer stage="error" must survive the wrapper-strip pattern (regression of D-PIPE-002)',
+      'shared helper: outer positional stage must win when caller fields have stage stripped',
     );
     assert.equal(
       parsed.component, 'ingest',

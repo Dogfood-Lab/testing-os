@@ -232,6 +232,88 @@ describe('Gate checks — BLOCK verdict', () => {
 });
 
 // ═══════════════════════════════════════════
+// Latest-per-domain filter — guards against stale agent_run rows
+// from prior `swarm resume` cycles silently blocking advance.
+// F-084568-005: when resume.js INSERTs a new agent_run for a redispatched
+// domain, the OLD failed/timed_out row stays in the table. checkGates() must
+// only look at the LATEST agent_run per (wave_id, domain_id) — otherwise the
+// stale row makes checkAgentCompletion() report "<N> agent(s) not complete"
+// even when every redispatched agent finished cleanly.
+// ═══════════════════════════════════════════
+
+describe('Gate checks — latest-per-domain filter (F-084568-005)', () => {
+  let db;
+
+  beforeEach(() => { db = openMemoryDb(); });
+
+  it('ADVANCE when a domain has a stale failed row followed by a complete row (resume cycle)', () => {
+    // F-084568-005: simulate the post-resume row shape.
+    // Setup creates ONE complete agent_run per domain. We then INSERT a
+    // SECOND row per domain at status='failed' positioned BEFORE the complete
+    // row by id — i.e. older — and confirm the gate still ADVANCEs because
+    // the SQL filter at advance.js:92-100 only picks MAX(ar2.id) per domain.
+    const { runId, waveId } = setupRun(db);
+
+    const domains = db.prepare('SELECT id FROM domains WHERE run_id = ? AND ownership_class != ?')
+      .all(runId, 'shared');
+
+    // Delete the rows setupRun inserted; re-insert with explicit ordering:
+    // OLD failed row first (lower id), NEW complete row second (higher id).
+    // This mirrors what resume.js produces: original row is failed/timed_out,
+    // redispatched row is later in time.
+    db.prepare('DELETE FROM agent_runs WHERE wave_id = ?').run(waveId);
+    for (const d of domains) {
+      db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'failed')")
+        .run(waveId, d.id);
+      db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'complete')")
+        .run(waveId, d.id);
+    }
+
+    // Sanity-check: both rows actually exist per domain.
+    const totalRows = db.prepare('SELECT COUNT(*) as n FROM agent_runs WHERE wave_id = ?').get(waveId).n;
+    assert.equal(totalRows, domains.length * 2,
+      `expected ${domains.length * 2} agent_run rows (failed + complete per domain), got ${totalRows}`);
+
+    const result = checkGates(db, runId);
+    // F-084568-005: without the MAX(ar2.id) filter the gate would BLOCK on
+    // the stale 'failed' rows. With it, only the newer 'complete' rows are
+    // counted and the gate ADVANCEs cleanly.
+    assert.equal(result.verdict, 'ADVANCE',
+      `latest-per-domain filter must ignore stale failed rows; got ${result.verdict}: ${result.reason}`);
+    assert.equal(result.nextPhase, 'health-audit-b');
+    db.close();
+  });
+
+  it('BLOCK when latest agent row per domain is still in-flight (stale complete row must NOT be picked)', () => {
+    // F-084568-005 mirror: inverse of the prior test. If a redispatched
+    // agent is STILL running (status='dispatched') with an old 'complete'
+    // row in the table, the gate must BLOCK — because the LATEST row
+    // (the dispatched one) is the true state. Confirms the filter doesn't
+    // accidentally pick the "best" row, it picks the LAST row.
+    const { runId, waveId } = setupRun(db);
+
+    const domains = db.prepare('SELECT id FROM domains WHERE run_id = ? AND ownership_class != ?')
+      .all(runId, 'shared');
+
+    db.prepare('DELETE FROM agent_runs WHERE wave_id = ?').run(waveId);
+    for (const d of domains) {
+      // OLD complete row (lower id), NEW dispatched row (higher id)
+      db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'complete')")
+        .run(waveId, d.id);
+      db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'dispatched')")
+        .run(waveId, d.id);
+    }
+
+    const result = checkGates(db, runId);
+    // The dispatched row is newer, so it wins. Gate must BLOCK on in-flight.
+    assert.equal(result.verdict, 'BLOCK');
+    assert.ok(result.reason && result.reason.includes('in-flight'),
+      `expected in-flight block reason, got: ${result.reason}`);
+    db.close();
+  });
+});
+
+// ═══════════════════════════════════════════
 // Advancement + Promotion
 // ═══════════════════════════════════════════
 

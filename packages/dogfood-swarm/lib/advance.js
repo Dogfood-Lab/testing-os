@@ -80,10 +80,23 @@ export function checkGates(db, runId) {
   const phaseInfo = PHASE_MAP[wave.phase];
   if (!phaseInfo) return { verdict: 'BLOCK', gates: [], reason: `Unknown phase: ${wave.phase}` };
 
+  // Read the LATEST agent_run per (wave_id, domain_id). After `swarm resume`
+  // runs, the wave gains a new agent_run row per redispatched domain (resume.js
+  // INSERTs at status='pending', then transitions to 'dispatched'); the OLD
+  // failed/timed_out row remains. Iterating ALL rows would surface the stale
+  // row to checkAgentCompletion() and report "BLOCK: <N> agent(s) not complete"
+  // even when every redispatched agent finished cleanly — silently blocking
+  // `swarm advance` after every successful resume cycle. Mirrors the
+  // latest-per-domain filter that collect.js (line ~130) and resume.js
+  // (line ~72) already apply. F-W1-BACK-005 / F-084568-005.
   const agents = db.prepare(`
     SELECT ar.*, d.name as domain_name
     FROM agent_runs ar JOIN domains d ON ar.domain_id = d.id
     WHERE ar.wave_id = ?
+      AND ar.id = (
+        SELECT MAX(ar2.id) FROM agent_runs ar2
+        WHERE ar2.wave_id = ar.wave_id AND ar2.domain_id = ar.domain_id
+      )
   `).all(wave.id);
 
   const gates = [];

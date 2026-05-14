@@ -4,12 +4,13 @@
  * Events are stored as YAML arrays in reviews/<YYYY>/<date>-finding-review-log.yaml
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import yaml from 'js-yaml';
 
 import { withFileLock } from '../lib/file-lock.js';
+import { renameWithRetry } from '../lib/rename-with-retry.js';
 
 let _eventCounter = 0;
 
@@ -99,7 +100,9 @@ export function appendEvent(rootDir, event) {
     const tmpSuffix = randomBytes(4).toString('hex');
     const tmpPath = `${logPath}.${tmpSuffix}.tmp`;
     writeFileSync(tmpPath, yaml.dump(events, { lineWidth: 120, noRefs: true }), 'utf-8');
-    renameSync(tmpPath, logPath);
+    // Windows EPERM/EBUSY on rename can fire transiently when AV or
+    // Search Indexer holds a handle to the freshly written temp. Retry.
+    renameWithRetry(tmpPath, logPath);
     return logPath;
   }
 
@@ -126,7 +129,10 @@ export function appendEvent(rootDir, event) {
     const tmpSuffix = randomBytes(4).toString('hex');
     const tmpPath = `${logPath}.${tmpSuffix}.tmp`;
     writeFileSync(tmpPath, yaml.dump(events, { lineWidth: 120, noRefs: true }), 'utf-8');
-    renameSync(tmpPath, logPath);
+    // renameWithRetry: tolerate the Windows EPERM/EBUSY transient handle race
+    // even though we hold the per-file lock — antivirus/Search Indexer can
+    // still grab a handle on the temp during the rename window.
+    renameWithRetry(tmpPath, logPath);
     return logPath;
   });
 }

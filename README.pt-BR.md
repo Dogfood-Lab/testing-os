@@ -21,7 +21,7 @@
 
 📖 **[Leia o manual →](https://dogfood-lab.github.io/testing-os/)**
 
-</div
+</div>
 
 ---
 
@@ -97,4 +97,4 @@ Sincronizado em todos os pacotes `@dogfood-lab/*`. Atualmente `0.1.0-pre`; a pri
 
 *Experimente primeiro. Lance depois.*
 
-</div
+</div>

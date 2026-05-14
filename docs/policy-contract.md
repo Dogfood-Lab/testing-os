@@ -79,7 +79,7 @@ Scenario IDs that must have a recent accepted record. "Recent" is defined by `fr
 
 ## Integration with Shipcheck
 
-Shipcheck Gate F reads `indexes/latest-by-repo.json` via GitHub API.
+Shipcheck Gate F reads `indexes/latest-by-repo.json` via `raw.githubusercontent.com` (the GitHub CDN). The CDN cache window is 3–5 minutes; that is exactly what creates the read-after-write timing seam documented in [`docs/rollout-doctrine.md`](rollout-doctrine.md) — an ingest that just landed on `main` is not immediately visible to Gate F until the CDN edge picks up the new commit. The same framing appears in `site/src/content/docs/handbook/integration.md`, `site/src/content/docs/handbook/operating-guide.md`, `docs/operating-cadence.md`, and `docs/enforcement-tiers.md`; this doc was previously the outlier saying "GitHub API."
 
 For a given repo + surface:
 - If no record exists: Gate F fails

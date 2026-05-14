@@ -39,7 +39,7 @@ export const config: SiteConfig = {
       id: 'architecture',
       title: 'Architecture',
       cards: [
-        { title: 'Three Contracts', code: '# Record — what a dogfood run looks like\n# Scenario — what constitutes real exercise\n# Policy — what rules the verifier enforces' },
+        { title: 'Seven Contracts', code: '# Foundational three\n# Record — what a dogfood run looks like\n# Scenario — what constitutes real exercise\n# Policy — what rules the verifier enforces\n\n# Intelligence layer four\n# Finding — a single learning from a run\n# Pattern — a reusable shape across findings\n# Recommendation — a candidate action derived from patterns\n# Doctrine — accepted recommendation, binding across the org\n\n# See: handbook/contracts/ for the full canonical model' },
         { title: 'Data Flow', code: 'Source repo → repository_dispatch\n  → Central verifier (schema + provenance + policy)\n  → Accepted record → records/<org>/<repo>/\n  → Rebuilt indexes → latest-by-repo.json' },
         { title: 'Consumers', code: 'shipcheck   → Gate F enforcement\nrepo-knowledge → SQLite mirror\norg audit   → Portfolio consumer' },
       ],

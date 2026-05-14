@@ -17,6 +17,7 @@
 
 import fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { renameWithRetry } from './rename-with-retry.js';
 
 /**
  * Atomically write `content` to `path`.
@@ -33,7 +34,11 @@ export function atomicWriteFileSync(path, content, encoding = 'utf-8') {
     // Indirect via `fs.*` (not destructured imports) so test mocks of
     // `fs.writeFileSync` reach this code path. Behavior is identical.
     fs.writeFileSync(tmpPath, content, encoding);
-    fs.renameSync(tmpPath, path);
+    // Windows-only: rename can transiently fail with EPERM/EBUSY when AV
+    // or Search Indexer holds a handle on the just-written temp file.
+    // renameWithRetry uses bounded exponential backoff; behavior on POSIX
+    // is identical to renameSync (the retry never fires).
+    renameWithRetry(tmpPath, path);
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch { /* tmp may not exist */ }
     throw err;

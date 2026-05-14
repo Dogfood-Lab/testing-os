@@ -22,7 +22,7 @@ testing-os
 
 📖 **[Lire la documentation →](https://dogfood-lab.github.io/testing-os/)**
 
-</div
+</div>
 
 ---
 
@@ -99,4 +99,4 @@ Synchronisation de toutes les versions des paquets `@dogfood-lab/*`. Actuellemen
 
 *Mangez d'abord. Expédiez ensuite.*
 
-</div
+</div>

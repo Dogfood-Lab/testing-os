@@ -229,12 +229,13 @@
       "description": "The canonical envelope is { domain, summary, [findings|features|fixes], ... }. Phase-7-wave-1 productization (F-252713-017): replaces silent normalization in collect.js with a structured AgentOutputValidationError pointing the agent at the canonical shape. The schema is permissive at top level (only `domain` + `summary` required) so it can govern audit, feature, AND amend outputs, with phase-specific $defs for the inner shapes. Targets a fixture path today — the live wiring is a cross-wave dependency on backend (Phase 7 wave 2 will (a) extend the categories enum to absorb historical wave-15/wave-20 categories or migrate those files, and (b) wire the validator into collect.js's mergeFindings flow).",
       "schema": "scripts/agent-output.schema.json",
       "targets": [
-        "swarms/__schema-fixtures__/*.json"
+        "swarms/__schema-fixtures__/*.json",
+        "swarms/swarm-*/wave-*/outputs/*.json"
       ],
       "allowlist": [],
       "errorClass": "AgentOutputValidationError",
       "allowEmpty": true,
-      "hint": "Match scripts/agent-output.schema.json. Required at top level: domain, summary. Audit outputs add `findings[]` (with severity ∈ CRITICAL/HIGH/MEDIUM/LOW and category ∈ AUDIT_CATEGORIES); feature outputs add `features[]`; amend outputs add `fixes[]` + `files_changed[]`. Once backend wave 2 wires this into collect.js, the target glob expands to `swarms/swarm-*/wave-*/*.json` (after the historical-shape migration lands)."
+      "hint": "Match scripts/agent-output.schema.json. Required at top level: domain, summary. Audit outputs add `findings[]` (with severity ∈ CRITICAL/HIGH/MEDIUM/LOW and category ∈ AUDIT_CATEGORIES); feature outputs add `features[]`; amend outputs add `fixes[]` + `files_changed[]`. Live-run target glob expanded 2026-05-14 (study-swarm Prevention-A): wave-2 amend's coordinator-brief drift (fixes_applied vs fixes) was caught at collect-time after agents had already run — moving the schema-conformance check to CI fires the gate at push time so brief-vs-schema drift surfaces before agents are dispatched."
     },
 
     {

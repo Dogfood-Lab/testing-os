@@ -62,7 +62,7 @@ Key fields:
 - `policy_version` -- semver for this policy
 - `enforcement.mode` -- `required`, `warn-only`, or `exempt`
 - `enforcement.reason` -- why non-required (mandatory for warn-only/exempt)
-- `enforcement.review_after` -- when to re-evaluate (mandatory for warn-only/exempt)
+- `enforcement.review_after` -- when to re-evaluate (mandatory for `exempt` only — see [`policy.schema.json`](https://github.com/dogfood-lab/testing-os/blob/main/packages/schemas/src/json/policy.schema.json) and [`docs/enforcement-tiers.md`](https://github.com/dogfood-lab/testing-os/blob/main/docs/enforcement-tiers.md))
 - `surfaces.<surface>.required_scenarios` -- list of scenario IDs required for this surface
 - `surfaces.<surface>.freshness.max_age_days` -- freshness violation threshold
 - `surfaces.<surface>.freshness.warn_age_days` -- freshness warning threshold

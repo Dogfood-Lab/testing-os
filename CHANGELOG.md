@@ -2,14 +2,20 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.7] — 2026-04-27
+## [Unreleased]
+
+### Changed
+
+- **Documentation reconciliation of "all 7 packages private" claim** — README.md `## Versioning`, SHIP_GATE.md D-48 + D-50, SECURITY.md `## Scope`, and four HANDOFF.md locations now consistently state: **six of seven `@dogfood-lab/*` packages are `private: true`; `@dogfood-lab/schemas` is publish-ready (declares `publishConfig.access=public` and a `files` whitelist) but has not been published to npm**. No code change to `packages/schemas/package.json` — the schemas package was always publish-ready by design; the docs had drifted to assert a blanket `private: true` that was never literally true. The npm publish decision remains deferred per HANDOFF.md Session G.
+- **CLAUDE.md `Cross-package imports` rule extended with a workspace-dependency-graph note** — documents that `findings → ingest → dogfood-swarm → findings` forms a cycle by design (npm workspaces resolve it via symlinks), explains why it's accepted, and supersedes the v1.1.4 CHANGELOG's "one-way edge, no cycle" framing which became stale when v1.1.5 added the `ingest → dogfood-swarm` `logStage` edge.
+
 
 Final swarm version. Wave-31 audit findings + Pattern #9/#10 reframes + the closing fence-tag self-incrimination instance. Phase 7 swarm declared complete (Option I — ship-and-stop): ~31 waves, ~115 fixes verified holding, 14 audit-coverage classes, 5 cross-pollination chains, Class #14 5-iteration recursion arc, methodology evidence at 5 layers. Cross-swarm methodology takeaways + 7-session post-swarm roadmap captured in [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
 
 ### Fixed
 
 - **`scripts/apply-finding-migration.mjs`** entrypoint detection — switched from `file://${process.argv[1]}` to canonical `pathToFileURL` pattern. Previous form silently no-op'd on Windows because `process.argv[1]` uses backslashes while `import.meta.url` is always POSIX/URL form. Caught by wave-31 audit-the-audit. Class #14 5th-iteration instance (productization caught its own incomplete productization).
-- **Untagged code fence** in [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md) line 363 (`verified_via_distribution` display block) — closed by the doc-drift `untagged-fence` handler (Pattern #5, wave-23 origin) firing against the swarm's own closure receipt. Most fitting self-incrimination instance of the entire 31-wave run: the discipline closed on its own closing artifact.
+- **Untagged code fence** in [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md) (the `verified_via_distribution` display block — line number intentionally omitted because the file is live and the offset drifts on each edit; the section anchor is the stable reference) — closed by the doc-drift `untagged-fence` handler (Pattern #5, wave-23 origin) firing against the swarm's own closure receipt. Most fitting self-incrimination instance of the entire 31-wave run: the discipline closed on its own closing artifact.
 
 ### Changed
 

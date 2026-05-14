@@ -16,10 +16,23 @@ const TEST_ROOT = resolve(__dirname, '__test_synthesis__');
 
 // ─── Helpers ────────────────────────────────────────────────
 
+// F-W1-TEST-007 — deterministic id generation. The previous shape used
+// Math.random()/Date.now() which made finding_ids and source_record_ids
+// differ across runs; that produced noisy failure-message diffs and a
+// statistical (vanishingly small) collision risk between concurrent ids.
+// A monotonic counter that resets at module load gives stable, debuggable
+// ids without affecting coverage.
+let _syntheticIdCounter = 0;
+function nextSyntheticId() {
+  _syntheticIdCounter += 1;
+  return _syntheticIdCounter.toString(36).padStart(6, '0');
+}
+
 function makeAcceptedFinding(overrides) {
+  const slug = nextSyntheticId();
   return {
     schema_version: '1.0.0',
-    finding_id: `dfind-test-${Math.random().toString(36).slice(2, 8)}`,
+    finding_id: `dfind-test-${slug}`,
     title: 'Test finding for synthesis',
     status: 'accepted',
     repo: 'mcp-tool-shop-org/test-repo',
@@ -30,7 +43,7 @@ function makeAcceptedFinding(overrides) {
     remediation_kind: 'docs_change',
     transfer_scope: 'surface_archetype',
     summary: 'Test finding for synthesis testing that is long enough to pass validation.',
-    source_record_ids: ['test-' + Math.random().toString(36).slice(2, 8)],
+    source_record_ids: [`test-${slug}`],
     evidence: [{ evidence_kind: 'record', record_id: 'test-001' }],
     ...overrides
   };

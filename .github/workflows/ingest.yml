@@ -24,7 +24,16 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          fetch-depth: 1
+          # F-W1-CI-008: full clone (NOT fetch-depth: 1). The push-with-retry
+          # loop downstream does `git pull --rebase` on failure; a shallow
+          # clone cannot rebase against arbitrary history. If main has
+          # diverged by more than one commit since this workflow started, a
+          # shallow rebase either succeeds onto a graft missing intermediate
+          # commits or fails with "refusing to merge unrelated histories"
+          # masquerading as the operator's "concurrent ingest conflict"
+          # mental model. The cost of fetch-depth: 0 on this repo (few MB of
+          # history) is well below the workflow's overall ingest cost.
+          fetch-depth: 0
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:

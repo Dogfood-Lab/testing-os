@@ -8,6 +8,11 @@
 function deepMerge(target, source) {
   const result = { ...target };
   for (const key of Object.keys(source)) {
+    // Prototype-pollution guard: js-yaml's default schema lets attacker-controlled
+    // policy YAML embed `__proto__` / `constructor` / `prototype` as object keys.
+    // Recursing into those mutates `Object.prototype` for the verifier process,
+    // which can flip policy_valid checks for every later submission. Drop the key.
+    if (key === '__proto__' || key === 'constructor' || key === 'prototype') continue;
     if (
       source[key] !== null &&
       typeof source[key] === 'object' &&

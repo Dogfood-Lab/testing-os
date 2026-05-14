@@ -103,7 +103,7 @@ Requires Node ≥ 20. CI matrix runs Node 20 + 22 on `ubuntu-latest`; locally va
 
 ## Versioning
 
-Lockstep across all `@dogfood-lab/*` packages — they bump together. The version line in this README is auto-stamped from `package.json` via `scripts/sync-version.mjs` (runs as `prebuild`). All packages are `private: true` for now; npm publish is a separate decision per package.
+Lockstep across all `@dogfood-lab/*` packages — they bump together. The version line in this README is auto-stamped from `package.json` via `scripts/sync-version.mjs` (runs as `prebuild`). Six of seven packages are `private: true`; `@dogfood-lab/schemas` is publish-ready (declares `publishConfig.access=public` and a `files` whitelist) but **unpublished**. The npm publish decision remains deferred per [HANDOFF.md](HANDOFF.md) Session G.
 
 ## License
 

@@ -19,6 +19,7 @@
 
 import fs from 'node:fs';
 import { randomBytes } from 'node:crypto';
+import { renameWithRetry } from './rename-with-retry.js';
 
 /**
  * Atomically write `content` to `path`.
@@ -35,7 +36,9 @@ export function atomicWriteFileSync(path, content, encoding = 'utf-8') {
     // Indirect via `fs.*` (not destructured imports) so test mocks of
     // `fs.writeFileSync` reach this code path. Mirrors findings/lib/atomic-write.js.
     fs.writeFileSync(tmpPath, content, encoding);
-    fs.renameSync(tmpPath, path);
+    // Windows-only: rename can transiently fail with EPERM/EBUSY when AV or
+    // Search Indexer holds a handle on the just-written temp. Bounded retry.
+    renameWithRetry(tmpPath, path);
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch { /* tmp may not exist */ }
     throw err;
@@ -80,7 +83,11 @@ export function stageWriteFileSync(path, content, encoding = 'utf-8') {
  * @param {string} finalPath
  */
 export function promoteStaged(tmpPath, finalPath) {
-  fs.renameSync(tmpPath, finalPath);
+  // Windows EPERM/EBUSY tolerance — the multi-file commit group in
+  // rebuild-indexes.js relies on each promoteStaged hop succeeding; a
+  // transient AV/Search-Indexer handle would otherwise abort the group
+  // partway through.
+  renameWithRetry(tmpPath, finalPath);
 }
 
 /**

@@ -29,6 +29,7 @@ import assert from 'node:assert/strict';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { mkdirSync, rmSync, readFileSync, writeFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import yaml from 'js-yaml';
 import { fork } from 'node:child_process';
 
@@ -42,15 +43,65 @@ import { appendEvent, createEvent, getAllEvents, getLogPath } from '../findings/
 import { withFileLock, isLocked, lockDirFor } from '../findings/lib/file-lock.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEST_ROOT = resolve(__dirname, '__test_event_log_race__');
+
+// F-W1-SUBSTABLE-4 — relocate TEST_ROOT to os.tmpdir() so the multi-process
+// fork suite isn't racing Windows lazy-close handles on a path under the
+// repo. Antivirus / search indexer scanning is the documented source of
+// transient EPERM/EBUSY/ENOTEMPTY on rmdir after a fork-exit on NTFS; the
+// OS temp dir is typically excluded from those scanners. Each test process
+// gets its own subdir so concurrent runs don't collide. The shape of the
+// path doesn't matter to the appendEvent contract — only the directory
+// behavior under contention does.
+const TEST_ROOT = resolve(tmpdir(), `dogfood-test-event-log-race-${process.pid}`);
+
+// F-W1-SUBSTABLE-4 — rmSync wrapped in a retry loop. Windows holds short-
+// lived handles after fork-exit (kernel cleanup, AV scan, search indexer);
+// the first rmSync may fail with ENOTEMPTY / EBUSY / EPERM even though
+// every test process has finished its writes. Retry with 25ms backoff up
+// to ~500ms total. On POSIX this short-circuits on the first attempt
+// because handles close synchronously on exit.
+function rmSyncWithRetry(target, { maxAttempts = 20, delayMs = 25 } = {}) {
+  if (!existsSync(target)) return;
+  let lastErr;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      rmSync(target, { recursive: true, force: true });
+      if (!existsSync(target)) return;
+    } catch (err) {
+      lastErr = err;
+      if (!['ENOTEMPTY', 'EBUSY', 'EPERM', 'ENOENT'].includes(err.code)) {
+        throw err;
+      }
+    }
+    // Brief synchronous backoff — short enough that the teardown doesn't
+    // dominate the test budget, long enough that the kernel can flush a
+    // handful of straggler handles.
+    const until = Date.now() + delayMs;
+    while (Date.now() < until) { /* spin */ }
+  }
+  // Final attempt with the real error surfaced — but be forgiving:
+  // if the failure is just ENOTEMPTY on the topmost dir, the test
+  // body already passed and a stale directory is not worth a hookFailed.
+  if (existsSync(target)) {
+    try { rmSync(target, { recursive: true, force: true }); }
+    catch (err) {
+      if (process.env.SUBSTABLE_DEBUG) {
+        process.stderr.write(`[event-log-race teardown] gave up on ${target}: ${err.code} ${err.message}\n`);
+      }
+      // Swallow ENOTEMPTY / EBUSY — the test logic passed; a leftover
+      // scratch dir under os.tmpdir() is the OS's problem to clean up.
+      if (!['ENOTEMPTY', 'EBUSY', 'EPERM'].includes(err.code)) throw err;
+    }
+  }
+}
 
 function setupTestRoot() {
-  if (existsSync(TEST_ROOT)) rmSync(TEST_ROOT, { recursive: true, force: true });
+  rmSyncWithRetry(TEST_ROOT);
   mkdirSync(TEST_ROOT, { recursive: true });
 }
 
 function teardownTestRoot() {
-  if (existsSync(TEST_ROOT)) rmSync(TEST_ROOT, { recursive: true, force: true });
+  rmSyncWithRetry(TEST_ROOT);
 }
 
 /**
@@ -86,7 +137,7 @@ describe('appendEvent — in-process serial smoke-test (W3-PIPE-001)', () => {
 
   for (let iter = 0; iter < ITERATIONS; iter++) {
     it(`50 sequenced appends preserve every event (iteration ${iter + 1}/${ITERATIONS})`, async () => {
-      if (existsSync(TEST_ROOT)) rmSync(TEST_ROOT, { recursive: true, force: true });
+      rmSyncWithRetry(TEST_ROOT);
       mkdirSync(TEST_ROOT, { recursive: true });
 
       const N = 50;
@@ -140,7 +191,7 @@ describe('appendEvent — multi-process concurrency (W3-PIPE-001)', () => {
   const ITERATIONS = 3;
   for (let iter = 0; iter < ITERATIONS; iter++) {
     it(`50 forked processes append distinct events without loss — iteration ${iter + 1}/${ITERATIONS} (canonical race detector)`, { timeout: 60_000 }, async () => {
-      if (existsSync(TEST_ROOT)) rmSync(TEST_ROOT, { recursive: true, force: true });
+      rmSyncWithRetry(TEST_ROOT);
       mkdirSync(TEST_ROOT, { recursive: true });
 
       const helperPath = resolve(__dirname, 'event-log-race.helper.mjs');
@@ -233,18 +284,23 @@ describe('withFileLock — file-mutex contract', () => {
     assert.equal(lockDirFor(target), `${target}.lock`);
   });
 
-  it('serializes nested withFileLock calls on the same target', async () => {
-    // Two callers with the same target must observe ordered execution.
-    // Use a small wait inside each critical section to make the ordering
-    // observable.
+  it('serial smoke-test: nested withFileLock calls on the same target run cleanly', async () => {
+    // NOTE (F-W1-TEST-003): this is NOT a concurrency test. `withFileLock`
+    // is synchronous (mkdir-based) and the body inside it has no async
+    // yield, so the two setImmediate callbacks run to completion one after
+    // the other on the event loop — they cannot interleave by construction.
+    // The CANONICAL race detector for the lock is the multi-process forked
+    // test at the top of this file (50 forks × 3 iterations); that test is
+    // what proves serialization under contention. This in-process check is
+    // only a smoke test that the wrapper doesn't throw on the happy path
+    // and that two back-to-back invocations on the same target produce a
+    // sequence consistent with serial execution.
     const target = join(tmp, 'log.yaml');
     const sequence = [];
 
     const a = new Promise(res => setImmediate(() => {
       withFileLock(target, () => {
         sequence.push('a-start');
-        // No setTimeout — the lock is sync. We add a sentinel to prove the
-        // critical section ran before b's did.
         sequence.push('a-end');
       });
       res();
@@ -260,14 +316,15 @@ describe('withFileLock — file-mutex contract', () => {
 
     await Promise.all([a, b]);
 
-    // Either a-start..a-end..b-start..b-end OR b-start..b-end..a-start..a-end.
-    // What is NEVER allowed: an interleaved a-start, b-start, a-end, b-end.
+    // Two callers, each pushing start/end as a pair without interleaving.
+    // Allowed orders: a..b or b..a; forbidden: a-start, b-start, a-end, ...
     const interleaved =
       (sequence.indexOf('a-start') < sequence.indexOf('b-start') &&
        sequence.indexOf('b-start') < sequence.indexOf('a-end')) ||
       (sequence.indexOf('b-start') < sequence.indexOf('a-start') &&
        sequence.indexOf('a-start') < sequence.indexOf('b-end'));
-    assert.equal(interleaved, false, `serialization broken: ${sequence.join(',')}`);
+    assert.equal(interleaved, false, `serial sequence broken: ${sequence.join(',')}`);
+    assert.equal(sequence.length, 4, 'both critical sections must have run to completion');
   });
 
   it('different targets do not contend with each other', () => {

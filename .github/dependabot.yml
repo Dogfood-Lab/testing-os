@@ -1,0 +1,41 @@
+# F-W1-CI-032: minimal Dependabot config to automate the floor of the SHA-bump
+# cadence. The repo's discipline of pinning by SHA (no floating @v4) makes
+# Dependabot's PR-based bump workflow especially valuable — it's the only
+# mechanism that does not require a human to remember to look. Pattern
+# mirrors ollama-intern-mcp's config: group minor + patch into one PR per
+# ecosystem, leave majors as their own PRs for migration review.
+
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      non-major:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: npm
+    # site/ is a separate npm subtree (Astro Starlight handbook, not a
+    # workspace member) per CLAUDE.md — its lockfile is independent of the
+    # root monorepo lockfile and needs its own Dependabot scope.
+    directory: "/site"
+    schedule:
+      interval: weekly
+    groups:
+      non-major:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions-non-major:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    open-pull-requests-limit: 3

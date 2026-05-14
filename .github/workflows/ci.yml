@@ -35,6 +35,15 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# F-W1-CI-002: declare the minimum the workflow needs explicitly rather than
+# inheriting whatever repo-default GITHUB_TOKEN scope is configured. The CI
+# workflow runs untrusted PR code via `npm ci` + `npm test`, so the
+# GITHUB_TOKEN scope is part of the attack surface. `contents: read` is the
+# floor needed for `actions/checkout` to fetch the ref; no job here writes
+# back to the repo, so no per-job override is needed.
+permissions:
+  contents: read
+
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
@@ -47,7 +56,14 @@ jobs:
       # fails and costs an extra retry-and-pin cycle every time.
       fail-fast: false
       matrix:
-        node-version: [20, 22]
+        # F-W1-CI-010: Node 20 hit EOL on 2026-04-30 — drop. Node 22 is
+        # current Maintenance LTS, Node 24 is Active LTS. Bumping the matrix
+        # keeps `engines.node` (`>=20`) tested at its current ceiling and
+        # surfaces Node 24 native-test-runner / permission-model / fetch
+        # behavior drift before downstream consumers hit it. The setup-node
+        # SHA bump (separate baseline issue, deadline 2026-09-16) is a
+        # follow-up that does not gate this matrix change.
+        node-version: [22, 24]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4

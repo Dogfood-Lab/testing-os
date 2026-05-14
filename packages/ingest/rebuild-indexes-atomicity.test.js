@@ -241,27 +241,31 @@ describe('rebuildIndexes — Class #6 helper-adoption-sweep (W3-PIPE-002)', () =
   });
 });
 
-describe('rebuildIndexes — multi-call concurrency (W3-PIPE-002 cross-fix)', () => {
+describe('rebuildIndexes — back-to-back serial smoke (W3-PIPE-002 cross-fix)', () => {
   let repoRoot;
   beforeEach(() => { repoRoot = makeTmpRepo(); });
   afterEach(() => rmSync(repoRoot, { recursive: true, force: true }));
 
-  it('two concurrent rebuilds in the same process do not corrupt index outputs', async () => {
+  it('two back-to-back in-process rebuilds leave no orphan artifacts', async () => {
+    // NOTE (F-W1-TEST-004): this is NOT a concurrency test. `rebuildIndexes`
+    // is synchronous, so wrapping each call in `new Promise(res => {
+    // rebuildIndexes(...); res(); })` causes the executor to run to
+    // completion before the promise resolves — the two calls run
+    // sequentially in declaration order. `Promise.all` here is a no-op.
+    // Real cross-process concurrency would need a forked-worker harness
+    // (see the multi-process pattern in event-log-race.test.js); this
+    // in-process check is only a smoke test that two back-to-back rebuilds
+    // on the same repoRoot produce valid index outputs and leave no orphan
+    // artifacts. It does NOT prove safety under contention.
     seedRecord(repoRoot, 'g-001');
     seedRecord(repoRoot, 'g-002');
 
-    // Run two rebuilds concurrently. Each rebuild stages its own pid+random
-    // temp suffix and journal, so they don't collide in path-space. The
-    // assertion: after both complete, the canonical paths hold valid JSON
-    // and no orphan artifacts remain.
-    await Promise.all([
-      new Promise(res => { rebuildIndexes(repoRoot); res(); }),
-      new Promise(res => { rebuildIndexes(repoRoot); res(); }),
-    ]);
+    rebuildIndexes(repoRoot);
+    rebuildIndexes(repoRoot);
 
     const orphans = listOrphanArtifacts(repoRoot);
-    assert.deepEqual(orphans.tmps, [], 'no .tmp residue after concurrent runs');
-    assert.deepEqual(orphans.journals, [], 'no journal residue after concurrent runs');
+    assert.deepEqual(orphans.tmps, [], 'no .tmp residue after two serial runs');
+    assert.deepEqual(orphans.journals, [], 'no journal residue after two serial runs');
 
     const latest = JSON.parse(readFileSync(join(repoRoot, 'indexes', 'latest-by-repo.json'), 'utf-8'));
     assert.ok(typeof latest === 'object' && latest !== null, 'latest is valid JSON');

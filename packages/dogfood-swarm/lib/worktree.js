@@ -15,9 +15,36 @@
  *   cleanup  → remove worktree after successful merge or on discard
  */
 
-import { execSync } from 'node:child_process';
+import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+
+/**
+ * Validate that a domain name is safe to interpolate into both a filesystem
+ * path AND a git branch name.
+ *
+ * Why this is centralized: createWorktree() and mergeWorktree() previously
+ * interpolated opts.domainName directly into shell-quoted git command
+ * strings (`git worktree add -b "<branch>" ...`). A domain name containing
+ * shell metacharacters (`"; rm -rf / ; "`), backticks, or path-traversal
+ * segments (`../../tmp/x`) would break the surrounding quotes and execute
+ * arbitrary shell, or escape the .swarm/worktrees/ jail. The argv-array
+ * execFileSync calls below close the shell-injection half; this predicate
+ * is the defense-in-depth half so even non-shell sinks see a sanitized name.
+ *
+ * Domains today are auto-detected from a fixed bucket list (tests, docs,
+ * frontend, backend, ci-tooling, shared) or manually added via
+ * `swarm domains <run> --add <name>` from operator input — the operator
+ * path is the only untrusted vector.
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function isSafeDomainName(name) {
+  if (typeof name !== 'string') return false;
+  if (name.length === 0 || name.length > 64) return false;
+  return /^[a-zA-Z0-9_-]+$/.test(name);
+}
 
 /**
  * Create a worktree for an agent.
@@ -30,6 +57,14 @@ import { join } from 'node:path';
  * @returns {{ worktreePath: string, branch: string }}
  */
 export function createWorktree(repoPath, opts) {
+  if (!isSafeDomainName(opts.domainName)) {
+    throw new Error(
+      `Unsafe domain name: ${JSON.stringify(opts.domainName)} — must match /^[a-zA-Z0-9_-]+$/ and be ≤64 chars`
+    );
+  }
+  if (!Number.isInteger(opts.waveNumber) || opts.waveNumber < 0) {
+    throw new Error(`Unsafe wave number: ${JSON.stringify(opts.waveNumber)}`);
+  }
   const runShort = opts.runId.replace(/^swarm-/, '').slice(0, 12);
   const branch = `swarm/${runShort}/w${opts.waveNumber}-${opts.domainName}`;
   const wtDir = join(repoPath, '.swarm', 'worktrees', `w${opts.waveNumber}-${opts.domainName}`);
@@ -41,16 +76,17 @@ export function createWorktree(repoPath, opts) {
   // Ensure .swarm is in .gitignore
   ensureGitignore(repoPath);
 
-  // Remove stale worktree if it exists
+  // Remove stale worktree if it exists. Argv-array form bypasses the shell
+  // so wtDir cannot trigger metacharacter interpretation.
   if (existsSync(wtDir)) {
-    try { git(repoPath, `worktree remove "${wtDir}" --force`); } catch { /* */ }
+    try { gitArgs(repoPath, ['worktree', 'remove', wtDir, '--force']); } catch { /* */ }
   }
 
-  // Delete stale branch if it exists
-  try { git(repoPath, `branch -D "${branch}"`); } catch { /* branch doesn't exist */ }
+  // Delete stale branch if it exists.
+  try { gitArgs(repoPath, ['branch', '-D', branch]); } catch { /* branch doesn't exist */ }
 
-  // Create worktree with new branch from HEAD
-  git(repoPath, `worktree add -b "${branch}" "${wtDir}"`);
+  // Create worktree with new branch from HEAD.
+  gitArgs(repoPath, ['worktree', 'add', '-b', branch, wtDir]);
 
   return { worktreePath: wtDir, branch };
 }
@@ -92,7 +128,9 @@ export function getWorktreeChanges(worktreePath) {
  */
 export function mergeWorktree(repoPath, branch) {
   try {
-    git(repoPath, `merge "${branch}" --no-ff -m "swarm: merge ${branch}"`);
+    // Argv-array form so a malicious branch name cannot break out of the
+    // -m argument and inject shell commands.
+    gitArgs(repoPath, ['merge', branch, '--no-ff', '-m', `swarm: merge ${branch}`]);
     return { merged: true, conflicts: [] };
   } catch (e) {
     // Check for merge conflicts
@@ -116,11 +154,11 @@ export function mergeWorktree(repoPath, branch) {
  */
 export function removeWorktree(repoPath, worktreePath, branch) {
   try {
-    git(repoPath, `worktree remove "${worktreePath}" --force`);
+    gitArgs(repoPath, ['worktree', 'remove', worktreePath, '--force']);
   } catch { /* already removed */ }
 
   if (branch) {
-    try { git(repoPath, `branch -D "${branch}"`); } catch { /* already deleted */ }
+    try { gitArgs(repoPath, ['branch', '-D', branch]); } catch { /* already deleted */ }
   }
 }
 
@@ -168,6 +206,16 @@ export function cleanupAllWorktrees(repoPath) {
 
 function git(cwd, cmd) {
   return execSync(`git ${cmd}`, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
+/**
+ * Argv-array variant of git(): bypasses the shell entirely so caller-supplied
+ * arguments cannot trigger metacharacter interpretation. Use this for any
+ * git invocation that interpolates external/unvalidated input (branch names,
+ * worktree paths, domain-derived strings).
+ */
+function gitArgs(cwd, args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
 }
 
 /**

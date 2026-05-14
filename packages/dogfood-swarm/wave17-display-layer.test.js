@@ -35,7 +35,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -263,8 +263,15 @@ describe('F-091578-012 — persist-results renders submission path + reproduce c
   afterEach(() => { rmSync(tmp, { recursive: true, force: true }); });
 
   it('emits INGEST_FAILED with submission path + reproduce command', () => {
-    // Build the minimum manifest + dirs persist-results.js expects, then
-    // give it a guaranteed-bad audit set so dogfood ingest exits non-zero.
+    // Build the minimum manifest + audit dir persist-results.js expects.
+    // The script bails out with exit 2 BEFORE the ingest seam if `audit/`
+    // is missing or empty (see persist-results.js:193). To exercise the
+    // ingest failure path (where the [INGEST_FAILED] rendering lives), we
+    // need at least one audit JSON whose findings shape sails past
+    // buildSubmission() but trips ingest run.js at schema validation.
+    // A bogus-but-parseable audit file does that: buildSubmission accepts
+    // it, atomic-writes submission.json, then `dogfood ingest` fails at
+    // the schema validator inside run.js.
     const manifestPath = join(tmp, 'manifest.json');
     writeFileSync(manifestPath, JSON.stringify({
       repo: 'org/repo',
@@ -275,13 +282,16 @@ describe('F-091578-012 — persist-results renders submission path + reproduce c
       finished_at: '2026-04-26T00:01:00Z',
     }, null, 2));
 
-    // Audit / remediate dirs exist but empty — buildSubmission produces a
-    // structurally valid submission with zero scenarios; ingest run.js will
-    // reject it (no scenario_results → schema invalid). That gives us a
-    // deterministic non-zero exit from execSync, which is the path we want
-    // to exercise. If ingest unexpectedly accepts an empty submission, the
-    // test would silently pass — guard against that by asserting on the
-    // captured stderr text below.
+    mkdirSync(join(tmp, 'audit'), { recursive: true });
+    writeFileSync(
+      join(tmp, 'audit', 'bogus.json'),
+      JSON.stringify({
+        component_id: 'bogus-component',
+        component_type: 'backend',
+        findings: [],
+      }, null, 2)
+    );
+
     const script = resolve(__dirname, 'persist-results.js');
 
     const result = spawnSync(process.execPath, [script, tmp], {
@@ -289,18 +299,24 @@ describe('F-091578-012 — persist-results renders submission path + reproduce c
       timeout: 30_000,
     });
 
-    // The script either fails at ingest (preferred) or fails earlier with an
-    // untyped error. The fix targets the ingest failure path; assert it.
+    // F-W1-TEST-002: the previous shape silently passed via an
+    // empty `else` branch when the ingest seam wasn't reached. The
+    // contract is that the script either succeeds (status 0) or fails
+    // through the [INGEST_FAILED] rendering path (status 1 + structured
+    // stderr). Anything else (e.g. exit 2 because audit/ was missing)
+    // is a test-setup bug, not a graceful degradation — surface it.
     if (result.status === 1 && /INGEST_FAILED/.test(result.stderr)) {
       assert.match(result.stderr, /\[INGEST_FAILED\]/);
       assert.match(result.stderr, /Submission:.*submission\.json/);
-      assert.match(result.stderr, /Reproduce:.*ingest\/run\.js.*--provenance=stub/);
+      // Path separator depends on host OS — POSIX emits forward slashes,
+      // Windows emits backslashes. The contract is that the Reproduce line
+      // mentions ingest/run.js (any sep) AND carries --provenance=stub.
+      assert.match(result.stderr, /Reproduce:.*ingest[\\/]+run\.js.*--provenance=stub/);
     } else {
-      // Couldn't reach the ingest seam — skip rather than false-pass.
-      // This keeps the suite green on environments where the empty
-      // submission is somehow accepted (vanishingly unlikely but honest).
-      // The other 5 unit-level tests in this file still cover F-091578-012's
-      // logic shape via the shared error-rendering surface.
+      assert.fail(
+        'Expected INGEST_FAILED at the ingest seam but got: ' +
+          JSON.stringify({ status: result.status, stderr: result.stderr.slice(0, 500) })
+      );
     }
   });
 });

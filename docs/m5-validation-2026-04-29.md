@@ -137,7 +137,15 @@ The error is loud — production code paths that write to a review log on exFAT 
 
 ### Wave-X candidate — Windows-only invocation paths in operator docs
 
-[CLAUDE.md](../CLAUDE.md) and [HANDOFF.md](../HANDOFF.md) contain hardcoded Windows-style absolute paths in operator-command snippets — 1 in CLAUDE.md, 10 in HANDOFF.md, 11 total. Both files are the legitimate home for that historical context (the `[no-legacy-paths]` doc-drift gate explicitly exempts them as "where historical context belongs"), so the strings themselves aren't a violation. The wave-X surface is that those snippets are non-portable from this side of the M5 transition: on macOS, the Windows drive-letter prefix resolves to nothing, so any contributor copy-pasting them from a Mac shell will hit "no such file." Run `grep -nE 'F:/AI' CLAUDE.md HANDOFF.md` for the authoritative inventory; the line numbers are easier to read fresh than to maintain in two places.
+[CLAUDE.md](../CLAUDE.md) and [HANDOFF.md](../HANDOFF.md) contain hardcoded Windows-style absolute paths in operator-command snippets. **As a snapshot at this document's authoring (2026-04-29) the count was 1 in CLAUDE.md, 10 in HANDOFF.md, 11 total** — that is a historical snapshot, not a current invariant. The authoritative inventory at any later date is the grep itself:
+
+```bash
+grep -nE 'F:/AI' CLAUDE.md HANDOFF.md
+```
+
+Future audits should rely on the grep, not on the count above — the snapshot is allowed to drift as legacy path snippets are added or pruned, and "count exactly matches the snapshot" is not a soundness condition.
+
+Both files are the legitimate home for that historical context (the `[no-legacy-paths]` doc-drift gate explicitly exempts them as "where historical context belongs"), so the strings themselves aren't a violation. The wave-X surface is that those snippets are non-portable from this side of the M5 transition: on macOS, the Windows drive-letter prefix resolves to nothing, so any contributor copy-pasting them from a Mac shell will hit "no such file."
 
 These are not runtime code — they are operator-shell snippets. None of them block testing-os from running on macOS.
 

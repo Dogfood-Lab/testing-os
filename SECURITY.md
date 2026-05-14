@@ -12,10 +12,19 @@ We aim to triage within 5 business days and ship a fix within 14 days for HIGH/C
 ## Scope
 
 In scope:
-- Code in `packages/*` published as `@dogfood-lab/*` on npm
+- Source code in `packages/*` in this repository. Six of seven packages are workspace-internal (`private: true`); `@dogfood-lab/schemas` is publish-ready (declares `publishConfig.access=public` and a `files` whitelist) but is **not currently published to npm**. The npm publish decision remains deferred per [HANDOFF.md](HANDOFF.md) Session G. Consumption today is via JSON evidence indexes at `indexes/` served over `raw.githubusercontent.com` and via workspace symlinks for local development.
 - The swarm control-plane SQLite schema and write paths
-- Schema validators in `@dogfood-lab/schemas`
-- The HTTP read API exposed via `indexes/` and `policies/` (when consumers fetch them)
+- Schema validators in `@dogfood-lab/schemas` (consumed as source via workspace symlinks)
+- The HTTP read API exposed via `indexes/` and `policies/` (when consumers fetch them via `raw.githubusercontent.com`)
+
+### Vulnerabilities affecting the JSON evidence schema
+
+The realistic external attack surface — what we explicitly want researchers to report:
+
+- **Forged submissions** that pass schema validation but assert false provenance (e.g. claiming a workflow run that did not happen)
+- **Provenance forgery** in the dispatcher tier — anything that lets a non-trusted repo inject a `repository_dispatch` payload accepted by `packages/ingest`
+- **Path traversal in `persist.js`** — any way for a crafted record ID or relative path to escape the runtime data dirs and write outside `records/` / `indexes/` / `reports/`
+- **Indexes poisoning** — any way to cause `indexes/latest-by-repo.json` or sibling indexes to publish a state that contradicts the underlying `records/` files (these indexes are downstream-trusted)
 
 Out of scope:
 - Issues in third-party dependencies (report upstream; we'll pin/patch when notified)

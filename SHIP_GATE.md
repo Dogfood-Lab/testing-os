@@ -44,10 +44,10 @@
 ## D. Shipping Hygiene
 
 - [x] `[all]` `verify` script exists (test + build + smoke in one command) — `npm run verify` (2026-04-25)
-- [x] `[all]` Version in manifest matches git tag — root + 7 packages all at `1.0.0`, will tag `v1.0.0` (2026-04-25)
-- [ ] `[all]` SKIP: dependency scanning not yet wired into CI. Tracked as a follow-up — would add `npm audit --audit-level=moderate` to `ci.yml` or enable Dependabot security alerts. Not blocking v1.0.0 since all packages are `private: true` (no public publish surface).
+- [x] `[all]` Version in manifest matches git tag — root + 7 packages all at `1.1.7`, tag `v1.1.7` (2026-04-27, last re-affirmed 2026-05-14)
+- [ ] `[all]` SKIP: dependency scanning not yet wired into CI. Tracked as a follow-up — would add `npm audit --audit-level=moderate` to `ci.yml` or enable Dependabot security alerts. Not blocking v1.0.0 since no package has been published to npm yet (six are `private: true`; `@dogfood-lab/schemas` is publish-ready but unpublished — no live public publish surface).
 - [ ] `[all]` SKIP: no automated dependency update mechanism. Same justification as above — Dependabot config wants a separate session. Surface counts on `npm audit` are tracked in HANDOFF.md (`site/` has 8 audit warnings inherited from legacy lockfile).
-- [ ] `[npm]` SKIP: all `@dogfood-lab/*` packages are `private: true` — no `npm publish` surface. `npm pack --dry-run` works (`tsc --build` produces `packages/schemas/dist/` etc.) but not the ship target. Reconsider when publishing decision is made.
+- [ ] `[npm]` SKIP: six of seven `@dogfood-lab/*` packages are `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but **unpublished**. No actual `npm publish` has shipped any of them. `npm pack --dry-run` works for schemas (`tsc --build` produces `packages/schemas/dist/`) but the publish decision remains deferred per [HANDOFF.md](HANDOFF.md) Session G. Reconsider when the publishing decision is made.
 - [x] `[npm]` `engines.node` set — root `package.json` has `"engines": {"node": ">=20"}` (2026-04-25)
 - [x] `[npm]` Lockfile committed (2026-04-25)
 - [ ] `[vsix]` SKIP: not a VS Code extension.

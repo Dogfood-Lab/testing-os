@@ -69,5 +69,8 @@ Default scenarios by surface to avoid every repo inventing from scratch:
 | api | `health-and-primary` | Hit health + primary endpoint, verify response shape |
 | library | `import-and-call` | Import, call primary function, verify output |
 | plugin | `install-and-activate` | Install in host, activate, verify registration |
+| web | `dom-and-route-roundtrip` | Load primary route, verify DOM markers, capture screenshot |
+
+All 8 surfaces above match the `product_surface` enum in [`packages/schemas/src/json/scenario.schema.json`](https://github.com/dogfood-lab/testing-os/blob/main/packages/schemas/src/json/scenario.schema.json) and the surface keys accepted by [`packages/schemas/src/json/policy.schema.json`](https://github.com/dogfood-lab/testing-os/blob/main/packages/schemas/src/json/policy.schema.json).
 
 Repos can use templates as-is, extend them, or replace them entirely.

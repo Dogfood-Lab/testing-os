@@ -19,6 +19,14 @@ permissions:
 
 jobs:
   build:
+    # F-W1-CI-011: `branches: [main]` on the push trigger does NOT apply to
+    # workflow_dispatch — that's a common misreading. workflow_dispatch can
+    # run on any branch where the workflow file exists. Guard the build job
+    # so a workflow_dispatch caller against a non-main branch can't push
+    # a malicious site/ change and consume Actions minutes (or, worse,
+    # produce an artifact the deploy job consumes). Push-trigger paths are
+    # already main-only; the guard adds nothing to that leg.
+    if: github.event_name == 'push' || github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -91,12 +99,17 @@ jobs:
         # Stage D minimum visual regression CI gate (F-827321-030 / D-OUT-003):
         # Run pa11y against ONE high-value reference page after the deploy has
         # been verified. WCAG2AA is the bar; we fail on errors, ignore warnings
-        # and notices. Pinning is intentionally via @latest because pa11y is a
-        # one-shot npx invocation here — there is no consumer in the workspace
-        # that needs a lockfile entry, and adding one to root devDependencies
-        # would pull a chromium-puppeteer chain into every `npm ci` for a
-        # check that only ever runs in this workflow leg. If we ever sweep
-        # multiple pages we'll revisit and pin via site/package-lock.json.
+        # and notices. Pinned to an exact version (NOT a floating caret-major
+        # tag) because pa11y embeds puppeteer + chromium and the workflow runs
+        # under `pages: write` + `id-token: write`. F-W1-CI-001: a supply-chain
+        # compromise of pa11y or any transitive dep would execute with
+        # elevated permissions during every Pages deploy. There is no
+        # consumer in the workspace that needs a lockfile entry, and adding
+        # one to root devDependencies would pull the chromium-puppeteer chain
+        # into every `npm ci` for a check that only ever runs in this
+        # workflow leg. If we ever sweep multiple pages we'll revisit and
+        # pin via site/package-lock.json. Bump in lockstep with Dependabot
+        # github-actions / npm sweeps.
         #
         # Chromium sandbox shim: GitHub Actions ubuntu-latest runners disable
         # the SUID sandbox by default, so puppeteer (which pa11y embeds) fails
@@ -115,7 +128,7 @@ jobs:
             }
           }
           EOF
-          npx -y pa11y@^8 \
+          npx -y pa11y@9.1.1 \
             --standard WCAG2AA \
             --reporter cli \
             --threshold 0 \

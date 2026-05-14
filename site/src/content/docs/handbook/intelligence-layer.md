@@ -159,12 +159,4 @@ Results are ranked (stronger and more specific first) and capped (max 5 recommen
 
 ## Test Coverage
 
-221 finding tests across 5 modules:
-
-| Module | Tests |
-|--------|-------|
-| Contract spine (Phase 1) | 55 |
-| Derivation engine (Phase 2) | 49 |
-| Review workflow (Phase 3) | 53 |
-| Synthesis layer (Phase 4) | 30 |
-| Adoption surface (Phase 5) | 34 |
+246 finding tests at v1.1.7 (covering contract spine, derivation, review, synthesis, and adoption modules). The precise per-module breakdown drifts with each release and is intentionally not kept in lockstep with this slow-moving handbook page. See [`docs/m5-validation-2026-04-29.md`](https://github.com/dogfood-lab/testing-os/blob/main/docs/m5-validation-2026-04-29.md) for the authoritative current matrix.

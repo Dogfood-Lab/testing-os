@@ -14,7 +14,11 @@ A few things to know up front:
 
 ```bash
 npm install
-npm run verify      # build + test — the canonical pre-commit check
+npm run verify      # the canonical pre-commit check
+                    # = sync-version:check → check-doc-drift → check-regression-pins → test:scripts → build → test
+                    # WARNING: `npm run build && npm test` is NOT equivalent — it skips the four
+                    # doc-drift / regression-pin / version-sync / scripts gates that the pre-commit
+                    # discipline depends on.
 ```
 
 CI runs the same `verify` flow on Node 20 + 22.

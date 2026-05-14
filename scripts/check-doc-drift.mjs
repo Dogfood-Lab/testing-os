@@ -983,13 +983,15 @@ function makeStructuralValidator(schema) {
 // CLI entry
 // ─────────────────────────────────────────────────────────────────────────────
 
-const isMain = (() => {
-  try {
-    return resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1] ?? '');
-  } catch {
-    return false;
-  }
-})();
+// F-W1-CI-005: previous heuristic compared `resolve(fileURLToPath(import.meta.url))`
+// to `resolve(process.argv[1])`. That mostly works but is the same fragile
+// path-string class apply-finding-migration.mjs already fixed in W31-BACK-001:
+// on Windows the two strings can disagree on drive-letter casing or 8.3 vs
+// long-name resolution and the entry block silently no-ops. The canonical
+// Node cross-platform pattern is `pathToFileURL(process.argv[1]).href` —
+// import.meta.url is always POSIX/URL form, so URL-vs-URL comparison is
+// reliable everywhere.
+const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
 
 if (isMain) {
   const here = dirname(fileURLToPath(import.meta.url));

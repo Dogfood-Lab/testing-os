@@ -98,11 +98,16 @@ describe('State transitions: forbidden', () => {
 // ============================================================
 
 describe('Review actions: accept', () => {
-  before(() => setupTestRoot());
+  // NOTE (F-W1-TEST-006): each `it` reseeds the candidate via beforeEach
+  // so test order and parallel execution can't share state. The previous
+  // shape relied on it #1 mutating disk for it #2 and #3 to read.
+  beforeEach(() => {
+    setupTestRoot();
+    writeFindingToTestRoot(makeTestFinding());
+  });
   after(() => { if (existsSync(TEST_ROOT)) rmSync(TEST_ROOT, { recursive: true }); });
 
-  it('accepts a candidate finding', () => {
-    writeFindingToTestRoot(makeTestFinding());
+  it('accepts a candidate finding and updates the in-memory finding object', () => {
     const result = performAction(TEST_ROOT, {
       findingId: 'dfind-test-review',
       action: 'accept',
@@ -116,12 +121,26 @@ describe('Review actions: accept', () => {
   });
 
   it('persists accepted status to disk', () => {
+    const action = performAction(TEST_ROOT, {
+      findingId: 'dfind-test-review',
+      action: 'accept',
+      actor: 'mike',
+      reason: 'Evidence is strong and portable.'
+    });
+    assert.ok(action.success, action.error);
     const onDisk = readFindingFromDisk('dfind-test-review');
     assert.equal(onDisk.status, 'accepted');
     assert.equal(onDisk.review.reviewed_by, 'mike');
   });
 
-  it('accepted finding remains schema-valid', () => {
+  it('accepted finding remains schema-valid on disk', () => {
+    const action = performAction(TEST_ROOT, {
+      findingId: 'dfind-test-review',
+      action: 'accept',
+      actor: 'mike',
+      reason: 'Evidence is strong and portable.'
+    });
+    assert.ok(action.success, action.error);
     const onDisk = readFindingFromDisk('dfind-test-review');
     const result = validateFinding(onDisk);
     assert.equal(result.valid, true, JSON.stringify(result.errors));
@@ -129,7 +148,9 @@ describe('Review actions: accept', () => {
 });
 
 describe('Review actions: reject', () => {
-  before(() => {
+  // NOTE (F-W1-TEST-006): each `it` reseeds the candidate via beforeEach
+  // so test order and parallel execution can't share state.
+  beforeEach(() => {
     setupTestRoot();
     writeFindingToTestRoot(makeTestFinding());
   });
@@ -145,7 +166,7 @@ describe('Review actions: reject', () => {
     assert.ok(result.error.includes('requires a reason'));
   });
 
-  it('rejects with reason', () => {
+  it('rejects with reason and updates in-memory finding', () => {
     const result = performAction(TEST_ROOT, {
       findingId: 'dfind-test-review',
       action: 'reject',
@@ -158,7 +179,15 @@ describe('Review actions: reject', () => {
     assert.equal(result.finding.review.reject_reason, 'insufficient_evidence');
   });
 
-  it('rejected finding remains on disk (not deleted)', () => {
+  it('rejected finding remains on disk (not deleted) with rejected status', () => {
+    const action = performAction(TEST_ROOT, {
+      findingId: 'dfind-test-review',
+      action: 'reject',
+      actor: 'mike',
+      reason: 'Insufficient evidence for this surface.',
+      rejectReason: 'insufficient_evidence'
+    });
+    assert.ok(action.success, action.error);
     const onDisk = readFindingFromDisk('dfind-test-review');
     assert.ok(onDisk, 'Rejected finding should still exist');
     assert.equal(onDisk.status, 'rejected');

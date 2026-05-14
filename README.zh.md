@@ -21,7 +21,7 @@
 
 📖 **[阅读手册 →](https://dogfood-lab.github.io/testing-os/)**
 
-</div
+</div>
 
 ---
 
@@ -97,4 +97,4 @@ npm run verify      # build + test (canonical pre-commit check)
 
 *先体验，再发布。*
 
-</div
+</div>

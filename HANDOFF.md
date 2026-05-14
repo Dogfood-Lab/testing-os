@@ -15,7 +15,7 @@
 >    - Bump pinned action SHAs from Node 20 → Node 24 across `ci.yml`, `ingest.yml`, `pages.yml`. Deadline 2026-09-16.
 >    - Run `npm audit fix` on `site/package-lock.json` (8 vulns inherited from legacy lockfile, 5 mod / 3 high).
 >    - Wire dependency scanning + Dependabot config into `ci.yml`. Currently SKIPped in SHIP_GATE.md.
-> 3. **npm publish decision** — all 7 packages are `private: true`. Flip whichever ones consumers will pull via npm. Mike's call.
+> 3. **npm publish decision** — six of seven packages are `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but unpublished. No package has actually been published to npm. Flip the remaining six and/or publish schemas when consumers will pull via npm. Mike's call.
 >
 > **Resumable from a cold start:** read this file and [CLAUDE.md](CLAUDE.md), then pick from the list above. The state is documented; you won't have to reconstruct anything from git log.
 
@@ -245,7 +245,7 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
 - Shipcheck audit: 100% pass on hard gates A–D (20 checked / 17 SKIP-with-justification / 0 unchecked). [PR #13](https://github.com/dogfood-lab/testing-os/pull/13) (squash `9625ea3`) ships the SHIP_GATE.md, SCORECARD.md, README threat model, repo metadata, lockstep `0.2.0-pre` → `1.0.0` bump, and the [1.0.0] CHANGELOG entry enumerating Sessions A–F.
 - Tag `v1.0.0` pushed to `dogfood-lab/testing-os`.
 - GitHub release created via `gh release create v1.0.0` with the CHANGELOG section as body.
-- npm publish: **deferred** — all 7 packages remain `private: true` per the HANDOFF's "deferred to Mike's choice." Flip to publish when there's a downstream pulled-via-npm consumer that needs it.
+- npm publish: **deferred** — six of seven packages remain `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but no `npm publish` has actually run. Per the HANDOFF's "deferred to Mike's choice." Flip the remaining six and/or publish schemas when there's a downstream pulled-via-npm consumer that needs it.
 
 **Goal.** Promote `0.1.0-pre` → `1.0.0` lockstep across all 7 packages. Tag a release. Optionally publish.
 
@@ -263,7 +263,7 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
    git push origin v1.0.0
    gh release create v1.0.0 --title "testing-os v1.0.0" --notes-file <(awk '/## \[1\.0\.0\]/,/## \[/' CHANGELOG.md | head -n -1)
    ```
-6. **(Optional)** publish to npm. Currently all packages are `private: true` — flip that on the ones we want public, then `npm publish --workspaces --access public`.
+6. **(Optional)** publish to npm. Currently six of seven packages are `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but unpublished — `npm publish --workspace @dogfood-lab/schemas` would ship that one. For the rest, flip `private` on the ones we want public, then `npm publish --workspaces --access public`.
 
 **Acceptance:** v1.0.0 tag exists, GitHub release published, CHANGELOG updated.
 
@@ -355,7 +355,7 @@ For the record (so they don't get lost):
 - ~~**`CONTRIBUTING.md`** — none.~~ — Done 2026-04-25 (Session C). Points at CLAUDE.md as the operating manual.
 - **TS conversion** — JS packages, not type-safe yet.
 - ~~**First v1.0.0 stable release** — still on `0.1.0-pre`.~~ — Done 2026-04-25 (Session G). [Release v1.0.0](https://github.com/dogfood-lab/testing-os/releases/tag/v1.0.0).
-- **npm publish** — all packages still `private: true`. May want some public. Mike's call; defer until a downstream consumer needs it via npm.
+- **npm publish** — six of seven packages still `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but unpublished. May want some public. Mike's call; defer until a downstream consumer needs it via npm.
 - **The 4 dispatcher orphans** (polyglot-vscode, repo-crawler-mcp, tool-scan, vocal-synth-engine) — folded into the prototypes seed vault. Their passports may still reference dogfood-labs paths. Audit happens in Session F.
 - ~~**`.github/workflows/pages.yml`** — testing-os has only `ci.yml`. Need a Pages workflow for the handbook.~~ — Done 2026-04-25 (Session B). testing-os now has 3 workflows (`ci.yml`, `ingest.yml`, `pages.yml`) — exceeds the soft cap of 2 in `.claude/rules/github-actions.md`, but each has a distinct purpose. Surfaced in [PR #3](https://github.com/dogfood-lab/testing-os/pull/3).
 - **Site-tree npm audit vulnerabilities** — surfaced during Session B. `site/package-lock.json` (inherited from legacy) reports 8 vulnerabilities (5 moderate, 3 high) in Astro/Starlight transitive deps. Not blocking deployment, but worth a `npm audit fix` pass.

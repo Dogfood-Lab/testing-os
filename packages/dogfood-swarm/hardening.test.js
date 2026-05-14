@@ -106,7 +106,6 @@ describe('State machine — transitionAgent', () => {
     db.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
       .run('r1', 'org/r', '/tmp/r', 'a'.repeat(40));
     saveDomainDraft(db, 'r1', [{ name: 'backend', globs: ['src/**'], ownership_class: 'owned' }]);
-    db.prepare("INSERT INTO waves (run_id, phase, wave_number) VALUES ('r1', 'test', 1)");
     db.prepare("INSERT INTO waves (run_id, phase, wave_number) VALUES (?, ?, ?)")
       .run('r1', 'test', 1);
     const domainId = db.prepare('SELECT id FROM domains WHERE run_id = ?').get('r1').id;

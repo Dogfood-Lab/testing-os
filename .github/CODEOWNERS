@@ -1,0 +1,23 @@
+# CODEOWNERS — testing-os
+#
+# F-W1-CI-035: GitHub uses this file to require an owner review on PRs that
+# touch listed paths. Pair with a branch-protection rule that requires
+# CODEOWNERS review where needed. CLAUDE.md hard rule #9 ("match scrutiny to
+# blast radius") frames the discipline: single-file changes can land
+# directly, cross-cut surfaces deserve a review pass.
+#
+# Single-owner pattern — bring on additional owners by adding @-handles to
+# specific paths once a second steward exists.
+
+* @mcp-tool-shop
+
+# Critical surfaces — these get explicit lines so that adding a future
+# additional owner does NOT silently drop the existing CODEOWNER. The
+# default rule above already covers these paths; the explicit lines are
+# the documentation surface, not a security increment by themselves.
+.github/workflows/      @mcp-tool-shop
+.github/CODEOWNERS      @mcp-tool-shop
+.github/dependabot.yml  @mcp-tool-shop
+packages/schemas/       @mcp-tool-shop
+policies/               @mcp-tool-shop
+swarms/PROTOCOL.md      @mcp-tool-shop

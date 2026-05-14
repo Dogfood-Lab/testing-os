@@ -21,7 +21,7 @@
 
 📖 **[ハンドブックを読む →](https://dogfood-lab.github.io/testing-os/)**
 
-</div
+</div>
 
 ---
 
@@ -97,4 +97,4 @@ Node ≥ 20 が必要です。
 
 *まず試す。次にリリースする。*
 
-</div
+</div>

@@ -41,7 +41,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve, relative } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   parseRegressionPins,
@@ -275,7 +275,14 @@ async function main() {
   process.exit(result.ok ? 0 : 1);
 }
 
-// ESM main detection — only run main() when invoked as a script, not when imported.
-if (import.meta.url === `file://${process.argv[1]}` || import.meta.url.endsWith(process.argv[1].replace(/\\/g, '/'))) {
+// F-W1-CI-006: ESM main detection — only run main() when invoked as a script,
+// not when imported by tests. Previous heuristic used a hand-built
+// `file://${process.argv[1]}` plus an `endsWith` fallback; both fail on
+// Windows because process.argv[1] uses backslashes while import.meta.url is
+// always POSIX/URL form. `pathToFileURL(process.argv[1]).href` is the
+// canonical Node cross-platform pattern (matches apply-finding-migration.mjs
+// W31-BACK-001 fix).
+const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
+if (isMain) {
   main();
 }

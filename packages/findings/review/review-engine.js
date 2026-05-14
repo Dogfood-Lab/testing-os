@@ -80,6 +80,14 @@ export function performAction(rootDir, params) {
   const fieldChanges = {};
   if (action === 'edit' && params.fieldChanges) {
     for (const [field, newValue] of Object.entries(params.fieldChanges)) {
+      // Prototype-pollution guard: `field` is operator-supplied via CLI/API.
+      // Writing to `__proto__` / `constructor` / `prototype` would mutate
+      // Object.prototype for the review-engine process and silently corrupt
+      // every downstream YAML dump + reload. Reject these keys outright so
+      // the operator sees a structured error instead of a poisoned process.
+      if (field === '__proto__' || field === 'constructor' || field === 'prototype') {
+        return { success: false, error: `Field "${field}" is not editable (reserved/unsafe key)` };
+      }
       const oldValue = finding[field];
       if (oldValue !== newValue) {
         fieldChanges[field] = { from: oldValue, to: newValue };

@@ -13,6 +13,7 @@ import { readdirSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { minimatch } from 'minimatch';
+import { isSafeDomainName } from './worktree.js';
 
 /**
  * Default domain buckets with detection heuristics.
@@ -192,6 +193,17 @@ export function editDomain(db, runId, domainName, changes) {
  * Add a new domain to a run. Only allowed when not frozen.
  */
 export function addDomain(db, runId, domain) {
+  // Domain names flow downstream into filesystem paths (.swarm/worktrees/<name>),
+  // git branch names (swarm/<run>/wN-<name>), and shell-quoted git commands
+  // (pre-fix). Reject at the boundary so a malicious `swarm domains --add
+  // "../../tmp"` or `"; rm -rf / ; "` never reaches createWorktree(). The same
+  // predicate guards createWorktree() defense-in-depth.
+  if (!isSafeDomainName(domain.name)) {
+    throw new Error(
+      `Unsafe domain name: ${JSON.stringify(domain.name)} — must match /^[a-zA-Z0-9_-]+$/ and be ≤64 chars`
+    );
+  }
+
   const frozen = aredomainsFrozen(db, runId);
   if (frozen) throw new Error('Domains are frozen. Unfreeze first.');
 

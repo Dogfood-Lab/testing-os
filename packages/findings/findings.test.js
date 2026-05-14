@@ -539,9 +539,16 @@ describe('Contract quality: valid fixtures', () => {
 describe('YAML parsing', () => {
   it('parseFinding handles non-YAML file gracefully', () => {
     // Use the package's own package.json as a "non-YAML JSON file" — stable across layouts.
+    // JSON is a strict YAML subset, so js-yaml parses it successfully and
+    // returns an object with `name`, `version`, etc. parseFinding's contract
+    // is "did it parse?", not "did it match the finding schema" — schema
+    // validation is the next layer up (validateFinding).
+    // F-W1-TEST-009: pin the exact shape so the test fails if parseFinding
+    // ever stops returning the parsed package contents for valid JSON.
     const result = parseFinding(resolve(__dirname, 'package.json'));
-    // JSON parses as YAML but won't match finding schema
-    assert.ok(result.data !== null || result.error !== null);
+    assert.equal(result.error, null, `expected no parse error, got: ${result.error}`);
+    assert.ok(result.data && typeof result.data === 'object', 'data should be a parsed object');
+    assert.equal(typeof result.data.name, 'string', 'parsed package.json should expose name');
   });
 
   it('parseFinding handles nonexistent file', () => {

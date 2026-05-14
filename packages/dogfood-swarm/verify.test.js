@@ -1,10 +1,19 @@
 /**
  * verify.test.js — Phase 2 tests: adapter registry, probing, verification runner.
+ *
+ * NOTE (F-W1-TEST-001): adapter probes are exercised against synthetic
+ * fixture repos that this test materializes into a tmpdir. The previous
+ * generation of these tests pointed at hardcoded local paths
+ * (F:/AI/stillpoint, F:/AI/ai-eyes-mcp, F:/AI/saints-mile) and silently
+ * `return`-ed when the path was absent, which made every adapter test
+ * pass on CI with zero assertions. The tmpdir approach gives CI a real
+ * assertion bedrock for the adapter selection layer.
  */
 
-import { describe, it, beforeEach } from 'node:test';
+import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 // ── Adapters ──
@@ -21,6 +30,89 @@ import { runStep } from './lib/verify/runner.js';
 // ── Control plane integration ──
 import { openMemoryDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains } from './lib/domains.js';
+
+// ═══════════════════════════════════════════
+// Synthetic fixture repos
+// ═══════════════════════════════════════════
+//
+// Each builder materializes the smallest set of files that the adapter's
+// probe() function looks for. Probe shape is documented at
+// packages/dogfood-swarm/lib/verify/adapters/*.js. Keep these in lockstep
+// when probe scoring changes.
+
+function makeNodeFixture(parent) {
+  const dir = join(parent, 'node-fixture');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'package.json'),
+    JSON.stringify(
+      {
+        name: 'fixture-node-repo',
+        version: '0.0.0',
+        scripts: { test: 'node --test', lint: 'eslint .', build: 'tsc -b' },
+      },
+      null,
+      2
+    ),
+    'utf-8'
+  );
+  writeFileSync(
+    join(dir, 'tsconfig.json'),
+    JSON.stringify({ compilerOptions: { target: 'ES2022' } }, null, 2),
+    'utf-8'
+  );
+  return dir;
+}
+
+function makePythonFixture(parent) {
+  const dir = join(parent, 'python-fixture');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'pyproject.toml'),
+    [
+      '[project]',
+      'name = "fixture-python-repo"',
+      'version = "0.0.0"',
+      '',
+      '[tool.ruff]',
+      'line-length = 120',
+      '',
+      '[tool.pytest.ini_options]',
+      'testpaths = ["tests"]',
+      '',
+    ].join('\n'),
+    'utf-8'
+  );
+  mkdirSync(join(dir, 'tests'), { recursive: true });
+  return dir;
+}
+
+function makeRustFixture(parent) {
+  const dir = join(parent, 'rust-fixture');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(
+    join(dir, 'Cargo.toml'),
+    [
+      '[package]',
+      'name = "fixture-rust-repo"',
+      'version = "0.0.0"',
+      'edition = "2021"',
+      '',
+    ].join('\n'),
+    'utf-8'
+  );
+  mkdirSync(join(dir, 'src'), { recursive: true });
+  writeFileSync(join(dir, 'src', 'lib.rs'), 'pub fn add(a: u32, b: u32) -> u32 { a + b }\n', 'utf-8');
+  return dir;
+}
+
+function makeEmptyFixture(parent) {
+  // A directory with nothing any adapter recognizes — used for "no adapter
+  // matches" assertions. Use mkdtempSync inside parent for uniqueness so
+  // adapters can't latch onto a sibling fixture by accident.
+  const dir = mkdtempSync(join(parent, 'empty-'));
+  return dir;
+}
 
 // ═══════════════════════════════════════════
 // Runner
@@ -58,47 +150,78 @@ describe('Runner — runStep', () => {
 // ═══════════════════════════════════════════
 
 describe('Node adapter — probe', () => {
-  it('scores high for stillpoint (has package.json + tsconfig)', () => {
-    const stillpoint = 'F:/AI/stillpoint';
-    if (!existsSync(join(stillpoint, 'package.json'))) return; // skip if not available
-    const result = nodeAdapter.probe(stillpoint);
+  let fixtureRoot;
+  let nodeRepo;
+  let emptyRepo;
+
+  before(() => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'verify-test-node-'));
+    nodeRepo = makeNodeFixture(fixtureRoot);
+    emptyRepo = makeEmptyFixture(fixtureRoot);
+  });
+  after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  it('scores high for a Node repo (package.json + tsconfig + test script)', () => {
+    const result = nodeAdapter.probe(nodeRepo);
     assert.ok(result.score >= 50, `Expected score >= 50, got ${result.score}`);
-    assert.ok(result.evidence.packageJson);
+    assert.equal(result.evidence.packageJson, true);
+    assert.equal(result.evidence.hasTest, true);
     assert.ok(result.reason.includes('Node'));
   });
 
-  it('scores zero for non-node repo', () => {
-    const result = nodeAdapter.probe('/tmp');
+  it('scores zero for an empty repo', () => {
+    const result = nodeAdapter.probe(emptyRepo);
     assert.equal(result.score, 0);
   });
 });
 
 describe('Python adapter — probe', () => {
-  it('scores high for ai-eyes-mcp (has pyproject.toml)', () => {
-    const aiEyes = 'F:/AI/ai-eyes-mcp';
-    if (!existsSync(join(aiEyes, 'pyproject.toml'))) return;
-    const result = pythonAdapter.probe(aiEyes);
+  let fixtureRoot;
+  let pyRepo;
+  let emptyRepo;
+
+  before(() => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'verify-test-python-'));
+    pyRepo = makePythonFixture(fixtureRoot);
+    emptyRepo = makeEmptyFixture(fixtureRoot);
+  });
+  after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  it('scores high for a Python repo (pyproject.toml + pytest + tests/)', () => {
+    const result = pythonAdapter.probe(pyRepo);
     assert.ok(result.score >= 50, `Expected score >= 50, got ${result.score}`);
-    assert.ok(result.evidence.pyprojectToml);
+    assert.equal(result.evidence.pyprojectToml, true);
+    assert.equal(result.evidence.hasPytest, true);
+    assert.equal(result.evidence.hasRuff, true);
   });
 
-  it('scores zero for non-python repo', () => {
-    const result = pythonAdapter.probe('/tmp');
+  it('scores zero for an empty repo', () => {
+    const result = pythonAdapter.probe(emptyRepo);
     assert.equal(result.score, 0);
   });
 });
 
 describe('Rust adapter — probe', () => {
-  it('scores high for saints-mile (has Cargo.toml)', () => {
-    const saints = 'F:/AI/saints-mile';
-    if (!existsSync(join(saints, 'Cargo.toml'))) return;
-    const result = rustAdapter.probe(saints);
+  let fixtureRoot;
+  let rustRepo;
+  let emptyRepo;
+
+  before(() => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'verify-test-rust-'));
+    rustRepo = makeRustFixture(fixtureRoot);
+    emptyRepo = makeEmptyFixture(fixtureRoot);
+  });
+  after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  it('scores high for a Rust repo (Cargo.toml + src/)', () => {
+    const result = rustAdapter.probe(rustRepo);
     assert.ok(result.score >= 60, `Expected score >= 60, got ${result.score}`);
-    assert.ok(result.evidence.cargoToml);
+    assert.equal(result.evidence.cargoToml, true);
+    assert.equal(result.evidence.srcDir, true);
   });
 
-  it('scores zero for non-rust repo', () => {
-    const result = rustAdapter.probe('/tmp');
+  it('scores zero for an empty repo', () => {
+    const result = rustAdapter.probe(emptyRepo);
     assert.equal(result.score, 0);
   });
 });
@@ -108,48 +231,60 @@ describe('Rust adapter — probe', () => {
 // ═══════════════════════════════════════════
 
 describe('Registry — probeAll', () => {
-  it('returns sorted results for stillpoint', () => {
-    const stillpoint = 'F:/AI/stillpoint';
-    if (!existsSync(join(stillpoint, 'package.json'))) return;
-    const results = probeAll(stillpoint);
+  let fixtureRoot;
+  let nodeRepo;
+  let pyRepo;
+
+  before(() => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'verify-test-registry-probeall-'));
+    nodeRepo = makeNodeFixture(fixtureRoot);
+    pyRepo = makePythonFixture(fixtureRoot);
+  });
+  after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  it('returns sorted results with the matching adapter first for a Node repo', () => {
+    const results = probeAll(nodeRepo);
     assert.ok(results.length >= 3);
-    // Node should be first (highest score)
     assert.equal(results[0].name, 'node');
     assert.ok(results[0].score > 0);
-    // Results are sorted descending
     for (let i = 1; i < results.length; i++) {
       assert.ok(results[i - 1].score >= results[i].score);
     }
   });
 
-  it('returns sorted results for ai-eyes-mcp', () => {
-    const aiEyes = 'F:/AI/ai-eyes-mcp';
-    if (!existsSync(join(aiEyes, 'pyproject.toml'))) return;
-    const results = probeAll(aiEyes);
+  it('returns sorted results with the matching adapter first for a Python repo', () => {
+    const results = probeAll(pyRepo);
     assert.equal(results[0].name, 'python');
     assert.ok(results[0].score > 0);
   });
 });
 
 describe('Registry — selectAdapter', () => {
-  it('selects node for stillpoint', () => {
-    const stillpoint = 'F:/AI/stillpoint';
-    if (!existsSync(join(stillpoint, 'package.json'))) return;
-    const selection = selectAdapter(stillpoint);
+  let fixtureRoot;
+  let nodeRepo;
+  let pyRepo;
+  let emptyRepo;
+
+  before(() => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'verify-test-registry-select-'));
+    nodeRepo = makeNodeFixture(fixtureRoot);
+    pyRepo = makePythonFixture(fixtureRoot);
+    emptyRepo = makeEmptyFixture(fixtureRoot);
+  });
+  after(() => rmSync(fixtureRoot, { recursive: true, force: true }));
+
+  it('selects node for a Node repo', () => {
+    const selection = selectAdapter(nodeRepo);
     assert.equal(selection.name, 'node');
   });
 
-  it('selects python for ai-eyes-mcp', () => {
-    const aiEyes = 'F:/AI/ai-eyes-mcp';
-    if (!existsSync(join(aiEyes, 'pyproject.toml'))) return;
-    const selection = selectAdapter(aiEyes);
+  it('selects python for a Python repo', () => {
+    const selection = selectAdapter(pyRepo);
     assert.equal(selection.name, 'python');
   });
 
   it('respects explicit override', () => {
-    const stillpoint = 'F:/AI/stillpoint';
-    if (!existsSync(join(stillpoint, 'package.json'))) return;
-    const selection = selectAdapter(stillpoint, 'python');
+    const selection = selectAdapter(nodeRepo, 'python');
     assert.equal(selection.name, 'python');
   });
 
@@ -157,8 +292,8 @@ describe('Registry — selectAdapter', () => {
     assert.throws(() => selectAdapter('.', 'cobol'), /Unknown adapter/);
   });
 
-  it('returns null for unrecognized repo', () => {
-    const selection = selectAdapter('/tmp');
+  it('returns null for an empty repo (no adapter matches)', () => {
+    const selection = selectAdapter(emptyRepo);
     assert.equal(selection, null);
   });
 });

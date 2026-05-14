@@ -299,11 +299,28 @@ describe('W2-BACK-006 — coordination logStage callsites mint a correlation_id'
       'isolate_failed logStage must include correlation_id');
   });
 
-  it('mintCorrelationId-style ids appear in coord-<ts>-<rand> shape', () => {
-    // The mint helper is private to each command; assert the regex shape via
-    // a synthetic banner that mimics a real emission.
-    const synthetic = `coord-${Date.now().toString(36)}-abcd`;
-    assert.match(synthetic, /^coord-[0-9a-z]+-[0-9a-f]{4}$/);
+  it('mintCorrelationId helpers in collect.js and dispatch.js produce coord-<base36-ts>-<hex4> ids', () => {
+    // F-W1-TEST-008: previous shape asserted a synthetic regex against itself
+    // (a tautology). Read the actual source of both helpers and assert that
+    // (a) each emits the same `coord-<base36-ts>-<rand>` shape, (b) the
+    // random suffix is `randomBytes(2).toString('hex')` (4 hex chars), and
+    // (c) the timestamp is `Date.now().toString(36)`. This catches any
+    // regression that drops the base36 timestamp or changes the rand width.
+    const sources = ['commands/collect.js', 'commands/dispatch.js'].map((rel) => ({
+      rel,
+      src: readFileSync(join(__dirname, rel), 'utf-8'),
+    }));
+    for (const { rel, src } of sources) {
+      const mintMatch = src.match(
+        /function mintCorrelationId\s*\(\)\s*\{([\s\S]*?)return\s+`coord-\$\{([^}]+)\}-\$\{([^}]+)\}`/
+      );
+      assert.ok(mintMatch, `${rel}: mintCorrelationId helper not found in expected shape`);
+      const body = mintMatch[1];
+      assert.match(body, /Date\.now\(\)\.toString\(36\)/,
+        `${rel}: timestamp must be Date.now().toString(36)`);
+      assert.match(body, /randomBytes\(2\)\.toString\('hex'\)/,
+        `${rel}: random suffix must be randomBytes(2).toString('hex') (4 hex chars)`);
+    }
   });
 });
 

@@ -38,6 +38,27 @@ All ignored. If a tool produces them, that's fine — they're regenerated. Never
 
 The `exports` field in each `package.json` controls what's reachable. Add a subpath export when a sibling package needs an internal file.
 
+#### Workspace dependency graph
+
+The current `@dogfood-lab/*` graph contains a deliberate cycle:
+
+```
+findings → ingest → dogfood-swarm → findings
+```
+
+- `@dogfood-lab/findings` depends on `@dogfood-lab/ingest`.
+- `@dogfood-lab/ingest` depends on `@dogfood-lab/dogfood-swarm` (introduced in v1.1.5 when `ingest/run.js` adopted `dogfood-swarm/lib/log-stage.js` for cross-package staged logging).
+- `@dogfood-lab/dogfood-swarm` depends on `@dogfood-lab/findings` (introduced in v1.1.4 when `dogfood-swarm/commands/*.js` adopted `findings/lib/atomic-write.js` for the `unsafeSegment` CAS edge).
+
+**This cycle is accepted by design.** npm workspaces resolve workspace cycles via symlinks at install time — there is no runtime resolution problem because every edge points at a concrete subpath export (`atomic-write.js`, `log-stage.js`) rather than the package root. The `logStage` and `atomicWrite` helpers are cross-package shared discipline; the value is high enough to accept the cycle rather than copy-paste-fork the helpers.
+
+Two design implications:
+
+- Tests in any one of the three packages transitively load the other two siblings via the workspace. That is the expected behavior and the reason `setupTestRoot()` in `packages/ingest/ingest.test.js` copies fixtures into a temp dir rather than relying on the writable shape of any sibling's source tree.
+- New cross-package edges should extract a single-purpose leaf helper (like `atomic-write.js` and `log-stage.js` did) rather than widen the cycle into general package-root imports. Each leaf helper should be small enough that a future "split this out into `@dogfood-lab/shared`" refactor is a mechanical move.
+
+The v1.1.4 CHANGELOG framed the `dogfood-swarm → findings` edge as "one-way edge, no cycle." That was true at v1.1.4; v1.1.5 closed the cycle by adding the `ingest → dogfood-swarm` edge for `logStage` adoption. **This subsection supersedes that framing.** The cycle exists by design as of v1.1.5; do not try to "fix" it without first deciding whether the leaf helpers should be extracted into a shared package.
+
 ### 5. Schema JSON files live in `packages/schemas/src/json/` — read via `createRequire`
 ```js
 import { createRequire } from 'node:module';
@@ -114,7 +135,11 @@ The full local check:
 npm install
 npm run build      # tsc --build (composite refs)
 npm test           # workspace fan-out: vitest for schemas, node --test for the rest
-npm run verify     # build + test (the canonical pre-commit check)
+npm run verify     # the canonical pre-commit check
+                   # = sync-version:check → check-doc-drift → check-regression-pins → test:scripts → build → test
+                   # WARNING: `npm run build && npm test` is NOT equivalent — it skips the four
+                   # doc-drift / regression-pin / version-sync / scripts gates that the pre-commit
+                   # discipline depends on.
 ```
 
 Per-package isolation:

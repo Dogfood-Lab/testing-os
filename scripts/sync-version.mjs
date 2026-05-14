@@ -43,7 +43,7 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const VERSION_BLOCK_START = '<!-- version:start -->';
 const VERSION_BLOCK_END = '<!-- version:end -->';
@@ -156,14 +156,15 @@ export class DriftError extends Error {
   }
 }
 
-// CLI entry — only run when invoked directly, not when imported by tests.
-const isMain = (() => {
-  try {
-    return resolve(fileURLToPath(import.meta.url)) === resolve(process.argv[1] ?? '');
-  } catch {
-    return false;
-  }
-})();
+// F-W1-CI-007: CLI entry — only run when invoked directly, not when imported
+// by tests. Previous heuristic compared `resolve(fileURLToPath(import.meta.url))`
+// to `resolve(process.argv[1])`. That mostly works but is the same fragile
+// path-string class apply-finding-migration.mjs already fixed in W31-BACK-001:
+// on Windows the two strings can disagree on drive-letter casing or 8.3 vs
+// long-name resolution and the entry block silently no-ops.
+// `pathToFileURL(process.argv[1]).href` is the canonical cross-platform
+// "is this script the entrypoint" pattern.
+const isMain = process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url;
 
 if (isMain) {
   const here = dirname(fileURLToPath(import.meta.url));

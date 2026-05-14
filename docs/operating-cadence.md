@@ -30,7 +30,10 @@ How dogfood governance runs day-to-day. Covers review cycles, escalation, and po
 
 ## New Repos
 
-1. Create a policy YAML in `policies/repos/<org>/<repo-name>.yaml` — `<org>` is `dogfood-lab` or `mcp-tool-shop-org` (testing-os accepts dispatched submissions from both)
+1. Create a policy YAML in `policies/repos/<org>/<repo-name>.yaml` — `<org>` is `dogfood-lab` or `mcp-tool-shop-org` (testing-os accepts dispatched submissions from both).
+
+   **Policy-registry status (as of 2026-05-14):** only the `policies/repos/mcp-tool-shop-org/` subdirectory has been exercised so far; no `dogfood-lab/*` repo has dogfooded yet, so the `policies/repos/dogfood-lab/` subdirectory **does not exist on disk**. The first `dogfood-lab/*` consumer to dogfood is responsible for creating *both* the per-repo policy YAML **and** the parent `policies/repos/dogfood-lab/` directory in the same change. A submission against a missing parent directory will **not** silently fail — the verifier falls back to the global policy defaults in `policies/global.yaml` — but the trust contract is sharper when an explicit per-repo policy exists, and the README threat-model line that lists `dogfood-lab/*` as an accepted submission surface should match a real registry entry.
+
 2. Default enforcement: `required` — use `warn-only` only with a documented `reason` and `review_after` date
 3. Create a dogfood workflow in the repo (`.github/workflows/dogfood.yml`)
 4. Identify the correct surface type from the 8 defined surfaces
