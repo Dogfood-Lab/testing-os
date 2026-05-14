@@ -1,7 +1,6 @@
 {
   "name": "@dogfood-lab/report",
-  "version": "1.1.7",
-  "private": true,
+  "version": "1.2.0",
   "type": "module",
   "description": "Submission builder for testing-os — turns swarm/run results into the JSON envelope expected by the verifier.",
   "main": "build-submission.js",
@@ -12,8 +11,16 @@
   "scripts": {
     "test": "node --test"
   },
+  "files": [
+    "build-submission.js",
+    "README.md",
+    "LICENSE"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@dogfood-lab/schemas": "*"
+    "@dogfood-lab/schemas": "^1.2.0"
   },
   "engines": {
     "node": ">=20"
@@ -28,5 +35,11 @@
   "homepage": "https://github.com/dogfood-lab/testing-os",
   "bugs": {
     "url": "https://github.com/dogfood-lab/testing-os/issues"
-  }
+  },
+  "keywords": [
+    "testing-os",
+    "dogfood-lab",
+    "submission",
+    "report-builder"
+  ]
 }

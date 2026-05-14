@@ -4,6 +4,12 @@ All notable changes to `testing-os` are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-05-14
+
+**First npm publish of the `@dogfood-lab/*` monorepo.** Six packages now public on npm: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. Headline install: `npm install -g @dogfood-lab/dogfood-swarm`. The seventh package (`@dogfood-lab/portfolio`) remains internal.
+
+**New in this release:** wave-level state machine (Phase 5A) + Three R's recovery contract (Phase 5B-1 `swarm rewind`, 5B-2 `swarm redrive`, plus the existing `swarm revalidate` from earlier in this version cycle) + `swarm history` audit-trail verb (Phase 5B-0). Stage A–D health pass closed at 0 CRIT / 0 HIGH against the pre-Phase-5 baseline. **1105/1105 tests** (was 940 at start of session arc). All packages bump lockstep from 1.1.7 → 1.2.0.
+
 ### Security
 
 - **F-W1-BACK-001 — prototype-pollution guard in `deepMerge`** ([`packages/verify/validators/policy.js`](packages/verify/validators/policy.js)). Repo-policy YAML merge now skips `__proto__`, `constructor`, and `prototype` keys before recursing. Adversarial submission can no longer mutate `Object.prototype` through a crafted policy file.

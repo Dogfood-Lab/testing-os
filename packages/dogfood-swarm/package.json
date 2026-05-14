@@ -1,9 +1,8 @@
 {
   "name": "@dogfood-lab/dogfood-swarm",
-  "version": "1.1.7",
-  "private": true,
+  "version": "1.2.0",
   "type": "module",
-  "description": "10-phase parallel-agent protocol runner for testing-os. SQLite-backed control plane, durable receipts, domain-aware orchestration.",
+  "description": "10-phase parallel-agent protocol runner for testing-os. SQLite-backed control plane, durable receipts, domain-aware orchestration. Three R's recovery contract: revalidate / rewind / redrive.",
   "main": "cli.js",
   "bin": {
     "swarm": "./cli.js"
@@ -16,9 +15,23 @@
   "scripts": {
     "test": "node --test control-plane.test.js hardening.test.js verify.test.js verify-fixed.test.js verify-verb-family.test.js advance.test.js persist.test.js swarm.test.js dispatch-amend-filter.test.js dispatch-state-machine.test.js dispatch-prompt-schema.test.js self-inspection.test.js wave9-defensive-depth.test.js wave10-docs-identity-drift.test.js wave12-observability.test.js wave17-display-layer.test.js wave18-operator-ux.test.js wave23-findings-format.test.js wave28-cross-fix.test.js revalidate.test.js verification-discipline.test.js stage-c-truth-pins.test.js cli-smoke.test.js wave-state-machine.test.js wave-history-breadcrumb.test.js rewind.test.js redrive.test.js lib/verify-classifier-v2.test.js"
   },
+  "files": [
+    "cli.js",
+    "persist-results.js",
+    "commands/",
+    "db/",
+    "lib/",
+    "README.md",
+    "LICENSE",
+    "!**/*.test.js",
+    "!**/*.test.mjs"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@dogfood-lab/findings": "*",
-    "@dogfood-lab/report": "*",
+    "@dogfood-lab/findings": "^1.2.0",
+    "@dogfood-lab/report": "^1.2.0",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
     "better-sqlite3": "^11.0.0",
@@ -37,5 +50,16 @@
   "homepage": "https://github.com/dogfood-lab/testing-os",
   "bugs": {
     "url": "https://github.com/dogfood-lab/testing-os/issues"
-  }
+  },
+  "keywords": [
+    "testing-os",
+    "dogfood-lab",
+    "swarm",
+    "agent-protocol",
+    "audit",
+    "recovery",
+    "rewind",
+    "redrive",
+    "revalidate"
+  ]
 }

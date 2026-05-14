@@ -20,7 +20,7 @@
 *Protocols, evidence stores, and learning loops for AI-assisted software.*
 
 <!-- version:start -->
-**v1.1.7** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
+**v1.2.0** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
 <!-- version:end -->
 
 📖 **[Read the handbook →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -40,9 +40,9 @@
 
 ## Status
 
-**v1.1.7** — final version of the Phase 7 dogfood swarm (Option I — ship-and-stop, 2026-04-27). Cumulative output across the swarm: ~31 waves, ~115 verified-holding fixes, 14 audit-coverage classes, 5 cross-pollination chains, 965/965 tests, methodology evidence at 5 layers. The authoritative catalog with cross-swarm takeaways and the 7-session post-swarm roadmap (Sessions A–G) is at [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
+**v1.2.0** — first npm publish of the `@dogfood-lab/*` monorepo. Six packages now public under the `@dogfood-lab` scope: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm` (the headline `swarm` CLI). New in this release: wave-level state machine + Three R's recovery contract (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + `swarm history` audit-trail verb + Stage A–D health pass at 0 CRIT / 0 HIGH. **1105/1105 tests.** Cumulative across the repo lifetime (since v1.0.0 cut 2026-04-25): all of the above plus the Phase 7 dogfood swarm (~31 waves, ~115 verified-holding fixes, 14 audit-coverage classes). Authoritative swarm catalog: [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
 
-Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Packages are `private: true`; npm publish is a separate decision per package. To consume locally, clone the repo and use `file:` workspace links, or fetch the generated indexes via `raw.githubusercontent.com` (see the handbook's Integration page).
+Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Headline install: `npm install -g @dogfood-lab/dogfood-swarm`. The receiver side stays consumed via dispatch — see the handbook's Integration page.
 
 **Platform:** validated end-to-end on Darwin/APFS as part of Session G ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)). See [Local Development](#local-development) for supported filesystems. Per-version detail in [CHANGELOG.md](CHANGELOG.md).
 
@@ -103,7 +103,7 @@ Requires Node ≥ 20. CI matrix runs Node 20 + 22 on `ubuntu-latest`; locally va
 
 ## Versioning
 
-Lockstep across all `@dogfood-lab/*` packages — they bump together. The version line in this README is auto-stamped from `package.json` via `scripts/sync-version.mjs` (runs as `prebuild`). Six of seven packages are `private: true`; `@dogfood-lab/schemas` is publish-ready (declares `publishConfig.access=public` and a `files` whitelist) but **unpublished**. The npm publish decision remains deferred per [HANDOFF.md](HANDOFF.md) Session G.
+Lockstep across all `@dogfood-lab/*` packages — they bump together. The version line in this README is auto-stamped from `package.json` via `scripts/sync-version.mjs` (runs as `prebuild`). As of **v1.2.0**, six packages publish to npm under the `@dogfood-lab` scope: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains internal to the monorepo.
 
 ## License
 
