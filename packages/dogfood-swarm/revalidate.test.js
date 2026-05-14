@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { openDb, closeDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains } from './lib/domains.js';
 import { getTransitionHistory } from './lib/state-machine.js';
+import { getWaveTransitionHistory } from './lib/wave-state-machine.js';
 import { revalidate } from './commands/revalidate.js';
 
 describe('revalidate — lawful repair of blocked agent_runs', () => {
@@ -268,6 +269,25 @@ describe('revalidate — lawful repair of blocked agent_runs', () => {
     const wave = db.prepare('SELECT status, completed_at FROM waves WHERE id = 1').get();
     assert.equal(wave.status, 'collected');
     assert.ok(wave.completed_at, 'completed_at should be set when wave transitions to collected');
+
+    // Phase 5B-0 — direct integration assertion against wave_state_events.
+    // Trusting `waves.status === 'collected'` to imply the audit row landed
+    // is exactly the vantage-point trap Class #14 warns about: the same
+    // raw UPDATE-only failure mode that motivated the wave-state-machine
+    // would pass that surface check while leaving NO audit row. Query the
+    // canonical reader directly and assert the operator's --reason text
+    // landed prefixed with `revalidate: ` per commands/revalidate.js:326.
+    const events = getWaveTransitionHistory(db, 1);
+    const recoveryRow = events.find(
+      e => e.from_status === 'failed' && e.to_status === 'collected'
+    );
+    assert.ok(recoveryRow,
+      `wave_state_events should record a failed->collected row for the recovery transition; got: ${JSON.stringify(events)}`);
+    assert.ok(recoveryRow.reason && recoveryRow.reason.startsWith('revalidate: '),
+      `recovery audit row reason must be prefixed with "revalidate: "; got: ${JSON.stringify(recoveryRow.reason)}`);
+    assert.ok(recoveryRow.reason.includes('full repair test'),
+      `recovery audit row reason must carry the operator's --reason text; got: ${JSON.stringify(recoveryRow.reason)}`);
+
     db.close();
   });
 

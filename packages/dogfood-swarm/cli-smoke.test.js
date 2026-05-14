@@ -36,8 +36,12 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 import { formatStatus } from './commands/status.js';
+import { openDb, closeDb } from './db/connection.js';
+import { transitionWave } from './lib/wave-state-machine.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -237,5 +241,189 @@ describe('CHR-2: revalidate help text surfaces required safety flags scannably',
       '--domain flag must be tagged Required in the revalidate help block');
     assert.match(tail, /--apply\s+Required/,
       '--apply flag must be tagged Required in the revalidate help block');
+  });
+});
+
+/**
+ * Phase 5B-0 — `swarm history <wave-id>` subprocess coverage.
+ *
+ * The verb's job is to render the wave_state_events audit chain so the
+ * operator's --reason text on `swarm revalidate --apply` is reachable
+ * without raw SQL. These tests invoke the CLI as a child process (same
+ * pattern as the Pattern #10 regression gate above) so a future regression
+ * in cli.js routing, the help block, or the formatHistory render contract
+ * fails at CI time rather than at the operator's first `swarm history`
+ * invocation.
+ *
+ * Coverage:
+ *   1. `--help` exits 0 + emits the Usage line on stdout.
+ *   2. No-args invocation exits 1 + emits the Usage error on stderr.
+ *   3. Unknown wave-id against a fresh DB exits 1 with a clear error
+ *      (no stack trace bleed-through).
+ *   4. Non-integer wave-id exits 1 with the "must be a positive integer"
+ *      message.
+ *   5. Known wave-id with two transitions (dispatched -> failed then
+ *      override failed -> collected) renders the full audit chain with
+ *      the operator's --reason text in the second row.
+ */
+describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
+  let tempDir;
+  let dbPath;
+
+  function setupFixtureDb() {
+    tempDir = mkdtempSync(join(tmpdir(), 'history-smoke-'));
+    dbPath = join(tempDir, 'control-plane.db');
+
+    const db = openDb(dbPath);
+    db.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+      .run('r1', 'org/r', tempDir, 'a'.repeat(40));
+    const ins = db.prepare(`
+      INSERT INTO waves (run_id, phase, wave_number, status, domain_snapshot_id)
+      VALUES ('r1', 'health-amend-a', 2, 'dispatched', 'snap1')
+    `).run();
+    const waveId = Number(ins.lastInsertRowid);
+
+    transitionWave(db, waveId, 'failed', 'collect rejected all 4 outputs');
+    transitionWave(db, waveId, 'collected', 'revalidate: wave-2 schema mismatch corrected', true);
+
+    closeDb(dbPath);
+    return waveId;
+  }
+
+  function teardownFixtureDb() {
+    if (dbPath) closeDb(dbPath);
+    if (tempDir) {
+      try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* */ }
+    }
+    tempDir = undefined;
+    dbPath = undefined;
+  }
+
+  function runHistoryCli(args, extraEnv = {}) {
+    return spawnSync(process.execPath, [CLI_PATH, 'history', ...args], {
+      encoding: 'utf-8',
+      cwd: __dirname,
+      env: { ...process.env, ...extraEnv },
+    });
+  }
+
+  it('`swarm history --help` exits 0 and prints the Usage line', () => {
+    const r = runHistoryCli(['--help']);
+    assert.doesNotMatch(r.stderr || '', /SyntaxError/,
+      `cli.js failed to parse:\n${r.stderr}`);
+    assert.equal(r.status, 0,
+      `--help should exit 0; got ${r.status}\nstderr: ${r.stderr}`);
+    assert.match(r.stdout, /Usage: swarm history <wave-id>/,
+      'history --help must print the Usage line on stdout');
+  });
+
+  it('`swarm history` (no args) exits 1 and prints Usage to stderr', () => {
+    const r = runHistoryCli([]);
+    assert.doesNotMatch(r.stderr || '', /SyntaxError/,
+      `cli.js failed to parse:\n${r.stderr}`);
+    assert.equal(r.status, 1,
+      `no-args history should exit 1; got ${r.status}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /Usage: swarm history <wave-id>/,
+      'history no-args must print Usage line on stderr');
+  });
+
+  it('`swarm history <unknown-wave-id>` exits 1 with a clear error, no stack trace', () => {
+    // Point at a fresh-but-empty DB so the wave-not-found path executes
+    // without any pre-existing rows colliding with the test fixture.
+    const emptyTempDir = mkdtempSync(join(tmpdir(), 'history-smoke-empty-'));
+    const emptyDbPath = join(emptyTempDir, 'control-plane.db');
+    try {
+      // openDb creates the schema; we never insert any waves here.
+      const db = openDb(emptyDbPath);
+      void db;
+      closeDb(emptyDbPath);
+
+      const r = runHistoryCli(['999999'], { SWARM_DB: emptyDbPath });
+      assert.doesNotMatch(r.stderr || '', /SyntaxError/,
+        `cli.js failed to parse:\n${r.stderr}`);
+      assert.equal(r.status, 1,
+        `unknown wave-id should exit 1; got ${r.status}\nstderr: ${r.stderr}`);
+      assert.match(r.stderr, /wave not found: 999999/,
+        'unknown wave-id must produce "wave not found" message');
+      // No stack trace leakage — operator should not see an "at file:..."
+      // frame for a known error path.
+      assert.doesNotMatch(r.stderr, /^\s+at .+\(/m,
+        `unknown wave-id error must NOT include a stack trace; got stderr:\n${r.stderr}`);
+    } finally {
+      try { closeDb(emptyDbPath); } catch { /* */ }
+      rmSync(emptyTempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('`swarm history <non-integer>` exits 1 with "must be a positive integer"', () => {
+    const r = runHistoryCli(['abc']);
+    assert.doesNotMatch(r.stderr || '', /SyntaxError/,
+      `cli.js failed to parse:\n${r.stderr}`);
+    assert.equal(r.status, 1,
+      `non-integer wave-id should exit 1; got ${r.status}\nstderr: ${r.stderr}`);
+    assert.match(r.stderr, /wave id must be a positive integer/,
+      'non-integer wave-id must produce a positive-integer error');
+  });
+
+  it('`swarm history <known-wave-id>` renders the full transition chain', () => {
+    const waveId = setupFixtureDb();
+    try {
+      const r = runHistoryCli([String(waveId)], { SWARM_DB: dbPath });
+      assert.doesNotMatch(r.stderr || '', /SyntaxError/,
+        `cli.js failed to parse:\n${r.stderr}`);
+      assert.equal(r.status, 0,
+        `known wave-id should exit 0; got ${r.status}\nstderr: ${r.stderr}`);
+
+      // Header banner names the wave so the operator orients quickly.
+      assert.match(r.stdout, new RegExp(`Wave ${waveId}`),
+        `output must name the wave; got:\n${r.stdout}`);
+
+      // Plain-ASCII column header (no ANSI/emoji).
+      assert.match(r.stdout, /FROM\s+TO\s+WHEN\s+REASON/,
+        `output must include the column header row; got:\n${r.stdout}`);
+
+      // Each fixture transition must appear as a row with the operator's
+      // reason text. The override row carries `revalidate:` prefix which
+      // mirrors the canonical write at commands/revalidate.js:326. The WHEN
+      // column renders as ISO-like `YYYY-MM-DD HH:MM:SS` so the regex tolerates
+      // an internal space (no \S match for the whole timestamp).
+      assert.match(r.stdout, /dispatched +failed +\d{4}-\d{2}-\d{2} +\d{2}:\d{2}:\d{2} +collect rejected all 4 outputs/,
+        `output must include the dispatched->failed row; got:\n${r.stdout}`);
+      assert.match(r.stdout, /failed +collected +\d{4}-\d{2}-\d{2} +\d{2}:\d{2}:\d{2} +revalidate: wave-2 schema mismatch corrected/,
+        `output must include the failed->collected override row with revalidate: prefix; got:\n${r.stdout}`);
+
+      // Summary line counts both transitions.
+      assert.match(r.stdout, /\(2 transitions\)/,
+        `output must summarize "(2 transitions)"; got:\n${r.stdout}`);
+
+      assert.doesNotMatch(r.stdout, /\[/,
+        'output must be plain ASCII (no ANSI escapes)');
+    } finally {
+      teardownFixtureDb();
+    }
+  });
+
+  it('`swarm history <fresh-wave-id>` renders "No transitions yet" cleanly', () => {
+    tempDir = mkdtempSync(join(tmpdir(), 'history-smoke-fresh-'));
+    dbPath = join(tempDir, 'control-plane.db');
+    try {
+      const db = openDb(dbPath);
+      db.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+        .run('r1', 'org/r', tempDir, 'a'.repeat(40));
+      const ins = db.prepare(`
+        INSERT INTO waves (run_id, phase, wave_number, status, domain_snapshot_id)
+        VALUES ('r1', 'health-audit-a', 1, 'dispatched', 'snap1')
+      `).run();
+      const freshWaveId = Number(ins.lastInsertRowid);
+      closeDb(dbPath);
+
+      const r = runHistoryCli([String(freshWaveId)], { SWARM_DB: dbPath });
+      assert.equal(r.status, 0,
+        `fresh-wave history should exit 0; got ${r.status}\nstderr: ${r.stderr}`);
+      assert.match(r.stdout, /No transitions yet/,
+        `fresh-wave history must say "No transitions yet"; got:\n${r.stdout}`);
+    } finally {
+      teardownFixtureDb();
+    }
   });
 });

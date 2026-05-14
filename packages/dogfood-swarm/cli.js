@@ -10,6 +10,7 @@
  *   swarm collect <run-id> [outputs] — Validate, enforce ownership, merge, dedup
  *   swarm status <run-id>            — Control plane status
  *   swarm resume <run-id>            — Redispatch incomplete agents
+ *   swarm history <wave-id>          — wave_state_events transition chain
  *   swarm approve <run-id> [ids]     — Approve findings for amend
  *   swarm findings <run-id> [wave] [--format=text|markdown|json]
  *                                    — Findings digest for a wave (default: latest).
@@ -27,6 +28,7 @@ import { collect } from './commands/collect.js';
 import { revalidate, formatRevalidate } from './commands/revalidate.js';
 import { status, formatStatus } from './commands/status.js';
 import { resume, formatResume } from './commands/resume.js';
+import { history, formatHistory } from './commands/history.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
@@ -388,6 +390,35 @@ function cmdResume(args) {
     outputDir: getOutputDir(runId),
   });
   console.log(formatResume(r));
+}
+
+function cmdHistory(args) {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Usage: swarm history <wave-id>');
+    console.log('');
+    console.log('Render the full wave_state_events transition chain for <wave-id>.');
+    console.log('Each row shows: from_status -> to_status, when, and the operator-');
+    console.log('supplied reason text (override transitions via `swarm revalidate`');
+    console.log('carry their --reason text here prefixed with `revalidate:`).');
+    return;
+  }
+
+  const waveIdArg = args[0];
+  if (!waveIdArg) {
+    console.error('Usage: swarm history <wave-id>');
+    process.exit(1);
+  }
+
+  try {
+    const report = history({ waveId: waveIdArg, dbPath: getDbPath() });
+    console.log(formatHistory(report));
+  } catch (e) {
+    if (e.code === 'WAVE_NOT_FOUND' || /wave id must be/.test(e.message)) {
+      console.error(e.message);
+      process.exit(1);
+    }
+    throw e;
+  }
 }
 
 function cmdVerify(args) {
@@ -783,6 +814,7 @@ const commands = {
   advance: cmdAdvance,
   status: cmdStatus,
   resume: cmdResume,
+  history: cmdHistory,
   approve: cmdApprove,
   persist: cmdPersist,
   findings: cmdFindings,
@@ -852,6 +884,12 @@ Commands:
   persist <run-id> [opts]    Export canonical truth to downstream systems
   status <run-id>            Control plane status
   resume <run-id>            Redispatch incomplete agents
+  history <wave-id>          Render the wave_state_events transition chain for
+                             a wave. Deep audit verb for the override-and-reason
+                             record written by \`swarm revalidate --apply\` (and
+                             any future override-bearing transition). \`swarm
+                             status\` surfaces a one-line breadcrumb pointing at
+                             this verb when the wave has interesting history.
   approve <run-id> [opts]    Approve findings for amend
   findings <run-id> [wave] [--format=text|markdown|json]
                              Findings digest for a wave (default: latest).

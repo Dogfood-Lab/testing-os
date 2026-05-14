@@ -9,6 +9,7 @@
 
 import { openDb } from '../db/connection.js';
 import { isBlocked, isInFlight, getTimeoutPolicy } from '../lib/state-machine.js';
+import { getWaveTransitionHistory, BLOCKED_STATUSES } from '../lib/wave-state-machine.js';
 
 /**
  * @param {object} opts
@@ -92,6 +93,18 @@ export function status(opts) {
     ? db.prepare('SELECT * FROM wave_receipts WHERE wave_id = ?').get(currentWave.id)
     : null;
 
+  // Phase 5B-0: wave transition-history breadcrumb. Read wave_state_events
+  // for the current wave so the audit row written by `swarm revalidate
+  // --apply` (and any future override-bearing transition) is reachable from
+  // the operator's natural scan-mode path. The breadcrumb only renders when
+  // the wave has "interesting history" — any override transition out of a
+  // BLOCKED source, OR more than one transition row. Common-case waves
+  // (single dispatched->collected) do not get the breadcrumb so steady-state
+  // status output stays uncluttered.
+  const waveHistorySummary = currentWave
+    ? summarizeWaveHistory(getWaveTransitionHistory(db, currentWave.id))
+    : { count: 0, interesting: false, lastReason: null };
+
   // Agents needing manual intervention
   const blockedAgents = currentAgents.filter(a => isBlocked(a.status));
   const inFlightAgents = currentAgents.filter(a => isInFlight(a.status));
@@ -130,11 +143,13 @@ export function status(opts) {
     waves: {
       total: waves.length,
       current: currentWave ? {
+        id: currentWave.id,
         number: currentWave.wave_number,
         phase: currentWave.phase,
         status: currentWave.status,
         domainSnapshotId: currentWave.domain_snapshot_id,
         serialVerifyRequired: !!currentWave.serial_verify_required,
+        history: waveHistorySummary,
       } : null,
     },
     agents: currentAgents.map(a => ({
@@ -202,6 +217,9 @@ export function formatStatus(s) {
     const w = s.waves.current;
     lines.push(`Wave ${w.number}/${s.waves.total} — ${w.phase} [${w.status}]`);
     if (w.domainSnapshotId) lines.push(`  Snapshot: ${w.domainSnapshotId}`);
+    if (w.history && w.history.interesting) {
+      lines.push(`  History: ${w.history.count} ${w.history.count === 1 ? 'transition' : 'transitions'}${w.history.lastReason ? ` (last reason: "${w.history.lastReason}")` : ''} — see \`swarm history ${w.id}\``);
+    }
     lines.push('');
 
     // Agent table
@@ -280,6 +298,54 @@ function frameAssessment(state) {
     return `*** ${state} ***`;
   }
   return `--- ${state} ---`;
+}
+
+/**
+ * Phase 5B-0: classify a wave's transition history for the status-output
+ * breadcrumb. "Interesting" means the operator's deep-audit verb (`swarm
+ * history`) has something worth showing beyond the common-case
+ * single-transition record.
+ *
+ * Triggers:
+ *   1. Any override transition out of a BLOCKED source status (currently
+ *      'failed' → anything; this is the canonical `swarm revalidate --apply`
+ *      audit row).
+ *   2. More than one transition row recorded (legitimate happy path
+ *      dispatched→collected→advanced is fine but worth a hint that the
+ *      audit chain has multiple steps).
+ *
+ * Common case (a fresh wave with a single dispatched→collected/failed
+ * transition) gets NO breadcrumb so steady-state `swarm status` output
+ * does not gain a per-wave line.
+ *
+ * @param {Array<{from_status:string,to_status:string,reason:string|null}>} events
+ * @returns {{ count:number, interesting:boolean, lastReason:(string|null) }}
+ */
+export function summarizeWaveHistory(events) {
+  const count = events.length;
+  if (count === 0) {
+    return { count: 0, interesting: false, lastReason: null };
+  }
+
+  const hasOverride = events.some(e => BLOCKED_STATUSES.has(e.from_status));
+  const interesting = hasOverride || count > 1;
+
+  let lastReason = null;
+  if (interesting) {
+    const last = events[events.length - 1];
+    if (last && last.reason) {
+      lastReason = truncateReason(last.reason, 60);
+    }
+  }
+
+  return { count, interesting, lastReason };
+}
+
+function truncateReason(s, w) {
+  const str = String(s);
+  if (str.length <= w) return str;
+  if (w <= 3) return str.slice(0, w);
+  return str.slice(0, w - 3) + '...';
 }
 
 const STATUS_ICONS = {
