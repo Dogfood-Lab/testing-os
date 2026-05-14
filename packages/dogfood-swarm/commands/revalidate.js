@@ -29,13 +29,14 @@
  *   - Reason is non-optional. SOX §404 attributability; Stripe two-phase
  *     review collapses to single-phase + reason for single-operator systems.
  *
- *   - Wave-level rollback in the same transaction. collect.js:373-377
- *     unconditionally sets waves.status='failed' when validation_errors > 0.
- *     The wave has no law engine (raw UPDATEs scattered across dispatch.js,
- *     collect.js, verify.js, advance.js — see empirical state-machine trace
- *     2026-05-14). Once every agent_run in the wave reaches 'complete', the
- *     same direct UPDATE collect.js would have written flips the wave back
- *     to 'collected'. Same transaction prevents torn state (agents complete
+ *   - Wave-level rollback in the same transaction. collect.js routes through
+ *     transitionWave (Phase 5A wave state machine) when validation_errors > 0,
+ *     emitting a dispatched → failed transition with audit row. Once every
+ *     agent_run in the wave reaches 'complete', revalidate flips the wave
+ *     back via transitionWave(... 'failed' → 'collected', reason, override=true).
+ *     Override is required because 'failed' is BLOCKED in the wave state
+ *     machine — the operator's --reason text becomes the audit-row reason in
+ *     wave_state_events. Same transaction prevents torn state (agents complete
  *     but wave still failed) if the process crashes mid-flight.
  */
 
@@ -48,6 +49,7 @@ import { getDomains, checkOwnership } from '../lib/domains.js';
 import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from '../lib/output-schema.js';
 import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate-agent-output.js';
 import { transitionAgent, isBlocked } from '../lib/state-machine.js';
+import { transitionWave } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
@@ -312,8 +314,18 @@ export function revalidate(opts) {
       `).all(wave.id);
 
       if (remaining.length === 0 && wave.status === 'failed') {
-        db.prepare(`UPDATE waves SET status = 'collected', completed_at = datetime('now') WHERE id = ?`)
-          .run(wave.id);
+        // Phase 5A: 'failed' is BLOCKED in the wave state machine.
+        // transitionWave with override=true writes the audit row to
+        // wave_state_events with the operator-supplied reason — this is the
+        // canonical recovery primitive (failed → collected) wired to its
+        // first CLI surface (`swarm revalidate --apply`).
+        transitionWave(
+          db,
+          wave.id,
+          'collected',
+          `revalidate: ${reason}`,
+          true,
+        );
         report.waveStatusAfter = 'collected';
       } else {
         report.waveStatusAfter = wave.status;

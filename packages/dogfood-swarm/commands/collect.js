@@ -20,6 +20,7 @@ import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from 
 import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate-agent-output.js';
 import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
 import { transitionAgent, canTransition } from '../lib/state-machine.js';
+import { transitionWave } from '../lib/wave-state-machine.js';
 import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { getActualTouchedFiles, diffReportedVsActual } from '../lib/git-touched-files.js';
@@ -457,9 +458,13 @@ export function collect(opts) {
     };
   }
 
-  // Update wave status. TRUTH-001 / TRUTH-003: also persist
-  // serial_verify_required so `swarm status` and downstream readers can see
-  // the discipline signal after collect's stdout hint scrolls past.
+  // Update wave status via the lawful state machine (Phase 5A).
+  // The transition writes the audit row in wave_state_events and sets
+  // completed_at as a side effect. serial_verify_required is a separate
+  // discipline flag (NOT a state-machine concern) — persist it independently
+  // after the state transition lands. TRUTH-001 / TRUTH-003 require that
+  // `swarm status` and downstream readers see the discipline signal after
+  // collect's stdout hint scrolls past.
   const hasViolations = report.violations.length > 0;
   const hasErrors = report.validation_errors.length > 0;
   const waveStatus = hasViolations || hasErrors ? 'failed' : 'collected';
@@ -468,8 +473,15 @@ export function collect(opts) {
   // found` error.
   report.waveStatusBefore = 'dispatched';
   report.waveStatusAfter = waveStatus;
-  db.prepare('UPDATE waves SET status = ?, serial_verify_required = ?, completed_at = datetime(?) WHERE id = ?')
-    .run(waveStatus, report.serial_verify_required ? 1 : 0, 'now', wave.id);
+  const collectReason = hasViolations
+    ? `collect: ${report.violations.length} ownership violation(s)`
+    : hasErrors
+      ? `collect: ${report.validation_errors.length} validation error(s)`
+      : `collect: ${report.agents.length} agent(s) accepted`;
+  transitionWave(db, wave.id, waveStatus, collectReason);
+  if (report.serial_verify_required) {
+    db.prepare('UPDATE waves SET serial_verify_required = 1 WHERE id = ?').run(wave.id);
+  }
 
   // Generate summary
   report.summary = buildSummary(db, opts.runId, wave, report);

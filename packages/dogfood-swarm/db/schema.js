@@ -5,7 +5,7 @@
  * artifacts, findings, finding_events, verification_receipts, kv.
  */
 
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 export const SCHEMA_SQL = `
 -- ───────────────────────────────────────────
@@ -215,6 +215,23 @@ CREATE TABLE IF NOT EXISTS domain_events (
 );
 
 -- ───────────────────────────────────────────
+-- v5: Wave state transition log (append-only)
+-- Phase 5A: mirrors agent_state_events for waves. Append-only audit trail
+-- written by lib/wave-state-machine.js#transitionWave(). Every successful
+-- wave status change writes one row here. Field shape matches
+-- agent_state_events verbatim (with wave_id swapped for agent_run_id) so the
+-- two logs can be merged into a unified timeline view by future tooling.
+-- ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS wave_state_events (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  wave_id     INTEGER NOT NULL REFERENCES waves(id),
+  from_status TEXT    NOT NULL,
+  to_status   TEXT    NOT NULL,
+  reason      TEXT,
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- ───────────────────────────────────────────
 -- v2: Wave receipts (durable export artifacts)
 -- ───────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS wave_receipts (
@@ -229,6 +246,7 @@ CREATE TABLE IF NOT EXISTS wave_receipts (
 
 CREATE INDEX IF NOT EXISTS idx_agent_state_ev ON agent_state_events(agent_run_id);
 CREATE INDEX IF NOT EXISTS idx_domain_ev      ON domain_events(domain_id);
+CREATE INDEX IF NOT EXISTS idx_wave_state_ev  ON wave_state_events(wave_id);
 
 -- ───────────────────────────────────────────
 -- v3: Wave promotion records (append-only)
@@ -280,6 +298,20 @@ export const MIGRATIONS_SQL = [
   // collapsing to the wave aggregate. Composes with the wave-level column;
   // legacy single-agent semantics keep the default 0.
   "ALTER TABLE agent_runs ADD COLUMN verification_skipped INTEGER NOT NULL DEFAULT 0",
+  // Phase 5A: wave_state_events table. CREATE IF NOT EXISTS so an existing
+  // DB at an older SCHEMA_VERSION picks up the table on next openDb without
+  // a destructive migration. The matching index lives below; both clauses are
+  // idempotent. The SCHEMA_SQL block already covers fresh DBs; this MIGRATIONS
+  // entry covers the upgrade path from earlier SCHEMA_VERSIONs.
+  `CREATE TABLE IF NOT EXISTS wave_state_events (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    wave_id     INTEGER NOT NULL REFERENCES waves(id),
+    from_status TEXT    NOT NULL,
+    to_status   TEXT    NOT NULL,
+    reason      TEXT,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_wave_state_ev ON wave_state_events(wave_id)",
 ];
 
 /**

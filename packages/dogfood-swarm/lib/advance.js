@@ -29,6 +29,7 @@
 
 import { openDb } from '../db/connection.js';
 import { isBlocked, isInFlight } from './state-machine.js';
+import { transitionWave } from './wave-state-machine.js';
 
 /**
  * Phase progression map.
@@ -196,8 +197,18 @@ export function recordPromotion(db, runId, waveId, fromPhase, toPhase, opts) {
     JSON.stringify(snapshot),
   );
 
-  // Mark wave as advanced
-  db.prepare("UPDATE waves SET status = 'advanced' WHERE id = ?").run(waveId);
+  // Mark wave as advanced via the lawful state machine (Phase 5A). The
+  // promotion row above is the contractual evidence of the gate-check outcome;
+  // the wave_state_events row below records the wave-status transition itself
+  // with the promotion id in the reason for forensic linkage. Legal source
+  // states are 'collected' (verify skipped or not yet run) and 'verified'
+  // (verify passed).
+  transitionWave(
+    db,
+    waveId,
+    'advanced',
+    `advance: promotion #${Number(result.lastInsertRowid)} ${fromPhase} → ${toPhase}`
+  );
 
   // Update run status
   if (toPhase === 'complete') {

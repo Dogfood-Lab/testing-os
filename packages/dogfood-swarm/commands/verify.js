@@ -9,6 +9,7 @@
 
 import { openDb } from '../db/connection.js';
 import { runVerification, probeAll, selectAdapter, listAdapters } from '../lib/verify/registry.js';
+import { transitionWave } from '../lib/wave-state-machine.js';
 
 /**
  * Run verification for a swarm run.
@@ -55,9 +56,17 @@ export function verify(opts) {
     result.test_count,
   );
 
-  // Update wave status to 'verified' if verification passed and wave was 'collected'
+  // Update wave status to 'verified' if verification passed and wave was
+  // 'collected'. Phase 5A: route through transitionWave so the transition
+  // lands in wave_state_events with the verify-receipt id in the reason,
+  // making the audit trail self-referential to the verification artifact.
   if (result.verdict === 'pass' && wave.status === 'collected') {
-    db.prepare("UPDATE waves SET status = 'verified' WHERE id = ?").run(wave.id);
+    transitionWave(
+      db,
+      wave.id,
+      'verified',
+      `verify: receipt #${Number(receiptResult.lastInsertRowid)} verdict=pass (${result.adapter || 'none'})`
+    );
   }
 
   return {
