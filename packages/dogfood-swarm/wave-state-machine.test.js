@@ -58,7 +58,16 @@ describe('wave-state-machine — transition table shape', () => {
   it('exposes the expected source statuses', () => {
     assert.deepEqual(
       Object.keys(TRANSITIONS).sort(),
-      ['advanced', 'collected', 'collecting', 'dispatched', 'failed', 'pending', 'verified'].sort()
+      [
+        'aborted_for_rewind',
+        'advanced',
+        'collected',
+        'collecting',
+        'dispatched',
+        'failed',
+        'pending',
+        'verified',
+      ].sort()
     );
   });
 
@@ -72,9 +81,13 @@ describe('wave-state-machine — transition table shape', () => {
     assert.ok(isTerminal('advanced'));
   });
 
-  it('legacy "pending" + "collecting" have no outbound edges', () => {
-    assert.deepEqual(TRANSITIONS.pending, []);
-    assert.deepEqual(TRANSITIONS.collecting, []);
+  it('legacy "pending" + "collecting" have only the rewind escape hatch', () => {
+    // Phase 5B-1 added `aborted_for_rewind` as the universal terminal so a
+    // rewind against a save-point tag can lawfully tear down any non-terminal
+    // wave. Before 5B-1 these had no outbound edges at all; now both have
+    // exactly one — the rewind exit.
+    assert.deepEqual(TRANSITIONS.pending, ['aborted_for_rewind']);
+    assert.deepEqual(TRANSITIONS.collecting, ['aborted_for_rewind']);
   });
 });
 

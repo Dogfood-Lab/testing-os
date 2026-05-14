@@ -160,7 +160,12 @@ describe('F-091578-002 — transitionAgent throws typed rejection per kind', () 
     assert.equal(thrown.kind, 'INVALID');
     assert.equal(thrown.from, 'pending');
     assert.equal(thrown.to, 'complete');
-    assert.deepEqual(thrown.allowedTransitions, ['dispatched']);
+    // Phase 5B-1 added `aborted_for_rewind` as the universal rewind escape
+    // hatch reachable from every non-terminal source — so the legal targets
+    // out of `pending` grew from ['dispatched'] to
+    // ['dispatched', 'aborted_for_rewind']. The hint still routes the
+    // operator to the canonical happy-path target first.
+    assert.deepEqual(thrown.allowedTransitions, ['dispatched', 'aborted_for_rewind']);
     assert.match(thrown.hint, /pick a legal target.*dispatched/);
     assert.match(thrown.message, /not allowed/);
     assert.match(thrown.message, /Legal transitions from 'pending'/);

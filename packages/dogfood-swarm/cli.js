@@ -29,6 +29,7 @@ import { revalidate, formatRevalidate } from './commands/revalidate.js';
 import { status, formatStatus } from './commands/status.js';
 import { resume, formatResume } from './commands/resume.js';
 import { history, formatHistory } from './commands/history.js';
+import { rewind, formatRewind } from './commands/rewind.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
@@ -390,6 +391,72 @@ function cmdResume(args) {
     outputDir: getOutputDir(runId),
   });
   console.log(formatResume(r));
+}
+
+function cmdRewind(args) {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Usage: swarm rewind <save-point-tag> --reason "<text>" [--apply] [--force] [--force-arbitrary-ref]');
+    console.log('');
+    console.log('Restore the working tree to a named save-point AND lawfully abort orphaned');
+    console.log('in-flight waves/agent_runs (status -> aborted_for_rewind) with full audit');
+    console.log('visibility in wave_state_events / agent_state_events (reason prefixed with');
+    console.log('"rewind: "). Dry-run by default; --apply mutates.');
+    console.log('');
+    console.log('Required:');
+    console.log('  <save-point-tag>          A git tag (default: must match swarm-save-*)');
+    console.log('  --reason "<text>"         Non-empty audit reason (recorded in state events)');
+    console.log('');
+    console.log('Optional:');
+    console.log('  --apply                   Mutate (default: dry-run preview)');
+    console.log('  --force                   Discard uncommitted changes in the working tree');
+    console.log('  --force-arbitrary-ref     Allow tags outside the swarm-save-* glob');
+    return;
+  }
+
+  const savePointTag = args[0];
+  if (!savePointTag || savePointTag.startsWith('--')) {
+    console.error('Usage: swarm rewind <save-point-tag> --reason "<text>" [--apply] [--force] [--force-arbitrary-ref]');
+    process.exit(1);
+  }
+
+  let reason = '';
+  const reasonIdx = args.indexOf('--reason');
+  if (reasonIdx >= 0 && args[reasonIdx + 1]) reason = args[reasonIdx + 1];
+  for (const a of args) {
+    const m = a.match(/^--reason=(.+)$/s);
+    if (m) reason = m[1];
+  }
+
+  if (!reason || !reason.trim()) {
+    console.error('rewind: --reason "<text>" is required (non-empty)');
+    process.exit(1);
+  }
+
+  const apply = args.includes('--apply');
+  const force = args.includes('--force');
+  const forceArbitraryRef = args.includes('--force-arbitrary-ref');
+
+  // The CLI wrapper is the ONLY place we resolve real paths. The rewind()
+  // function never defaults to process.cwd() / DEFAULT_DB_PATH so tests can
+  // safely point at fixture trees + fixture DBs. The wrapper here resolves
+  // the operator's invocation context.
+  const result = rewind({
+    savePointTag,
+    reason,
+    cwd: process.cwd(),
+    dbPath: getDbPath(),
+    apply,
+    force,
+    forceArbitraryRef,
+  });
+
+  process.stdout.write(formatRewind(result));
+
+  if (apply) {
+    console.log('\nRewind applied. Inspect with `swarm status <run-id>` / `swarm history <wave-id>`.');
+  } else {
+    console.log('\nDry-run only — re-run with --apply to rewind the working tree + abort orphaned rows.');
+  }
 }
 
 function cmdHistory(args) {
@@ -805,6 +872,7 @@ const commands = {
   dispatch: cmdDispatch,
   collect: cmdCollect,
   revalidate: cmdRevalidate,
+  rewind: cmdRewind,
   verify: cmdVerify,
   'verify-fixed': cmdVerifyFixed,
   'verify-recurring': cmdVerifyRecurring,
@@ -851,6 +919,21 @@ Commands:
                              agent_run in the wave is then 'complete' and the
                              wave was 'failed', flips wave to 'collected' in
                              the same transaction.
+  rewind <save-point-tag> --reason "<text>" [opts]
+                             Lawful rewind: git reset --hard <tag> PLUS lawful
+                             abort of orphaned in-flight waves + agent_runs via
+                             transitionAgent/transitionWave (override path) with
+                             rewind: prefix on every audit row. Dry-run by
+                             default.
+                               --reason "<text>"       Required: non-empty audit reason
+                               --apply                 Required to mutate (default: dry-run)
+                               --force                 Allow rewind despite uncommitted changes
+                               --force-arbitrary-ref   Allow tags outside swarm-save-* glob
+                             Audit visibility: wave_state_events and
+                             agent_state_events both gain a row per affected
+                             row (status -> aborted_for_rewind, reason prefix
+                             rewind:). Terminal rows (advanced waves, complete
+                             agents) are preserved unchanged.
   verify <run-id> [opts]     Run build verification (auto-detect or --adapter)
   verify-fixed <run-id> [opts]
                              Re-audit findings marked [fixed]; classify into

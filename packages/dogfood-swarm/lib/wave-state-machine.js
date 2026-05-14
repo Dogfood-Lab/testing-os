@@ -49,6 +49,16 @@
  * the canonical blocked source — recovery to 'collected' MUST carry an
  * operator-supplied reason via revalidate's --reason flag (Stage A recovery
  * contract pinned by revalidate.test.js).
+ *
+ * Phase 5B-1 (rewind) addition: 'aborted_for_rewind' is a new terminal status
+ * applied to every non-terminal wave affected by `swarm rewind --apply`. Every
+ * non-terminal source can reach it (the normal path covers non-blocked sources;
+ * the override path covers `failed`). Terminal `advanced` waves are SKIPPED by
+ * rewind — promotion records are immutable history and the new aborted status
+ * would corrupt the gate-evidence trail. The audit row in wave_state_events
+ * carries the `rewind:` reason prefix (mirroring `revalidate:` on the recovery
+ * path), so an inspector can prove the wave was lawfully torn down rather than
+ * silently dropped when the working tree was reset.
  */
 
 import { StateMachineRejectionError } from './errors.js';
@@ -61,13 +71,14 @@ import { StateMachineRejectionError } from './errors.js';
  * factor into the enum — those are fixture setup, not state transitions.
  */
 const TRANSITIONS = {
-  pending:    [],
-  dispatched: ['collected', 'failed'],
-  collected:  ['verified', 'advanced'],
-  verified:   ['advanced'],
+  pending:    ['aborted_for_rewind'],
+  dispatched: ['collected', 'failed', 'aborted_for_rewind'],
+  collected:  ['verified', 'advanced', 'aborted_for_rewind'],
+  verified:   ['advanced', 'aborted_for_rewind'],
   advanced:   [],
-  failed:     [],
-  collecting: [],
+  failed:     ['aborted_for_rewind'],
+  collecting: ['aborted_for_rewind'],
+  aborted_for_rewind: [],
 };
 
 /**
@@ -88,8 +99,13 @@ const BLOCKED_STATUSES = new Set(['failed']);
  * table and downstream gates have been checked. Reopening an advanced wave
  * would corrupt the gate-evidence record; the correct recovery is to
  * dispatch a fresh wave at the next phase.
+ *
+ * 'aborted_for_rewind' is terminal so a future redrive (5B-2) cannot
+ * accidentally re-animate a wave that was lawfully torn down by `swarm rewind`.
+ * The redrive verb's contract is to dispatch a FRESH wave at the same phase,
+ * not to flip an aborted wave back into the dispatched state.
  */
-const TERMINAL_STATUSES = new Set(['advanced']);
+const TERMINAL_STATUSES = new Set(['advanced', 'aborted_for_rewind']);
 
 /**
  * Check if a transition is allowed.

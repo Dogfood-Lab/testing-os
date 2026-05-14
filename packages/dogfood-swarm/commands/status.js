@@ -310,7 +310,12 @@ function frameAssessment(state) {
  *   1. Any override transition out of a BLOCKED source status (currently
  *      'failed' → anything; this is the canonical `swarm revalidate --apply`
  *      audit row).
- *   2. More than one transition row recorded (legitimate happy path
+ *   2. Phase 5B-1: any rewind transition (to_status === 'aborted_for_rewind').
+ *      A rewind is always operator-initiated through a destructive verb and
+ *      should never blend into the steady-state status output — surfacing it
+ *      via the breadcrumb routes the operator to `swarm history` for the
+ *      reason text.
+ *   3. More than one transition row recorded (legitimate happy path
  *      dispatched→collected→advanced is fine but worth a hint that the
  *      audit chain has multiple steps).
  *
@@ -328,7 +333,8 @@ export function summarizeWaveHistory(events) {
   }
 
   const hasOverride = events.some(e => BLOCKED_STATUSES.has(e.from_status));
-  const interesting = hasOverride || count > 1;
+  const hasRewind = events.some(e => e.to_status === 'aborted_for_rewind');
+  const interesting = hasOverride || hasRewind || count > 1;
 
   let lastReason = null;
   if (interesting) {

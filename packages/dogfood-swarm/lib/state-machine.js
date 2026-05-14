@@ -13,18 +13,25 @@
  *   timed_out           — exceeded timeout policy (deterministic, not guessed)
  *   invalid_output      — output failed schema validation (manual fix required)
  *   ownership_violation — agent touched files outside its domain (manual fix required)
+ *   aborted_for_rewind  — agent_run was orphaned by a `swarm rewind` against a save-point
+ *                         tag whose tree predates this run (Phase 5B-1; terminal — the
+ *                         row + its prior audit chain survive the tree reset).
  *
  * Transition rules:
- *   pending            → dispatched
- *   dispatched         → running, complete, failed, timed_out
- *   running            → complete, failed, timed_out
+ *   pending            → dispatched, aborted_for_rewind
+ *   dispatched         → running, complete, failed, timed_out, aborted_for_rewind
+ *   running            → complete, failed, timed_out, aborted_for_rewind
  *   complete           → (terminal)
- *   failed             → dispatched (redispatch)
- *   timed_out          → dispatched (redispatch)
- *   invalid_output     → (blocked — manual fix only, no auto-retry)
- *   ownership_violation → (blocked — manual fix only, no auto-retry)
+ *   failed             → dispatched (redispatch), aborted_for_rewind
+ *   timed_out          → dispatched (redispatch), aborted_for_rewind
+ *   invalid_output     → (blocked — manual fix only, no auto-retry; rewind only via override)
+ *   ownership_violation → (blocked — manual fix only, no auto-retry; rewind only via override)
+ *   aborted_for_rewind  → (terminal)
  *
  * Blocked statuses can only transition via explicit coordinator override.
+ * `aborted_for_rewind` is written by `swarm rewind --apply` via the override path
+ * (transitionAgent(... override=true, reason)) for any non-terminal source so the
+ * operator's --reason text becomes the audit row in agent_state_events.
  */
 
 import { StateMachineRejectionError } from './errors.js';
@@ -33,14 +40,15 @@ import { StateMachineRejectionError } from './errors.js';
  * Allowed transitions: from → [to, to, ...]
  */
 const TRANSITIONS = {
-  pending:              ['dispatched'],
-  dispatched:           ['running', 'complete', 'failed', 'timed_out', 'invalid_output', 'ownership_violation'],
-  running:              ['complete', 'failed', 'timed_out', 'invalid_output', 'ownership_violation'],
+  pending:              ['dispatched', 'aborted_for_rewind'],
+  dispatched:           ['running', 'complete', 'failed', 'timed_out', 'invalid_output', 'ownership_violation', 'aborted_for_rewind'],
+  running:              ['complete', 'failed', 'timed_out', 'invalid_output', 'ownership_violation', 'aborted_for_rewind'],
   complete:             [],
-  failed:               ['dispatched'],
-  timed_out:            ['dispatched'],
+  failed:               ['dispatched', 'aborted_for_rewind'],
+  timed_out:            ['dispatched', 'aborted_for_rewind'],
   invalid_output:       [],
   ownership_violation:  [],
+  aborted_for_rewind:   [],
 };
 
 /**
@@ -51,8 +59,13 @@ const BLOCKED_STATUSES = new Set(['invalid_output', 'ownership_violation']);
 
 /**
  * Terminal statuses — cannot transition out.
+ *
+ * `aborted_for_rewind` joins `complete` as terminal so a future redrive (5B-2)
+ * cannot accidentally re-animate an agent_run that was lawfully abandoned by a
+ * rewind. The redrive verb's contract is to dispatch a FRESH agent_run row, not
+ * to flip an aborted one back into flight.
  */
-const TERMINAL_STATUSES = new Set(['complete']);
+const TERMINAL_STATUSES = new Set(['complete', 'aborted_for_rewind']);
 
 /**
  * Statuses eligible for automatic redispatch.
