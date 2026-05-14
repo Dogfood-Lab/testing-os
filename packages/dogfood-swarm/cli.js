@@ -292,17 +292,26 @@ function cmdCollect(args) {
   // with --skip-verify carried `verification_skipped: true`, the per-agent
   // verify pass was deliberately deferred so parallel agents do not observe
   // cumulative-tree measurement artifacts. The coordinator now runs ONE
-  // serial verify against the post-merge tree before promoting. Surface this
-  // as a Next-step hint, not a hidden side-effect.
+  // serial verify against the post-merge tree before promoting.
+  //
+  // D-STRUCT-003: replace the prior bare `SERIAL VERIFY REQUIRED:` header
+  // (which competed with the trailing `Next: swarm status` line for the
+  // operator's scan-anchor) with a heavy `[!]`-sigiled banner that matches
+  // the FAILED-class assessment frame used in `swarm status`. When the
+  // serial-verify gate is live, the canonical `Next:` token is REPLACED
+  // with an `Action required:` line that names the actual obligation
+  // (`npm run verify` against the cumulative tree). The `Next:` token must
+  // carry the GATING step or carry NONE.
   if (result.serial_verify_required) {
-    console.log('SERIAL VERIFY REQUIRED:');
+    console.log('===== [!] SERIAL VERIFY REQUIRED [!] =====');
     console.log('  One or more agents skipped per-agent verification per the parallel-wave');
     console.log('  discipline. Run a single `npm run verify` against the cumulative tree');
     console.log('  before advancing the wave. See swarms/PROTOCOL.md §Serial final verification.');
     console.log('');
+    console.log(`Action required: npm run verify  (then: swarm status ${runId})`);
+  } else {
+    console.log(`Next: swarm status ${runId}`);
   }
-
-  console.log(`Next: swarm status ${runId}`);
 }
 
 function cmdRevalidate(args) {
@@ -797,13 +806,14 @@ Commands:
                              §Serial final verification.
   collect <run-id> [opts]    Validate, enforce ownership, merge
   revalidate <run-id> [opts] Lawful recovery for blocked agent_runs
-                             (invalid_output / ownership_violation). Wraps the
-                             override path that exists in state-machine.js but
-                             had no operator surface. Dry-run by default;
-                             --apply required to mutate; --reason required.
-                             Usage: swarm revalidate <run-id> --reason "<text>"
-                             --domain=name:path [--domain=name:path ...] [--apply]
-                             Re-runs the same validators as 'collect'; on pass,
+                             (invalid_output / ownership_violation).
+                             Usage: swarm revalidate <run-id> [flags]
+                               --reason "<text>"   Required: non-empty audit reason
+                               --domain=name:path  Required: repeatable, one per agent
+                               --apply             Required to mutate (default: dry-run)
+                             Wraps the override path that exists in state-
+                             machine.js but had no operator surface. Re-runs
+                             the same validators as 'collect'; on pass,
                              transitions agent to 'complete' with override and
                              reason recorded in agent_state_events. If every
                              agent_run in the wave is then 'complete' and the

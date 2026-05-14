@@ -241,14 +241,45 @@ export function formatStatus(s) {
     lines.push('');
   }
 
-  // Assessment
-  lines.push(`--- ${s.assessment.state} ---`);
+  // D-STRUCT-001: three-tier visual treatment by assessment class so the
+  // shape of the frame carries the same information as the LABEL text.
+  // Operators scanning past status output cannot pre-attentively distinguish
+  // a green state from a red state when every state renders inside the same
+  // `--- LABEL ---` frame. The chosen markers (`=====`, `***`, `---`) and
+  // the `[!]` content sigil are pure-ASCII so they render identically under
+  // CI plaintext logs, screen-readers, and Markdown.
+  //   FAILED-class  →  `===== [!] LABEL [!] =====`  (heavy + obligation sigil)
+  //   READY-class   →  `*** LABEL ***`              (light, distinct)
+  //   neutral       →  `--- LABEL ---`              (current)
+  lines.push(frameAssessment(s.assessment.state));
   if (s.assessment.blockers.length > 0) {
     for (const b of s.assessment.blockers) lines.push(`  BLOCKER: ${b}`);
   }
   lines.push(`Next: ${s.assessment.nextAction}`);
 
   return lines.join('\n');
+}
+
+const FAILED_CLASS_STATES = new Set([
+  'WAVE FAILED',
+  'BLOCKED',
+  'VERIFY REQUIRED',
+  'AMEND NEEDED',
+]);
+
+const READY_CLASS_STATES = new Set([
+  'READY TO COLLECT',
+  'READY TO ADVANCE',
+]);
+
+function frameAssessment(state) {
+  if (FAILED_CLASS_STATES.has(state)) {
+    return `===== [!] ${state} [!] =====`;
+  }
+  if (READY_CLASS_STATES.has(state)) {
+    return `*** ${state} ***`;
+  }
+  return `--- ${state} ---`;
 }
 
 const STATUS_ICONS = {

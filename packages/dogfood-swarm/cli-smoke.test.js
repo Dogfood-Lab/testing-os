@@ -37,9 +37,37 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
+import { formatStatus } from './commands/status.js';
+
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const CLI_PATH = join(__dirname, 'cli.js');
+
+function stubStatus(assessmentState, nextAction = 'noop') {
+  return {
+    run: {
+      id: 'r1', repo: 'org/r', status: 'health-audit-a',
+      branch: 'main', commitSha: 'abcdef0123',
+      savePointTag: null,
+      timeoutPolicy: '1800s',
+    },
+    domains: [],
+    waves: { total: 0, current: null },
+    agents: [],
+    agentSummary: { total: 0, complete: 0, inFlight: 0, blocked: 0 },
+    findings: {
+      total: 0,
+      bySeverity: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
+      byStatus: {},
+      open: { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 },
+      thisWave: { new: 0, recurring: 0, fixed: 0 },
+    },
+    violations: 0,
+    lastVerification: null,
+    waveReceipt: null,
+    assessment: { state: assessmentState, blockers: [], nextAction },
+  };
+}
 
 function runCli(args = []) {
   return spawnSync(process.execPath, [CLI_PATH, ...args], {
@@ -107,5 +135,107 @@ describe('cli.js parser-load (Pattern #10 regression gate)', () => {
       `dispatch-with-no-args should exit 1; got ${r.status}\nstderr: ${r.stderr}`);
     assert.match(r.stderr, /Usage: swarm dispatch/,
       'dispatch Usage line missing from stderr');
+  });
+});
+
+/**
+ * D-STRUCT-001 — distinct visual frames per assessment class.
+ *
+ * Pattern #10 proof gate: before the fix, FAILED-class states (WAVE FAILED,
+ * VERIFY REQUIRED, AMEND NEEDED, BLOCKED) and READY-class states (READY TO
+ * ADVANCE, READY TO COLLECT) all rendered as identical `--- LABEL ---`
+ * frames. An operator scanning past a long status output cannot pre-
+ * attentively distinguish a red-state from a green-state. The fix gives
+ * each class a distinct ASCII frame so the visual SHAPE carries the same
+ * information as the LABEL text — robust against CI plaintext logs,
+ * screen-readers, and Markdown rendering that may drop ANSI colors.
+ *
+ * Asserts each class' frame carries a marker character absent from the
+ * other classes. Pure-source asserts (no color/emoji) so the test is
+ * meaningful under every capture pipeline.
+ */
+describe('D-STRUCT-001: formatStatus renders distinct frames per assessment class', () => {
+  it('FAILED-class WAVE FAILED frame is distinct from READY TO ADVANCE', () => {
+    const failedOut = formatStatus(stubStatus('WAVE FAILED'));
+    const readyOut = formatStatus(stubStatus('READY TO ADVANCE'));
+
+    // Extract the assessment line from each — the line containing the
+    // assessment state label.
+    const failedLine = failedOut.split('\n').find(l => l.includes('WAVE FAILED')) || '';
+    const readyLine = readyOut.split('\n').find(l => l.includes('READY TO ADVANCE')) || '';
+
+    assert.ok(failedLine.length > 0, 'WAVE FAILED line must be present');
+    assert.ok(readyLine.length > 0, 'READY TO ADVANCE line must be present');
+
+    // Pattern #10 substance: the two frames must differ in non-trivial
+    // ways. Strip the label words and compare the surrounding frame
+    // characters — they must NOT be identical.
+    const failedFrame = failedLine.replace(/WAVE FAILED/g, '').trim();
+    const readyFrame = readyLine.replace(/READY TO ADVANCE/g, '').trim();
+    assert.notEqual(failedFrame, readyFrame,
+      'frame characters around WAVE FAILED and READY TO ADVANCE must differ ' +
+      `(both are: "${failedFrame}" vs "${readyFrame}")`);
+  });
+
+  it('VERIFY REQUIRED frame carries the FAILED-class obligation marker', () => {
+    const out = formatStatus(stubStatus('VERIFY REQUIRED'));
+    const line = out.split('\n').find(l => l.includes('VERIFY REQUIRED')) || '';
+    assert.ok(line.length > 0, 'VERIFY REQUIRED line must be present');
+    // Obligation marker `[!]` (ASCII, screen-reader-safe, distinct from
+    // neutral `---` frame). The READY-class frame does NOT carry `[!]`.
+    assert.match(line, /\[!\]/,
+      `VERIFY REQUIRED must carry FAILED-class marker [!]; got "${line}"`);
+    const readyLine = formatStatus(stubStatus('READY TO ADVANCE'))
+      .split('\n').find(l => l.includes('READY TO ADVANCE')) || '';
+    assert.doesNotMatch(readyLine, /\[!\]/,
+      `READY TO ADVANCE must NOT carry the [!] obligation marker; got "${readyLine}"`);
+  });
+
+  it('AMEND NEEDED frame carries the FAILED-class obligation marker', () => {
+    const out = formatStatus(stubStatus('AMEND NEEDED'));
+    const line = out.split('\n').find(l => l.includes('AMEND NEEDED')) || '';
+    assert.match(line, /\[!\]/,
+      `AMEND NEEDED must carry FAILED-class marker [!]; got "${line}"`);
+  });
+
+  it('READY TO ADVANCE frame is distinct from neutral IN PROGRESS frame', () => {
+    const readyOut = formatStatus(stubStatus('READY TO ADVANCE'));
+    const progOut = formatStatus(stubStatus('IN PROGRESS'));
+    const readyLine = readyOut.split('\n').find(l => l.includes('READY TO ADVANCE')) || '';
+    const progLine = progOut.split('\n').find(l => l.includes('IN PROGRESS')) || '';
+    const readyFrame = readyLine.replace(/READY TO ADVANCE/g, '').trim();
+    const progFrame = progLine.replace(/IN PROGRESS/g, '').trim();
+    assert.notEqual(readyFrame, progFrame,
+      'READY-class frame must differ from neutral IN-PROGRESS frame');
+  });
+});
+
+/**
+ * CHR-2 — revalidate help block surfaces the load-bearing safety triplet
+ * (--reason / --apply / --domain) as a scannable group, not as a side
+ * clause in a 13-line prose wall.
+ *
+ * Wave-2 session anchor: operator derived --reason was REQUIRED (not
+ * optional) by triggering an error. The help text technically contained
+ * the truth but did not lead with it visually. The fix surfaces each
+ * required-flag as a bulleted line under the Usage block so a scan-mode
+ * reader cannot miss them.
+ */
+describe('CHR-2: revalidate help text surfaces required safety flags scannably', () => {
+  it('no-args help block lists --reason / --apply / --domain as Required', () => {
+    const r = runCli([]);
+    assert.equal(r.status, 0, 'no-args help should exit 0');
+    // Locate the revalidate block, slice it, then assert the three
+    // Required-tagged flag bullets are present together.
+    const help = r.stdout;
+    const reIdx = help.indexOf('revalidate ');
+    assert.ok(reIdx >= 0, 'revalidate command block must be present in help');
+    const tail = help.slice(reIdx, reIdx + 800);
+    assert.match(tail, /--reason "<text>"\s+Required/,
+      '--reason flag must be tagged Required in the revalidate help block');
+    assert.match(tail, /--domain=name:path\s+Required/,
+      '--domain flag must be tagged Required in the revalidate help block');
+    assert.match(tail, /--apply\s+Required/,
+      '--apply flag must be tagged Required in the revalidate help block');
   });
 });

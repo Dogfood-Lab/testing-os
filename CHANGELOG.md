@@ -283,7 +283,3 @@ First stable release. The migration from `mcp-tool-shop-org/dogfood-labs` is com
 - `site/` `npm audit` reports 8 vulnerabilities (5 moderate, 3 high) inherited from the legacy lockfile; not blocking deployment.
 - Workspace dep scanning + Dependabot config not yet wired into CI; tracked under SHIP_GATE.md hygiene SKIPs.
 - All 7 packages are `private: true`. The `npm publish` decision is deferred per HANDOFF.md Session G.
-
-## [Unreleased]
-
-(Open for the next change set.)

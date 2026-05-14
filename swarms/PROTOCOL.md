@@ -318,7 +318,13 @@ These are repairable but never auto-retryable: the source of failure was not tra
 The canonical override has lived in `packages/dogfood-swarm/lib/state-machine.js` since the BLOCKED_STATUSES set was introduced:
 
 ```text
-transitionAgent(db, agentRunId, 'complete', reason, /* override */ true)
+transitionAgent(
+  db,
+  agentRunId,
+  'complete',
+  reason,
+  /* override */ true
+)
 ```
 
 Override requires a non-empty `reason` (`state-machine.js` line 106: `throw new Error('Override requires a reason …')`). The transition writes a row to `agent_state_events` capturing `from_status`, `to_status`, the reason, and the timestamp — the same audit trail every normal transition produces, but explicitly flagged as an override. Until `v1.1.7-…`, this primitive had no operator-facing CLI surface; recovery required raw SQL.
@@ -328,7 +334,11 @@ Override requires a non-empty `reason` (`state-machine.js` line 106: `throw new 
 `swarm revalidate` exposes the override lawfully:
 
 ```text
-Usage: swarm revalidate <run-id> --reason "<text>" --domain=name:path [--domain=name:path ...] [--apply]
+Usage: swarm revalidate <run-id>
+  --reason "<text>"
+  --domain=name:path
+  [--domain=name:path ...]
+  [--apply]
 ```
 
 Behavior (from `packages/dogfood-swarm/commands/revalidate.js`):

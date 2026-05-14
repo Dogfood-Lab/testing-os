@@ -261,7 +261,16 @@ function formatReceiptMarkdown(r) {
   lines.push('| Domain | Ownership | Status | Verify skipped | Error |');
   lines.push('|--------|-----------|--------|----------------|-------|');
   for (const a of r.agents) {
-    const skipped = a.verification_skipped ? 'yes' : 'no';
+    // D-STRUCT-002: render the cell as an OBLIGATION marker, not a neutral
+    // boolean. `REQUIRED` (uppercase) reads pre-attentively as an open
+    // coordinator obligation; `—` (em-dash) is the default-quiet state and
+    // matches the convention already used in the Error column. Compare
+    // with the prior shape (`yes` / `no`) where a wave-level discipline
+    // gate collapsed into a passing-checkbox visual. The JSON layer's
+    // `verification_skipped: boolean` is unchanged (machine consumers
+    // parse the boolean); only the human-readable cell shifts to surface
+    // the obligation.
+    const skipped = a.verification_skipped ? 'REQUIRED' : '—';
     lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${skipped} | ${a.error || '—'} |`);
   }
   lines.push('');

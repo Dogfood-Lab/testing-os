@@ -513,10 +513,13 @@ describe('receipt JSON and Markdown include serial_verify_required and per-agent
       'receipt MD must surface wave-level Serial verify required line');
     assert.match(md, /\| Verify skipped \|/,
       'receipt MD agents table must include Verify skipped column header');
-    // domain-a row marks yes; domain-b row marks no.
-    assert.match(md, /\| domain-a \| owned \| complete \| yes \|/,
-      'receipt MD must mark domain-a (skipped) as yes in the agents table');
-    assert.match(md, /\| domain-b \| owned \| complete \| no \|/,
-      'receipt MD must mark domain-b (did not skip) as no in the agents table');
+    // D-STRUCT-002: the skipped row carries `REQUIRED` (open obligation),
+    // the not-skipped row carries `—` (default-quiet, em-dash). Prior shape
+    // was `yes`/`no` which read as a passing-checkbox visual; the obligation
+    // marker survives CI plaintext logs, screen-readers, and Markdown.
+    assert.match(md, /\| domain-a \| owned \| complete \| REQUIRED \|/,
+      'receipt MD must mark domain-a (skipped) with the REQUIRED obligation marker');
+    assert.match(md, /\| domain-b \| owned \| complete \| — \|/,
+      'receipt MD must mark domain-b (did not skip) with the em-dash default-quiet marker');
   });
 });
