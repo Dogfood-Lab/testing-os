@@ -9,16 +9,16 @@ export const config: SiteConfig = {
   footerText: 'MIT Licensed — built by <a href="https://github.com/dogfood-lab" style="color:var(--color-muted);text-decoration:underline">dogfood-lab</a>',
 
   hero: {
-    badge: 'Testing OS',
+    badge: 'Testing OS — v1.2.1 on npm',
     headline: 'testing-os',
     headlineAccent: 'proves it ships.',
-    description: 'Centralized dogfood evidence system. 13 repos, 8 surfaces, all verified pass, all enforcement required.',
+    description: 'Centralized dogfood evidence system. 13 repos, 8 surfaces, all verified pass, all enforcement required. v1.2.1 ships the Three R\'s recovery contract (revalidate, rewind, redrive) and the swarm history audit verb.',
     primaryCta: { href: '#architecture', label: 'How it works' },
     secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
+      { label: 'Install', code: 'npm install -g @dogfood-lab/dogfood-swarm' },
       { label: 'Verify', code: 'npm run verify' },
-      { label: 'Portfolio', code: 'node packages/portfolio/generate.js' },
-      { label: 'Sync', code: 'rk sync-dogfood --local <path-to-clone>' },
+      { label: 'Recover', code: 'swarm revalidate <run-id> --reason "<text>" --domain=<name>:<corrected.json> --apply' },
     ],
   },
 
