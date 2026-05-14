@@ -287,6 +287,67 @@ After Phase 7 (post-deploy verification) passes:
 
 ---
 
+## Recovery from blocked agent_runs: `swarm revalidate`
+
+Sometimes an amend wave's `swarm collect` rejects every agent's output for a schema or ownership reason that is real but **recoverable**: the agent did the work, the work is correct on disk, the JSON envelope drifted from the canonical shape (`fixes_applied` vs `fixes`; `files_edited` vs `files_changed`), or the coordinator-frozen domain map omitted a glob the brief told the agent to edit. In those cases the four `agent_runs` move to a blocked status, the wave moves to `failed`, and nothing in the audit lane offers a path back. The lawful recovery verb for that exact shape is `swarm revalidate`.
+
+### The two blocked statuses
+
+`packages/dogfood-swarm/lib/state-machine.js` defines an 8-status state machine for `agent_runs`. Two of those statuses are the BLOCKED_STATUSES set (line 50) — `invalid_output` and `ownership_violation`. Neither has any outbound transition in the normal `TRANSITIONS` map; the state-machine deliberately requires explicit coordinator override to move them.
+
+- **`invalid_output`** — the agent's JSON failed the canonical `agent-output.schema.json` envelope, the legacy `validateAuditOutput` / `validateFeatureOutput` / `validateAmendOutput`, or one of the legacy normalization passes downstream. The output is on disk; the gate refused it.
+- **`ownership_violation`** — the agent's `files_changed` set contains paths that lie outside the agent's frozen domain map. The work landed in the worktree; ownership accounting refused to claim it.
+
+These are repairable but never auto-retryable: the source of failure was not transient, and any retry without operator review would either repeat the violation or paper over a real drift.
+
+### The override primitive (library level)
+
+The canonical override has lived in `packages/dogfood-swarm/lib/state-machine.js` since the BLOCKED_STATUSES set was introduced:
+
+```text
+transitionAgent(db, agentRunId, 'complete', reason, /* override */ true)
+```
+
+Override requires a non-empty `reason` (`state-machine.js` line 106: `throw new Error('Override requires a reason …')`). The transition writes a row to `agent_state_events` capturing `from_status`, `to_status`, the reason, and the timestamp — the same audit trail every normal transition produces, but explicitly flagged as an override. Until `v1.1.7-…`, this primitive had no operator-facing CLI surface; recovery required raw SQL.
+
+### The CLI verb
+
+`swarm revalidate` exposes the override lawfully:
+
+```text
+Usage: swarm revalidate <run-id> --reason "<text>" --domain=name:path [--domain=name:path ...] [--apply]
+```
+
+Behavior (from `packages/dogfood-swarm/commands/revalidate.js`):
+
+1. **Dry-run by default.** No `--apply` ⇒ revalidate inspects each corrected output JSON against the same envelope schema + legacy validator + ownership check that `collect` would have run, builds a `report.repairs[]` list of "would transition", and returns without touching the DB. The repair preview lets the operator see what would change before any state leaves disk.
+2. **`--apply` is required to mutate.** With `--apply` and at least one repair planned, revalidate opens a single SQLite transaction and per repair: calls `transitionAgent(db, ar.id, 'complete', reason, true)`, records the output artifact with its SHA-256, mirrors the `file_claims` rows `collect` would have written for amend outputs.
+3. **`--reason "<text>"` is mandatory.** The library rejects empty/whitespace reasons before any DB connection is opened. The reason is recorded verbatim in `agent_state_events` for every override transition in the wave.
+4. **Refusals are first-class.** If the corrected JSON still fails the envelope, the legacy validator, or the ownership check, revalidate refuses the repair and records the refusal in `report.refusals[]` — the agent_run stays in its blocked status, and the operator sees a structured reason rather than a silent ignore. Already-complete rows are skipped idempotently.
+5. **Wave-level rollback in the same transaction.** `collect.js:373-377` sets `waves.status='failed'` when `validation_errors > 0`. Revalidate mirrors the inverse direction: after every per-repair override, if every latest `agent_run` in the wave is now `complete` AND the wave was `failed`, the same transaction also runs `UPDATE waves SET status='collected', completed_at=datetime('now') WHERE id = ?`. Same transaction prevents the torn-state regression (agents complete, wave still `failed`) if the process crashes mid-flight. Partial repair (N=4 blocked, repair N-1) keeps the wave in `failed` deliberately — only full repair flips the wave back.
+
+### When to use it (and when not)
+
+Use `swarm revalidate` when:
+
+- `swarm collect` reports `validation_errors > 0` and the wave is `failed`.
+- The output JSON on disk is correct (or has been hand-corrected) and reflects work the agent actually did.
+- The reason is documentable in one sentence (it becomes part of the run's audit history).
+
+Do NOT use `swarm revalidate` to bypass a real ownership violation. If an agent genuinely edited files outside its domain, the lawful response is to roll back the work, fix the domain map (or the brief), and re-dispatch — not to override the gate. Revalidate refuses repairs that still fail ownership checks for exactly this reason: the override path only opens when the corrected state passes the same checks `collect` would have applied.
+
+### Architectural grounding
+
+The shape — "executed but produced invalid output is repairable in place, with a required reason captured in audit history" — appears across the workflow-orchestration field: AWS Step Functions Redrive, Temporal workflow reset, Airflow `clear` / `set-state`, Argo retry, GitHub Actions `rerun --failed`. Direct DB intervention is universally last-resort; toolchains mediate state mutation through tooled commands that emit an event-sourced audit row alongside the UPDATE (Stripe Ledger correction-event pattern). `swarm revalidate` is the testing-os instance of that family.
+
+### Cross-references
+
+- State-machine contract and override primitive: [Handbook → State Machines](../site/src/content/docs/handbook/state-machines.md) `agent_runs` section.
+- Source: `packages/dogfood-swarm/commands/revalidate.js` (file header documents the architectural grounding in line-numbered detail).
+- Tests: `packages/dogfood-swarm/revalidate.test.js` (11 cases; the partial-vs-full-repair wave-rollback is the regression anchor for this section).
+
+---
+
 ## Key Principles
 
 1. **Exclusive File Ownership** — No agent edits a file outside its assignment. Violations trigger revert.
