@@ -23,13 +23,15 @@ The single positional argument is the integer `waves.id`. There are no flags.
 
 The first line names the wave (id, run_id, wave_number, phase, current status). Then a blank line, then either a fixed-column table of every transition, or a single `No transitions yet.` notice when the wave has had no state changes (the common state for a fresh `dispatched` wave whose first transition has not yet landed).
 
-```text
-Wave 42 (run swarm-run-1789450000-abc, wave_number 3, phase health-audit-a) — current status: collected
+Example (abbreviated values for display; live output uses full IDs and ISO timestamps):
 
-FROM          TO            WHEN                 REASON
-------------------------------------------------------------------------
-dispatched    failed        2026-05-14 09:12:08  collect: 2 validation_errors
-failed        collected     2026-05-14 09:14:33  revalidate: fix typos in output JSON
+```text
+Wave 42 (run abc, wave 3, phase health-a) — status: collected
+
+FROM         TO           WHEN       REASON
+----------------------------------------------------------
+dispatched   failed       09:12:08   collect: 2 errors
+failed       collected    09:14:33   revalidate: fix typos
 
 (2 transitions)
 ```
@@ -57,13 +59,13 @@ A wave has interesting history when any one of these is true:
 2. **Any rewind transition** (`to_status === 'aborted_for_rewind'`). Rewinds are always operator-initiated through a destructive verb and should never blend into steady-state status output.
 3. **More than one transition row recorded.** A legitimate happy path (`dispatched → collected → advanced`) is fine but worth a hint that the audit chain has multiple steps.
 
-When interesting, the breadcrumb line looks like:
+When interesting, the breadcrumb shows the transition count, optionally an excerpt of the most recent reason text (truncated to 60 characters if longer), and a pointer at `swarm history <wave-id>`. Example:
 
 ```text
-  History: 2 transitions (last reason: "revalidate: fix typos in output JSON") — see `swarm history 42`
+  History: 2 transitions — see `swarm history 42`
 ```
 
-The last reason is truncated to 60 characters with `...` if longer. The pointer at `swarm history <wave-id>` is the canonical route from the natural scan-mode read of `swarm status` into the deep-audit verb.
+When a `--reason` is present (e.g. after `swarm revalidate --apply`), it appears in parentheses between the count and the pointer: `2 transitions (last reason: "fix typos") — see ...`. The pointer is the canonical route from natural scan-mode reads of `swarm status` into the deep-audit verb.
 
 ## Error cases
 
