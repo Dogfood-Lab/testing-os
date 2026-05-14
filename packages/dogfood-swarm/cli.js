@@ -791,7 +791,7 @@ Commands:
                              --skip-verify (amend phases): append the parallel-
                              wave directive to amend prompts so agents skip
                              per-agent npm test. Coordinator runs one serial
-                             verify after `swarm collect` instead. Eliminates
+                             verify after 'swarm collect' instead. Eliminates
                              cumulative-tree measurement artifacts when N
                              agents run verify concurrently. PROTOCOL.md
                              §Serial final verification.
