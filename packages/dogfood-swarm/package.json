@@ -34,7 +34,7 @@
     "@dogfood-lab/report": "^1.2.0",
     "ajv": "^8.18.0",
     "ajv-formats": "^3.0.1",
-    "better-sqlite3": "^11.0.0",
+    "better-sqlite3": "^12.10.0",
     "minimatch": "^10.0.0"
   },
   "engines": {
