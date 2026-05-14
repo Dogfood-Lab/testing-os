@@ -20,16 +20,16 @@
 *Protocolli, archivi di dati e cicli di apprendimento per lo sviluppo software assistito dall'intelligenza artificiale.*
 
 <!-- version:start -->
-**v1.2.0** — 7 pacchetti (`@dogfood-lab/*`), suite di test per l'intero ambiente di lavoro, ricevitore attivo, documentazione pubblicata.
+**v1.2.1** — 7 pacchetti (`@dogfood-lab/*`), suite di test per l'intero ambiente di lavoro, ricevitore attivo, manuale pubblicato.
 <!-- version:end -->
 
-📖 **[Leggi la documentazione →](https://dogfood-lab.github.io/testing-os/handbook/)**
+📖 **[Leggi il manuale →](https://dogfood-lab.github.io/testing-os/handbook/)**
 
 </div
 
 ---
 
-## Cos'è questo progetto
+## Cos'è questo
 
 `testing-os` è il monorepo principale dell'organizzazione GitHub [Dogfood Lab](https://github.com/dogfood-lab) — successore di [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs), ora archiviata.  Raggruppa i protocolli e l'infrastruttura per eseguire, registrare e apprendere dai test in un flusso di lavoro di sviluppo nativo per l'intelligenza artificiale:
 
@@ -40,31 +40,31 @@
 
 ## Stato
 
-**v1.2.0** — prima pubblicazione npm del monorepo `@dogfood-lab/*`. Sei pacchetti sono ora disponibili pubblicamente sotto lo scope `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm` (il CLI `swarm` principale). Novità in questa versione: macchina a stati a livello di "wave" + contratto di ripristino "Three R's" (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + verbo `swarm history` per la traccia degli audit + test di salute di livello A–D a 0 errori critici / 0 errori gravi. **1105/1105 test.** Totale nel ciclo di vita del repository (dal rilascio v1.0.0 del 2026-04-25): tutto quanto sopra più il dogfood swarm di Fase 7 (~31 "wave", ~115 correzioni verificate, 14 classi di copertura degli audit). Catalogo swarm autorevole: [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
+**v1.2.1** — rilascio di correzione che aggiunge il logo di testing-os a ogni file README di ogni pacchetto, in modo che venga visualizzato su ogni pagina npm (nella versione v1.2.0, tre pacchetti sono stati pubblicati senza il logo; la versione v1.2.1 corregge questo problema per tutti i 6 pacchetti). Tutte le funzionalità della Fase 5 sono state mantenute dalla versione v1.2.0: macchina a stati a livello di "wave" + contratto di ripristino "Three R's" (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + verbo `swarm history` per la traccia degli audit + test di salute di livello A–D a 0 errori critici / 0 errori gravi. Sei pacchetti pubblicati sotto `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1105/1105 test.** Totale nel corso della vita del repository (dal rilascio v1.0.0 il 2026-04-25): lo swarm della Fase 7 (~31 "wave", ~115 correzioni verificate, 14 classi di copertura degli audit) e ora l'arco di pubblicazione iniziale su npm della versione v1.2.x. Catalogo dello swarm autorevole: [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
 
-Il ricevitore è attivo: i workflow `dogfood.yml` nei repository dei clienti vengono inviati a questo repository, e il file [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) salva i record risultanti e li indicizza in `main`. La documentazione è disponibile all'indirizzo [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Installazione principale: `npm install -g @dogfood-lab/dogfood-swarm`. Il lato ricevente viene utilizzato tramite dispatch — vedere la pagina di integrazione della documentazione.
+Il ricevitore è attivo: i workflow `dogfood.yml` nei repository dei clienti vengono inviati a questo repository, e il file [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) committa i record risultanti e li indicizza nella directory `main`. Il manuale è disponibile all'indirizzo [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Installazione: `npm install -g @dogfood-lab/dogfood-swarm`. Il lato ricevente viene utilizzato tramite dispatch; vedere la pagina di integrazione del manuale.
 
 **Piattaforma:** validato end-to-end su Darwin/APFS come parte della Sessione G ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)). Consultare [Local Development](#local-development) per i filesystem supportati. Dettagli per versione in [CHANGELOG.md](CHANGELOG.md).
 
 ## Modello di minaccia
 
-testing-os elabora le proposte inviate tramite `repository_dispatch` da repository GitHub attendibili sotto `mcp-tool-shop-org/*` e `dogfood-lab/*`. Il verifier richiede la provenienza di GitHub Actions: gli ID di esecuzione dichiarati vengono confermati tramite l'API di GitHub e le proposte con formati errati, riferimenti mancanti o affermazioni di policy non valide vengono rifiutate.
+testing-os elabora le proposte di dogfood inviate tramite `repository_dispatch` da repository GitHub attendibili sotto `mcp-tool-shop-org/*` e `dogfood-lab/*`. Il verifier richiede la provenienza di GitHub Actions; gli ID di esecuzione dichiarati vengono confermati tramite l'API di GitHub e le proposte con formati errati, riferimenti mancanti o affermazioni di policy non valide vengono rifiutate.
 
-**Cosa tocca testing-os:** il JSON della proposta in ogni payload `repository_dispatch`; `policies/`, `fixtures/`, `records/` e `indexes/` in questo repository; chiamate in uscita a `api.github.com` per la verifica della provenienza.
+**Cosa tocca testing-os:** il file JSON di invio in ogni payload `repository_dispatch`; le directory `policies/`, `fixtures/`, `records/` e `indexes/` in questo repository; chiamate in uscita a `api.github.com` per la verifica della provenienza.
 
-**Cosa testing-os NON tocca:** il codice sorgente destinato agli utenti finali, i segreti contenuti nei repository destinati agli utenti finali al di fuori dell'ambito di invio, o qualsiasi cosa al di fuori dell'albero di lavoro di questo repository.
+**Cosa testing-os NON tocca:** il codice sorgente dei consumer, i segreti nei repository dei consumer al di fuori dell'inviluppo di dispatch, o qualsiasi cosa al di fuori dell'albero di lavoro di questo repository.
 
-**Autorizzazioni richieste:** il flusso di lavoro del ricevitore viene eseguito con `contents: write` limitato a questo repository. La verifica della provenienza utilizza il `GITHUB_TOKEN` predefinito del flusso di lavoro per le chiamate API di Actions in sola lettura. **Nessuna telemetria, nessun servizio di terze parti, nessuna analisi: questo codice non invia dati e non espone una superficie di rete al di fuori di GitHub.**
+**Permessi richiesti:** il workflow del ricevitore viene eseguito con `contents: write` limitato solo a questo repository. La verifica della provenienza utilizza il `GITHUB_TOKEN` predefinito del workflow per le chiamate API di Actions in sola lettura. **Nessuna telemetria, nessun servizio di terze parti, nessuna analisi: questo codice non invia dati e non espone una superficie di rete al di fuori di GitHub.**
 
 ## Pacchetti
 
 | Pacchetto | Origine | Scopo |
 |---------|--------|---------|
 | `@dogfood-lab/schemas` | TypeScript | Gli 8 schemi JSON (record, finding, pattern, recommendation, doctrine, policy, scenario, submission). |
-| `@dogfood-lab/verify` | JS | Validatore centrale per le submission. Le submission passano attraverso questo componente prima di essere memorizzate. |
-| `@dogfood-lab/findings` | JS | Contratto per i "findings" e pipeline per la derivazione, la revisione, la sintesi e la consulenza. |
+| `@dogfood-lab/verify` | JS | Validatore centrale delle inviazioni. Le inviazioni passano attraverso questo componente prima di essere memorizzate. |
+| `@dogfood-lab/findings` | JS | Contratto di "finding" + pipeline di derivazione/revisione/sintesi/consulenza. |
 | `@dogfood-lab/ingest` | JS | Componente di collegamento delle pipeline: dispatch → verify → persist → index. |
-| `@dogfood-lab/report` | JS | Generatore di submission per i repository di origine. |
+| `@dogfood-lab/report` | JS | Costruttore di inviazioni per i repository di origine. |
 | `@dogfood-lab/portfolio` | JS | Generatore di portfolio multi-repository. |
 | `@dogfood-lab/dogfood-swarm` | JS | Protocollo parallelo a 10 fasi + piano di controllo SQLite + binario `swarm`. |
 
@@ -103,7 +103,7 @@ Richiede Node ≥ 20. La matrice CI esegue Node 20 + 22 su `ubuntu-latest`; è s
 
 ## Versioning
 
-Sincronizzazione tra tutti i pacchetti `@dogfood-lab/*`: vengono aggiornati contemporaneamente. La riga di versione in questo file README viene aggiornata automaticamente da `package.json` tramite `scripts/sync-version.mjs` (viene eseguito come `prebuild`). A partire dalla versione **v1.2.0**, sei pacchetti vengono pubblicati su npm con il prefisso `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. Il settimo (`@dogfood-lab/portfolio`) rimane interno al monorepo.
+Sincronizzazione tra tutti i pacchetti `@dogfood-lab/*`: vengono aggiornati contemporaneamente. La riga di versione in questo file README viene aggiornata automaticamente dal file `package.json` tramite `scripts/sync-version.mjs` (eseguito come `prebuild`). A partire dalla versione **v1.2.0**, sei pacchetti vengono pubblicati su npm con il prefisso `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. Il settimo (`@dogfood-lab/portfolio`) rimane interno al monorepo.
 
 ## Licenza
 
@@ -115,6 +115,6 @@ Sincronizzazione tra tutti i pacchetti `@dogfood-lab/*`: vengono aggiornati cont
 
 **[Manuale](https://dogfood-lab.github.io/testing-os/handbook/)** · **[Tutti i repository](https://github.com/orgs/dogfood-lab/repositories)** · **[Profilo](https://github.com/dogfood-lab)**
 
-*Mangiare prima. Spedire dopo.*
+*Mangia prima. Spedisci dopo.*
 
 </div

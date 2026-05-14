@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://github.com/dogfood-lab/testing-os">
+    <img src="https://raw.githubusercontent.com/dogfood-lab/testing-os/main/assets/logo.png" alt="testing-os" width="280">
+  </a>
+</p>
+
 # @dogfood-lab/report
 
 > Submission builder for testing-os — turns swarm/run results into the JSON envelope expected by the verifier.

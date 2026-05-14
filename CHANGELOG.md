@@ -4,6 +4,10 @@ All notable changes to `testing-os` are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [1.2.1] — 2026-05-14
+
+**Add testing-os logo to every per-package README.** The v1.2.0 publish shipped `@dogfood-lab/schemas`, `@dogfood-lab/verify`, and `@dogfood-lab/report` to npm before the logo got added to their READMEs — those three v1.2.0 packages render on their npm pages without the logo. v1.2.1 lockstep bump prepends the canonical logo (via `raw.githubusercontent.com` absolute URL so it renders cross-context) to all 7 per-package READMEs and re-publishes all 6 publishing packages. No code changes; this is a documentation-only patch release.
+
 ## [1.2.0] — 2026-05-14
 
 **First npm publish of the `@dogfood-lab/*` monorepo.** Six packages now public on npm: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. Headline install: `npm install -g @dogfood-lab/dogfood-swarm`. The seventh package (`@dogfood-lab/portfolio`) remains internal.

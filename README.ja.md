@@ -40,7 +40,7 @@
 
 ## 状態
 
-**v1.2.0** — `@dogfood-lab/*` モノレポの最初のnpm公開。`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm` (主要な`swarm` CLI) の6つのパッケージが、`@dogfood-lab` スコープで公開されています。このリリースで新たに追加された機能：ウェーブレベルの状態マシン、Three R's 回復契約 (`swarm revalidate`, `swarm rewind`, `swarm redrive`)、`swarm history` による監査トレイル機能、Stage A–D の健全性チェック (0 CRIT / 0 HIGH)。**1105/1105 テスト**。v1.0.0 以降の累積的なテスト数 (2026年4月25日時点): 上記の機能に加え、Phase 7 dogfood swarm (~31ウェーブ、~115件の検証済み修正、14種類の監査範囲)。公式スウォームカタログ: [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)。
+**v1.2.1** - パッチリリース。各パッケージのREADMEファイルに「testing-os」のロゴを追加し、すべてのnpmページでロゴが表示されるようにしました (v1.2.0では、ロゴなしで3つのパッケージが同時にリリースされました。v1.2.1では、この問題を修正し、すべての6つのパッケージでロゴを表示するようにしました)。 v1.2.0で導入されたすべてのPhase 5の機能は、v1.2.1でも引き続き利用可能です。これには、ウェーブレベルの状態遷移機構、Three R'sリカバリー機能 (`swarm revalidate`, `swarm rewind`, `swarm redrive`)、および`swarm history`による監査トレイル機能が含まれます。また、Stage A～Dの健全性チェックは、0件の重大な問題/0件の高度な問題でパスとなります。6つのパッケージが`@dogfood-lab`の下で公開されています: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1105/1105のテストが完了しました。** リポジトリ全体の累積テスト結果（v1.0.0以降、2026年4月25日時点）：Phase 7のdogfood swarm（約31ウェーブ、約115件の検証済み修正、14種類の監査範囲）に加え、現在v1.2.xの最初のnpm公開に関するテストも含まれています。信頼できるswarmカタログは、[`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)で確認できます。
 
 受信機能は稼働中です。コンシューマーリポジトリの `dogfood.yml` ワークフローがこのリポジトリに送信され、[`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) が、結果の記録とインデックスを `main` ブランチにコミットします。ハンドブックは [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) で公開されています。インストール方法: `npm install -g @dogfood-lab/dogfood-swarm`。受信機能は、コンシューマーリポジトリから送信される形式で利用されます。詳細は、ハンドブックの「統合」セクションを参照してください。
 

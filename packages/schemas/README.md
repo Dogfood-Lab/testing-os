@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://github.com/dogfood-lab/testing-os">
+    <img src="https://raw.githubusercontent.com/dogfood-lab/testing-os/main/assets/logo.png" alt="testing-os" width="280">
+  </a>
+</p>
+
 # @dogfood-lab/schemas
 
 > JSON schemas for the testing-os contract spine — record, finding, pattern, recommendation, doctrine, policy, scenario, submission.

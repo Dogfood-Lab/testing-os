@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://github.com/dogfood-lab/testing-os">
+    <img src="https://raw.githubusercontent.com/dogfood-lab/testing-os/main/assets/logo.png" alt="testing-os" width="280">
+  </a>
+</p>
+
 # @dogfood-lab/findings
 
 > Finding contract spine for testing-os. Validates, reads, lists, and queries evidence-bound findings — the fourth contract alongside record, scenario, and policy.

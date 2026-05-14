@@ -1,3 +1,9 @@
+<p align="center">
+  <a href="https://github.com/dogfood-lab/testing-os">
+    <img src="https://raw.githubusercontent.com/dogfood-lab/testing-os/main/assets/logo.png" alt="testing-os" width="280">
+  </a>
+</p>
+
 # @dogfood-lab/dogfood-swarm
 
 > 10-phase parallel-agent protocol runner for testing-os. SQLite-backed control plane, durable receipts, domain-aware orchestration. Three R's recovery contract: `revalidate` / `rewind` / `redrive`.
