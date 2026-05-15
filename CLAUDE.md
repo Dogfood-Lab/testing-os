@@ -101,7 +101,7 @@ Three workflows, each with a distinct purpose — exceeds the org-wide soft cap 
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `ci.yml` | `push` / `pull_request` on `packages/**`, `package*.json`, `tsconfig*.json`, `.github/workflows/**` | Build + test on Node 20 + 22 |
+| `ci.yml` | `push` / `pull_request` on `packages/**`, `package*.json`, `tsconfig*.json`, `.github/workflows/**` | Build + test on Node 22 + 24 |
 | `ingest.yml` | `repository_dispatch` (`dogfood_submission`) + `workflow_dispatch` | Receives consumer dogfood submissions, runs `packages/ingest/run.js --provenance=github`, commits new records + indexes back to `main`. Concurrency-safe per-repo. |
 | `pages.yml` | `push` to `main` on `site/**` or `.github/workflows/pages.yml` | Builds the Astro Starlight handbook, deploys to `dogfood-lab.github.io/testing-os/`, curls the URL with retry to verify deploy. |
 
@@ -147,7 +147,7 @@ Per-package isolation:
 npm test --workspace @dogfood-lab/findings
 ```
 
-CI runs the same `verify` flow on Node 20 + 22.
+CI runs the same `verify` flow on Node 22 + 24.
 
 ## Working with the legacy
 

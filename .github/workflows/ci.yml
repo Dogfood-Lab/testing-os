@@ -58,11 +58,16 @@ jobs:
       matrix:
         # F-W1-CI-010: Node 20 hit EOL on 2026-04-30 — drop. Node 22 is
         # current Maintenance LTS, Node 24 is Active LTS. Bumping the matrix
-        # keeps `engines.node` (`>=20`) tested at its current ceiling and
         # surfaces Node 24 native-test-runner / permission-model / fetch
         # behavior drift before downstream consumers hit it. The setup-node
         # SHA bump (separate baseline issue, deadline 2026-09-16) is a
         # follow-up that does not gate this matrix change.
+        #
+        # 2026-05-14 cleanup: `engines.node` lockstep-tightened from `>=20`
+        # to `>=22` to match this matrix + better-sqlite3 v12 prebuild
+        # support (v12 dropped Node 20 prebuilds — consumers on Node 20
+        # would have needed a C++ toolchain to install). Honest signal
+        # beats permissive engines-with-no-test-coverage.
         node-version: [22, 24]
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

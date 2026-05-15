@@ -18,3 +18,9 @@ indexes/*.tmp.json
 
 # Translation cache (regenerated)
 .polyglot-cache.json
+
+# Astro build cache (regenerated on every `astro build`). Tracked from
+# v1.1.2 → v1.2.2; untracked in the post-1.2.2 cleanup because every
+# release otherwise produces a large noise diff that crowds out the real
+# changes. Astro regenerates the directory cleanly on each build.
+site/.astro/
