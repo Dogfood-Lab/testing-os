@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0.0",
+  "policy_version": "1.0.0",
+  "run_id": "ai-loadout-26069980543-1",
+  "repo": "mcp-tool-shop-org/ai-loadout",
+  "ref": {
+    "branch": "main",
+    "commit_sha": "1f47527361be249d029d07a1c2d29d3311adc81c"
+  },
+  "source": {
+    "actor": "mcp-tool-shop",
+    "attempt": 1,
+    "provider": "github",
+    "provider_run_id": "26069980543",
+    "run_url": "https://github.com/mcp-tool-shop-org/ai-loadout/actions/runs/26069980543",
+    "workflow": "dogfood.yml"
+  },
+  "timing": {
+    "duration_ms": 0,
+    "finished_at": "2026-05-19T01:10:55Z",
+    "started_at": "2026-05-18T21:10:34-04:00"
+  },
+  "ci_checks": [],
+  "scenario_results": [
+    {
+      "evidence": [
+        {
+          "description": "CI run log with resolve output",
+          "kind": "log",
+          "url": "https://github.com/mcp-tool-shop-org/ai-loadout/actions/runs/26069980543"
+        }
+      ],
+      "execution_mode": "bot",
+      "notes": "Bot-driven resolve against test dispatch table",
+      "product_surface": "cli",
+      "scenario_id": "resolve-real-loadout",
+      "scenario_name": "Resolve a loadout from a dispatch table",
+      "scenario_version": "1.0.0",
+      "step_results": [
+        {
+          "status": "pass",
+          "step_id": "create-project-index"
+        },
+        {
+          "status": "pass",
+          "step_id": "resolve-loadout"
+        },
+        {
+          "status": "pass",
+          "step_id": "verify-output"
+        }
+      ],
+      "verdict": "pass"
+    }
+  ],
+  "overall_verdict": {
+    "proposed": "pass",
+    "verified": "pass",
+    "downgraded": false
+  },
+  "verification": {
+    "status": "accepted",
+    "verified_at": "2026-05-19T01:11:16.253Z",
+    "provenance_confirmed": true,
+    "schema_valid": true,
+    "policy_valid": true,
+    "rejection_reasons": []
+  },
+  "notes": "Phase 2 rollout: ai-loadout CLI dogfood."
+}
