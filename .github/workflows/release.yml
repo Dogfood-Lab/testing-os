@@ -1,19 +1,22 @@
 name: Release
 
 # Publishes the 6 public @dogfood-lab/* packages to npm using OIDC trusted
-# publishing. No NPM_TOKEN required — npm validates the workflow's OIDC
-# subject claim against the trust config in npmjs.com (configured for
-# dogfood-lab/testing-os + release.yml). The published tarballs include
-# Sigstore provenance via --provenance.
+# publishing AND creates the GitHub Release in the same workflow.
+#
+# OIDC trusted publishing requires npm >= 11.5.x for the new auth path. Node
+# 22 ships with npm 10.9 which can sign Sigstore provenance but cannot
+# negotiate the new trusted-publisher auth — the publish PUT goes out without
+# an OIDC token and npm returns 404 ("not in this registry"). The sandbox
+# install below shadows the system npm with npm@latest (mirrors the doctrine
+# in sovereign's release.yml, which is the proven pattern across the org).
+# In-place `npm install -g npm@latest` on Node 22's bundled npm 10.9 races
+# on its own arborist rebuild — the sandbox keeps the system npm untouched.
 #
 # Two triggers:
 #   - push of a v*.*.* tag → automatic publish (the future-default path)
 #   - workflow_dispatch with a tag input → manual publish against an existing
-#     tag (needed for the first fire against v1.2.3, which was tagged before
+#     tag (used for the first fire against v1.2.3, which was tagged before
 #     this workflow file existed; see feedback_release_spine_first_fire_predates_tag)
-#
-# The workflow checks out the tag itself (not the trigger ref), so the
-# published tarball contents always reflect what was tagged.
 
 on:
   push:
@@ -27,8 +30,8 @@ on:
         type: string
 
 permissions:
-  contents: read
-  id-token: write  # OIDC token for npm trusted publishing
+  contents: write       # for GitHub Release creation
+  id-token: write       # for npm OIDC trusted publishing
 
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref }}
@@ -37,15 +40,12 @@ concurrency:
 jobs:
   publish:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
-      # The tag we are publishing — from workflow_dispatch input on manual
-      # runs, or derived from the trigger ref on automatic (tag-push) runs.
       PUBLISH_TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
         with:
-          # Full history so the explicit tag checkout below has the ref.
           fetch-depth: 0
 
       - name: Check out the release tag
@@ -53,7 +53,6 @@ jobs:
           echo "Publishing tag: $PUBLISH_TAG"
           git fetch --tags --force
           git checkout "$PUBLISH_TAG"
-          # Sanity: HEAD must now be the tag commit.
           git rev-parse HEAD
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -62,16 +61,70 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           cache: npm
 
+      - name: Install npm >=11.5 in sandbox for OIDC trusted publishing
+        run: |
+          # Node 22 bundles npm 10.9 which can sign Sigstore provenance but
+          # cannot negotiate the OIDC trusted-publisher auth path npm added
+          # in 11.5. In-place `npm install -g npm@latest` races on Node 22's
+          # bundled npm's own arborist rebuild (MODULE_NOT_FOUND: promise-retry).
+          # The sandbox shadows system npm via PATH; system npm stays intact.
+          SANDBOX="$HOME/.npm-cli-sandbox"
+          mkdir -p "$SANDBOX"
+          pushd "$SANDBOX" >/dev/null
+          echo '{"name":"npm-cli-sandbox","version":"0.0.0","private":true}' > package.json
+          npm install --no-save --no-audit --no-fund --silent npm@latest
+          popd >/dev/null
+          echo "$SANDBOX/node_modules/.bin" >> "$GITHUB_PATH"
+          "$SANDBOX/node_modules/.bin/npm" --version
+
+      - name: Verify tag matches root package.json version
+        run: |
+          PKG_VERSION=$(node -p "require('./package.json').version")
+          TAG_VERSION="${PUBLISH_TAG#v}"
+          echo "Tag: ${PUBLISH_TAG} → ${TAG_VERSION}"
+          echo "Package: ${PKG_VERSION}"
+          if [ "${PKG_VERSION}" != "${TAG_VERSION}" ]; then
+            echo "::error::Tag ${TAG_VERSION} does not match package.json version ${PKG_VERSION}"
+            exit 1
+          fi
+
       - run: npm ci
 
-      # Pre-publish gate: same `verify` flow CI runs. Catches any drift
-      # between tag and main that would publish a broken artifact.
-      - run: npm run verify
+      - name: Verify (full pre-publish gate)
+        run: npm run verify
 
-      # Publish all public workspaces with Sigstore provenance via OIDC.
-      # `--workspaces --access public` walks every packages/*/package.json
-      # and skips the ones marked `private: true` (root + portfolio).
-      - name: Publish to npm
+      - name: Publish 6 public packages to npm with provenance
         run: npm publish --workspaces --access public --provenance
         env:
           NPM_CONFIG_PROVENANCE: true
+
+      - name: Extract release notes from CHANGELOG
+        run: |
+          # Carve out the [${TAG_VERSION}] section from CHANGELOG.md.
+          # awk: print lines from the matching header up to (but excluding)
+          # the next "## [" header at the start of a line.
+          TAG_VERSION="${PUBLISH_TAG#v}"
+          awk -v ver="${TAG_VERSION}" '
+            $0 ~ "^## \\[" ver "\\]" { capture=1; print; next }
+            capture && /^## \[/ { exit }
+            capture { print }
+          ' CHANGELOG.md > /tmp/release-notes.md
+          echo "--- release notes preview ---"
+          head -30 /tmp/release-notes.md
+          echo "--- (end preview) ---"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # --verify-tag asserts the tag exists. If a release already exists
+          # for this tag (e.g. a re-fire after a partial failure), skip
+          # creation rather than failing the workflow.
+          if gh release view "${PUBLISH_TAG}" >/dev/null 2>&1; then
+            echo "GitHub Release ${PUBLISH_TAG} already exists — skipping creation."
+            exit 0
+          fi
+          gh release create "${PUBLISH_TAG}" \
+            --title "testing-os ${PUBLISH_TAG}" \
+            --notes-file /tmp/release-notes.md \
+            --verify-tag
