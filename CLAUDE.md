@@ -102,7 +102,7 @@ Three workflows, each with a distinct purpose — exceeds the org-wide soft cap 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
 | `ci.yml` | `push` / `pull_request` on `packages/**`, `package*.json`, `tsconfig*.json`, `.github/workflows/**` | Build + test on Node 22 + 24 |
-| `ingest.yml` | `repository_dispatch` (`dogfood_submission`) + `workflow_dispatch` | Receives consumer dogfood submissions, runs `packages/ingest/run.js --provenance=github`, commits new records + indexes back to `main`. Concurrency-safe per-repo. |
+| `ingest.yml` | `repository_dispatch` (`dogfood_submission`) + `workflow_dispatch` | Receives consumer dogfood submissions, runs `packages/ingest/run.js --provenance=github`, commits new records + indexes back to `main`. Concurrency-serialized at workflow level; push conflicts handled by git pull --rebase retry loop (3 attempts). |
 | `pages.yml` | `push` to `main` on `site/**` or `.github/workflows/pages.yml` | Builds the Astro Starlight handbook, deploys to `dogfood-lab.github.io/testing-os/`, curls the URL with retry to verify deploy. |
 
 All action SHAs pinned (no floating `@v4`). The $130 GitHub Actions incident memory (`memory/github-actions-incident.md`) is why.

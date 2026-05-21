@@ -12,7 +12,7 @@
  * 6. Generate wave summary
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { openDb } from '../db/connection.js';
 import { getDomains, checkOwnership } from '../lib/domains.js';
@@ -25,6 +25,27 @@ import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { getActualTouchedFiles, diffReportedVsActual } from '../lib/git-touched-files.js';
 import { randomBytes } from 'node:crypto';
+
+/**
+ * Upper bound on agent output JSON file size before we even attempt JSON.parse.
+ *
+ * Honest agent outputs are typically <100 KB; even verbose findings dumps are
+ * <1 MB. 50 MB leaves headroom for legitimate large outputs while preventing
+ * pathological cases (an agent caught in a logging loop that writes a multi-GB
+ * file before crashing would otherwise block the coordinator's event loop
+ * during parse and exhaust memory). BR-B-001.
+ */
+const MAX_AGENT_OUTPUT_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Upper bound on error message length persisted to agent_runs.error_message.
+ *
+ * Huge parse-error messages (1MB+ when the input is a giant blob) bloat the
+ * audit log row and break terminal-line wrapping for the operator. 512 chars
+ * is enough to convey the offending position and a snippet of context.
+ * BR-B-004.
+ */
+const MAX_ERROR_MESSAGE_CHARS = 512;
 
 /**
  * tryTransition — observability-friendly wrapper around transitionAgent.
@@ -206,18 +227,37 @@ export function collect(opts) {
       continue;
     }
 
-    // Read and parse output
+    // Read and parse output. Size-gate before parse so a pathological agent
+    // output (logging loop, raw stdout dump) cannot block the coordinator's
+    // event loop or exhaust memory. BR-B-001.
     let output;
     try {
+      const stats = statSync(outputPath);
+      if (stats.size > MAX_AGENT_OUTPUT_BYTES) {
+        const sizeMb = (stats.size / 1024 / 1024).toFixed(1);
+        const limitMb = MAX_AGENT_OUTPUT_BYTES / 1024 / 1024;
+        throw new Error(
+          `agent output exceeds size limit: ${sizeMb} MB (limit: ${limitMb} MB). ` +
+          `Agent likely entered a logging loop or wrote raw stdout instead of ` +
+          `structured JSON. Inspect ${outputPath} and re-dispatch the agent ` +
+          `with a clearer brief.`
+        );
+      }
       output = JSON.parse(readFileSync(outputPath, 'utf-8'));
     } catch (e) {
+      // Truncate before persistence — a 1MB+ parse-error message would bloat
+      // the agent_runs.error_message column and break terminal-line wrapping
+      // for the operator reading audit output. BR-B-004.
+      const truncatedMsg = e.message.length > MAX_ERROR_MESSAGE_CHARS
+        ? e.message.slice(0, MAX_ERROR_MESSAGE_CHARS - 3) + '...'
+        : e.message;
       agentReport.status = 'invalid_output';
-      agentReport.errors.push(`JSON parse error: ${e.message}`);
-      tryTransition(db, ar.id, 'invalid_output', `JSON parse error: ${e.message}`, domain.name);
+      agentReport.errors.push(`JSON parse error: ${truncatedMsg}`);
+      tryTransition(db, ar.id, 'invalid_output', `JSON parse error: ${truncatedMsg}`, domain.name);
       db.prepare('UPDATE agent_runs SET error_message = ? WHERE id = ?')
-        .run(e.message, ar.id);
+        .run(truncatedMsg, ar.id);
       report.agents.push(agentReport);
-      report.validation_errors.push({ domain: domain.name, error: e.message });
+      report.validation_errors.push({ domain: domain.name, error: truncatedMsg });
       continue;
     }
 

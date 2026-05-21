@@ -1,0 +1,91 @@
+---
+// Custom 404 page (FE-B-002, Stage C humanization).
+//
+// Starlight's astro.config.mjs sets `disable404Route: true` because the
+// site composes its own brand-aligned layout instead of inheriting
+// Starlight's stock 404. Astro automatically picks up
+// `src/pages/404.astro` for unmatched routes on the static build that
+// `pages.yml` deploys to GitHub Pages — no astro.config.mjs change
+// needed.
+//
+// The page mirrors the BaseLayout wrapper used by `index.astro` so
+// the header (skip-link, logo badge, brand link, npm/GitHub buttons)
+// and footer (MIT line + license link) match the rest of the site.
+import '../styles/global.css';
+import BaseLayout from '../components/BaseLayout.astro';
+import { config } from '../site-config';
+
+const base = import.meta.env.BASE_URL.endsWith('/')
+  ? import.meta.env.BASE_URL
+  : import.meta.env.BASE_URL + '/';
+---
+
+<BaseLayout
+  title="404 — Page not found · testing-os"
+  description="The page you were looking for doesn't exist. Browse the handbook, the README on GitHub, or search the handbook."
+  logoBadge={config.logoBadge}
+  brandName={config.brandName}
+  repoUrl={config.repoUrl}
+  npmUrl={config.npmUrl}
+  footerText={config.footerText}
+  nav={config.sections.map(s => ({ href: `${base}#${s.id}`, label: s.title }))}
+>
+  <section class="mx-auto max-w-2xl py-16">
+    <p class="mb-4 text-sm font-medium uppercase tracking-wider text-muted">
+      Error 404
+    </p>
+    <h1 class="mb-6 text-4xl font-semibold tracking-tight text-heading">
+      Page not found
+    </h1>
+    <p class="mb-8 text-lg text-body">
+      The page you're looking for doesn't exist on the testing-os
+      handbook. It may have moved, been renamed, or never existed at
+      this address.
+    </p>
+
+    <h2 class="mb-4 text-xl font-semibold text-heading">Try one of these</h2>
+    <ul class="mb-8 list-disc space-y-3 pl-6 text-body">
+      <li>
+        <a
+          class="font-medium text-action underline underline-offset-2 hover:text-action-hover"
+          href={`${base}handbook/`}
+        >
+          Handbook home
+        </a>
+        — start here if you're new. Covers contracts, architecture, and
+        the operating guide.
+      </li>
+      <li>
+        <a
+          class="font-medium text-action underline underline-offset-2 hover:text-action-hover"
+          href={config.repoUrl}
+        >
+          README on GitHub
+        </a>
+        — installation, status, and the package list.
+      </li>
+      <li>
+        Search the handbook with the Starlight search box —
+        press <kbd class="rounded border border-edge bg-surface-strong px-1.5 py-0.5 text-xs font-mono">Ctrl</kbd>
+        +
+        <kbd class="rounded border border-edge bg-surface-strong px-1.5 py-0.5 text-xs font-mono">K</kbd>
+        (or
+        <kbd class="rounded border border-edge bg-surface-strong px-1.5 py-0.5 text-xs font-mono">⌘</kbd>
+        +
+        <kbd class="rounded border border-edge bg-surface-strong px-1.5 py-0.5 text-xs font-mono">K</kbd>
+        on macOS) on any handbook page to bring it up.
+      </li>
+    </ul>
+
+    <p class="text-sm text-muted">
+      If you arrived here from a link inside this site, please
+      <a
+        class="underline underline-offset-2 hover:text-body"
+        href={`${config.repoUrl}/issues/new`}
+      >
+        open an issue
+      </a>
+      so we can fix the broken pointer.
+    </p>
+  </section>
+</BaseLayout>

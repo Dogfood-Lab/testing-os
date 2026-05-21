@@ -262,13 +262,33 @@ export async function ingest(submission, options) {
       // spread inside the shared logStage helper. F-827321-035: an inner
       // `stage:` field overwrites the outer name, hiding the error event
       // from any `"stage":"error"` grep across the runner log.
+      //
+      // `rebuildIndexes()` is called as one unit — there is no partial
+      // `indexResult` to surface from this catch (counts only exist on the
+      // success path above). The structured event surfaces what the operator
+      // actually needs: throw site (stack, truncated), where the record
+      // landed, and the recovery path. The console warning mirrors the same
+      // shape so log-only readers get the same actionable hint.
+      const truncatedStack = err.stack
+        ? err.stack.split('\n').slice(0, 20).join('\n')
+        : null;
+      const stackPreview = err.stack
+        ? err.stack.split('\n').slice(0, 5).join(' / ')
+        : 'n/a';
       logStage('error', {
         submission_id: submissionId,
         correlation_id,
         failed_stage: 'rebuild_indexes',
-        message: err.message
+        message: err.message,
+        stack: truncatedStack,
+        record_persisted_at: path,
+        recovery: 'next ingest will trigger a full rebuild of indexes/'
       });
-      console.error(`WARNING: record persisted but index rebuild failed: ${err.message} — indexes may be stale`);
+      console.error(
+        `WARNING: record persisted at ${path}, but index rebuild failed: ${err.message}\n` +
+        `         indexes/ may be stale until next ingest. To force rebuild now, re-run any test ingest.\n` +
+        `         stack: ${stackPreview}`
+      );
     }
   }
 

@@ -4,9 +4,41 @@ All notable changes to `testing-os` are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [1.2.3] — 2026-05-20
+
+**Health-pass cleanup release.** Four-stage dogfood swarm (Stage A bug/security → Stage B proactive → Stage C humanization → Stage D visual polish) against v1.2.2 surfaced 50+ findings; this release lands the load-bearing fixes. No package shape changes, no breaking changes from 1.2.2. **1105/1105 tests.**
+
+### Security
+
+- **BR-001 — `execFileSync` argv form in verify runner** ([`packages/dogfood-swarm/lib/verify/runner.js`](packages/dogfood-swarm/lib/verify/runner.js)). Mirrors the v1.2.0 `F-W1-BACK-003` doctrine: replace shell-string `execSync` with `execFileSync(cmd, args[])` so a future adapter author who lands a user-influenced `step.args` cannot re-introduce shell-metacharacter interpretation in the argument vector. Current adapters all pass hardcoded safe args — this is defense-in-depth.
+- **BR-B-001 — bounded JSON.parse on agent output** ([`packages/dogfood-swarm/commands/collect.js`](packages/dogfood-swarm/commands/collect.js)). `swarm collect` now checks output file size via `statSync` before reading; rejects oversized outputs (>50 MB) with an operator-actionable error naming the size, the limit, the likely cause (logging loop / raw stdout), and the remediation. Prevents memory exhaustion of the coordinator on malicious or runaway agent output. Bundled fix: `agent_runs.error_message` and `report.validation_errors[*].error` are truncated to 512 chars before persistence (BR-B-004).
+- **CI-B-002 — defensive guard against null `repository_dispatch` payload** ([`.github/workflows/ingest.yml`](.github/workflows/ingest.yml)). Receiver workflow now emits a `::error::` annotation and exits 1 when `client_payload.submission` is missing/null, before invoking the ingest script. Previously the downstream verify pipeline rejected null gracefully but produced no GitHub error annotation, so an operator debugging a misconfigured consumer dispatcher would see a green workflow with a silent rejection record.
+
+### Observability
+
+- **BE-B-001 — actionable error messages from `loadGlobalPolicy`** ([`packages/ingest/load-context.js`](packages/ingest/load-context.js)). Missing/malformed `policies/global-policy.yaml` now throws a structured Error naming the resolved path, the failure mode (ENOENT vs YAML parse, with line/column from `yaml.YAMLException`), and the operator action. Closes the asymmetric defensive-posture gap with `loadRepoPolicy` (which already wrapped its read).
+- **BE-B-002 — rebuild-indexes failure carries stack and recovery hint** ([`packages/ingest/run.js`](packages/ingest/run.js)). The `rebuild_indexes` catch block now enriches both the structured logStage event and the console warning with `err.stack` (truncated), `record_persisted_at` so the operator knows the record DID land, and a `recovery` hint ("next ingest will trigger a full rebuild of indexes/"). Preserves the F-827321-035 outer `stage='error'` invariant.
+
+### Documentation
+
+- **CI-001+002 — Node version honesty pass** ([`README.md`](README.md)). Node badge corrected from `>=20` to `>=22` to match `package.json` `engines.node`; the "CI matrix runs Node 20 + 22" claim updated to "Node 22 + 24" to match `.github/workflows/ci.yml` matrix.
+- **CI-003 — CHANGELOG accuracy** ([`CHANGELOG.md`](CHANGELOG.md)). The v1.2.2 entry's claim that `engines.node` "remains `">=20"` — tightening to `">=22"` is tracked as a follow-up" was wrong: the tightening shipped in v1.2.2 itself. Corrected to "is tightened from `>=20` to `>=22` in this release, matching the CI matrix."
+- **CI-B-001 — concurrency claim matches implementation** ([`CLAUDE.md`](CLAUDE.md)). The workflow table row for `ingest.yml` previously claimed "Concurrency-safe per-repo"; in reality the workflow's `concurrency.group` is workflow-global and safety comes from a git-pull-rebase retry loop. CLAUDE.md now honestly describes both.
+
+### Handbook & visual surface
+
+- **FE-B-001 — new CLI reference page** ([`site/src/content/docs/handbook/cli-reference.md`](site/src/content/docs/handbook/cli-reference.md)). Covers 17 previously-undocumented `swarm` verbs (`init`, `domains`, `dispatch`, `collect`, `verify`, `verify-fixed`, `verify-recurring`, `verify-unverified`, `verify-approved`, `receipt`, `advance`, `status`, `resume`, `approve`, `persist`, `findings`, `runs`) with usage synopses sized to fit a 320px-wide phone (handbook's 64-char fence-width discipline).
+- **FE-B-002 — custom 404 page** ([`site/src/pages/404.astro`](site/src/pages/404.astro)). Replaces the GitHub Pages default 404 with a handbook-branded page offering three recovery links (handbook home, README on GitHub, search hint via Ctrl-K). Inherits skip-link + brand header from `BaseLayout`.
+- **VD-001 — hero badge synced to release** ([`site/src/site-config.ts`](site/src/site-config.ts)). Hero badge and description updated to v1.2.3.
+- **VD-002 — social card meta** ([`site/astro.config.mjs`](site/astro.config.mjs)). Added `og:image`, `og:image:alt`, `og:type`, `twitter:card`, `twitter:image` head tags pointing at the deployed logo so links shared in Slack / GitHub / Mastodon preview with the brand mark instead of a bare text fallback.
+
+### Verification
+
+`npm run verify` 1105/1105/0 (byte-identical test count to v1.2.2; doc-drift + regression-pin + script tests + workspace tests all green). Shipcheck audit: 20 checked / 17 SKIP-with-justification / 0 unchecked / **100% pass on hard gates A–D**.
+
 ## [1.2.2] — 2026-05-14
 
-**Bump `better-sqlite3` runtime dependency from `^11.0.0` to `^12.10.0`** ([#25](https://github.com/dogfood-lab/testing-os/pull/25)). `@dogfood-lab/dogfood-swarm` now bundles SQLite 3.53.1 (was 3.50.x). Native prebuilds added for Node.js v26; prebuilds dropped for Node.js v20 + v23. The repo's CI matrix is Node 22 + 24, so internal verification is unaffected, but consumers running `@dogfood-lab/dogfood-swarm` on Node 20 will now need to build the native binding from source. The repo's `engines.node` field remains `">=20"` — tightening to `">=22"` is tracked as a follow-up.
+**Bump `better-sqlite3` runtime dependency from `^11.0.0` to `^12.10.0`** ([#25](https://github.com/dogfood-lab/testing-os/pull/25)). `@dogfood-lab/dogfood-swarm` now bundles SQLite 3.53.1 (was 3.50.x). Native prebuilds added for Node.js v26; prebuilds dropped for Node.js v20 + v23. The repo's CI matrix is Node 22 + 24, so internal verification is unaffected, but consumers running `@dogfood-lab/dogfood-swarm` on Node 20 will now need to build the native binding from source. The repo's `engines.node` field is tightened from `">=20"` to `">=22"` in this release, matching the CI matrix.
 
 **Dev-only:** `vitest` and `@vitest/coverage-v8` bumped from `3.2.4` to `4.1.6` ([#21](https://github.com/dogfood-lab/testing-os/pull/21), [#24](https://github.com/dogfood-lab/testing-os/pull/24)). Test runtime only; no published-package impact.
 

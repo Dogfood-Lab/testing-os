@@ -19,12 +19,42 @@ import { isUnsafeSegment } from './lib/unsafe-segment.js';
 /**
  * Load the global policy.
  *
+ * The global policy is REQUIRED — unlike `loadRepoPolicy` which silently
+ * returns null when a repo-specific override is absent, a missing or malformed
+ * global policy throws with a structured, operator-actionable message naming
+ * the resolved path and the failure mode (missing vs unreadable vs invalid
+ * YAML, with line/column from `yaml.YAMLException.mark` when available).
+ * Receiver workflows would otherwise crash with a raw `ENOENT` or
+ * `YAMLException` stack trace, leaving the operator to guess which file
+ * to fix.
+ *
  * @param {string} repoRoot
  * @returns {object}
  */
 export function loadGlobalPolicy(repoRoot) {
   const path = join(repoRoot, 'policies', 'global-policy.yaml');
-  return yaml.load(readFileSync(path, 'utf-8'));
+  let raw;
+  try {
+    raw = readFileSync(path, 'utf-8');
+  } catch (e) {
+    if (e.code === 'ENOENT') {
+      throw new Error(
+        `Global policy missing: ${path}\n` +
+        `The ingest pipeline requires a global policy file. ` +
+        `Create it from policies/global-policy.example.yaml or the project README.`
+      );
+    }
+    throw new Error(`Global policy unreadable: ${path} — ${e.message}`);
+  }
+  try {
+    return yaml.load(raw);
+  } catch (e) {
+    const where = e.mark ? ` at line ${e.mark.line + 1}, column ${e.mark.column + 1}` : '';
+    throw new Error(
+      `Global policy YAML invalid: ${path}${where} — ${e.message}\n` +
+      `Fix the YAML and re-run.`
+    );
+  }
 }
 
 /**

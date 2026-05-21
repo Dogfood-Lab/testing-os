@@ -9,10 +9,10 @@ export const config: SiteConfig = {
   footerText: 'MIT Licensed — built by <a href="https://github.com/dogfood-lab" style="color:var(--color-muted);text-decoration:underline">dogfood-lab</a>',
 
   hero: {
-    badge: 'Testing OS — v1.2.1 on npm',
+    badge: 'Testing OS — v1.2.3 on npm',
     headline: 'testing-os',
     headlineAccent: 'proves it ships.',
-    description: 'Centralized dogfood evidence system. 13 repos, 8 surfaces, all verified pass, all enforcement required. v1.2.1 ships the Three R\'s recovery contract (revalidate, rewind, redrive) and the swarm history audit verb.',
+    description: 'Centralized dogfood evidence system. 13 repos, 8 surfaces, all verified pass, all enforcement required. v1.2.3 lands a 4-stage dogfood-swarm health cleanup over v1.2.2: defense-in-depth around the receiver pipeline, actionable error messages, a new CLI reference handbook page, and a custom 404.',
     primaryCta: { href: '#architecture', label: 'How it works' },
     secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [

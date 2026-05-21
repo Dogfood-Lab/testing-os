@@ -48,6 +48,15 @@ jobs:
           SUBMISSION_PAYLOAD: ${{ toJson(github.event.client_payload.submission) }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # Defensive guard: surface a clear error if the dispatcher sent no
+          # submission payload (CI-B-002). The downstream verify pipeline
+          # rejects null gracefully but produces no GitHub error annotation,
+          # so an operator debugging a misbehaving consumer dispatcher would
+          # otherwise see only a green workflow with a silent rejection record.
+          if [ -z "$SUBMISSION_PAYLOAD" ] || [ "$SUBMISSION_PAYLOAD" = "null" ]; then
+            echo "::error::repository_dispatch received with missing/null client_payload.submission. Consumer dispatcher is misconfigured — check the dispatching workflow's dogfood.yml step."
+            exit 1
+          fi
           echo "$SUBMISSION_PAYLOAD" | node packages/ingest/run.js --provenance=github | tee /tmp/ingest-result.json
 
       - name: Run ingestion (workflow_dispatch)

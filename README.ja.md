@@ -19,9 +19,7 @@
 
 *AIを活用したソフトウェア開発のためのプロトコル、証拠保存、学習ループ。*
 
-<!-- version:start -->
-**v1.2.2** — `@dogfood-lab/*` パッケージ6つ、ワークスペース全体のテストスイート、インジェスト受信機能の実装、ハンドブックのデプロイ。
-<!-- version:end -->
+**v1.2.3** — 7つのパッケージ (`@dogfood-lab/*`)、ワークスペース全体のテストスイート、データ取り込み機能のライブ運用開始、ハンドブックのデプロイ。
 
 📖 **[ハンドブックを読む →](https://dogfood-lab.github.io/testing-os/handbook/)**
 
@@ -40,7 +38,7 @@
 
 ## 状態
 
-**v1.2.2** リリース：`better-sqlite3`のバージョンを`^11.0.0`から`^12.10.0`に更新しました（`@dogfood-lab/dogfood-swarm`は現在、SQLite 3.53.1を同梱しており、以前は3.50.xでした）。テスト実行環境のツールも更新しました：`vitest`と`@vitest/coverage-v8`のバージョンをそれぞれ`3.2.4`から`4.1.6`にアップグレードしました（開発環境でのみ変更があり、公開されているパッケージには影響ありません）。v1.2.0で導入されたPhase 5のすべての機能は引き続き利用可能です。これには、ウェーブレベルの状態機械、Three R'sリカバリー機能（`swarm revalidate`、`swarm rewind`、`swarm redrive`）、`swarm history`監査ログ機能、およびStage A～Dの健全性チェック（CRITICAL/HIGHが0の場合）が含まれます。6つのパッケージが`@dogfood-lab`の下で公開されています：`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`。**1105/1105のテストケース。** リポジトリ全体の累積テスト数（v1.0.0以降、2026年4月25日時点）：Phase 7のdogfood swarm（約31ウェーブ、約115件の検証済み修正、14種類の監査範囲）と、v1.2.xの最初のnpm公開に関連するテスト。公式のswarmカタログ：[`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)。
+**v1.2.3** — health-passのクリーンアップリリース。v1.2.2に対して、4段階の内部テスト（段階A：バグ/セキュリティ → 段階B：積極的な改善 → 段階C：人間工学的な改善 → 段階D：視覚的な調整）を実施した結果、50件以上の問題点が発見されました。今回のリリースでは、重要な修正が含まれています。具体的には、データ取り込みパイプラインのセキュリティ強化（`execFileSync`の引数形式の検証、エージェントからの出力に対する`JSON.parse`の制限、`repository_dispatch`ペイロードがnullの場合の防御）、オペレーターが対応可能なエラーメッセージの追加（`loadGlobalPolicy`におけるENOENT/YAMLエラー、インデックス再構築の失敗時のスタックトレースと復旧ヒントの表示）、Node.jsのバージョンに関する情報の正確性チェック（README、CHANGELOG、CLAUDE.md）、17個の未ドキュメント化された`swarm`コマンドを網羅した新しいCLIリファレンスハンドブックページの追加、カスタム404ページ、ソーシャルカードのメタデータ。パッケージの構造やAPIに変更はありません。v1.2.2からの互換性を維持しています。フェーズ5のすべての機能が引き続き利用可能です。具体的には、ウェーブレベルの状態遷移、3つのR（再検証、巻き戻し、再送信）による復旧機能、`swarm history`による監査ログ機能。6つのパッケージが`@dogfood-lab`から公開されています：`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1105/1105のテストが合格しました。** リポジトリ全体の累積テスト結果（v1.0.0以降）：フェーズ7の内部テスト（約31ウェーブ、約115件の修正、14種類の監査範囲）、v1.2.xの最初のnpm公開、v1.2.3のhealth-passクリーンアップ。公式の`swarm`カタログ：[`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)。
 
 受信機能は稼働中です。コンシューマーリポジトリの `dogfood.yml` ワークフローがこのリポジトリに送信され、[`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) が、結果の記録とインデックスを `main` ブランチにコミットします。ハンドブックは [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) で公開されています。インストール方法: `npm install -g @dogfood-lab/dogfood-swarm`。受信機能は、コンシューマーリポジトリから送信される形式で利用されます。詳細は、ハンドブックの「統合」セクションを参照してください。
 

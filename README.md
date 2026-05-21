@@ -13,14 +13,14 @@
 [![CI](https://github.com/dogfood-lab/testing-os/actions/workflows/ci.yml/badge.svg)](https://github.com/dogfood-lab/testing-os/actions/workflows/ci.yml)
 [![Pages](https://github.com/dogfood-lab/testing-os/actions/workflows/pages.yml/badge.svg)](https://dogfood-lab.github.io/testing-os/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](package.json)
 
 **Operating system for testing in the AI era**
 
 *Protocols, evidence stores, and learning loops for AI-assisted software.*
 
 <!-- version:start -->
-**v1.2.2** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
+**v1.2.3** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
 <!-- version:end -->
 
 📖 **[Read the handbook →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -40,7 +40,7 @@
 
 ## Status
 
-**v1.2.2** — runtime patch release bumping `better-sqlite3` from `^11.0.0` to `^12.10.0` (`@dogfood-lab/dogfood-swarm` now bundles SQLite 3.53.1, previously 3.50.x). Test-runtime tooling also refreshed: `vitest` + `@vitest/coverage-v8` from `3.2.4` to `4.1.6` (dev-only, no published-package impact). All Phase 5 features carry over from v1.2.0: wave-level state machine + Three R's recovery contract (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + `swarm history` audit-trail verb + Stage A–D health pass at 0 CRIT / 0 HIGH. Six packages publish under `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1105/1105 tests.** Cumulative across the repo lifetime (since v1.0.0 cut 2026-04-25): the Phase 7 dogfood swarm (~31 waves, ~115 verified-holding fixes, 14 audit-coverage classes) and the v1.2.x first-npm-publish arc. Authoritative swarm catalog: [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
+**v1.2.3** — health-pass cleanup release. A four-stage dogfood swarm (Stage A bug/security → Stage B proactive → Stage C humanization → Stage D visual polish) against v1.2.2 surfaced 50+ findings; this release lands the load-bearing fixes: defense-in-depth around the receiver pipeline (`execFileSync` argv form in verify runner, bounded `JSON.parse` on agent output, defensive guard against null `repository_dispatch` payload), operator-actionable error messages (`loadGlobalPolicy` ENOENT/YAML errors, rebuild-indexes failures now carry stack + recovery hint), a Node-version honesty pass (README + CHANGELOG + CLAUDE.md), a new CLI reference handbook page covering 17 previously-undocumented `swarm` verbs, a custom 404 page, and social-card meta. No package shape changes, no breaking changes from 1.2.2. All Phase 5 features carry over: wave-level state machine + Three R's recovery contract (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + `swarm history` audit-trail verb. Six packages publish under `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1105/1105 tests.** Cumulative across the repo lifetime (since v1.0.0 cut 2026-04-25): the Phase 7 dogfood swarm (~31 waves, ~115 verified-holding fixes, 14 audit-coverage classes), the v1.2.x first-npm-publish arc, and the v1.2.3 health-pass cleanup. Authoritative swarm catalog: [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
 
 Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Headline install: `npm install -g @dogfood-lab/dogfood-swarm`. The receiver side stays consumed via dispatch — see the handbook's Integration page.
 
@@ -97,7 +97,7 @@ npm test            # vitest for schemas, node --test for the rest
 npm run verify      # build + test (canonical pre-commit check)
 ```
 
-Requires Node ≥ 20. CI matrix runs Node 20 + 22 on `ubuntu-latest`; locally validated on Node 25.
+Requires Node ≥ 22. CI matrix runs Node 22 + 24 on `ubuntu-latest`; locally validated on Node 25.
 
 **Supported filesystems:** APFS, HFS+, ext4 (CI baseline), NTFS — anything that implements POSIX `link(2)`. **Not supported:** exFAT, FAT32. The file-lock CAS in [`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js) requires hardlink semantics for atomic publication; on exFAT, `linkSync` throws `ENOTSUP` (loud, not silent). Common gotcha: cross-platform external SSDs are often formatted exFAT — clone the repo to local APFS/HFS+ instead. See [`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md) for the full Session G validation matrix.
 

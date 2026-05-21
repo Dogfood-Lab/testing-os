@@ -19,9 +19,7 @@
 
 *用于人工智能辅助软件的协议、证据存储和学习循环。*
 
-<!-- version:start -->
-**v1.2.2** — 包含 7 个包 (`@dogfood-lab/*`)，工作区范围的测试套件，实时数据接收器，用户手册已部署。
-<!-- version:end -->
+**v1.2.3** — 包含 7 个软件包 (`@dogfood-lab/*`)，整个工作空间的测试套件，数据接收器已上线，用户手册已部署。
 
 📖 **[阅读用户手册 →](https://dogfood-lab.github.io/testing-os/handbook/)**
 
@@ -40,7 +38,7 @@
 
 ## 状态
 
-**v1.2.2** 版本 — 运行时补丁发布，将 `better-sqlite3` 从 `^11.0.0` 升级到 `^12.10.0`（`@dogfood-lab/dogfood-swarm` 现在包含 SQLite 3.53.1 版本，之前是 3.50.x 版本）。测试运行时工具也已更新：`vitest` 和 `@vitest/coverage-v8` 从 `3.2.4` 升级到 `4.1.6`（仅影响开发环境，不影响已发布的软件包）。所有第五阶段的功能均继承自 v1.2.0 版本：波形级别的状态机 + 三个 R 的恢复合约（`swarm revalidate`、`swarm rewind`、`swarm redrive`）+ `swarm history` 审计跟踪功能 + A–D 阶段的健康状态检查，均达到 0 个关键问题 / 0 个高危问题。共有六个软件包在 `@dogfood-lab` 下发布：`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`。**1105/1105 个测试通过。** 累积测试结果涵盖整个代码库的生命周期（自 v1.0.0 版本发布于 2026年4月25日）：第七阶段的内部测试环境（约 31 个波形，约 115 个已验证的修复，14 个审计覆盖类别）以及 v1.2.x 版本的首次 npm 发布过程。权威的内部测试环境目录：[`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)。
+**v1.2.3** — 健康检查模块的清理版本。针对 v1.2.2 版本，我们进行了四阶段的内部测试（阶段 A：错误/安全问题 → 阶段 B：主动改进 → 阶段 C：用户体验优化 → 阶段 D：视觉优化），发现了 50 多个问题；本次发布包含关键修复：加强了数据接收器流水线的安全性（验证运行器中的 `execFileSync` 参数形式，对代理输出的 `JSON.parse` 进行限制，防御性措施以防止 `repository_dispatch` 负载为空），提供了可供操作员使用的错误信息（`loadGlobalPolicy` 的 ENOENT/YAML 错误，重建索引失败时会显示堆栈信息和恢复提示），以及 Node 版本验证（README、CHANGELOG 和 CLAUDE.md 文件），新增了一篇 CLI 参考手册页面，涵盖了 17 个之前未记录的 `swarm` 命令，还包括一个自定义的 404 页面和社交媒体卡片元数据。没有软件包结构的变化，也没有与 1.2.2 版本相比的破坏性更改。所有第五阶段的功能都已保留：波级别状态机 + 三个 R 的恢复机制（`swarm revalidate`、`swarm rewind`、`swarm redrive`）+ `swarm history` 审计跟踪命令。共有 6 个软件包在 `@dogfood-lab` 下发布：`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`。**1105/1105 个测试通过。** 从仓库的整个生命周期（自 v1.0.0 版本发布，即 2026-04-25）开始，包括第七阶段的内部测试（约 31 个波次，约 115 个已验证的修复，14 个审计覆盖类别），v1.2.x 版本的首次 npm 发布，以及 v1.2.3 版本的健康检查模块清理。权威的 `swarm` 目录：[`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)。
 
 数据接收器已启用：客户端仓库中的 `dogfood.yml` 工作流会发送到此仓库，并且 [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) 提交将生成的记录和索引回写到 `main` 分支。用户手册已部署在 [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/)。 快速安装：`npm install -g @dogfood-lab/dogfood-swarm`。 客户端通过分发方式进行消费，详情请参阅用户手册的“集成”页面。
 

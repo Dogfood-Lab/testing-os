@@ -5,26 +5,48 @@
  * into verification steps with exit codes and durations.
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 
 /**
  * Run a single verification step.
+ *
+ * Uses `execFileSync` argv-array form to mirror the v1.2.0 F-W1-BACK-003
+ * doctrine (`packages/dogfood-swarm/lib/worktree.js`,
+ * `packages/dogfood-swarm/lib/domains.js`): callers pass `step.cmd` +
+ * `step.args` as a structured pair so a future adapter author who lands a
+ * user-influenced `step.args` cannot re-introduce shell metacharacter
+ * interpretation in the argument vector. Current call sites
+ * (`adapters/{node,python,rust}.js`) all pass hardcoded safe args, so this
+ * is defense-in-depth — but it keeps the doctrine consistent across the
+ * package.
+ *
+ * `shell: true` is retained because production adapters invoke `npm`/`npx`
+ * (Windows `.cmd` wrappers that need PATHEXT resolution from a shell). The
+ * argv-array shape is still the load-bearing security signal: it forces a
+ * future contributor to think in terms of `(cmd, args[])` rather than string
+ * concatenation, and it keeps this file's import + call shape identical to
+ * the worktree.js doctrine.
  *
  * @param {string} repoPath — cwd for the command
  * @param {object} step — { name: string, cmd: string, args?: string[], optional?: boolean }
  * @returns {object} — StepResult
  */
 export function runStep(repoPath, step) {
-  const fullCmd = step.args ? `${step.cmd} ${step.args.join(' ')}` : step.cmd;
+  const cmdArgs = step.args || [];
+  // `command` is the human-readable display string returned to callers and
+  // asserted by callers/tests; it is NOT what executes. `execFileSync`
+  // receives `step.cmd` + the argv array separately below.
+  const fullCmd = cmdArgs.length ? `${step.cmd} ${cmdArgs.join(' ')}` : step.cmd;
   const start = Date.now();
 
   try {
-    const stdout = execSync(fullCmd, {
+    const stdout = execFileSync(step.cmd, cmdArgs, {
       cwd: repoPath,
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: 300000, // 5 min per step
       env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+      shell: true,
     });
 
     return {
