@@ -1,0 +1,70 @@
+{
+  "schema_version": "1.0.0",
+  "policy_version": "1.0.0",
+  "run_id": "site-theme-26432147726-1",
+  "repo": "mcp-tool-shop-org/site-theme",
+  "ref": {
+    "branch": "main",
+    "commit_sha": "e2c88c1ee9cb191a17709059f8c47a7bf35e67ed"
+  },
+  "source": {
+    "actor": "mcp-tool-shop",
+    "attempt": 1,
+    "provider": "github",
+    "provider_run_id": "26432147726",
+    "run_url": "https://github.com/mcp-tool-shop-org/site-theme/actions/runs/26432147726",
+    "workflow": "dogfood.yml"
+  },
+  "timing": {
+    "duration_ms": 0,
+    "finished_at": "2026-05-26T04:24:17Z",
+    "started_at": "2026-05-26T00:24:00-04:00"
+  },
+  "ci_checks": [],
+  "scenario_results": [
+    {
+      "evidence": [
+        {
+          "description": "CI run log with scaffold and template list output",
+          "kind": "log",
+          "url": "https://github.com/mcp-tool-shop-org/site-theme/actions/runs/26432147726"
+        }
+      ],
+      "execution_mode": "bot",
+      "notes": "Bot-driven scaffold dry-run and template listing",
+      "product_surface": "npm-package",
+      "scenario_id": "scaffold-and-verify",
+      "scenario_name": "Scaffold template and verify CLI outputs",
+      "scenario_version": "1.0.0",
+      "step_results": [
+        {
+          "status": "pass",
+          "step_id": "scaffold-template"
+        },
+        {
+          "status": "pass",
+          "step_id": "list-templates"
+        },
+        {
+          "status": "pass",
+          "step_id": "verify-output"
+        }
+      ],
+      "verdict": "pass"
+    }
+  ],
+  "overall_verdict": {
+    "proposed": "pass",
+    "verified": "pass",
+    "downgraded": false
+  },
+  "verification": {
+    "status": "accepted",
+    "verified_at": "2026-05-26T04:24:28.562Z",
+    "provenance_confirmed": true,
+    "schema_valid": true,
+    "policy_valid": true,
+    "rejection_reasons": []
+  },
+  "notes": "site-theme CLI dogfood: scaffold-and-verify scenario."
+}
