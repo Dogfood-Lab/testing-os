@@ -40,14 +40,6 @@
     "path": "records/mcp-tool-shop-org/repo-crawler-mcp/2026/03/26/run-repo-crawler-mcp-23571073097-1.json"
   },
   {
-    "repo": "mcp-tool-shop-org/shipcheck",
-    "surface": "cli",
-    "run_id": "shipcheck-23571363808-1",
-    "finished_at": "2026-03-26T00:32:46Z",
-    "age_days": 61,
-    "path": "records/mcp-tool-shop-org/shipcheck/2026/03/26/run-shipcheck-23571363808-1.json"
-  },
-  {
     "repo": "mcp-tool-shop-org/tool-scan",
     "surface": "cli",
     "run_id": "tool-scan-23571932376-1",
