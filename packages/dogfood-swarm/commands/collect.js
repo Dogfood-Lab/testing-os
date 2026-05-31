@@ -12,7 +12,7 @@
  * 6. Generate wave summary
  */
 
-import { readFileSync, existsSync, statSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { openDb } from '../db/connection.js';
 import { getDomains, checkOwnership } from '../lib/domains.js';
@@ -21,21 +21,28 @@ import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate
 import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
 import { transitionAgent, canTransition } from '../lib/state-machine.js';
 import { transitionWave } from '../lib/wave-state-machine.js';
+import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
+import {
+  readBoundedJson, BoundedJsonError, MAX_AGENT_OUTPUT_BYTES,
+} from '../lib/bounded-json-read.js';
 import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { getActualTouchedFiles, diffReportedVsActual } from '../lib/git-touched-files.js';
 import { randomBytes } from 'node:crypto';
 
-/**
+/*
  * Upper bound on agent output JSON file size before we even attempt JSON.parse.
  *
  * Honest agent outputs are typically <100 KB; even verbose findings dumps are
  * <1 MB. 50 MB leaves headroom for legitimate large outputs while preventing
  * pathological cases (an agent caught in a logging loop that writes a multi-GB
  * file before crashing would otherwise block the coordinator's event loop
- * during parse and exhaust memory). BR-B-001.
+ * during parse and exhaust memory).
+ *
+ * BR-B-001 (original). F-H5 (Wave A1 D3): constant lifted into the shared
+ * lib/bounded-json-read.js helper alongside the size-gate + parse so the
+ * call sites listed in the helper registry all stay in lockstep.
  */
-const MAX_AGENT_OUTPUT_BYTES = 50 * 1024 * 1024;
 
 /**
  * Upper bound on error message length persisted to agent_runs.error_message.
@@ -170,15 +177,18 @@ export function collect(opts) {
   // findings if the old outputPath still exists on disk, (b) silently call
   // transitionAgent('failed' → 'failed') on the stale row (illegal — the
   // state machine throws), and (c) flip wave.status back to 'failed' even
-  // when every redispatched agent succeeded, blocking advance.js. Mirrors the
-  // wave-9 latest-per-domain pattern in resume.js. F-375053-002.
+  // when every redispatched agent succeeded, blocking advance.js.
+  //
+  // F-375053-002 (original mutation-side fix). F-H6/H7/H8 (Wave A1 D3): the
+  // SQL fragment is now lifted into lib/queries/latest-agent-runs.js so the
+  // entire wave-9 family — mutation sites AND read sites — share ONE
+  // definition. The mechanical guard
+  // (`amend1-wave9-filter-discipline.test.js`) ensures no future
+  // `FROM agent_runs` site under packages/dogfood-swarm/** can re-divide.
   const agentRuns = db.prepare(`
     SELECT ar.* FROM agent_runs ar
     WHERE ar.wave_id = ?
-      AND ar.id = (
-        SELECT MAX(ar2.id) FROM agent_runs ar2
-        WHERE ar2.wave_id = ar.wave_id AND ar2.domain_id = ar.domain_id
-      )
+      ${LATEST_AGENT_RUN_PER_DOMAIN}
   `).all(wave.id);
   const domains = getDomains(db, opts.runId);
   const domainMap = new Map(domains.map(d => [d.name, d]));
@@ -229,21 +239,13 @@ export function collect(opts) {
 
     // Read and parse output. Size-gate before parse so a pathological agent
     // output (logging loop, raw stdout dump) cannot block the coordinator's
-    // event loop or exhaust memory. BR-B-001.
+    // event loop or exhaust memory. BR-B-001 (original). F-H5 (Wave A1 D3):
+    // statSync + readFileSync + JSON.parse triplet now goes through the
+    // shared helper so the size-limit is enforced identically across every
+    // operator-supplied / agent-emitted JSON read site.
     let output;
     try {
-      const stats = statSync(outputPath);
-      if (stats.size > MAX_AGENT_OUTPUT_BYTES) {
-        const sizeMb = (stats.size / 1024 / 1024).toFixed(1);
-        const limitMb = MAX_AGENT_OUTPUT_BYTES / 1024 / 1024;
-        throw new Error(
-          `agent output exceeds size limit: ${sizeMb} MB (limit: ${limitMb} MB). ` +
-          `Agent likely entered a logging loop or wrote raw stdout instead of ` +
-          `structured JSON. Inspect ${outputPath} and re-dispatch the agent ` +
-          `with a clearer brief.`
-        );
-      }
-      output = JSON.parse(readFileSync(outputPath, 'utf-8'));
+      output = readBoundedJson(outputPath, { maxBytes: MAX_AGENT_OUTPUT_BYTES });
     } catch (e) {
       // Truncate before persistence — a 1MB+ parse-error message would bloat
       // the agent_runs.error_message column and break terminal-line wrapping

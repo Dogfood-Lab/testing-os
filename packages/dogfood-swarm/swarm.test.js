@@ -111,22 +111,38 @@ describe('buildScenarioResults', () => {
   });
 
   it('computes evidence severities', () => {
+    // F-C1 (Wave A1 D3): evidence is now a schema-clean ARRAY of {kind, url,
+    // description} items (the previous OBJECT shape violated the
+    // dogfood-record-submission schema's evidence items contract). The
+    // per-severity counts now live inside the description string of the
+    // single evidence row; the same information is asserted via substring
+    // match so a future tweak to phrasing does not break the test in
+    // lockstep with persist-results.js's emitter.
     const results = buildScenarioResults([auditA], []);
-    assert.equal(results[0].evidence.total_findings, 2);
-    assert.equal(results[0].evidence.severities.medium, 1);
-    assert.equal(results[0].evidence.severities.low, 1);
+    assert.ok(Array.isArray(results[0].evidence),
+      'evidence must be an array per dogfood-record-submission schema');
+    assert.equal(results[0].evidence.length, 1);
+    const ev = results[0].evidence[0];
+    assert.equal(ev.kind, 'artifact');
+    assert.match(ev.url, /^swarm:\/\/audit\//);
+    assert.match(ev.description, /2 finding\(s\)/);
+    assert.match(ev.description, /medium:1/);
+    assert.match(ev.description, /low:1/);
   });
 
   it('marks remediate step pass when remediation exists', () => {
     const remediate = [{ component_id: 'core', fixes: [] }];
     const results = buildScenarioResults([auditA], remediate);
-    const remStep = results[0].step_results.find(s => s.step === 'remediate');
+    // F-C1 (Wave A1 D3): step_results items use `step_id` (schema-mandated),
+    // updated in lockstep with persist-results.js stepResult() emitter shape.
+    const remStep = results[0].step_results.find(s => s.step_id === 'remediate');
     assert.equal(remStep.status, 'pass');
   });
 
   it('marks remediate step fail when no remediation', () => {
     const results = buildScenarioResults([auditA], []);
-    const remStep = results[0].step_results.find(s => s.step === 'remediate');
+    // F-C1 (Wave A1 D3): step_results items use `step_id` (schema-mandated).
+    const remStep = results[0].step_results.find(s => s.step_id === 'remediate');
     assert.equal(remStep.status, 'fail');
   });
 });

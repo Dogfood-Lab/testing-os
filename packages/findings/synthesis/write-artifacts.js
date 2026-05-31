@@ -2,11 +2,12 @@
  * Write pattern, recommendation, and doctrine artifacts to disk.
  */
 
-import { mkdirSync, existsSync, readdirSync, readFileSync } from 'node:fs';
-import { resolve, join } from 'node:path';
+import { mkdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 import yaml from 'js-yaml';
 
 import { atomicWriteFileSync } from '../lib/atomic-write.js';
+import { loadYamlDir } from '../lib/safe-yaml-load.js';
 
 /**
  * Write a pattern to disk.
@@ -42,34 +43,50 @@ export function writeDoctrine(rootDir, doc) {
 }
 
 /**
- * Load all patterns from disk.
+ * Load all patterns from disk (legacy array shape).
+ *
+ * Torn pattern YAML files are NO LONGER silently dropped — they surface
+ * via `loadPatternsWithSkips`. H2 / F-721047-010 — silent-loader closure.
  */
 export function loadPatterns(rootDir) {
-  return loadArtifacts(resolve(rootDir, 'patterns'));
+  return loadPatternsWithSkips(rootDir).entries.map(e => e.data);
 }
 
 /**
- * Load all recommendations from disk.
+ * Load all recommendations from disk (legacy array shape).
+ *
+ * Torn recommendation YAML files are NO LONGER silently dropped — they
+ * surface via `loadRecommendationsWithSkips`. H2 / F-721047-010.
  */
 export function loadRecommendations(rootDir) {
-  return loadArtifacts(resolve(rootDir, 'recommendations'));
+  return loadRecommendationsWithSkips(rootDir).entries.map(e => e.data);
 }
 
 /**
- * Load all doctrines from disk.
+ * Load all doctrines from disk (legacy array shape).
+ *
+ * Torn doctrine YAML files are NO LONGER silently dropped — they surface
+ * via `loadDoctrinesWithSkips`. H2 / F-721047-010.
  */
 export function loadDoctrines(rootDir) {
-  return loadArtifacts(resolve(rootDir, 'doctrine'));
+  return loadDoctrinesWithSkips(rootDir).entries.map(e => e.data);
 }
 
-function loadArtifacts(dir) {
-  if (!existsSync(dir)) return [];
-  return readdirSync(dir)
-    .filter(f => f.endsWith('.yaml'))
-    .map(f => {
-      try {
-        return yaml.load(readFileSync(join(dir, f), 'utf-8'));
-      } catch { return null; }
-    })
-    .filter(Boolean);
+/**
+ * Audit-honesty loaders: surface structured skip records for any torn
+ * artifact YAML files.
+ *
+ * @param {string} rootDir
+ * @returns {{ entries: Array<{ path: string, data: object }>, skipped: Array<{ path: string, error: string }> }}
+ */
+export function loadPatternsWithSkips(rootDir) {
+  return loadYamlDir(resolve(rootDir, 'patterns'), { recursive: false });
+}
+
+export function loadRecommendationsWithSkips(rootDir) {
+  return loadYamlDir(resolve(rootDir, 'recommendations'), { recursive: false });
+}
+
+export function loadDoctrinesWithSkips(rootDir) {
+  return loadYamlDir(resolve(rootDir, 'doctrine'), { recursive: false });
 }

@@ -36,7 +36,7 @@
 - [x] `[all]` README is current: what it does, install, usage, supported platforms + runtime versions (2026-04-25)
 - [x] `[all]` CHANGELOG.md (Keep a Changelog format) — updated with v1.0.0 entry (2026-04-25)
 - [x] `[all]` LICENSE file present and repo states support status (2026-04-25)
-- [x] `[cli]` `--help` output accurate for all commands and flags — `swarm` bin documents its 10 subcommands (2026-04-25)
+- [x] `[cli]` `--help` output accurate for all commands and flags — `swarm` bin documents its 21 subcommands (init, domains, dispatch, collect, revalidate, rewind, redrive, verify, verify-fixed, verify-recurring, verify-unverified, verify-approved, receipt, advance, status, resume, history, approve, persist, findings, runs) (2026-04-25, last re-affirmed 2026-05-31 at v1.2.3)
 - [ ] `[cli|mcp|desktop]` SKIP: testing-os tools don't expose user-facing logging level controls. The receiver workflow logs via GitHub Actions; the `swarm` CLI prints to stdout/stderr. No secrets to redact in operator output. Promote if a logging-level requirement surfaces.
 - [ ] `[mcp]` SKIP: not an MCP server.
 - [x] `[complex]` HANDBOOK.md — the Astro Starlight handbook serves this purpose, deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) (2026-04-25)
@@ -44,11 +44,11 @@
 ## D. Shipping Hygiene
 
 - [x] `[all]` `verify` script exists (test + build + smoke in one command) — `npm run verify` (2026-04-25)
-- [x] `[all]` Version in manifest matches git tag — root + 7 packages all at `1.1.7`, tag `v1.1.7` (2026-04-27, last re-affirmed 2026-05-14)
-- [ ] `[all]` SKIP: dependency scanning not yet wired into CI. Tracked as a follow-up — would add `npm audit --audit-level=moderate` to `ci.yml` or enable Dependabot security alerts. Not blocking v1.0.0 since no package has been published to npm yet (six are `private: true`; `@dogfood-lab/schemas` is publish-ready but unpublished — no live public publish surface).
+- [x] `[all]` Version in manifest matches git tag — root + 7 packages all at `1.2.3`, tag `v1.2.3` (2026-05-20, last re-affirmed 2026-05-31)
+- [ ] `[all]` SKIP: dependency scanning not yet wired into CI. Tracked as a follow-up — would add `npm audit --audit-level=moderate` to `ci.yml` or enable Dependabot security alerts. Six of seven `@dogfood-lab/*` packages have been published to npm since v1.2.0 (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); `npm audit` against the root tree currently reports 0 high (the `fast-uri` override in `package.json` closes GHSA-q3j6-qgpj-74h6 / GHSA-v39h-62p7-jpjc). Dependabot config still pending per HANDOFF.md follow-up.
 - [ ] `[all]` SKIP: no automated dependency update mechanism. Same justification as above — Dependabot config wants a separate session. Surface counts on `npm audit` are tracked in HANDOFF.md (`site/` has 8 audit warnings inherited from legacy lockfile).
-- [ ] `[npm]` SKIP: six of seven `@dogfood-lab/*` packages are `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but **unpublished**. No actual `npm publish` has shipped any of them. `npm pack --dry-run` works for schemas (`tsc --build` produces `packages/schemas/dist/`) but the publish decision remains deferred per [HANDOFF.md](HANDOFF.md) Session G. Reconsider when the publishing decision is made.
-- [x] `[npm]` `engines.node` set — root `package.json` has `"engines": {"node": ">=20"}` (2026-04-25)
+- [x] `[npm]` Six of seven `@dogfood-lab/*` packages are published on npm since v1.2.0 (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); headline install is `npm install -g @dogfood-lab/dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains intentionally workspace-internal. Per-package READMEs carry the canonical logo since v1.2.1. (2026-05-14, last re-affirmed 2026-05-31 at v1.2.3)
+- [x] `[npm]` `engines.node` set — root `package.json` has `"engines": {"node": ">=22"}` (tightened from `>=20` to `>=22` in v1.2.2 to match the CI Node 22 + 24 matrix; last re-affirmed 2026-05-31 at v1.2.3)
 - [x] `[npm]` Lockfile committed (2026-04-25)
 - [ ] `[vsix]` SKIP: not a VS Code extension.
 - [ ] `[desktop]` SKIP: not a desktop app.

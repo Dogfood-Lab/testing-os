@@ -101,13 +101,34 @@ export function performAction(rootDir, params) {
 
   // Apply review metadata
   const now = new Date().toISOString();
+
+  // H4 / F-stage-a-h4 — auto-populate review.reject_reason whenever the
+  // target status is 'rejected'. Pre-amend, the engine only set the field
+  // for `action === 'reject'` and silently produced rejected findings on
+  // merge / supersede without a structured reason. The H4 schema if/then
+  // would then reject those findings at the contract boundary — but the
+  // engine was producing them. The fix:
+  //
+  //   - Operator-supplied `params.rejectReason` always wins (override).
+  //   - `merge` and `supersede` auto-default to `'merged_into_canonical'`
+  //     since lineage already carries `superseded_by` / `merged_from`.
+  //   - For `action === 'reject'`, the engine does NOT invent a default —
+  //     defaulting would erase operator intent. The schema enforces that
+  //     the field is set; an operator who forgets sees a validation error
+  //     downstream and learns to pass one. (This is the intentional
+  //     test-and-tell path in h4-engine-auto-reject-reason.test.js.)
+  let effectiveRejectReason = params.rejectReason;
+  if (!effectiveRejectReason && toStatus === 'rejected' && (action === 'merge' || action === 'supersede')) {
+    effectiveRejectReason = 'merged_into_canonical';
+  }
+
   finding.review = {
     reviewed_by: actor,
     reviewed_at: now,
     last_action: action,
     ...(params.reason ? { decision_reason: params.reason } : {}),
     ...(params.notes ? { review_notes: params.notes } : {}),
-    ...(params.rejectReason && action === 'reject' ? { reject_reason: params.rejectReason } : {})
+    ...(effectiveRejectReason ? { reject_reason: effectiveRejectReason } : {})
   };
 
   // Update timestamps

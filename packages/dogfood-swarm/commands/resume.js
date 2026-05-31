@@ -28,6 +28,7 @@ import {
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
+import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 
 /**
  * @param {object} opts
@@ -67,17 +68,16 @@ export function resume(opts) {
   // redispatch (see line 116-119 below). Iterating ALL rows on a second
   // resume call would re-process the original failed row and INSERT another
   // redispatch for the same domain, growing agent_runs without bound. The
-  // window function picks the latest row per domain so each domain's current
-  // state drives at most one redispatch per resume call.
+  // wave-9 latest-per-domain filter picks the latest row per domain so each
+  // domain's current state drives at most one redispatch per resume call.
+  // F-H6/H7/H8 (Wave A1 D3): SQL fragment now lives in
+  // lib/queries/latest-agent-runs.js (shared with read-side callers).
   const agentRuns = db.prepare(`
     SELECT ar.*, d.name as domain_name, d.globs
     FROM agent_runs ar
     JOIN domains d ON ar.domain_id = d.id
     WHERE ar.wave_id = ?
-      AND ar.id = (
-        SELECT MAX(ar2.id) FROM agent_runs ar2
-        WHERE ar2.wave_id = ar.wave_id AND ar2.domain_id = ar.domain_id
-      )
+      ${LATEST_AGENT_RUN_PER_DOMAIN}
   `).all(wave.id);
 
   const report = {

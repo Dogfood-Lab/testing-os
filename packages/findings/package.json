@@ -18,7 +18,7 @@
     "findings": "./cli.js"
   },
   "scripts": {
-    "test": "node --test findings.test.js derive/derive.test.js review/review.test.js synthesis/synthesis.test.js advise/advise.test.js lib/atomic-write.test.js"
+    "test": "node --test findings.test.js derive/derive.test.js derive/load-records-skip.test.js review/review.test.js review/event-log-loader.test.js review/h4-engine-auto-reject-reason.test.js synthesis/synthesis.test.js synthesis/loaders-skip.test.js advise/advise.test.js lib/atomic-write.test.js lib/safe-yaml-load.test.js"
   },
   "files": [
     "index.js",

@@ -6,7 +6,7 @@ All notable changes to `testing-os` are documented here. The format follows [Kee
 
 ## [1.2.3] — 2026-05-20
 
-**Health-pass cleanup release.** Four-stage dogfood swarm (Stage A bug/security → Stage B proactive → Stage C humanization → Stage D visual polish) against v1.2.2 surfaced 50+ findings; this release lands the load-bearing fixes. No package shape changes, no breaking changes from 1.2.2. **1105/1105 tests.**
+**Health-pass cleanup release.** Four-stage dogfood swarm (Stage A bug/security → Stage B proactive → Stage C humanization → Stage D visual polish) against v1.2.2 surfaced 50+ findings; this release lands the load-bearing fixes. No package shape changes, no breaking changes from 1.2.2. **1204 tests (7 workspace packages + repo scripts).**
 
 ### Security
 
@@ -34,7 +34,7 @@ All notable changes to `testing-os` are documented here. The format follows [Kee
 
 ### Verification
 
-`npm run verify` 1105/1105/0 (byte-identical test count to v1.2.2; doc-drift + regression-pin + script tests + workspace tests all green). Shipcheck audit: 20 checked / 17 SKIP-with-justification / 0 unchecked / **100% pass on hard gates A–D**.
+`npm run verify` 1204 tests (7 workspace packages + repo scripts), 0 failures; doc-drift + regression-pin + script tests + workspace tests all green. Shipcheck audit: 21 checked / 17 SKIP-with-justification / 0 unchecked / **100% pass on hard gates A–D**.
 
 ## [1.2.2] — 2026-05-14
 
@@ -42,7 +42,7 @@ All notable changes to `testing-os` are documented here. The format follows [Kee
 
 **Dev-only:** `vitest` and `@vitest/coverage-v8` bumped from `3.2.4` to `4.1.6` ([#21](https://github.com/dogfood-lab/testing-os/pull/21), [#24](https://github.com/dogfood-lab/testing-os/pull/24)). Test runtime only; no published-package impact.
 
-**Verification:** `npm run verify` 1105/1105/0 (byte-identical to v1.2.1); targeted transaction-semantics tests (`wave-state-machine.test.js`, `revalidate.test.js`, `rewind.test.js`, `redrive.test.js`) pass 118/118; SQLite native binding loads and reports `sqlite_version() = 3.53.1` on Node 22.21.1.
+**Verification:** `npm run verify` reported 1105/1105/0 (byte-identical to v1.2.1) at time of release; on re-baseline at HEAD it now reports 1204 tests (7 workspace packages + repo scripts) — net +99 tests added in v1.2.3's swarm-A1 corrective wave. Targeted transaction-semantics tests (`wave-state-machine.test.js`, `revalidate.test.js`, `rewind.test.js`, `redrive.test.js`) pass 118/118; SQLite native binding loads and reports `sqlite_version() = 3.53.1` on Node 22.21.1.
 
 ## [1.2.1] — 2026-05-14
 
@@ -52,7 +52,7 @@ All notable changes to `testing-os` are documented here. The format follows [Kee
 
 **First npm publish of the `@dogfood-lab/*` monorepo.** Six packages now public on npm: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. Headline install: `npm install -g @dogfood-lab/dogfood-swarm`. The seventh package (`@dogfood-lab/portfolio`) remains internal.
 
-**New in this release:** wave-level state machine (Phase 5A) + Three R's recovery contract (Phase 5B-1 `swarm rewind`, 5B-2 `swarm redrive`, plus the existing `swarm revalidate` from earlier in this version cycle) + `swarm history` audit-trail verb (Phase 5B-0). Stage A–D health pass closed at 0 CRIT / 0 HIGH against the pre-Phase-5 baseline. **1105/1105 tests** (was 940 at start of session arc). All packages bump lockstep from 1.1.7 → 1.2.0.
+**New in this release:** wave-level state machine (Phase 5A) + Three R's recovery contract (Phase 5B-1 `swarm rewind`, 5B-2 `swarm redrive`, plus the existing `swarm revalidate` from earlier in this version cycle) + `swarm history` audit-trail verb (Phase 5B-0). Stage A–D health pass closed at 0 CRIT / 0 HIGH against the pre-Phase-5 baseline. **1204 tests (7 workspace packages + repo scripts)** (was 940 at start of session arc; the v1.2.0 release notes originally cited 1105 — corrected at re-baseline in v1.2.3). All packages bump lockstep from 1.1.7 → 1.2.0.
 
 ### Security
 

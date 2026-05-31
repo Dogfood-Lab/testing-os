@@ -21,10 +21,11 @@
  * Defaults to the highest-numbered wave directory under the run.
  */
 
-import { readdirSync, readFileSync, statSync, existsSync } from 'node:fs';
+import { readdirSync, statSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
 import { renderDigest, renderMarkdown } from './findings-render.js';
+import { readBoundedJson } from './bounded-json-read.js';
 
 const SWARMS_DIR = resolve(import.meta.dirname, '../../../swarms');
 
@@ -60,9 +61,14 @@ export function loadDomainOutputs(waveDir) {
     // Tolerate the older `<domain>.output.json` shape if a stale wave dir is
     // ever reprocessed — strip whichever suffix is present.
     const domain = entry.replace(/\.output\.json$/, '').replace(/\.json$/, '');
-    const raw = readFileSync(join(waveDir, entry), 'utf8');
+    // F-H5 (Wave A1 D3): per-domain agent output JSON read goes through the
+    // bounded helper. A pathological agent output (logging loop, raw stdout)
+    // here would otherwise OOM the digest renderer. The digest layer
+    // historically tolerates parse errors per-file (it surfaces them as
+    // `parseError` on the output entry), so we preserve that contract — the
+    // bounded helper's structured errors are mapped to the same shape.
     try {
-      const parsed = JSON.parse(raw);
+      const parsed = readBoundedJson(join(waveDir, entry));
       outputs.push({ domain, parsed });
     } catch (err) {
       outputs.push({ domain, parseError: err.message });

@@ -15,6 +15,7 @@
 
 import { openDb } from '../../db/connection.js';
 import { createHash } from 'node:crypto';
+import { LATEST_AGENT_RUN_PER_DOMAIN } from '../queries/latest-agent-runs.js';
 
 /**
  * Build a canonical run export from DB truth.
@@ -34,22 +35,35 @@ export function buildRunExport(db, runId) {
 
   // Build wave summaries
   const waveSummaries = waves.map(w => {
+    // F-H8 (Wave A1 D3): wave-9 latest-per-(wave, domain) filter via the
+    // shared helper. The bug shape: after `swarm resume` redispatches a
+    // failed agent, the original failed row remains in agent_runs. Iterating
+    // all rows surfaced the stale failed row to the audit-DB ground truth,
+    // flipping the dogfood-bridge `every(complete)` check to non-pass for
+    // recovered waves. See lib/queries/latest-agent-runs.js header.
     const agents = db.prepare(`
       SELECT ar.*, d.name as domain_name
       FROM agent_runs ar JOIN domains d ON ar.domain_id = d.id
       WHERE ar.wave_id = ?
+        ${LATEST_AGENT_RUN_PER_DOMAIN}
     `).all(w.id);
 
     const verification = db.prepare(
       'SELECT * FROM verification_receipts WHERE wave_id = ? ORDER BY created_at DESC LIMIT 1'
     ).get(w.id);
 
+    // F-H8-sibling (advisor-surfaced, Wave A1 D3): the violations subquery
+    // is the OTHER read site in export.js that lacked the wave-9 filter. A
+    // violation recorded against a stale failed agent_run row would surface
+    // here even after a clean redispatch. Apply the same filter so the
+    // audit-DB export shows only the surviving agent_run's violations.
     const violations = db.prepare(`
       SELECT fc.file_path, d.name as domain_name
       FROM file_claims fc
       JOIN agent_runs ar ON fc.agent_run_id = ar.id
       JOIN domains d ON ar.domain_id = d.id
       WHERE fc.violation = 1 AND ar.wave_id = ?
+        ${LATEST_AGENT_RUN_PER_DOMAIN}
     `).all(w.id);
 
     return {

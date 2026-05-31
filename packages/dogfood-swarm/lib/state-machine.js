@@ -258,6 +258,34 @@ export function getTransitionHistory(db, agentRunId) {
 
 // ── Internal ──
 
+/**
+ * F-H9 (Wave A1 D3): wrap the UPDATE agent_runs + INSERT agent_state_events
+ * pair in a single db.transaction() so a crash partway through cannot leave
+ * the agent_runs row updated with no corresponding audit event (Stripe
+ * Ledger pattern: state and its audit row land together or not at all).
+ *
+ * Mirrors wave-state-machine.js executeTransition (line 245-264) which
+ * already used this shape for the same reason on the wave side.
+ *
+ * better-sqlite3 nests cleanly: callers already inside an outer transaction
+ * (collect.js's upsertFindings batch, rewind.js, redrive.js,
+ * revalidate.js's repair pass) keep working unchanged — better-sqlite3
+ * collapses nested tx() into a SAVEPOINT.
+ *
+ * H9 sibling closure (applyTimeoutPolicy at line 184): the loop iterates and
+ * calls transitionAgent per agent. Because transitionAgent goes through
+ * executeTransition which now self-wraps, each per-agent UPDATE+INSERT
+ * pair is atomic — even if the loop is interrupted mid-iteration, any agent
+ * the loop already touched is either fully transitioned (UPDATE + audit
+ * row) or untouched. No torn rows.
+ *
+ * H9 sibling closure (dispatch.js:195-200, resume.js:128-136 raw INSERT +
+ * transitionAgent pairs): once executeTransition self-wraps, the
+ * transitionAgent call inside those pairs is itself atomic. The outer
+ * INSERT agent_runs is separate and explicitly outside the transition
+ * audit-row contract (it creates the row that the transition will then
+ * audit), which is by design.
+ */
 function executeTransition(db, agentRunId, from, to, reason) {
   const updates = { status: to };
   if (to === 'complete') updates.completed_at = new Date().toISOString();
@@ -265,14 +293,18 @@ function executeTransition(db, agentRunId, from, to, reason) {
 
   const setClauses = Object.entries(updates).map(([k, v]) => `${k} = ?`).join(', ');
   const values = [...Object.values(updates), agentRunId];
-  db.prepare(`UPDATE agent_runs SET ${setClauses} WHERE id = ?`).run(...values);
 
-  const eventResult = db.prepare(`
-    INSERT INTO agent_state_events (agent_run_id, from_status, to_status, reason)
-    VALUES (?, ?, ?, ?)
-  `).run(agentRunId, from, to, reason || null);
+  const tx = db.transaction(() => {
+    db.prepare(`UPDATE agent_runs SET ${setClauses} WHERE id = ?`).run(...values);
+    const eventResult = db.prepare(`
+      INSERT INTO agent_state_events (agent_run_id, from_status, to_status, reason)
+      VALUES (?, ?, ?, ?)
+    `).run(agentRunId, from, to, reason || null);
+    return Number(eventResult.lastInsertRowid);
+  });
 
-  return { from, to, eventId: Number(eventResult.lastInsertRowid) };
+  const eventId = tx();
+  return { from, to, eventId };
 }
 
 export { TRANSITIONS, BLOCKED_STATUSES, TERMINAL_STATUSES, REDISPATCHABLE, IN_FLIGHT };

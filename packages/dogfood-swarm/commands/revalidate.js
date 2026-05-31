@@ -51,6 +51,8 @@ import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate
 import { transitionAgent, isBlocked } from '../lib/state-machine.js';
 import { transitionWave } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
+import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
+import { readBoundedJson } from '../lib/bounded-json-read.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
@@ -97,13 +99,12 @@ export function revalidate(opts) {
   const isAudit = AUDIT_PHASES.includes(wave.phase);
   const isAmend = AMEND_PHASES.includes(wave.phase);
 
+  // F-H6/H7/H8 (Wave A1 D3): wave-9 latest-per-(wave, domain) filter via the
+  // shared helper. The fragment is identical across mutation + read callers.
   const agentRuns = db.prepare(`
     SELECT ar.* FROM agent_runs ar
     WHERE ar.wave_id = ?
-      AND ar.id = (
-        SELECT MAX(ar2.id) FROM agent_runs ar2
-        WHERE ar2.wave_id = ar.wave_id AND ar2.domain_id = ar.domain_id
-      )
+      ${LATEST_AGENT_RUN_PER_DOMAIN}
   `).all(wave.id);
 
   const domains = getDomains(db, runId);
@@ -175,9 +176,13 @@ export function revalidate(opts) {
       continue;
     }
 
+    // F-H5 (Wave A1 D3): operator-supplied --domain=name:path JSON read goes
+    // through the shared bounded helper. This is exactly the recovery case
+    // where a pathological / oversized input matters most — a misnamed path
+    // pointing at a multi-GB log would otherwise block the coordinator.
     let output;
     try {
-      output = JSON.parse(readFileSync(outputPath, 'utf-8'));
+      output = readBoundedJson(outputPath);
     } catch (e) {
       report.refusals.push({
         domain: domainName,
@@ -303,13 +308,11 @@ export function revalidate(opts) {
       // validation_errors. Mirror its inverse — if every latest agent_run is now
       // 'complete' AND the wave is 'failed', flip back to 'collected'. Same
       // transaction prevents the torn-state regression (Stripe Ledger pattern).
+      // F-H6/H7/H8 (Wave A1 D3): shared wave-9 filter.
       const remaining = db.prepare(`
         SELECT ar.id, ar.status FROM agent_runs ar
         WHERE ar.wave_id = ?
-          AND ar.id = (
-            SELECT MAX(ar2.id) FROM agent_runs ar2
-            WHERE ar2.wave_id = ar.wave_id AND ar2.domain_id = ar.domain_id
-          )
+          ${LATEST_AGENT_RUN_PER_DOMAIN}
           AND ar.status != 'complete'
       `).all(wave.id);
 
@@ -369,14 +372,12 @@ export function revalidate(opts) {
     if (partialNotRecovered) {
       const repairedIds = new Set(report.repairs.filter(r => r.applied).map(r => r.agent_run_id));
       const submittedDomains = new Set(Object.keys(outputs || {}));
+      // F-H6/H7/H8 (Wave A1 D3): shared wave-9 filter.
       const stillBlocked = db.prepare(`
         SELECT ar.id, d.name as domain_name, ar.status FROM agent_runs ar
         JOIN domains d ON ar.domain_id = d.id
         WHERE ar.wave_id = ?
-          AND ar.id = (
-            SELECT MAX(ar2.id) FROM agent_runs ar2
-            WHERE ar2.wave_id = ar.wave_id AND ar2.domain_id = ar.domain_id
-          )
+          ${LATEST_AGENT_RUN_PER_DOMAIN}
           AND ar.status != 'complete'
       `).all(wave.id);
       stillBlockedCount = stillBlocked.length;

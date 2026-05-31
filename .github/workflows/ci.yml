@@ -70,7 +70,7 @@ jobs:
         # beats permissive engines-with-no-test-coverage.
         node-version: [22, 24]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 (node24 runtime)
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ matrix.node-version }}
@@ -80,12 +80,28 @@ jobs:
       # README must all agree on the workspace version. Catches the F-178611-015
       # drift class (lockfile stamped from a prior version) before tests run.
       - run: npm run sync-version:check
+      # H10 / Wave A1 amend: durable lockfile-drift guard. `npm install --package-lock-only`
+      # regenerates the lockfile from package.json + the workspace tree without
+      # touching node_modules; the follow-up `git diff --exit-code` fails CI on
+      # ANY lockfile drift class (version, engines.node, transitive deps, new
+      # workspace, deleted workspace). This is strictly broader than
+      # sync-version:check, which only inspects two version fields — at HEAD
+      # d0f7a58 the lockfile shipped with all 7 packages/* entries pinned at
+      # 1.2.2 (root was 1.2.3) and engines.node at >=20 (root was >=22), and
+      # sync-version:check passed despite both classes of drift.
+      - name: Lockfile-drift gate
+        run: |
+          npm install --package-lock-only
+          git diff --exit-code package-lock.json || {
+            echo "::error::package-lock.json drifted from package.json. Run 'npm install' locally and commit the regenerated lockfile."
+            exit 1
+          }
       # Class #11 sweep gate: assert source-of-truth/doc cross-refs hold.
       # Catches the F-COORD-004 drift class (error code added to lib/errors.js
       # without a sibling entry in error-codes.md, status enum added to
       # schema.js without state-machines.md mention, legacy paths leaking back
       # into user-facing handbook pages). See scripts/doc-drift-patterns.json
-      # for the 5 active checks; adding a new instance is a config edit.
+      # for the active checks; adding a new instance is a config edit.
       - run: npm run check-doc-drift
       # VD-NEW-2 (Phase 2-B verification-discipline): `npm run verify` runs
       # check-regression-pins as the third gate; CI was missing it. The local

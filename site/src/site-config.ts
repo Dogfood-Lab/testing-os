@@ -12,7 +12,7 @@ export const config: SiteConfig = {
     badge: 'Testing OS — v1.2.3 on npm',
     headline: 'testing-os',
     headlineAccent: 'proves it ships.',
-    description: 'Centralized dogfood evidence system. 13 repos, 8 surfaces, all verified pass, all enforcement required. v1.2.3 lands a 4-stage dogfood-swarm health cleanup over v1.2.2: defense-in-depth around the receiver pipeline, actionable error messages, a new CLI reference handbook page, and a custom 404.',
+    description: 'Centralized dogfood evidence system. 13 active repos (14 governed — the 14th, `dogfood-labs`, is the archived legacy repo retained for historical evidence), 8 surfaces, all currently-tracked active repos: last verdict = pass, all enforcement required. v1.2.3 lands a 4-stage dogfood-swarm health cleanup over v1.2.2: defense-in-depth around the receiver pipeline, actionable error messages, a new CLI reference handbook page, and a custom 404.',
     primaryCta: { href: '#architecture', label: 'How it works' },
     secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
@@ -31,7 +31,7 @@ export const config: SiteConfig = {
       features: [
         { title: 'Evidence-Based', desc: 'Every dogfood run produces a structured record with schema validation, provenance checks, and policy compliance.' },
         { title: 'Policy-Driven', desc: 'Per-repo enforcement tiers (required, warn-only, exempt) with promotion paths and review dates.' },
-        { title: 'Full Coverage', desc: '13 repos across 8 product surfaces: CLI, desktop, web, API, MCP server, npm package, plugin, library.' },
+        { title: 'Full Coverage', desc: '13 active repos across 8 product surfaces: CLI, desktop, web, API, MCP server, npm package, plugin, library. (The 14th governed entry, `dogfood-labs`, is the archived legacy repo retained for historical evidence.)' },
       ],
     },
     {

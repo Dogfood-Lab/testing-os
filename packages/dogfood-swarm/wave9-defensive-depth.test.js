@@ -397,7 +397,12 @@ describe('persist-results — F-246817-007 error-path coverage', () => {
     assert.equal(results.length, 1);
     assert.equal(results[0].verdict, 'pass',
       'no findings → pass verdict, not a thrown error');
-    assert.equal(results[0].evidence.total_findings, 0);
+    // F-C1 (Wave A1 D3): evidence is now a schema-clean ARRAY (was object).
+    // The per-finding counts live in the description string. Lockstep-updated
+    // with persist-results.js emitter shape and the
+    // dogfood-record-submission schema's evidence-items contract.
+    assert.ok(Array.isArray(results[0].evidence));
+    assert.match(results[0].evidence[0].description, /0 finding\(s\)/);
   });
 
   it('buildAuditPayload handles audit with no controls AND no findings', () => {
@@ -477,7 +482,11 @@ describe('persist-results — F-246817-007 error-path coverage', () => {
     }];
     const results = buildScenarioResults(audits, []);
     assert.equal(results[0].verdict, 'pass');
-    assert.equal(results[0].evidence.open_findings, 0);
-    assert.equal(results[0].evidence.fixed, 2);
+    // F-C1 (Wave A1 D3): evidence is a schema-clean ARRAY; counts in description.
+    assert.ok(Array.isArray(results[0].evidence));
+    const desc = results[0].evidence[0].description;
+    assert.match(desc, /2 finding\(s\)/);
+    assert.match(desc, /0 open/);
+    assert.match(desc, /2 fixed/);
   });
 });

@@ -28,7 +28,7 @@ testing-os is the centralized dogfood evidence system for the [Dogfood Lab](http
 
 ## Current Coverage
 
-13 repos across 8 product surfaces, all verified pass, all enforcement: required.
+13 active repos across 8 product surfaces, all currently-tracked active repos: last verdict = pass, all enforcement: required. (The 14th governed entry, `dogfood-labs`, is the archived legacy repo retained for historical evidence — see [`indexes/stale.json`](https://github.com/dogfood-lab/testing-os/blob/main/indexes/stale.json) for stale records and [`indexes/latest-by-repo.json`](https://github.com/dogfood-lab/testing-os/blob/main/indexes/latest-by-repo.json) for the live verdict map.)
 
 ## Getting Started
 

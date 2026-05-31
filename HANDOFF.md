@@ -8,14 +8,14 @@
 >
 > **What's left to do tomorrow (or whenever you pick it up):**
 >
-> 1. **Session H — delete legacy `mcp-tool-shop-org/dogfood-labs`.** Pre-flight checklist below is satisfied for items A–G; remaining gates are the 30-day window (started 2026-04-25 — earliest delete: 2026-05-25), Mike's explicit "yes delete it," archiving issues + PR history + Actions runs into `legacy/`, and traffic re-check just before delete.
+> 1. **Session H — delete legacy `mcp-tool-shop-org/dogfood-labs`.** Pre-flight checklist below is satisfied for items A–G; the 30-day grace window started 2026-04-25 and **passed on 2026-05-25** (current date 2026-05-31 — six days past). Remaining gates: Mike's explicit "yes delete it" go/no-go on the deferred close, archiving issues + PR history + Actions runs into `legacy/`, and a final traffic re-check just before delete. No additional waiting required — this is now a deliberate hold pending Mike's call.
 > 2. **Five surfaced follow-ups** (each is its own small session, none blocks H):
 >    - Set `DOGFOOD_TOKEN` secret on consumer repos so dispatch actually fires (currently skipped silently). User-side: mint a fine-grained PAT with `contents: write` on `dogfood-lab/testing-os`, add as `DOGFOOD_TOKEN` to ai-loadout / claude-guardian / glyphstudio / site-theme / shipcheck.
 >    - Fix ai-loadout's broken `main` build (TS errors on missing `@types/node` config).
->    - Bump pinned action SHAs from Node 20 → Node 24 across `ci.yml`, `ingest.yml`, `pages.yml`. Deadline 2026-09-16.
+>    - ~~Bump pinned action SHAs from Node 20 → Node 24 across `ci.yml`, `ingest.yml`, `pages.yml`, `release.yml`. The `actions/checkout@v4.3.1` pin still runs on Node 20 (deprecation cliff 2026-06-02 → forced-Node-24, 2026-09-16 → Node 20 removed); the other pinned actions are already Node 24.~~ — Done 2026-05-31 (Wave A1 D4). Bumped `actions/checkout` to v6.0.2 (node24 runtime, SHA `de0fac2e4500dabe0009e67214ff5f5447ce83dd`) in all 4 workflows ahead of the 2026-06-02 deprecation.
 >    - Run `npm audit fix` on `site/package-lock.json` (8 vulns inherited from legacy lockfile, 5 mod / 3 high).
 >    - Wire dependency scanning + Dependabot config into `ci.yml`. Currently SKIPped in SHIP_GATE.md.
-> 3. **npm publish decision** — six of seven packages are `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but unpublished. No package has actually been published to npm. Flip the remaining six and/or publish schemas when consumers will pull via npm. Mike's call.
+> 3. **npm publish — landed.** Six of seven `@dogfood-lab/*` packages are published on npm since v1.2.0 (2026-05-14): `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. Headline install: `npm install -g @dogfood-lab/dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains intentionally workspace-internal. The deferred "Mike's call" from v1.0.0 → v1.1.x closed at v1.2.0.
 >
 > **Resumable from a cold start:** read this file and [CLAUDE.md](CLAUDE.md), then pick from the list above. The state is documented; you won't have to reconstruct anything from git log.
 
@@ -245,7 +245,7 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
 - Shipcheck audit: 100% pass on hard gates A–D (20 checked / 17 SKIP-with-justification / 0 unchecked). [PR #13](https://github.com/dogfood-lab/testing-os/pull/13) (squash `9625ea3`) ships the SHIP_GATE.md, SCORECARD.md, README threat model, repo metadata, lockstep `0.2.0-pre` → `1.0.0` bump, and the [1.0.0] CHANGELOG entry enumerating Sessions A–F.
 - Tag `v1.0.0` pushed to `dogfood-lab/testing-os`.
 - GitHub release created via `gh release create v1.0.0` with the CHANGELOG section as body.
-- npm publish: **deferred** — six of seven packages remain `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but no `npm publish` has actually run. Per the HANDOFF's "deferred to Mike's choice." Flip the remaining six and/or publish schemas when there's a downstream pulled-via-npm consumer that needs it.
+- npm publish: **deferred at v1.0.0; closed at v1.2.0 (2026-05-14).** Six of seven `@dogfood-lab/*` packages are now published on npm: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains intentionally workspace-internal. Headline install: `npm install -g @dogfood-lab/dogfood-swarm`. (Historical Session G outcome preserved above; closure recorded here.)
 
 **Goal.** Promote `0.1.0-pre` → `1.0.0` lockstep across all 7 packages. Tag a release. Optionally publish.
 
@@ -263,7 +263,7 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
    git push origin v1.0.0
    gh release create v1.0.0 --title "testing-os v1.0.0" --notes-file <(awk '/## \[1\.0\.0\]/,/## \[/' CHANGELOG.md | head -n -1)
    ```
-6. **(Optional)** publish to npm. Currently six of seven packages are `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but unpublished — `npm publish --workspace @dogfood-lab/schemas` would ship that one. For the rest, flip `private` on the ones we want public, then `npm publish --workspaces --access public`.
+6. **(Optional)** publish to npm. *Session G state at the time:* six of seven packages were `private: true`; `@dogfood-lab/schemas` was publish-ready (`publishConfig.access=public` + `files` whitelist) but unpublished. **Closed at v1.2.0 (2026-05-14):** six packages are now published — `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains intentionally workspace-internal.
 
 **Acceptance:** v1.0.0 tag exists, GitHub release published, CHANGELOG updated.
 
@@ -285,7 +285,7 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
 - [x] Session D done — 7 translations published
 - [x] Session E done — `$id` URLs flipped, schemas bumped
 - [x] Session F done — zero unintentional external references (intentional ones documented in Session F header)
-- [x] Session G done — v1.0.0 tagged and released (npm publish deferred per HANDOFF guidance)
+- [x] Session G done — v1.0.0 tagged and released; npm publish (originally deferred) closed at v1.2.0 (2026-05-14) when 6 of 7 packages shipped
 - [ ] **Issues + PR history archived externally** for the legacy repo:
   ```bash
   gh issue list --repo mcp-tool-shop-org/dogfood-labs --state all --limit 1000 --json number,title,state,body,createdAt,labels,comments > legacy-issues.json
@@ -297,7 +297,7 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
   gh run list --repo mcp-tool-shop-org/dogfood-labs --limit 1000 --json databaseId,headBranch,conclusion,createdAt,name > legacy-actions.json
   ```
 - [ ] **GitHub Pages traffic check** confirms no recent (last 14 days) external traffic
-- [ ] **Wait 30+ days after archive.** Lets external consumers fail loudly. Don't rush.
+- [x] **Wait 30+ days after archive.** Lets external consumers fail loudly. Don't rush. — **Grace window passed 2026-05-25** (30 days after 2026-04-25 archive); current date 2026-05-31. Awaiting Mike's go/no-go on the deferred-close items below before any deletion command runs.
 - [ ] **Mike has explicitly approved deletion** — not just acknowledged. The kind of "yes delete it" that matches the magnitude of "I am about to permanently remove 8000+ commits, hundreds of evidence records, and the audit trail of months of dogfood runs."
 
 **Delete:**
@@ -349,13 +349,13 @@ For the record (so they don't get lost):
 - **`DOGFOOD_TOKEN` secret missing on consumer repos** — surfaced during Session A. Without it, every consumer's `dogfood.yml` skips the dispatch step with a `DOGFOOD_TOKEN not set — skipping dispatch` warning. Affects: ai-loadout, claude-guardian, glyphstudio, site-theme, plus any future consumer. Need a fine-grained PAT (or GitHub App) with `contents: write` on `dogfood-lab/testing-os`, added as `DOGFOOD_TOKEN` to each consumer's secrets. **User-side action** (token creation requires Mike's auth).
 - **ai-loadout build is broken on `main`** — surfaced during Session A. `tsc` fails with TS2591 / TS2534 on `node:fs`, `node:path`, `process` etc.; `@types/node` not effective. Pre-existing on main since at least the 2026-04-25 cutover commit. Independent of testing-os migration but blocks ai-loadout's own dogfood until fixed.
 - **`HANDOFF.md` Session A step 4 used the wrong subcommand** — it said `npx @mcptoolshop/shipcheck audit --gate F …`, but the actual subcommand is `npx @mcptoolshop/shipcheck dogfood …`. The `audit` subcommand is the SHIP_GATE.md tracker, not the dogfood-freshness check. Fixed.
-- **Pinned action SHAs in `ingest.yml` and `ci.yml` are Node 20** — GitHub deprecation warning fired during the first ingest.yml run. Forced to Node 24 by 2026-06-02; Node 20 removed by 2026-09-16. Bump the SHAs before then.
+- ~~**Pinned action SHAs running on Node 20** — GitHub deprecation warning fired during the first ingest.yml run. Forced to Node 24 by 2026-06-02; Node 20 removed by 2026-09-16. Bump the SHAs before then.~~ — Done 2026-05-31 (Wave A1 D4). Bumped `actions/checkout` to v6.0.2 (node24 runtime, SHA `de0fac2e4500dabe0009e67214ff5f5447ce83dd`) in `ci.yml`, `ingest.yml`, `pages.yml`, `release.yml`.
 - ~~**External-reference audit** — beyond the 4 codebases the recon swarm found, we never checked the prototypes seed vault, the brand repo, or external consumers.~~ — Done 2026-04-25 (Session F). All actionable refs cut over via [shipcheck#3](https://github.com/mcp-tool-shop-org/shipcheck/pull/3); intentional legacy refs documented in the Session F header.
 - ~~**`scripts/sync-version.mjs`** — world-forge has it, we don't. Without it, README version line drifts.~~ — Done 2026-04-25 (Session C). Wired as `prebuild`; `npm run sync-version:check` is the CI gate.
 - ~~**`CONTRIBUTING.md`** — none.~~ — Done 2026-04-25 (Session C). Points at CLAUDE.md as the operating manual.
 - **TS conversion** — JS packages, not type-safe yet.
 - ~~**First v1.0.0 stable release** — still on `0.1.0-pre`.~~ — Done 2026-04-25 (Session G). [Release v1.0.0](https://github.com/dogfood-lab/testing-os/releases/tag/v1.0.0).
-- **npm publish** — six of seven packages still `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but unpublished. May want some public. Mike's call; defer until a downstream consumer needs it via npm.
+- ~~**npm publish** — six of seven packages still `private: true`; `@dogfood-lab/schemas` is publish-ready (`publishConfig.access=public` + `files` whitelist) but unpublished. May want some public. Mike's call; defer until a downstream consumer needs it via npm.~~ — Done 2026-05-14 (v1.2.0). Six of seven packages published as `@dogfood-lab/{schemas,verify,report,ingest,findings,dogfood-swarm}`. `@dogfood-lab/portfolio` remains intentionally workspace-internal.
 - **The 4 dispatcher orphans** (polyglot-vscode, repo-crawler-mcp, tool-scan, vocal-synth-engine) — folded into the prototypes seed vault. Their passports may still reference dogfood-labs paths. Audit happens in Session F.
 - ~~**`.github/workflows/pages.yml`** — testing-os has only `ci.yml`. Need a Pages workflow for the handbook.~~ — Done 2026-04-25 (Session B). testing-os now has 3 workflows (`ci.yml`, `ingest.yml`, `pages.yml`) — exceeds the soft cap of 2 in `.claude/rules/github-actions.md`, but each has a distinct purpose. Surfaced in [PR #3](https://github.com/dogfood-lab/testing-os/pull/3).
 - **Site-tree npm audit vulnerabilities** — surfaced during Session B. `site/package-lock.json` (inherited from legacy) reports 8 vulnerabilities (5 moderate, 3 high) in Astro/Starlight transitive deps. Not blocking deployment, but worth a `npm audit fix` pass.
