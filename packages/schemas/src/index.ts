@@ -64,6 +64,7 @@ export {
   validatePayload,
   createAjv,
   _resetValidatorCacheForTests,
+  _schemasModuleInstanceCount,
   type ValidationError,
   type ValidationResult,
 } from './validate.js';

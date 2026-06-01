@@ -60,6 +60,64 @@ describe('@dogfood-lab/schemas validation harness', () => {
     });
   });
 
+  describe('validatePayload ValidationError shape (H3 keyword extension)', () => {
+    // H3 contract preservation: ingest/validate-record.js previously exposed
+    // `keyword` on every error in its RecordValidationError.errors[] array,
+    // and ingest.test.js:208-220 pins `typeof e.keyword === 'string'` for
+    // every entry. Migrating ingest to delegate to validatePayload requires
+    // the canonical ValidationError to surface keyword too — otherwise the
+    // migration silently strips it and the keyword pin fails.
+    //
+    // Pin: every error returned by validatePayload carries a non-empty
+    // string `keyword` field reflecting Ajv's err.keyword (`required`,
+    // `pattern`, `enum`, `additionalProperties`, `minLength`, etc.).
+
+    it('surfaces Ajv keyword on a required-rule violation', () => {
+      const result = validatePayload('recordSubmission', { schema_version: '1.0.0' });
+      expect(result.valid).toBe(false);
+      expect(result.errors.length).toBeGreaterThan(0);
+      const requiredErr = result.errors.find(e => e.keyword === 'required');
+      expect(requiredErr, 'expected a required-keyword error; got ' + JSON.stringify(result.errors)).toBeTruthy();
+      expect(typeof requiredErr!.keyword).toBe('string');
+    });
+
+    it('surfaces Ajv keyword on a pattern-rule violation', () => {
+      const result = validatePayload('finding', {
+        schema_version: '1.0.0',
+        finding_id: 'NOT_A_VALID_DFIND_ID', // pattern: ^dfind-
+        title: 'x',
+        status: 'accepted',
+        repo: 'dogfood-lab/testing-os',
+        product_surface: 'npm-package',
+        journey_stage: 'verification',
+        issue_kind: 'verification_gap',
+        root_cause_kind: 'tooling_gap',
+        remediation_kind: 'verification_fix',
+        transfer_scope: 'org_wide',
+        summary: 'A non-trivial summary that satisfies the minLength constraint.',
+        source_record_ids: ['testing-os-w8-001'],
+        evidence: [{ evidence_kind: 'doc', doc_ref: 'x' }],
+      });
+      expect(result.valid).toBe(false);
+      const patternErr = result.errors.find(e => e.keyword === 'pattern');
+      expect(patternErr, 'expected a pattern-keyword error; got ' + JSON.stringify(result.errors)).toBeTruthy();
+    });
+
+    it('every error in a multi-error result carries `keyword`', () => {
+      // F-H3-PIN: the keyword pin (packages/ingest/ingest.test.js:208-220)
+      // walks every error and asserts `typeof e.keyword === 'string'`. Any
+      // future change that drops keyword for a subset of errors would break
+      // ingest. Pin the per-error invariant here at the canonical seam.
+      const result = validatePayload('recordSubmission', {});
+      expect(result.valid).toBe(false);
+      expect(result.errors.length).toBeGreaterThan(0);
+      for (const err of result.errors) {
+        expect(typeof err.keyword, 'error missing keyword: ' + JSON.stringify(err)).toBe('string');
+        expect(err.keyword!.length, 'error has empty keyword: ' + JSON.stringify(err)).toBeGreaterThan(0);
+      }
+    });
+  });
+
   // ---------------------------------------------------------------------------
   // recordSubmission — source-authored payload (no verification block)
   // ---------------------------------------------------------------------------

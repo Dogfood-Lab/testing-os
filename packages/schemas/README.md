@@ -33,17 +33,19 @@ npm install @dogfood-lab/schemas
 
 ## Usage — TypeScript surface
 
-The package exports `validatePayload` and the compiled validators:
+The package exports `validatePayload` and the compiled validators. `validatePayload(name, payload)` takes the **schema name first** (one of `record`, `recordSubmission`, `finding`, `pattern`, `recommendation`, `doctrine`, `policy`, `scenario` — all camelCase, NOT the file basename) and the payload second. The return shape is `{ valid: boolean, errors: ValidationError[] }` — each error carries `path`, `message`, `keyword` (the Ajv rule that fired, e.g. `required` / `pattern` / `enum`), and optional `params`.
 
 ```ts
 import { validatePayload } from '@dogfood-lab/schemas';
 
-const result = validatePayload(submission, 'dogfood-record-submission');
-if (!result.ok) {
+const result = validatePayload('recordSubmission', submission);
+if (!result.valid) {
   console.error('schema mismatch:', result.errors);
   process.exit(1);
 }
 ```
+
+`compileSchema(name)` returns the raw Ajv `ValidateFunction` for advanced cases (custom error formatting, direct `validate.errors` inspection). Sibling packages (`@dogfood-lab/verify`, `@dogfood-lab/findings`, `@dogfood-lab/ingest`, `@dogfood-lab/report`) all delegate to `validatePayload` — collapsing N Ajv instances to one per schema per process via the module-scope `validatorCache`.
 
 ## Usage — Raw JSON schemas
 

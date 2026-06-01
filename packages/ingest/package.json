@@ -6,7 +6,8 @@
   "main": "run.js",
   "exports": {
     ".": "./run.js",
-    "./lib/*": "./lib/*"
+    "./lib/*": "./lib/*",
+    "./validate-record.js": "./validate-record.js"
   },
   "scripts": {
     "test": "node --test",

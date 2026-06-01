@@ -1,46 +1,38 @@
 /**
  * Schema validation for pattern, recommendation, and doctrine artifacts.
+ *
+ * H3 hop 1: delegates to the canonical {@link validatePayload} from
+ * `@dogfood-lab/schemas`. Pre-H3 this module compiled its own
+ * Ajv2020 + ajv-formats instance per schema; that duplicated the
+ * verifier's compile path and created the C1 two-Ajv structural gap
+ * (same JSON Schema → two distinct compiled validators in two
+ * sibling packages). The migration collapses pattern, recommendation,
+ * and doctrine to the single cached validator the canonical seam
+ * shares with the rest of the workspace.
+ *
+ * Return contract preserved: `{ valid, errors: [{ path, message }] }`.
+ * Synthesis callers ignored `params` and `keyword` historically — we
+ * project the canonical ValidationError down to the narrower shape
+ * the synthesis layer actually uses.
  */
 
-import { readFileSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { createRequire } from 'node:module';
-import Ajv2020 from 'ajv/dist/2020.js';
-import addFormats from 'ajv-formats';
-import yaml from 'js-yaml';
+import { validatePayload } from '@dogfood-lab/schemas';
 
-const require = createRequire(import.meta.url);
-// Resolve the schemas package's json directory via its subpath export.
-const SCHEMAS_DIR = dirname(
-  require.resolve('@dogfood-lab/schemas/json/dogfood-pattern.schema.json')
-);
-
-const _validators = {};
-
-function getValidator(schemaFile) {
-  if (!_validators[schemaFile]) {
-    const schema = JSON.parse(readFileSync(`${SCHEMAS_DIR}/${schemaFile}`, 'utf-8'));
-    const ajv = new Ajv2020({ allErrors: true, strict: false });
-    addFormats(ajv);
-    _validators[schemaFile] = ajv.compile(schema);
-  }
-  return _validators[schemaFile];
+function projectErrors(errors) {
+  return errors.map(e => ({ path: e.path, message: e.message }));
 }
 
 export function validatePattern(data) {
-  const validate = getValidator('dogfood-pattern.schema.json');
-  const valid = validate(data);
-  return { valid, errors: valid ? [] : (validate.errors || []).map(e => ({ path: e.instancePath || '/', message: e.message })) };
+  const result = validatePayload('pattern', data);
+  return { valid: result.valid, errors: projectErrors(result.errors) };
 }
 
 export function validateRecommendation(data) {
-  const validate = getValidator('dogfood-recommendation.schema.json');
-  const valid = validate(data);
-  return { valid, errors: valid ? [] : (validate.errors || []).map(e => ({ path: e.instancePath || '/', message: e.message })) };
+  const result = validatePayload('recommendation', data);
+  return { valid: result.valid, errors: projectErrors(result.errors) };
 }
 
 export function validateDoctrine(data) {
-  const validate = getValidator('dogfood-doctrine.schema.json');
-  const valid = validate(data);
-  return { valid, errors: valid ? [] : (validate.errors || []).map(e => ({ path: e.instancePath || '/', message: e.message })) };
+  const result = validatePayload('doctrine', data);
+  return { valid: result.valid, errors: projectErrors(result.errors) };
 }
