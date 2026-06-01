@@ -1156,6 +1156,7 @@ test('framework-self-test: REGISTERED_HANDLERS exposes all handler kinds', () =>
     'helper-adoption-sweep',
     'schema-conformance',
     'self-consistency',
+    'source-of-truth-cross-ref',
     'source-vs-target-coverage',
     'untagged-fence',
   ]);
@@ -1342,5 +1343,449 @@ test('error-codes META: removing any enforced code from the handbook MUST trigge
     `Details:\n${vacuous.map((v) => `  - ${v.code}: clean=${v.clean} missing=${JSON.stringify(v.missing)}`).join('\n')}\n` +
     `Fix in scripts/doc-drift-patterns.json: ensure every code has an extractor whose regex matches AT LEAST ONE line in its declared source file. ` +
     `For codes minted via a variable (e.g. \`this.code = opts.code\`), match at the MINT site (template literal definition, JSDoc type union, or object-literal callsite), not the assignment site.`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// R9: source-of-truth-cross-ref handler (v1.3.1 fast-follow, productizing the
+// post-release honesty sweep that fixed stale v1.2.3 references on SHIP_GATE /
+// SCORECARD / CLAUDE / site-config after the v1.3.0 bump).
+//
+// The gate cross-references current-version + publishable-state + verb-count
+// claims on honesty surfaces against authoritative resolvers (package.json,
+// cli.js). It distinguishes current-state assertions from historical references
+// by anchoring each claim to an explicit per-surface pattern rather than
+// classifying free-floating version mentions heuristically.
+//
+// Two load-bearing properties this block proves (mirroring the error-codes
+// META test pattern at the choke-point: a gate is NOT verified until a meta-
+// test mutates the protected thing and asserts the gate fires):
+//
+//   1. Mutation fires RED: changing a current-version assertion in any
+//      configured surface produces a drift report naming that surface.
+//   2. Vacuity is detected: a claim whose pattern matches zero lines in its
+//      target reports as config-error, so silent-truncation-by-rename can't
+//      land a "clean" gate that protects nothing.
+//
+// The two failure modes the v1.3.0 swarm caught at the FIX layer (L2-003,
+// H3-first-seal) both passed N/N test runs while being structurally vacuous.
+// These tests are the structural insurance against that recurring twice more.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('source-of-truth-cross-ref handler is registered', () => {
+  assert.ok(
+    REGISTERED_HANDLERS['source-of-truth-cross-ref'],
+    'R9 handler must be registered in HANDLERS so config entries with this kind dispatch to it.',
+  );
+  const handler = REGISTERED_HANDLERS['source-of-truth-cross-ref'];
+  assert.equal(handler.kind, 'source-of-truth-cross-ref');
+  assert.ok(Array.isArray(handler.requiredFields), 'handler must declare requiredFields');
+  assert.ok(handler.requiredFields.includes('resolvers'), 'requiredFields must include "resolvers"');
+  assert.ok(handler.requiredFields.includes('claims'), 'requiredFields must include "claims"');
+});
+
+test('R9: clean fixture (doc version matches package.json) passes', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9', private: true }, null, 2));
+  fx.write('SHIP_GATE.md', '- [x] root + 4 packages all at `9.9.9`, tag `v9.9.9`\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        version: { source: 'package-json-field', file: 'package.json', path: 'version' },
+      },
+      claims: [{
+        id: 'ship-gate-version-row',
+        target: 'SHIP_GATE.md',
+        pattern: 'packages all at `([0-9]+\\.[0-9]+\\.[0-9]+)`',
+        captureGroup: 1,
+        resolver: 'version',
+        title: 'SHIP_GATE manifest-version row',
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('R9 META: staled version in SHIP_GATE produces drift naming the surface', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9', private: true }, null, 2));
+  fx.write('SHIP_GATE.md', '- [x] root + 4 packages all at `1.2.3`, tag `v1.2.3`\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        version: { source: 'package-json-field', file: 'package.json', path: 'version' },
+      },
+      claims: [{
+        id: 'ship-gate-version-row',
+        target: 'SHIP_GATE.md',
+        pattern: 'packages all at `([0-9]+\\.[0-9]+\\.[0-9]+)`',
+        captureGroup: 1,
+        resolver: 'version',
+        title: 'SHIP_GATE manifest-version row',
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, JSON.stringify(result.reports));
+  // The drift report must NAME the surface so the operator can fix it.
+  const drift = result.reports.find((r) => r.severity === 'drift');
+  assert.ok(drift, `expected a drift report; got: ${JSON.stringify(result.reports)}`);
+  assert.match(drift.file ?? '', /SHIP_GATE\.md/, 'drift must name SHIP_GATE.md');
+  assert.match(drift.message, /1\.2\.3.*9\.9\.9|9\.9\.9.*1\.2\.3/, 'drift message must surface both the asserted and resolver-truth values');
+});
+
+test('R9 META: vacuous pattern (zero matches in target) reports as config-error', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  // Target file exists but contains nothing matching the claim's anchor pattern.
+  // This is the v1.3.0 swarm lesson #3 / H3-first-seal pattern: a gate that
+  // matches no lines is silently green — the protected assertion could be
+  // renamed or removed and the gate would never fire again.
+  fx.write('SHIP_GATE.md', '- [x] no version assertions here\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        version: { source: 'package-json-field', file: 'package.json', path: 'version' },
+      },
+      claims: [{
+        id: 'ship-gate-version-row',
+        target: 'SHIP_GATE.md',
+        pattern: 'packages all at `([0-9]+\\.[0-9]+\\.[0-9]+)`',
+        captureGroup: 1,
+        resolver: 'version',
+        title: 'SHIP_GATE manifest-version row',
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  const cfgErr = result.reports.find((r) => r.severity === 'config-error');
+  assert.ok(cfgErr, `expected a config-error report; got: ${JSON.stringify(result.reports)}`);
+  assert.match(cfgErr.message, /vacuous|zero matches/i,
+    'config-error message must explicitly identify the gate as vacuous so silent truncation is impossible to land');
+  assert.match(cfgErr.message, /SHIP_GATE\.md/,
+    'config-error message must name the target surface so the operator knows where to look');
+});
+
+test('R9 META: missing target file reports config-error', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  // SHIP_GATE.md NOT written.
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        version: { source: 'package-json-field', file: 'package.json', path: 'version' },
+      },
+      claims: [{
+        id: 'ship-gate-version-row',
+        target: 'SHIP_GATE.md',
+        pattern: 'packages all at `([0-9]+\\.[0-9]+\\.[0-9]+)`',
+        captureGroup: 1,
+        resolver: 'version',
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  assert.equal(result.reports[0].severity, 'config-error');
+  assert.match(result.reports[0].message, /target.*not found.*SHIP_GATE\.md/i);
+});
+
+test('R9 META: unknown resolver reference reports config-error', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  fx.write('SHIP_GATE.md', '- [x] packages all at `9.9.9`\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        // version intentionally not declared.
+      },
+      claims: [{
+        id: 'orphan',
+        target: 'SHIP_GATE.md',
+        pattern: 'packages all at `([0-9]+\\.[0-9]+\\.[0-9]+)`',
+        captureGroup: 1,
+        resolver: 'version',
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  assert.equal(result.reports[0].severity, 'config-error');
+  assert.match(result.reports[0].message, /resolver.*'version'.*not declared/i);
+});
+
+test('R9: pattern-count resolver counts cli.js verbs and matches a current claim', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  fx.write('packages/cli/cli.js', [
+    'function cmdA() {}',
+    'function cmdB() {}',
+    'function cmdC() {}',
+    'const command = process.argv[2];',
+  ].join('\n'));
+  fx.write('SHIP_GATE.md', '- [x] `swarm` bin documents its 3 subcommands\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        verbCount: { source: 'pattern-count', file: 'packages/cli/cli.js', pattern: '^function cmd[A-Z]', flags: 'gm' },
+      },
+      claims: [{
+        id: 'ship-gate-verb-count',
+        target: 'SHIP_GATE.md',
+        pattern: '`swarm` bin documents its (\\d+) subcommands',
+        captureGroup: 1,
+        resolver: 'verbCount',
+        title: 'SHIP_GATE swarm-verb count',
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('R9 META: wrong verb count in SHIP_GATE produces drift', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  // 3 cmdX functions in cli.js, but doc claims 99 — drift.
+  fx.write('packages/cli/cli.js', [
+    'function cmdA() {}',
+    'function cmdB() {}',
+    'function cmdC() {}',
+  ].join('\n'));
+  fx.write('SHIP_GATE.md', '- [x] `swarm` bin documents its 99 subcommands\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        verbCount: { source: 'pattern-count', file: 'packages/cli/cli.js', pattern: '^function cmd[A-Z]', flags: 'gm' },
+      },
+      claims: [{
+        id: 'ship-gate-verb-count',
+        target: 'SHIP_GATE.md',
+        pattern: '`swarm` bin documents its (\\d+) subcommands',
+        captureGroup: 1,
+        resolver: 'verbCount',
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  const drift = result.reports.find((r) => r.severity === 'drift');
+  assert.ok(drift, 'expected a drift report');
+  assert.match(drift.message, /99.*3|3.*99/, 'drift must surface both the asserted and the resolved counts');
+});
+
+test('R9: package-json-publishable resolver returns true for `publishConfig: { access: public }` + not private', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('packages/published/package.json', JSON.stringify({
+    name: '@scope/published',
+    version: '9.9.9',
+    publishConfig: { access: 'public' },
+  }, null, 2));
+  fx.write('README.md', 'Available on npm: yes\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        published: { source: 'package-json-publishable', file: 'packages/published/package.json' },
+      },
+      claims: [{
+        id: 'readme-publishable',
+        target: 'README.md',
+        pattern: 'Available on npm: (yes|no)',
+        captureGroup: 1,
+        resolver: 'published',
+        // Map resolver booleans onto the captured string vocabulary.
+        valueMap: { true: 'yes', false: 'no' },
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('R9 META: README claims publishable but package.json is private → drift', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('packages/closed/package.json', JSON.stringify({
+    name: '@scope/closed',
+    version: '9.9.9',
+    private: true,
+  }, null, 2));
+  fx.write('README.md', 'Available on npm: yes\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        published: { source: 'package-json-publishable', file: 'packages/closed/package.json' },
+      },
+      claims: [{
+        id: 'readme-publishable',
+        target: 'README.md',
+        pattern: 'Available on npm: (yes|no)',
+        captureGroup: 1,
+        resolver: 'published',
+        valueMap: { true: 'yes', false: 'no' },
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  const drift = result.reports.find((r) => r.severity === 'drift');
+  assert.ok(drift, 'expected drift for lying-about-publishability');
+  assert.match(drift.file ?? '', /README\.md/);
+});
+
+test('R9 LIVE META: every configured source-of-truth claim fires drift when its target is staled', async (t) => {
+  // The choke-point invariant for this gate. Each entry in the LIVE config's
+  // source-of-truth-cross-ref check is mutated in a fresh fixture (the
+  // captured value replaced with a deliberately-stale stand-in) and the gate
+  // is re-run against just that surface. Every claim must produce a drift
+  // report naming the surface — otherwise the claim is silently vacuous and
+  // the v1.3.0 honesty-sweep recurrence is back on the table at the next bump.
+  //
+  // This is the test the kickoff specifically calls "load-bearing." Without
+  // it, R9 joins the treadmill it was built to stop.
+  const liveCfgRaw = readFileSync(resolve(repoRoot, 'scripts/doc-drift-patterns.json'), 'utf8');
+  const liveCfg = JSON.parse(liveCfgRaw);
+  const sotEntry = liveCfg.checks.find((c) => c.kind === 'source-of-truth-cross-ref');
+  assert.ok(sotEntry, 'the live config must declare a source-of-truth-cross-ref check (R9 production wiring)');
+  assert.ok(Array.isArray(sotEntry.claims) && sotEntry.claims.length > 0,
+    'R9 entry must declare at least one claim');
+
+  // Snapshot every resolver source and every claim target so the fixture
+  // sees identical input to the live framework.
+  const liveSourceSnapshots = new Map();
+  for (const [, spec] of Object.entries(sotEntry.resolvers ?? {})) {
+    if (spec.file) {
+      liveSourceSnapshots.set(spec.file, readFileSync(resolve(repoRoot, spec.file), 'utf8'));
+    }
+  }
+  const liveTargetSnapshots = new Map();
+  for (const claim of sotEntry.claims) {
+    if (!liveTargetSnapshots.has(claim.target)) {
+      liveTargetSnapshots.set(claim.target, readFileSync(resolve(repoRoot, claim.target), 'utf8'));
+    }
+  }
+
+  const vacuous = [];
+  for (const claim of sotEntry.claims) {
+    const fx = makeFixture(t);
+    // Mirror every resolver source verbatim.
+    for (const [src, content] of liveSourceSnapshots) {
+      fx.write(src, content);
+    }
+    // Find the LIVE match line-by-line — mirrors the handler's per-line
+    // semantics so `^`-anchored patterns work the same way they do in
+    // production (the handler walks lines; running `re.exec()` against the
+    // full file would only match `^` at byte 0).
+    const targetSrc = liveTargetSnapshots.get(claim.target);
+    const targetLines = targetSrc.split(/\r?\n/);
+    let foundIdx = -1;
+    let foundMatch = null;
+    for (let i = 0; i < targetLines.length; i++) {
+      const lineRe = new RegExp(claim.pattern);
+      const m = lineRe.exec(targetLines[i]);
+      if (m) { foundIdx = i; foundMatch = m; break; }
+    }
+    if (foundMatch === null) {
+      // Live pattern matches zero lines — the gate is already vacuous on the
+      // clean tree, which is a different (and worse) failure mode than what
+      // this test is checking. Surface it so the operator sees it here too.
+      vacuous.push({
+        claim: claim.id,
+        target: claim.target,
+        reason: 'pattern matched zero lines on live target — gate is structurally vacuous before any mutation',
+      });
+      continue;
+    }
+    const capturedIdx = claim.captureGroup ?? 1;
+    const capturedValue = foundMatch[capturedIdx];
+
+    // Pick a stale stand-in that (a) is GUARANTEED different from the live
+    // captured value AND (b) keeps the pattern matching. Appending an arbitrary
+    // suffix breaks (b) — the pattern stops matching, the gate reports
+    // config-error (vacuous), which is a DIFFERENT failure mode than drift.
+    // For shape-typed captures (version, integer count) we substitute another
+    // value of the same shape; for anything else we fall back to a suffix and
+    // accept that the gate may report vacuous-config-error rather than drift.
+    let staleValue;
+    if (/^[0-9]+\.[0-9]+\.[0-9]+$/.test(capturedValue)) {
+      staleValue = capturedValue === '0.0.0' ? '9.9.9' : '0.0.0';
+    } else if (/^[0-9]+$/.test(capturedValue)) {
+      staleValue = parseInt(capturedValue, 10) === 0 ? '999' : '0';
+    } else {
+      staleValue = `${capturedValue}-STALE`;
+    }
+    assert.notEqual(staleValue, capturedValue,
+      `precondition: stale stand-in must differ from live value`);
+
+    const mutatedLine = targetLines[foundIdx].replace(
+      foundMatch[0],
+      foundMatch[0].replace(capturedValue, staleValue),
+    );
+    assert.notEqual(mutatedLine, targetLines[foundIdx],
+      `precondition: line mutation must change the line content`);
+    const mutatedTargetLines = [...targetLines];
+    mutatedTargetLines[foundIdx] = mutatedLine;
+    const mutated = mutatedTargetLines.join('\n');
+
+    for (const [target, content] of liveTargetSnapshots) {
+      fx.write(target, target === claim.target ? mutated : content);
+    }
+
+    fx.write('scripts/doc-drift-patterns.json', liveCfgRaw);
+    const result = await runDriftChecks({
+      repoRoot: fx.dir,
+      configPath: resolve(fx.dir, 'scripts/doc-drift-patterns.json'),
+      checkId: sotEntry.id,
+    });
+
+    const namedTarget = (result.reports ?? []).some(
+      (r) => r.severity === 'drift' && (r.file ?? '').includes(claim.target),
+    );
+    if (!namedTarget) {
+      vacuous.push({
+        claim: claim.id,
+        target: claim.target,
+        reason: `mutation did not fire drift naming the target (stale='${staleValue}')`,
+        reports: (result.reports ?? []).map((r) => ({ severity: r.severity, message: r.message })),
+      });
+    }
+  }
+
+  assert.equal(
+    vacuous.length,
+    0,
+    `Vacuous source-of-truth-cross-ref claims detected (${vacuous.length} of ${sotEntry.claims.length} claims do NOT fire drift on mutation).\n` +
+    `Each vacuous claim could allow its honesty surface to drift silently between releases — exactly the failure mode this gate exists to prevent.\n` +
+    `Details:\n${vacuous.map((v) => `  - ${v.claim} @ ${v.target}: ${v.reason}`).join('\n')}\n` +
+    `Fix in scripts/doc-drift-patterns.json: ensure each claim's pattern + captureGroup actually anchor to a current-state assertion in its declared target. ` +
+    `A pattern that matches zero lines today, OR matches but the captured value is still equal after mutation, means the gate protects nothing.`,
   );
 });

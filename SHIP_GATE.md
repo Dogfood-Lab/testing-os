@@ -36,7 +36,7 @@
 - [x] `[all]` README is current: what it does, install, usage, supported platforms + runtime versions (2026-04-25)
 - [x] `[all]` CHANGELOG.md (Keep a Changelog format) — updated with v1.0.0 entry (2026-04-25)
 - [x] `[all]` LICENSE file present and repo states support status (2026-04-25)
-- [x] `[cli]` `--help` output accurate for all commands and flags — `swarm` bin documents its 21 subcommands (init, domains, dispatch, collect, revalidate, rewind, redrive, verify, verify-fixed, verify-recurring, verify-unverified, verify-approved, receipt, advance, status, resume, history, approve, persist, findings, runs) (2026-04-25, last re-affirmed 2026-06-01 at v1.3.0)
+- [x] `[cli]` `--help` output accurate for all commands and flags — `swarm` bin documents its 21 subcommands (init, domains, dispatch, collect, revalidate, rewind, redrive, verify, verify-fixed, verify-recurring, verify-unverified, verify-approved, receipt, advance, status, resume, history, approve, persist, findings, runs) (2026-04-25, last re-affirmed 2026-06-01 at v1.3.1)
 - [ ] `[cli|mcp|desktop]` SKIP: testing-os tools don't expose user-facing logging level controls. The receiver workflow logs via GitHub Actions; the `swarm` CLI prints to stdout/stderr. No secrets to redact in operator output. Promote if a logging-level requirement surfaces.
 - [ ] `[mcp]` SKIP: not an MCP server.
 - [x] `[complex]` HANDBOOK.md — the Astro Starlight handbook serves this purpose, deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) (2026-04-25)
@@ -44,11 +44,11 @@
 ## D. Shipping Hygiene
 
 - [x] `[all]` `verify` script exists (test + build + smoke in one command) — `npm run verify` (2026-04-25)
-- [x] `[all]` Version in manifest matches git tag — root + 7 packages all at `1.3.0`, tag `v1.3.0` (2026-06-01)
+- [x] `[all]` Version in manifest matches git tag — root + 7 packages all at `1.3.1`, tag `v1.3.1` (2026-06-01)
 - [ ] `[all]` SKIP: dependency scanning not yet wired into CI. Tracked as a follow-up — would add `npm audit --audit-level=moderate` to `ci.yml` or enable Dependabot security alerts. Six of seven `@dogfood-lab/*` packages have been published to npm since v1.2.0 (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); `npm audit` against the root tree currently reports 0 high (the `fast-uri` override in `package.json` closes GHSA-q3j6-qgpj-74h6 / GHSA-v39h-62p7-jpjc). Dependabot config still pending per HANDOFF.md follow-up.
 - [ ] `[all]` SKIP: no automated dependency update mechanism. Same justification as above — Dependabot config wants a separate session. Surface counts on `npm audit` are tracked in HANDOFF.md (`site/` has 8 audit warnings inherited from legacy lockfile).
-- [x] `[npm]` Six of seven `@dogfood-lab/*` packages are published on npm since v1.2.0 (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); headline install is `npm install -g @dogfood-lab/dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains intentionally workspace-internal. Per-package READMEs carry the canonical logo since v1.2.1. (2026-05-14, last re-affirmed 2026-06-01 at v1.3.0)
-- [x] `[npm]` `engines.node` set — root `package.json` has `"engines": {"node": ">=22"}` (tightened from `>=20` to `>=22` in v1.2.2 to match the CI Node 22 + 24 matrix; last re-affirmed 2026-06-01 at v1.3.0)
+- [x] `[npm]` Six of seven `@dogfood-lab/*` packages are published on npm since v1.2.0 (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); headline install is `npm install -g @dogfood-lab/dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains intentionally workspace-internal. Per-package READMEs carry the canonical logo since v1.2.1. (2026-05-14, last re-affirmed 2026-06-01 at v1.3.1)
+- [x] `[npm]` `engines.node` set — root `package.json` has `"engines": {"node": ">=22"}` (tightened from `>=20` to `>=22` in v1.2.2 to match the CI Node 22 + 24 matrix; last re-affirmed 2026-06-01 at v1.3.1)
 - [x] `[npm]` Lockfile committed (2026-04-25)
 - [ ] `[vsix]` SKIP: not a VS Code extension.
 - [ ] `[desktop]` SKIP: not a desktop app.

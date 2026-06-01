@@ -260,6 +260,127 @@
       "description": "Meta-check: every config entry has a registered handler and all required fields. Drift here means someone added a check kind in config but forgot to register the handler module, or removed a required field from an existing check. The choke-point invariant — the framework checks itself.",
       "configPath": "scripts/doc-drift-patterns.json",
       "hint": "Either register the missing handler module in scripts/check-doc-drift.mjs (HANDLERS map), or remove the orphaned check from scripts/doc-drift-patterns.json. Required fields are declared on each handler module."
+    },
+
+    {
+      "id": "source-of-truth-cross-ref",
+      "kind": "source-of-truth-cross-ref",
+      "title": "Honesty surfaces cross-ref package.json + cli.js (R9, v1.3.1)",
+      "description": "R9 productized the post-v1.3.0-release honesty sweep. The v1.3.0 bump stamped the gated surfaces (package.json ×8, sync-version, README version block) but left stale `v1.2.3` text on the *ungated* honesty surfaces (SHIP_GATE / SCORECARD / CLAUDE / site-config), shipping a release whose own SHIP_GATE 'version matches tag' row was false. Per the v1.3.0 lesson #5, hand-maintained current-state claims recur as drift at every bump until a gate cross-checks them against authoritative resolvers. This check is that gate. Each claim anchors to an *explicit* per-surface current-state pattern (NOT free-floating version strings) so historical references like 'release v1.2.3 cut 2026-05-20', 'since v1.2.0', and '`**v1.2.0**,'-style scope-historical mentions are left alone. The companion META test at scripts/check-doc-drift.test.mjs 'R9 LIVE META' mutates every configured claim's captured value to a stale stand-in and asserts the gate fires drift naming the surface — without that meta-loop, R9 would itself become a vacuous gate (v1.3.0 lesson #3, bit twice at the FIX layer).",
+      "resolvers": {
+        "version": {
+          "source": "package-json-field",
+          "file": "package.json",
+          "path": "version"
+        },
+        "verbCount": {
+          "source": "pattern-count",
+          "file": "packages/dogfood-swarm/cli.js",
+          "pattern": "^function cmd[A-Z]",
+          "flags": "gm"
+        }
+      },
+      "claims": [
+        {
+          "id": "ship-gate-verb-count",
+          "title": "SHIP_GATE `swarm` bin subcommand count matches cli.js cmdXxx handlers",
+          "target": "SHIP_GATE.md",
+          "pattern": "`swarm` bin documents its (\\d+) subcommands",
+          "captureGroup": 1,
+          "resolver": "verbCount",
+          "hint": "Either update the SHIP_GATE row to reflect the current cmdXxx count in packages/dogfood-swarm/cli.js, or remove/add a cmdXxx handler if the docs are right and the code is wrong."
+        },
+        {
+          "id": "ship-gate-version-row-at",
+          "title": "SHIP_GATE manifest version (at) matches package.json",
+          "target": "SHIP_GATE.md",
+          "pattern": "packages all at `([0-9]+\\.[0-9]+\\.[0-9]+)`",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update the SHIP_GATE 'Version in manifest matches git tag' row's `at \\`X.Y.Z\\`` value to the current package.json version."
+        },
+        {
+          "id": "ship-gate-version-row-tag",
+          "title": "SHIP_GATE manifest version (tag) matches package.json",
+          "target": "SHIP_GATE.md",
+          "pattern": "tag `v([0-9]+\\.[0-9]+\\.[0-9]+)` \\(20",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update the SHIP_GATE 'Version in manifest matches git tag' row's `tag \\`vX.Y.Z\\`` value to the current package.json version. Re-tag the release if the doc is right and the tag is wrong."
+        },
+        {
+          "id": "ship-gate-reaffirm-stamps",
+          "title": "SHIP_GATE row re-affirmation stamps point at the current version",
+          "target": "SHIP_GATE.md",
+          "pattern": "re-affirmed 20[0-9]{2}-[0-9]{2}-[0-9]{2} at v([0-9]+\\.[0-9]+\\.[0-9]+)",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update every '(...last re-affirmed YYYY-MM-DD at vX.Y.Z)' stamp in SHIP_GATE.md to the current release version. Historical references should not use the 're-affirmed ... at v' shape — phrase them as 'shipped in vX.Y.Z' or similar instead."
+        },
+        {
+          "id": "scorecard-header-reaffirm",
+          "title": "SCORECARD header re-affirmation matches the current version",
+          "target": "SCORECARD.md",
+          "pattern": "\\*\\*Date:\\*\\*[^(]*\\(re-affirmed at v([0-9]+\\.[0-9]+\\.[0-9]+)",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update SCORECARD.md's '**Date:**' header — the FIRST `(re-affirmed at v...)` in that line is the current version stamp; subsequent re-affirmed mentions are historical and left alone by this pattern."
+        },
+        {
+          "id": "scorecard-narrative-at-current",
+          "title": "SCORECARD narrative 'at vX.Y.Z (re-affirmed YYYY-MM-DD)' matches the current version",
+          "target": "SCORECARD.md",
+          "pattern": "at v([0-9]+\\.[0-9]+\\.[0-9]+) \\(re-affirmed 20[0-9]{2}-[0-9]{2}-[0-9]{2}\\)",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update SCORECARD.md's 'at vX.Y.Z (re-affirmed YYYY-MM-DD)' framings — they assert that the score still applies at the current version. Reword historical references that aren't current re-affirmations to avoid this exact shape."
+        },
+        {
+          "id": "scorecard-shippable",
+          "title": "SCORECARD 'shippable at vX.Y.Z' matches the current version",
+          "target": "SCORECARD.md",
+          "pattern": "repo is shippable at v([0-9]+\\.[0-9]+\\.[0-9]+)",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update SCORECARD.md's 'The repo is shippable at vX.Y.Z' assertion to the current package.json version."
+        },
+        {
+          "id": "claude-currently-version",
+          "title": "CLAUDE.md 'Currently `X.Y.Z`' matches package.json",
+          "target": "CLAUDE.md",
+          "pattern": "Currently \\*\\*`([0-9]+\\.[0-9]+\\.[0-9]+)`\\*\\*",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update CLAUDE.md's 'Lockstep ... Currently **`X.Y.Z`**' assertion to the current package.json version."
+        },
+        {
+          "id": "claude-shipcheck-current",
+          "title": "CLAUDE.md shipcheck-audit re-affirmation matches the current version",
+          "target": "CLAUDE.md",
+          "pattern": "0 unchecked at v([0-9]+\\.[0-9]+\\.[0-9]+), re-affirmed",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update CLAUDE.md's 'currently pass at 100% (... 0 unchecked at vX.Y.Z, re-affirmed YYYY-MM-DD)' to the current package.json version."
+        },
+        {
+          "id": "readme-status-block",
+          "title": "README top-of-file status block matches the current version",
+          "target": "README.md",
+          "pattern": "^\\*\\*v([0-9]+\\.[0-9]+\\.[0-9]+)\\*\\* —",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update every '**vX.Y.Z** —' status-block heading in README.md to the current package.json version. The em-dash anchor distinguishes current claims ('**vX.Y.Z** — capability statement') from historical references ('**vX.Y.Z**, six packages…' which uses a comma)."
+        },
+        {
+          "id": "readme-npm-publish-state",
+          "title": "README npm-publish state line matches the current version",
+          "target": "README.md",
+          "pattern": "publish to npm under `@dogfood-lab` at v([0-9]+\\.[0-9]+\\.[0-9]+) in lockstep",
+          "captureGroup": 1,
+          "resolver": "version",
+          "hint": "Update README.md's 'Six packages publish to npm under `@dogfood-lab` at vX.Y.Z in lockstep' to the current package.json version."
+        }
+      ]
     }
   ]
 }

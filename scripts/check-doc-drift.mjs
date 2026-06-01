@@ -759,6 +759,222 @@ const frameworkSelfTestHandler = {
   },
 };
 
+/**
+ * source-of-truth-cross-ref — R9 (v1.3.1 fast-follow).
+ *
+ * Cross-references current-state claims on honesty surfaces (SHIP_GATE,
+ * SCORECARD, CLAUDE, README, HANDOFF, SECURITY, site-config) against
+ * authoritative resolvers (package.json fields, publishability declarations,
+ * cli.js verb counts). Closes the drift class the v1.3.0 release surfaced
+ * twice — stale `v1.2.3` text on ungated surfaces after the v1.3.0 bump,
+ * caught by a manual sweep that nothing was gating.
+ *
+ * Design corrections from the original R9 brief (per the v1.3.0 swarm
+ * post-mortem):
+ *   - NO wall-clock date arithmetic (the original's "N days ago" check is a
+ *     time-bomb — goes red on every calendar day with zero code/doc change).
+ *   - NO absolute test-count resolver (R6 dropped that claim from the README
+ *     in v1.3.0; reintroducing it would re-introduce the unit-mismatch risk).
+ *   - "Publishable" = package.json *declares* publishable (not private +
+ *     `publishConfig.access`), NOT npm-registry truth. The manifest is the
+ *     authoritative surface for what the operator promised to ship; registry
+ *     state lives outside the build.
+ *   - Current-vs-historical discrimination is via per-claim anchor patterns,
+ *     NOT free-floating version-string classification. Each claim names the
+ *     exact line shape it gates; a pattern that matches zero lines reports as
+ *     config-error so silent-truncation-by-rename cannot land a vacuous gate.
+ *
+ * Vacuity guard (lesson #3 from v1.3.0 — twice bit at the FIX layer): a claim
+ * whose `pattern` matches no lines in its `target` is reported as
+ * config-error, not silent pass. The companion META test in
+ * scripts/check-doc-drift.test.mjs mutates each LIVE claim's captured value
+ * to a stale stand-in and asserts the gate fires RED. Without that META loop,
+ * R9 joins the drift-treadmill it was built to stop.
+ *
+ * Resolvers (extensible — add a case in resolveOne() to introduce a new kind):
+ *   - package-json-field: read a dotted field path from a manifest file.
+ *   - package-json-publishable: `!private && publishConfig.access === 'public'`.
+ *   - pattern-count: count regex matches across a source file.
+ *
+ * Claim shape (in scripts/doc-drift-patterns.json):
+ *   {
+ *     id: string,
+ *     target: string,            // path to honesty surface
+ *     pattern: string,           // regex anchored to the current-state assertion
+ *     captureGroup: number,      // which capture group holds the asserted value
+ *     resolver: string,          // resolver name from `resolvers` map
+ *     valueMap?: { [resolverStr: string]: string },  // optional boolean→token map
+ *     title?: string,
+ *     hint?: string,
+ *     vacuousHint?: string
+ *   }
+ */
+const sourceOfTruthCrossRefHandler = {
+  kind: 'source-of-truth-cross-ref',
+  description: 'Honesty surfaces match resolvers from package.json + cli.js. Per-claim anchor patterns; vacuity guarded; META test required.',
+  requiredFields: ['resolvers', 'claims'],
+  async run(check, repoRoot) {
+    const reports = [];
+
+    // ── Phase 1: resolve every resolver up-front. A resolver failure is a
+    //    config-error that aborts the check — we cannot meaningfully report
+    //    drift if we don't know the source of truth. ───────────────────────
+    const resolverValues = {};
+    for (const [name, spec] of Object.entries(check.resolvers ?? {})) {
+      try {
+        resolverValues[name] = resolveOne(spec, repoRoot);
+      } catch (err) {
+        reports.push({
+          checkId: check.id,
+          severity: 'config-error',
+          message: `[${check.id}] resolver '${name}' failed: ${err.message}`,
+          hint: `Check the resolver spec in scripts/doc-drift-patterns.json — verify 'source', 'file', and 'path'/'pattern' fields. Known sources: package-json-field, package-json-publishable, pattern-count.`,
+        });
+      }
+    }
+    // If any resolver failed, do not attempt claim evaluation — the comparison
+    // would be against `undefined` and produce noisy false drift.
+    if (reports.length > 0) return reports;
+
+    // ── Phase 2: evaluate every claim against its resolver. ───────────────
+    for (const claim of check.claims ?? []) {
+      const targetAbs = resolve(repoRoot, claim.target);
+      if (!existsSync(targetAbs)) {
+        reports.push({
+          checkId: check.id,
+          severity: 'config-error',
+          message: `[${check.id}/${claim.id}] target file not found: ${claim.target}`,
+          hint: claim.vacuousHint ?? `Verify the path in scripts/doc-drift-patterns.json — the file may have moved or been renamed. R9 cannot honesty-check a surface that does not exist.`,
+        });
+        continue;
+      }
+      const rawResolver = resolverValues[claim.resolver];
+      if (rawResolver === undefined) {
+        reports.push({
+          checkId: check.id,
+          severity: 'config-error',
+          message: `[${check.id}/${claim.id}] resolver '${claim.resolver}' not declared in resolvers{} for check '${check.id}'`,
+          hint: `Add a '${claim.resolver}' entry to the check's resolvers{} block, or fix the typo in claim.resolver.`,
+        });
+        continue;
+      }
+
+      // Apply optional valueMap (used for boolean resolvers asserted as
+      // human-readable tokens like 'yes'/'no' in the target text).
+      const expected = claim.valueMap
+        ? String(claim.valueMap[String(rawResolver)] ?? rawResolver)
+        : String(rawResolver);
+
+      const text = readFileSync(targetAbs, 'utf8');
+      const lines = text.split(/\r?\n/);
+      // Build a per-line regex so we report line numbers. A claim's pattern
+      // is treated as line-local (no multiline modifier) — multi-line
+      // assertions should be decomposed into multiple claims.
+      let flags = claim.flags ?? '';
+      if (!flags.includes('g')) flags += 'g';
+      const re = new RegExp(claim.pattern, flags);
+
+      const matches = [];
+      lines.forEach((line, idx) => {
+        re.lastIndex = 0;
+        let m;
+        while ((m = re.exec(line)) !== null) {
+          const captureGroup = claim.captureGroup ?? 1;
+          const captured = m[captureGroup];
+          if (captured !== undefined) {
+            matches.push({ line: idx + 1, captured, full: m[0] });
+          }
+          if (m.index === re.lastIndex) re.lastIndex++; // safety: avoid infinite loop on zero-width
+        }
+      });
+
+      // ── Vacuity guard. The protected assertion has been moved, renamed, or
+      //    silently truncated. Stay LOUD so the operator updates the claim
+      //    config rather than living with a green-but-protect-nothing gate. ─
+      if (matches.length === 0) {
+        reports.push({
+          checkId: check.id,
+          severity: 'config-error',
+          message: `[${check.id}/${claim.id}] vacuous claim — pattern matched zero lines in ${claim.target}; the current-state assertion this claim guards has been moved, renamed, or removed`,
+          file: claim.target,
+          hint: claim.vacuousHint ?? `Locate the current ${claim.resolver} assertion in ${claim.target} and update claim '${claim.id}'s pattern in scripts/doc-drift-patterns.json to match its current shape. If the assertion was intentionally removed, delete the claim too (and document why in the entry's description).`,
+        });
+        continue;
+      }
+
+      // ── Drift check: every matched assertion must match the resolver value. ─
+      for (const hit of matches) {
+        if (hit.captured !== expected) {
+          reports.push({
+            checkId: check.id,
+            severity: 'drift',
+            message: `[${check.id}/${claim.id}] ${claim.target}:${hit.line} asserts '${hit.captured}' but resolver '${claim.resolver}' is '${expected}' — ${claim.title ?? claim.id}`,
+            file: `${claim.target}:${hit.line}`,
+            hint: claim.hint
+              ?? `Update ${claim.target}:${hit.line} to '${expected}'. If the doc is right and the source is wrong, fix the resolver source instead. Either way, the two must agree before release.`,
+          });
+        }
+      }
+    }
+    return reports;
+  },
+};
+
+/**
+ * Resolve a single resolver spec to its authoritative value.
+ *
+ * @param {{ source: string, file?: string, path?: string, pattern?: string, flags?: string }} spec
+ * @param {string} repoRoot
+ * @returns {string | number | boolean}
+ */
+function resolveOne(spec, repoRoot) {
+  if (!spec || typeof spec !== 'object') {
+    throw new Error('resolver spec must be an object with a `source` field');
+  }
+  if (spec.source === 'package-json-field') {
+    if (!spec.file) throw new Error('package-json-field resolver requires `file`');
+    if (!spec.path) throw new Error('package-json-field resolver requires `path`');
+    const abs = resolve(repoRoot, spec.file);
+    if (!existsSync(abs)) throw new Error(`manifest not found: ${spec.file}`);
+    const j = JSON.parse(readFileSync(abs, 'utf8'));
+    let v = j;
+    for (const seg of String(spec.path).split('.')) {
+      if (v == null) break;
+      v = v[seg];
+    }
+    if (v === undefined) {
+      throw new Error(`field '${spec.path}' not present in ${spec.file}`);
+    }
+    return v;
+  }
+  if (spec.source === 'package-json-publishable') {
+    if (!spec.file) throw new Error('package-json-publishable resolver requires `file`');
+    const abs = resolve(repoRoot, spec.file);
+    if (!existsSync(abs)) throw new Error(`manifest not found: ${spec.file}`);
+    const j = JSON.parse(readFileSync(abs, 'utf8'));
+    const notPrivate = j.private !== true;
+    const hasPublicAccess = j.publishConfig != null && j.publishConfig.access === 'public';
+    return notPrivate && hasPublicAccess;
+  }
+  if (spec.source === 'pattern-count') {
+    if (!spec.file) throw new Error('pattern-count resolver requires `file`');
+    if (!spec.pattern) throw new Error('pattern-count resolver requires `pattern`');
+    const abs = resolve(repoRoot, spec.file);
+    if (!existsSync(abs)) throw new Error(`source file not found: ${spec.file}`);
+    const src = readFileSync(abs, 'utf8');
+    let flags = spec.flags ?? 'g';
+    if (!flags.includes('g')) flags += 'g';
+    const re = new RegExp(spec.pattern, flags);
+    let count = 0;
+    while (re.exec(src) !== null) {
+      count++;
+      if (count > 100000) throw new Error('pattern-count exceeded 100k matches — likely an unanchored regex');
+    }
+    return count;
+  }
+  throw new Error(`unknown resolver source: '${spec.source}' (known: package-json-field, package-json-publishable, pattern-count)`);
+}
+
 const HANDLERS = {
   [sourceVsTargetCoverageHandler.kind]: sourceVsTargetCoverageHandler,
   [forbiddenPatternInTargetsHandler.kind]: forbiddenPatternInTargetsHandler,
@@ -767,6 +983,7 @@ const HANDLERS = {
   [helperAdoptionSweepHandler.kind]: helperAdoptionSweepHandler,
   [schemaConformanceHandler.kind]: schemaConformanceHandler,
   [frameworkSelfTestHandler.kind]: frameworkSelfTestHandler,
+  [sourceOfTruthCrossRefHandler.kind]: sourceOfTruthCrossRefHandler,
 };
 
 // Exposed for tests + meta-introspection. Keep the export surface read-only —

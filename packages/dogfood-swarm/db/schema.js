@@ -5,7 +5,7 @@
  * artifacts, findings, finding_events, verification_receipts, kv.
  */
 
-export const SCHEMA_VERSION = 5;
+export const SCHEMA_VERSION = 6;
 
 export const SCHEMA_SQL = `
 -- ───────────────────────────────────────────
@@ -185,6 +185,14 @@ CREATE INDEX IF NOT EXISTS idx_agent_runs_wave  ON agent_runs(wave_id);
 CREATE INDEX IF NOT EXISTS idx_file_claims_ar   ON file_claims(agent_run_id);
 CREATE INDEX IF NOT EXISTS idx_findings_run     ON findings(run_id);
 CREATE INDEX IF NOT EXISTS idx_findings_fp      ON findings(run_id, fingerprint);
+-- D3B-006: enforce content-addressed finding_id uniqueness within a run.
+-- The companion code change in lib/fingerprint.js#upsertFindings derives the
+-- finding_id from the fingerprint (F-<first 8 hex>), so distinct fingerprints
+-- normally produce distinct ids. The UNIQUE index catches the rare prefix
+-- collision and prevents two concurrent collect runs from silently
+-- inserting two rows under the same id (the live-DB defect the prior
+-- timestamp+counter scheme could not refuse).
+CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_run_finding_id ON findings(run_id, finding_id);
 CREATE INDEX IF NOT EXISTS idx_finding_events_f ON finding_events(finding_id);
 CREATE INDEX IF NOT EXISTS idx_artifacts_ar     ON artifacts(agent_run_id);
 CREATE INDEX IF NOT EXISTS idx_verif_wave       ON verification_receipts(wave_id);
@@ -312,6 +320,13 @@ export const MIGRATIONS_SQL = [
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
   )`,
   "CREATE INDEX IF NOT EXISTS idx_wave_state_ev ON wave_state_events(wave_id)",
+  // D3B-006: UNIQUE index on (run_id, finding_id) — picks up DBs bootstrapped
+  // before this entry shipped. Idempotent (CREATE INDEX IF NOT EXISTS) so it
+  // is safe to re-run on every openDb. A pre-existing dup pair would fail
+  // here loud (correct behavior for a data-integrity gate); the live
+  // control-plane.db audited at swarm-v131-pre held zero findings, so the
+  // ungated rollout is safe in practice.
+  "CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_run_finding_id ON findings(run_id, finding_id)",
 ];
 
 /**

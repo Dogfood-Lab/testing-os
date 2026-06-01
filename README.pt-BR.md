@@ -20,7 +20,7 @@
 *Protocolos, repositórios de evidências e ciclos de aprendizado para software assistido por IA.*
 
 <!-- version:start -->
-**v1.3.0** — 7 pacotes (`@dogfood-lab/*`), conjunto de testes em todo o espaço de trabalho, receptor de ingestão ativo, manual implementado.
+**v1.3.1** — versão atual. Consulte o arquivo [CHANGELOG.md](CHANGELOG.md) para ver as novidades.
 <!-- version:end -->
 
 📖 **[Leia o manual →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -38,13 +38,14 @@
 - Uma **camada de política + verificador** que decide o que conta como "verificado" — e aplica isso em todos os repositórios de consumidores.
 - Uma **camada de inteligência** que transforma as descobertas brutas em padrões e doutrinas reutilizáveis.
 
-## Status
+## Guia de início rápido
 
-**v1.3.0** — um único validador de esquema canônico em todos os consumidores (uma instância Ajv por esquema por processo; uma divisão de elevação de espaço de trabalho é uma barreira rígida). Erros estruturados de nível superior com códigos estáveis (`ISOLATION_FAILED`, `DUPLICATE_RUN_ID`, `STATE_MACHINE_*`, `DISPATCH_*`, `VALIDATOR_FAULT_*`, …) e uma dica `Next:` em cada caminho de falha. O YAML de política agora é validado pelo esquema no momento do carregamento — um arquivo de política estruturalmente inválido falha de forma explícita, em vez de passar silenciosamente para valores padrão mais permissivos. O manual em [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) vem com paridade de temas claro/escuro, acessibilidade WCAG-AA por página (pa11y no CI com repetição), uma referência CLI `swarm` por verbo e um 404 personalizado. Seis pacotes são publicados no npm sob `@dogfood-lab` na v1.3.0 em sincronia — veja a tabela abaixo. Sem alterações incompatíveis em relação à v1.2.x. Consulte [CHANGELOG.md](CHANGELOG.md) para a entrada completa da v1.3.0.
+```bash
+npm install -g @dogfood-lab/dogfood-swarm
+swarm --help
+```
 
-O receptor está ativo: os fluxos de trabalho `dogfood.yml` nos repositórios de consumidores são enviados para este repositório, e o arquivo [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) confirma os registros e índices resultantes de volta para `main`. O manual é implementado em [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). A instalação principal: `npm install -g @dogfood-lab/dogfood-swarm`. O lado do receptor continua a ser consumido por meio de envio — consulte a página de Integração no manual.
-
-**Plataforma:** validado de ponta a ponta em Darwin/APFS como parte da Sessão G ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)). Consulte [Desenvolvimento local](#local-development) para os sistemas de arquivos suportados. Detalhes por versão em [CHANGELOG.md](CHANGELOG.md).
+O guia do operador, a referência da interface de linha de comando (CLI), a referência do esquema e as instruções de integração estão disponíveis em **[handbook](https://dogfood-lab.github.io/testing-os/handbook/)**. Os detalhes específicos de cada versão podem ser encontrados em [CHANGELOG.md](CHANGELOG.md).
 
 ## Modelo de ameaças
 
@@ -103,7 +104,7 @@ Requer Node ≥ 22. A matriz de CI executa o Node 22 e 24 no `ubuntu-latest`; va
 
 ## Controle de versão
 
-Controle de versão sincronizado em todos os pacotes `@dogfood-lab/*` — eles são atualizados em conjunto. A linha de versão neste arquivo README é gerada automaticamente a partir de `package.json` por meio de `scripts/sync-version.mjs` (executado como `prebuild`). A partir da **versão 1.2.0**, seis pacotes são publicados no npm sob o escopo `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. O sétimo (`@dogfood-lab/portfolio`) permanece interno ao monorepos.
+Todos os pacotes `@dogfood-lab/*` são atualizados em conjunto — um único número para todo o monorepositorio. Seis pacotes são publicados no npm sob `@dogfood-lab` na versão v1.3.1, de forma sincronizada (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); o sétimo, `@dogfood-lab/portfolio`, permanece interno. A linha de versão no início deste arquivo README é gerada automaticamente a partir do arquivo `package.json` por meio de [`scripts/sync-version.mjs`](scripts/sync-version.mjs) a cada execução de `npm run build`.
 
 ## Licença
 

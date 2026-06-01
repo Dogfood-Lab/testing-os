@@ -20,7 +20,7 @@
 *Protocols, evidence stores, and learning loops for AI-assisted software.*
 
 <!-- version:start -->
-**v1.3.0** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
+**v1.3.1** — current release. See [CHANGELOG.md](CHANGELOG.md) for what shipped.
 <!-- version:end -->
 
 📖 **[Read the handbook →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -38,13 +38,14 @@
 - A **policy + verifier** layer that decides what counts as "verified" — and enforces it across consumer repos.
 - An **intelligence layer** that turns raw findings into reusable patterns and doctrine.
 
-## Status
+## Quick Start
 
-**v1.3.0** — single canonical schema validator across every consumer (one Ajv instance per schema per process; a workspace-hoist split is a hard gate). Structured top-level errors with stable codes (`ISOLATION_FAILED`, `DUPLICATE_RUN_ID`, `STATE_MACHINE_*`, `DISPATCH_*`, `VALIDATOR_FAULT_*`, …) and a `Next:` hint on every failure path. Policy YAML is now schema-gated at load time — a structurally-invalid policy file fails loud instead of silently passing through to lenient defaults. Handbook at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/handbook/) ships with light/dark theme parity, per-page WCAG-AA accessibility (pa11y in CI with retry), a per-verb `swarm` CLI reference, and a custom 404. Six packages publish to npm under `@dogfood-lab` at v1.3.0 in lockstep — see the table below. No breaking changes from v1.2.x. See [CHANGELOG.md](CHANGELOG.md) for the full v1.3.0 entry.
+```bash
+npm install -g @dogfood-lab/dogfood-swarm
+swarm --help
+```
 
-Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Headline install: `npm install -g @dogfood-lab/dogfood-swarm`. The receiver side stays consumed via dispatch — see the handbook's Integration page.
-
-**Platform:** validated end-to-end on Darwin/APFS as part of Session G ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)). See [Local Development](#local-development) for supported filesystems. Per-version detail in [CHANGELOG.md](CHANGELOG.md).
+The operator's guide, CLI reference, schema reference, and integration recipes live in the **[handbook](https://dogfood-lab.github.io/testing-os/handbook/)**. Per-version detail is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Threat Model
 
@@ -103,7 +104,7 @@ Requires Node ≥ 22. CI matrix runs Node 22 + 24 on `ubuntu-latest`; locally va
 
 ## Versioning
 
-Lockstep across all `@dogfood-lab/*` packages — they bump together. The version line in this README is auto-stamped from `package.json` via `scripts/sync-version.mjs` (runs as `prebuild`). As of **v1.2.0**, six packages publish to npm under the `@dogfood-lab` scope: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains internal to the monorepo.
+All `@dogfood-lab/*` packages bump together — one number across the monorepo. Six packages publish to npm under `@dogfood-lab` at v1.3.1 in lockstep (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); the seventh, `@dogfood-lab/portfolio`, stays internal. The version line near the top of this README is auto-stamped from `package.json` via [`scripts/sync-version.mjs`](scripts/sync-version.mjs) on every `npm run build`.
 
 ## License
 
