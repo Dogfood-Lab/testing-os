@@ -7,7 +7,7 @@ sidebar:
 
 The intelligence layer turns dogfood evidence into reusable lessons, patterns, recommendations, and doctrine that future projects can inherit.
 
-This page documents the **finding-review state machine** (`candidate → reviewed → accepted → invalidated`). For the record-classification state machine (`accepted` / `rejected` / portfolio buckets) see [Architecture](../architecture/) and [Operating Guide](../operating-guide/). For the wave-classification state machine (`new` / `recurring` / `fixed` / `unverified`) emitted by dogfood-swarm runs, see the [State Machines reference](../state-machines/). The three vocabularies share words but operate on different objects — read the glossary if you have not already.
+This page documents the **finding-review state machine** (`candidate → reviewed → accepted → invalidated`). It is one of the four distinct status vocabularies in testing-os. For the record-classification vocabulary (`accepted` / `rejected` / portfolio buckets) see [Architecture](../architecture/) and [Operating Guide](../operating-guide/). For the wave-finding classification (`new` / `recurring` / `fixed` / `unverified`) emitted by dogfood-swarm runs, see the [State Machines reference](../state-machines/). For the agent_run lifecycle (the fourth vocabulary — pending / dispatched / running / complete / failed / timed_out / invalid_output / ownership_violation / aborted_for_rewind), see the same reference. The four vocabularies share words but operate on different objects — read the glossary if you have not already.
 
 ## The Learning Loop
 

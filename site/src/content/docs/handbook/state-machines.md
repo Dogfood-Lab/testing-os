@@ -1,11 +1,13 @@
 ---
 title: State Machines
-description: The three distinct status vocabularies in testing-os and which layer each one operates at
+description: The four distinct status vocabularies in testing-os and which layer each one operates at
 sidebar:
   order: 6
 ---
 
-testing-os has **four distinct state machines** that operate at different layers. They look adjacent — several of them reuse words like `accepted`, `complete`, or `failed`, and the same operator may touch all four in a single debugging session — but conflating them produces wrong fixes. This page names each one explicitly and links to its operating context.
+testing-os has **four distinct status vocabularies** that operate at different layers. They look adjacent — several of them reuse words like `accepted`, `complete`, or `failed`, and the same operator may touch all four in a single debugging session — but conflating them produces wrong fixes. This page names each one explicitly and links to its operating context.
+
+Three of the four vocabularies are governed by formal transition tables that throw `StateMachineRejectionError` on illegal moves: the wave state machine (`packages/dogfood-swarm/lib/wave-state-machine.js`), the agent_run lifecycle (`packages/dogfood-swarm/lib/state-machine.js`), and the finding-review machine (`packages/findings/review/transitions.js`). The fourth — record classification — is the verifier's derived output and the portfolio generator's freshness rollup, not a transitions-based machine. Operators see all four; only three throw.
 
 ## At a glance
 

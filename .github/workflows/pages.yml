@@ -95,21 +95,44 @@ jobs:
         with:
           node-version: 22
 
-      - name: pa11y accessibility check (WCAG2AA, error-codes handbook page)
-        # Stage D minimum visual regression CI gate (F-827321-030 / D-OUT-003):
-        # Run pa11y against ONE high-value reference page after the deploy has
-        # been verified. WCAG2AA is the bar; we fail on errors, ignore warnings
-        # and notices. Pinned to an exact version (NOT a floating caret-major
-        # tag) because pa11y embeds puppeteer + chromium and the workflow runs
-        # under `pages: write` + `id-token: write`. F-W1-CI-001: a supply-chain
-        # compromise of pa11y or any transitive dep would execute with
-        # elevated permissions during every Pages deploy. There is no
-        # consumer in the workspace that needs a lockfile entry, and adding
-        # one to root devDependencies would pull the chromium-puppeteer chain
-        # into every `npm ci` for a check that only ever runs in this
-        # workflow leg. If we ever sweep multiple pages we'll revisit and
-        # pin via site/package-lock.json. Bump in lockstep with Dependabot
-        # github-actions / npm sweeps.
+      - name: pa11y accessibility check (WCAG2AA, multiple handbook pages with retry)
+        # Stage D visual regression CI gate (F-827321-030 / D-OUT-003, Stage D
+        # amend FX5 + FX6): run pa11y against a curated set of high-value
+        # reference pages after the deploy has been verified. WCAG2AA is the
+        # bar; we fail on errors, ignore warnings and notices. Pinned to an
+        # exact version (NOT a floating caret-major tag) because pa11y embeds
+        # puppeteer + chromium and the workflow runs under `pages: write` +
+        # `id-token: write`. F-W1-CI-001: a supply-chain compromise of pa11y
+        # or any transitive dep would execute with elevated permissions
+        # during every Pages deploy. There is no consumer in the workspace
+        # that needs a lockfile entry, and adding one to root devDependencies
+        # would pull the chromium-puppeteer chain into every `npm ci` for a
+        # check that only ever runs in this workflow leg. Bump in lockstep
+        # with Dependabot github-actions / npm sweeps.
+        #
+        # Stage D amend FX5 (D4B-015 closure): wrap each per-page pa11y
+        # invocation in a 3-attempt retry-with-backoff. Pre-amend the step
+        # ran once and any transient chromium-mirror blip during the `npx
+        # -y` install broke an otherwise-successful deploy. The deploy-
+        # verify step above (lines 73-90) already used a 5-attempt loop;
+        # this asymmetry was the audit finding. Three attempts is enough:
+        # real accessibility regressions are deterministic and re-fail;
+        # only transient network/install errors recover. Backoff factor 10
+        # (vs verify's 5) because pa11y's failure mode is install timeout,
+        # which often needs longer than HTTP 5xx recovery.
+        #
+        # Stage D amend FX6 (MED-3 closure): broaden coverage beyond the
+        # single error-codes/ canary. The audit flagged that 13 of 14
+        # deployed pages had no a11y gate — error-codes is high-signal
+        # because of its severity callouts + WCAG-AA accent assertion in
+        # scripts/check-severity-contrast.test.mjs, but the architecture,
+        # state-machines, and cli-reference pages have orthogonal a11y
+        # surface area (figure+caption alt text, complex tables, dense
+        # code blocks). The current sweep runs 4 pages serially — same
+        # `npx -y` install reused across attempts via the npm cache, so
+        # the wall-clock overhead is modest. If pa11y churn becomes a
+        # maintenance burden, the future state is promotion to
+        # site/package-lock.json (acknowledged in the original comment).
         #
         # Chromium sandbox shim: GitHub Actions ubuntu-latest runners disable
         # the SUID sandbox by default, so puppeteer (which pa11y embeds) fails
@@ -119,8 +142,18 @@ jobs:
         # runner kernel constraint, not a tested-against config we want to
         # commit. Same "no Cadillac" discipline as the original pa11y wiring.
         run: |
-          target="${{ steps.verify.outputs.page_url }}handbook/error-codes/"
-          echo "pa11y target: $target"
+          base="${{ steps.verify.outputs.page_url }}"
+          # Pages probed for WCAG2AA compliance. Curated, not glob-swept, so
+          # adding a new page is an explicit decision (not a silent regression
+          # on a new untested page). Update this list when a new high-value
+          # reference page lands in site/src/content/docs/handbook/.
+          targets=(
+            "${base}handbook/error-codes/"
+            "${base}handbook/architecture/"
+            "${base}handbook/state-machines/"
+            "${base}handbook/cli-reference/"
+          )
+
           cat > /tmp/pa11y-ci.json <<'EOF'
           {
             "chromeLaunchConfig": {
@@ -128,9 +161,40 @@ jobs:
             }
           }
           EOF
-          npx -y pa11y@9.1.1 \
-            --standard WCAG2AA \
-            --reporter cli \
-            --threshold 0 \
-            --config /tmp/pa11y-ci.json \
-            "$target"
+
+          failures=()
+          for target in "${targets[@]}"; do
+            echo ""
+            echo "::group::pa11y → $target"
+            ok=0
+            for attempt in 1 2 3; do
+              if npx -y pa11y@9.1.1 \
+                  --standard WCAG2AA \
+                  --reporter cli \
+                  --threshold 0 \
+                  --config /tmp/pa11y-ci.json \
+                  "$target"; then
+                ok=1
+                echo "pa11y OK on attempt $attempt: $target"
+                break
+              fi
+              if [ $attempt -lt 3 ]; then
+                wait_s=$((attempt * 10))
+                echo "::warning::pa11y attempt $attempt failed for $target — sleeping ${wait_s}s before retry"
+                sleep $wait_s
+              fi
+            done
+            if [ $ok -eq 0 ]; then
+              failures+=("$target")
+            fi
+            echo "::endgroup::"
+          done
+
+          if [ ${#failures[@]} -gt 0 ]; then
+            echo "::error::pa11y failed on ${#failures[@]} page(s) after 3 attempts each:"
+            for f in "${failures[@]}"; do
+              echo "::error::  $f"
+            done
+            exit 1
+          fi
+          echo "::notice::pa11y WCAG2AA OK across ${#targets[@]} handbook pages"

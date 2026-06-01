@@ -1,11 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 480" role="img" aria-labelledby="verify-title verify-desc" preserveAspectRatio="xMidYMid meet">
   <title id="verify-title">Healthy npm run verify output</title>
-  <desc id="verify-desc">Terminal capture of a successful npm run verify in the testing-os repo. The command sequence runs sync-version:check (clean, README block matches package.json version), check-doc-drift (13 of 13 checks passed), test:scripts (24 sync-version tests pass, 14 check-doc-drift tests pass, all green), build (tsc --build composite project, no errors), and the workspace test fan-out covering schemas, verify, ingest, findings, report, portfolio, and dogfood-swarm packages — every package reports passing tests with no failures and no warnings.</desc>
+  <desc id="verify-desc">Terminal capture of a successful npm run verify in the testing-os repo. The command sequence runs sync-version:check (clean, README block matches package.json version), check-doc-drift (13 of 13 checks passed), check-regression-pins (every source-pinned F-id has a test pin), test:scripts (all script test files green — 9 files, 100+ tests), build (tsc --build composite project, no errors), and the workspace test fan-out covering schemas, verify, ingest, findings, report, portfolio, and dogfood-swarm packages — every package reports passing tests with no failures and no warnings.</desc>
 
   <defs>
+    <!-- Stage D amend: terminal-mock SVG keeps its dark terminal aesthetic in
+         BOTH site themes — the `.term-bg` outer rect is intentionally
+         transparent so the SVG no longer renders as a dark slab on a white
+         handbook page in light mode. The inner `.term-frame` continues to
+         carry the dark terminal chrome (this is a terminal mock — a light-
+         terminal version would be visually dishonest). Operators in light
+         mode see a self-contained dark terminal card centered on the page
+         background, not a full-width dark slab. -->
     <style>
-      .term-bg { fill: #09090b; }
+      .term-bg { fill: transparent; }
       .term-frame { fill: #18181b; stroke: #27272a; stroke-width: 1; rx: 8; }
       .term-bar { fill: #27272a; rx: 8 8 0 0; }
       .term-dot-r { fill: #f87171; }
@@ -33,16 +41,16 @@
   <g class="mono">
     <text x="36" y="76"><tspan class="text-prompt">$</tspan> <tspan class="text-cmd">npm run verify</tspan></text>
 
-    <text x="36" y="100" class="text-dim">&gt; testing-os@1.1.1 verify</text>
-    <text x="36" y="116" class="text-dim">&gt; npm run sync-version:check &amp;&amp; npm run check-doc-drift &amp;&amp; npm run test:scripts &amp;&amp; npm run build &amp;&amp; npm run test</text>
+    <text x="36" y="100" class="text-dim">&gt; testing-os@1.2.3 verify</text>
+    <text x="36" y="116" class="text-dim">&gt; npm run sync-version:check &amp;&amp; npm run check-doc-drift &amp;&amp; npm run check-regression-pins &amp;&amp; npm run test:scripts &amp;&amp; npm run build &amp;&amp; npm run test</text>
 
     <text x="36" y="148" class="text-info">[sync-version]</text><text x="160" y="148" class="text-body"> README version block matches package.json — clean.</text>
 
     <text x="36" y="172" class="text-info">[check-doc-drift]</text><text x="190" y="172" class="text-ok"> OK — 13 check(s) passed.</text>
 
-    <text x="36" y="196" class="text-dim"># node --test scripts/sync-version.test.mjs scripts/check-doc-drift.test.mjs</text>
-    <text x="36" y="216" class="text-ok">  ✓ sync-version: 24 tests passed</text>
-    <text x="36" y="232" class="text-ok">  ✓ check-doc-drift: 14 tests passed</text>
+    <text x="36" y="196" class="text-dim"># node --test "scripts/*.test.mjs"</text>
+    <text x="36" y="216" class="text-ok">  ✓ test:scripts — all 9 script test files green</text>
+    <text x="36" y="232" class="text-ok">  ✓ check-regression-pins — 40 source pins / 93 test pins (allowlist 3)</text>
 
     <text x="36" y="260" class="text-dim"># tsc --build (composite refs)</text>
     <text x="36" y="280" class="text-ok">  ✓ packages/schemas → built (8 schemas, 0 errors)</text>

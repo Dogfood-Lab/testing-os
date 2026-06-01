@@ -28,7 +28,7 @@ Every repo starts at the strictest enforcement level (`required`), and weakening
 | **Provenance** | Proof that a claimed workflow run actually happened. In production, confirmed via the GitHub Actions API. |
 | **Ingestion** | The pipeline that receives a submission, runs it through the verifier, persists the result, and rebuilds indexes. |
 
-testing-os has **two distinct status vocabularies** that operate at different layers — they look adjacent but they are not the same state machine. See the [State Machines reference](../state-machines/) for the full picture.
+This guide introduces three of the four status vocabularies you'll meet — the ones a new operator encounters within the first day. The fourth (agent_run lifecycle) is internal swarm control-plane plumbing surfaced indirectly through `swarm dispatch` / `swarm collect` errors; see the [State Machines reference](../state-machines/) for the full picture, including all four vocabularies and which three are governed by formal transition tables.
 
 - **Record classification (ingest layer):** every persisted record carries `verification.status` of `accepted` or `rejected`. Portfolio buckets layer on top of that: `stale`, `unknown_freshness`, `missing`. Index rebuild has its own per-record outcome buckets: `accepted`, `rejected`, `corrupted`, `skipped`.
 - **Finding review (intelligence layer):** every finding moves through `candidate → reviewed → accepted → (invalidated)`. This governs human review of derived lessons, not record persistence.
@@ -74,7 +74,7 @@ A healthy run looks like this — green checkmarks across every workspace packag
 <figure>
   <img
     src="/testing-os/screenshots/verify-output.svg"
-    alt="Terminal output of a healthy npm run verify in the testing-os repo. The sequence runs sync-version:check (clean, README block matches package.json), check-doc-drift (13 of 13 checks passed), test:scripts (24 sync-version tests, 14 check-doc-drift tests — all pass), tsc --build (composite refs, no errors), and the workspace test fan-out across schemas (vitest, passed), verify (node --test, passed), ingest (passed), findings (passed), report (passed), portfolio (passed), and dogfood-swarm (passed). Each package shows a green check and the test runner used. No red, no warnings."
+    alt="Terminal output of a healthy npm run verify in the testing-os repo at v1.2.3. The sequence runs sync-version:check (clean, README block matches package.json), check-doc-drift (13 of 13 checks passed), check-regression-pins (every source-pinned F-id has a test pin), test:scripts (all 9 script test files green), tsc --build (composite refs, no errors), and the workspace test fan-out across schemas (vitest, passed), verify (node --test, passed), ingest (passed), findings (passed), report (passed), portfolio (passed), and dogfood-swarm (passed). Each package shows a green check and the test runner used. No red, no warnings."
     style="width: 100%; height: auto;"
   />
   <figcaption>Healthy `npm run verify` output. If a package shows red instead of a green check, fix the failure before proceeding — the verify gate is the canonical pre-commit check.</figcaption>
