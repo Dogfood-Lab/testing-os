@@ -6,7 +6,7 @@
       "id": "error-codes",
       "kind": "source-vs-target-coverage",
       "title": "All error codes documented",
-      "description": "Every error.code value emitted from packages/**/lib/errors.js (including STATE_MACHINE_<KIND> expansions and the D2/D1 batch + singleton collision/schema-invalid + validator-fault families) must appear in the error-codes handbook page.",
+      "description": "Every error.code value emitted from packages/**/lib/errors.js (including STATE_MACHINE_<KIND> expansions, the D2/D1 batch + singleton collision/schema-invalid families, the DISPATCH_* union on DispatchPreconditionError, and the VALIDATOR_FAULT_* template-literal family on verify/index.js's runValidator helper) must appear in the error-codes handbook page. Stage C Wave A2.1 FX2 closed the vacuous-extractor root cause: the prior `reasons.push(`VALIDATOR_FAULT_` regex matched ZERO lines because verify/index.js pushes a *variable* (`reasons.push(faultReason)`) where the template literal lives in the runValidator helper a few lines up; the prior DISPATCH_* coverage was zero because no extractor existed at all (DispatchPreconditionError sets `this.code = opts.code` from a JSDoc-typed union, so the general `this.code = 'X'` literal extractor missed it). Fixed extractors target the MINT site (template-literal definition + JSDoc type union) rather than the assignment site, asserted non-vacuous by scripts/check-doc-drift.test.mjs's `error-codes META` test which strips each enforced code from the handbook and asserts drift fires.",
       "sources": [
         "packages/dogfood-swarm/lib/errors.js",
         "packages/ingest/validate-record.js",
@@ -29,26 +29,18 @@
           "expand": ["FINDING_ID_COLLISION"]
         },
         {
-          "regex": "code:\\s*['\"]PATTERN_ID_COLLISION['\"]",
-          "expand": ["PATTERN_ID_COLLISION"]
-        },
-        {
-          "regex": "code:\\s*['\"]RECOMMENDATION_ID_COLLISION['\"]",
-          "expand": ["RECOMMENDATION_ID_COLLISION"]
-        },
-        {
-          "regex": "code:\\s*['\"]DOCTRINE_ID_COLLISION['\"]",
-          "expand": ["DOCTRINE_ID_COLLISION"]
-        },
-        {
-          "regex": "reasons\\.push\\(\\s*`VALIDATOR_FAULT_",
+          "regex": "`VALIDATOR_FAULT_\\$\\{cls\\}",
           "expand": ["VALIDATOR_FAULT_SCHEMA", "VALIDATOR_FAULT_POLICY", "VALIDATOR_FAULT_STEPS"]
+        },
+        {
+          "regex": "'(DISPATCH_[A-Z_]+)'",
+          "captureGroup": 1
         }
       ],
       "targets": [
         "site/src/content/docs/handbook/error-codes.md"
       ],
-      "hint": "Document the missing error code in site/src/content/docs/handbook/error-codes.md following the existing format (### `CODE_NAME`, Class, Trigger, Message shape, Hint, Operator action). The error-codes gate's source list covers: dogfood-swarm/lib/errors.js (typed class .code), ingest/validate-record.js + ingest/persist.js (typed class .code), findings/derive/write-findings.js + findings/synthesis/write-artifacts.js (object-literal { code: '...' } in batch errors AND class .code on the SCHEMA_INVALID + ID_COLLISION classes), and verify/index.js (template-literal VALIDATOR_FAULT_${cls} string-prefix codes pushed into rejection_reasons[])."
+      "hint": "Document the missing error code in site/src/content/docs/handbook/error-codes.md following the existing format (### `CODE_NAME`, Class, Trigger, Message shape, Hint, Operator action). The error-codes gate's source list covers: dogfood-swarm/lib/errors.js (typed class `this.code = 'X'` literals for IsolationError/CollectUpsertError/CliInvalidGlobsError, the STATE_MACHINE_${kind} template literal, AND the DISPATCH_* JSDoc-type-union string literals on DispatchPreconditionError — the class itself uses `this.code = opts.code` so the union IS the contract), ingest/validate-record.js + ingest/persist.js (typed class .code literals), findings/derive/write-findings.js + findings/synthesis/write-artifacts.js (the `this.code = 'X'` literals on the SCHEMA_INVALID + ID_COLLISION classes — caught by the general literal extractor, no per-code expand needed), and verify/index.js (the `VALIDATOR_FAULT_${cls}` template-literal definition in the runValidator helper — extracts at the MINT site, NOT the `reasons.push(faultReason)` callsite, because the latter pushes a variable and was vacuous pre-FX2)."
     },
     {
       "id": "statuses",

@@ -94,6 +94,28 @@ function runCli(payload, extraEnv = {}) {
 }
 
 /**
+ * Run the SANDBOX copy of run.js (staged by `setupTempRunJs`) so the CLI's
+ * `repoRoot = resolve(__dirname, '../..')` walk lands in TEST_ROOT. Tests that
+ * drive a *real* ingest use this rather than `runCli`: a successful ingest
+ * writes a record under `records/<org>/<repo>/…` AND rebuilds `indexes/`, both
+ * rooted at `repoRoot`. Pointed at the real repo those writes pollute the
+ * working tree (untracked record + re-stamped indexes — and on Windows the
+ * index `path` fields flip to `\` separators); pointed at TEST_ROOT they land
+ * in the sandbox `afterEach` deletes. Mirrors `runCli`'s flag + env shape —
+ * only the run.js path differs.
+ */
+function runSandboxCli(payload, extraEnv = {}) {
+  return spawnSync(process.execPath, [
+    join(TEST_ROOT, 'packages', 'ingest', 'run.js'),
+    '--provenance', 'stub'
+  ], {
+    input: typeof payload === 'string' ? payload : JSON.stringify(payload),
+    encoding: 'utf-8',
+    env: { ...process.env, CI: '', GITHUB_ACTIONS: '', ...extraEnv }
+  });
+}
+
+/**
  * Parse NDJSON `logStage` lines out of a captured stderr stream.
  * Filters out the human-readable banner that wave-17 emits when the runner
  * sees a TTY.
@@ -250,14 +272,7 @@ describe('D1B-001 — CLI top-level catch emits a structured stage:error event',
     // (synth-or-real) as correlation_id.
     setupTempRunJs();
 
-    const child = spawnSync(process.execPath, [
-      join(TEST_ROOT, 'packages', 'ingest', 'run.js'),
-      '--provenance', 'stub'
-    ], {
-      input: JSON.stringify(pilot0),
-      encoding: 'utf-8',
-      env: { ...process.env, CI: '', GITHUB_ACTIONS: '' }
-    });
+    const child = runSandboxCli(pilot0);
 
     assert.equal(child.status, 2,
       `expected exit 2 when global policy missing; got ${child.status}. ` +
@@ -284,10 +299,26 @@ describe('D1B-001 — CLI top-level catch emits a structured stage:error event',
   });
 
   it('NEGATIVE: a successful run does NOT emit any stage:error event', () => {
-    // Counter-test: pilot0 ingested against the real repo's policies should
-    // succeed (exit 0) and emit zero stage:error lines. Pins that the
-    // structured-error emit is FAILURE-PATH ONLY, not a noisy default.
-    const child = runCli(pilot0);
+    // Counter-test: pilot0 ingested against a SANDBOXED repo root (real
+    // `policies/` copied in) should succeed (exit 0) and emit zero stage:error
+    // lines. Pins that the structured-error emit is FAILURE-PATH ONLY, not a
+    // noisy default.
+    //
+    // Why sandboxed and not the real repoRoot: a successful ingest WRITES a
+    // record under `records/<org>/<repo>/…` AND rebuilds `indexes/`, both
+    // rooted at repoRoot. Against the real repo that left an untracked record
+    // and re-stamped the committed indexes on every run — and on Windows
+    // `rebuildIndexes` rewrites each index `path` with `\` separators, so
+    // `git status` was dirty after every test run (the path.sep cross-platform
+    // blind-spot). `setupTempRunJs({ withPolicies: true })` redirects repoRoot
+    // to TEST_ROOT so the full persist + rebuild success path is exercised
+    // inside the sandbox `afterEach` deletes, leaving the working tree clean.
+    // (Bonus fidelity: a fresh TEST_ROOT/records is empty, so this always hits
+    // the real write+rebuild path rather than short-circuiting on a duplicate
+    // record left over from a previous run against the real tree.)
+    setupTempRunJs({ withPolicies: true });
+
+    const child = runSandboxCli(pilot0);
 
     assert.equal(child.status, 0,
       `valid submission must exit 0; got ${child.status}. ` +
@@ -362,24 +393,76 @@ describe('D1B-001 — CLI top-level catch emits a structured stage:error event',
     const child = runCliRaw([], pilot0);
     assertProvenanceErrorEvent(child, 'no --provenance flag at all');
   });
+
+  // ─────────────────────────────────────────────────────────────────
+  // cli_read_file (D1B-001 family): the `--file <path>` flag read fires
+  // during arg-parsing — OUTSIDE the JSON.parse try and BEFORE
+  // `cliCorrelationId` is seeded. Pre-fix, an unreadable path (ENOENT) threw
+  // an uncaught exception → raw stack + exit 1, with NO `"stage":"error"`
+  // NDJSON line. The exit-1 (not exit-2) put it technically outside the
+  // literal D1B-001 "exit-2" contract, yet it produced exactly the
+  // un-greppable raw-stack failure D1B-001 exists to eliminate. The fix wraps
+  // the read so a failure routes through emitCliErrorEvent
+  // (failed_stage='cli_read_file', synth correlation id) and exits 2.
+  // ─────────────────────────────────────────────────────────────────
+
+  it('cli_read_file POSITIVE: --file with a nonexistent path emits stage:error and exits 2', () => {
+    // The read happens before stdin is consulted and before any submission is
+    // parsed, so the only pivot available is the synth correlation id.
+    const child = runCliRaw(['--file', '/nonexistent/path.json'], '');
+
+    assert.equal(child.status, 2,
+      `--file ENOENT must exit 2, not the pre-fix raw-stack exit 1 ` +
+      `(stdout=${child.stdout} stderr=${child.stderr})`);
+
+    const events = parseStageEvents(child.stderr);
+    const errorEvents = events.filter(e => e.stage === 'error');
+
+    assert.equal(errorEvents.length, 1,
+      `expected exactly one stage:error event for the --file ENOENT path; ` +
+      `got ${errorEvents.length}. stderr=${child.stderr}`);
+
+    const errEvent = errorEvents[0];
+    assert.equal(errEvent.failed_stage, 'cli_read_file',
+      `failed_stage must be 'cli_read_file'; got ${JSON.stringify(errEvent.failed_stage)}`);
+    assert.equal(errEvent.component, 'ingest',
+      'structured error event must be tagged as ingest');
+    assert.equal(typeof errEvent.message, 'string',
+      `message must be a string; got ${JSON.stringify(errEvent.message)}`);
+    assert.ok(errEvent.message.length > 0, 'message must be non-empty');
+    // No submission parsed yet → correlation_id must be a synth `ing-…` id.
+    assert.ok(errEvent.correlation_id && errEvent.correlation_id.startsWith('ing-'),
+      `correlation_id must be a synth id (ing-…) for the --file ENOENT path; ` +
+      `got ${JSON.stringify(errEvent.correlation_id)}`);
+  });
 });
 
 /**
  * Stage a sandbox copy of run.js in TEST_ROOT and rewrite the
  * `node:fs`/`node:path`/`@dogfood-lab/*` imports to absolute paths so the
- * copy resolves against the real workspace's installed deps. We deliberately
- * DO NOT copy a `policies/` directory — `loadGlobalPolicy(repoRoot)` walks
- * up two dirs from the copy and finds NOTHING, throwing ENOENT.
+ * copy resolves against the real workspace's installed deps.
  *
  * Why a sandbox: run.js hard-codes `repoRoot = resolve(__dirname, '../..')`
  * in its `isMain` block, so the only way to point the CLI at a fake repo
  * root without forking the production source is to copy the file into a
- * sibling directory hierarchy.
+ * sibling directory hierarchy. Because the copy lives at
+ * `TEST_ROOT/packages/ingest/run.js`, its `repoRoot` resolves to TEST_ROOT —
+ * so every record write and index rebuild the CLI performs is redirected
+ * into the sandbox `afterEach` deletes, never the real working tree.
+ *
+ * @param {object} [opts]
+ * @param {boolean} [opts.withPolicies=false] - Default (false): NO `policies/`
+ *   dir is staged, so `loadGlobalPolicy(TEST_ROOT)` throws ENOENT — exactly the
+ *   failure the loadGlobalPolicy-ENOENT POSITIVE test drives. When true: the
+ *   real `policies/` tree is copied in so the verifier sees the same policy
+ *   inputs as the real repo and the ingest SUCCEEDS end-to-end (verify →
+ *   persist → rebuild) entirely inside the sandbox — the NEGATIVE test needs a
+ *   genuine success whose record/index writes never reach the working tree.
  */
-function setupTempRunJs() {
+function setupTempRunJs({ withPolicies = false } = {}) {
   rmSync(TEST_ROOT, { recursive: true, force: true });
-  // Mirror the packages/ingest/run.js path so its `../..` walk lands in
-  // TEST_ROOT (which has no policies/).
+  // Mirror the packages/ingest/run.js path so the copy's `../..` walk lands
+  // in TEST_ROOT.
   mkdirSync(join(TEST_ROOT, 'packages', 'ingest'), { recursive: true });
   const realRunJs = readFileSync(resolve(__dirname, 'run.js'), 'utf-8');
   // Rewrite bare workspace imports + sibling-module relative imports to
@@ -402,4 +485,12 @@ function setupTempRunJs() {
     .replace(/from\s+['"]\.\/rebuild-indexes\.js['"]/, `from '${rebuildIndexesJs}'`);
 
   writeFileSync(join(TEST_ROOT, 'packages', 'ingest', 'run.js'), rewritten, 'utf-8');
+
+  // For a SUCCESSFUL ingest the verifier needs policy: `loadGlobalPolicy` and
+  // `loadRepoPolicy` resolve under `repoRoot` (= TEST_ROOT for the copy), so
+  // copy the real policy tree in. Omitting it is the ENOENT failure the
+  // loadGlobalPolicy POSITIVE test relies on — hence opt-in, default off.
+  if (withPolicies) {
+    copyDirSync(resolve(REPO_ROOT, 'policies'), join(TEST_ROOT, 'policies'));
+  }
 }

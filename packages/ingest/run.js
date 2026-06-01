@@ -480,7 +480,24 @@ if (isMain) {
       provenanceMode = args[++i];
     } else if (args[i] === '--file' && args[i + 1]) {
       const { readFileSync } = await import('node:fs');
-      submissionJson = readFileSync(resolve(args[++i]), 'utf-8');
+      // D1B-001 family (operator-legibility): a --file read failure
+      // (ENOENT/EACCES) routes through the structured error event and exits 2
+      // — pre-fix it propagated as a raw uncaught stack + exit 1, with NO
+      // grep-able `"stage":"error"` NDJSON line. This read runs during
+      // arg-parsing, BEFORE `cliCorrelationId` is seeded below, so synth a
+      // correlation id here (the same pivot the JSON.parse catch uses when
+      // there is no submission to derive a run_id from yet).
+      try {
+        submissionJson = readFileSync(resolve(args[++i]), 'utf-8');
+      } catch (err) {
+        emitCliErrorEvent({
+          failedStage: 'cli_read_file',
+          correlationId: synthCorrelationId(),
+          err,
+          humanPrefix: 'could not read --file payload'
+        });
+        process.exit(2);
+      }
     } else if (args[i] === '--payload' && args[i + 1]) {
       submissionJson = args[++i];
     } else if (args[i] === '--verify-only') {
