@@ -19,6 +19,13 @@
  * throws (closes F-651020-007). Trailing rmSync at the end of the test body
  * is the wrong shape — it never runs on assertion failure and leaks tmpdir
  * entries across CI and local runs.
+ *
+ * Wave A1 amend (H10): also imports check-lockfile-drift.test.mjs so that the
+ * `npm run test:scripts` pipeline picks up the new lockfile-drift regression
+ * test without needing a package.json scripts edit. sync-version.test.mjs is
+ * the natural compose point — it's the existing entry that covers the two
+ * lockfile surfaces sync-version.mjs *does* check; check-lockfile-drift.test
+ * covers the surfaces it does NOT (per-workspace versions + engines.node).
  */
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -26,6 +33,9 @@ import { mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from 'node
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { syncVersion, DriftError } from './sync-version.mjs';
+// H10 regression: per-workspace version drift + engines.node drift. See
+// scripts/check-lockfile-drift.test.mjs for the contract.
+import './check-lockfile-drift.test.mjs';
 
 function makeRepo(t, version, { readmeVersion, lockTopVersion, lockRootVersion, omitLockRoot, omitLockfile } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'sync-version-'));

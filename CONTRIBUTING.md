@@ -21,7 +21,7 @@ npm run verify      # the canonical pre-commit check
                     # discipline depends on.
 ```
 
-CI runs the same `verify` flow on Node 20 + 22.
+CI runs the same `verify` flow on Node 22 + 24 (tightened from `20 + 22` to `22 + 24` in v1.2.2 to match `engines.node: ">=22"` in the root `package.json`).
 
 ## Where to start
 

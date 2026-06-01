@@ -28,7 +28,7 @@ testing-os is the centralized dogfood evidence system for the [Dogfood Lab](http
 
 ## Current Coverage
 
-13 repos across 8 product surfaces, all verified pass, all enforcement: required.
+13 active repos across 8 product surfaces, all currently-tracked active repos: last verdict = pass, all enforcement: required. (The 14th governed entry, `dogfood-labs`, is the archived legacy repo retained for historical evidence — see [`indexes/stale.json`](https://github.com/dogfood-lab/testing-os/blob/main/indexes/stale.json) for stale records and [`indexes/latest-by-repo.json`](https://github.com/dogfood-lab/testing-os/blob/main/indexes/latest-by-repo.json) for the live verdict map.)
 
 ## Getting Started
 
@@ -40,7 +40,8 @@ testing-os is the centralized dogfood evidence system for the [Dogfood Lab](http
 - [Operating Guide](./operating-guide/) -- day-to-day operations
 - [Integration](./integration/) -- how other systems consume dogfood status
 - [Intelligence Layer](./intelligence-layer/) -- how evidence becomes reusable portfolio memory
-- [State Machines](./state-machines/) -- the three distinct status vocabularies and which layer each one operates at
+- [State Machines](./state-machines/) -- the four distinct status vocabularies (record classification, finding review, wave-finding classification, agent_run lifecycle) and which layer each one operates at
 - [Recovery — The Three R's](./recovery/) -- revalidate, rewind, redrive — the lawful recovery contract
 - [swarm history](./swarm-history/) -- deep-audit the wave_state_events transition chain
+- [swarm CLI reference](./cli-reference/) -- per-verb quick reference for all 21 `swarm` verbs, with cross-links to the deep-dive pages
 - [Error Code Reference](./error-codes/) -- structured error codes surfaced by testing-os CLIs

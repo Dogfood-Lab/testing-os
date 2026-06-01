@@ -24,6 +24,8 @@
  */
 import { renameSync } from 'node:fs';
 
+import { sleepSync } from './sleep-sync.js';
+
 export function renameWithRetry(tmp, dest, { retries = 10, baseMs = 15, maxMs = 200 } = {}) {
   for (let i = 0; i <= retries; i++) {
     try {
@@ -32,8 +34,12 @@ export function renameWithRetry(tmp, dest, { retries = 10, baseMs = 15, maxMs = 
     } catch (err) {
       if ((err.code !== 'EPERM' && err.code !== 'EBUSY') || i === retries) throw err;
       const delay = Math.min(baseMs * (1 << i), maxMs);
-      const until = Date.now() + delay;
-      while (Date.now() < until) { /* spin */ }
+      // D1B-002-ingest (Stage C humanization fold): replaced the
+      // `while (Date.now() < until)` busy-spin with the Atomics.wait-
+      // based sleepSync helper. Same workspace-cycle pattern as
+      // `ingest/lib/atomic-write.js` — sibling helper, not a
+      // cross-package import.
+      sleepSync(delay);
     }
   }
 }

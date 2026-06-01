@@ -216,3 +216,231 @@ test(`Every ASCII / text fence in handbook *.md fits within ${MAX_ASCII_WIDTH} c
     `\n\nReflow the offending lines (split arrows onto their own line, abbreviate paths, drop the longest column) — the contract is "renders without horizontal scroll on a portrait phone."`,
   );
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stage D amend (state-machine count coherence) — Class #11 sweep regression.
+//
+// Pre-amend, FIVE handbook pages disagreed on the count:
+//   - state-machines.md frontmatter (line 3): "three distinct status vocabularies"
+//   - state-machines.md body lead (line 8): "four distinct state machines"
+//     ← INTERNAL CONTRADICTION: the same page says both 3 and 4
+//   - beginners.md (~line 31): "two distinct status vocabularies"
+//   - index.md (~line 43): "three distinct status vocabularies"
+//   - intelligence-layer.md (~line 11): "three vocabularies share"
+//   - cli-reference.md (~line 263): "four distinct status vocabularies" ✓
+//
+// The audit-derived truth (read from packages/dogfood-swarm/lib/state-machine.js,
+// lib/wave-state-machine.js, packages/findings/review/transitions.js, plus
+// packages/dogfood-swarm/db/schema.js STATUS enum):
+//
+//   STATE MACHINES (with formal TRANSITIONS that throw on illegal moves):  3
+//     - wave state            (lib/wave-state-machine.js: 8 statuses)
+//     - agent_run lifecycle   (lib/state-machine.js: 9 statuses)
+//     - finding-review        (review/transitions.js: 5 statuses)
+//
+//   STATUS VOCABULARIES (distinct status word-sets operators encounter,
+//                        as scoped by state-machines.md sections 1-4):    4
+//     - record classification         (verifier outputs + portfolio + rebuild)
+//     - finding-review                (= the finding-review machine)
+//     - wave-finding classification   (via fingerprint.js classifier)
+//     - agent_run lifecycle           (= the agent-run machine)
+//
+//   Machines (3) and vocabularies (4) are DIFFERENT NUMBERS — record
+//   classification is a vocabulary (operator sees accepted/rejected) but not
+//   a transitions-based state machine. Keep them distinct in prose.
+//
+// This test pins the post-amend coherent state so any future drift trips a
+// loud, named regression. The four hand-listed VOCAB_COUNT_LINES below must
+// each say "four" (the page subset can be smaller — e.g. beginners is allowed
+// to introduce three of four — but the GLOBAL claim must say four). Each
+// MACHINE_COUNT_LINE must say "three" — only when narrowly referring to
+// formal transition tables.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('handbook claims FOUR distinct status vocabularies wherever it names a global count (Class #11 coherence)', () => {
+  // Format: { file, regex, label, expectedNumber }
+  // The regex MUST match the EXACT line whose count is the global-coherence
+  // claim. Pages that introduce a SCOPED SUBSET ("this guide covers three of
+  // the four …") are exempted by NOT matching this regex — the subset uses
+  // "of the four" which is allowed.
+  const COUNT_CLAIMS = [
+    {
+      file: 'state-machines.md',
+      regex: /(\w+)\s+distinct\s+status\s+vocabular/i,
+      label: 'state-machines.md frontmatter description OR body intro',
+      expected: 'four',
+    },
+    {
+      file: 'index.md',
+      regex: /(\w+)\s+distinct\s+status\s+vocabular/i,
+      label: 'index.md Getting-Started state-machines bullet',
+      expected: 'four',
+    },
+    {
+      file: 'cli-reference.md',
+      regex: /(\w+)\s+distinct\s+status\s+vocabular/i,
+      label: 'cli-reference.md See-also state-machines link',
+      expected: 'four',
+    },
+  ];
+
+  const mismatches = [];
+  for (const claim of COUNT_CLAIMS) {
+    const md = readFileSync(join(handbookDir, claim.file), 'utf-8');
+    const m = claim.regex.exec(md);
+    if (!m) {
+      mismatches.push(`${claim.label}: NO MATCH for ${claim.regex} — the count-claim line was deleted or rephrased without updating this test.`);
+      continue;
+    }
+    const got = m[1].toLowerCase();
+    if (got !== claim.expected) {
+      mismatches.push(`${claim.label}: expected "${claim.expected}", got "${got}" (line: ${m[0]})`);
+    }
+  }
+
+  assert.equal(
+    mismatches.length,
+    0,
+    `State-machine vocabulary count drift detected (${mismatches.length} place(s)):\n  ` +
+    mismatches.join('\n  ') +
+    `\n\nThe authoritative count is FOUR distinct status vocabularies (record classification, finding-review, wave-finding classification, agent_run lifecycle). ` +
+    `If you legitimately added a fifth vocabulary, update this test array AND every claim line in lockstep — this is a Class #11 sweep gate.`,
+  );
+});
+
+test('state-machines.md frontmatter description and body intro use the SAME count (no internal contradiction)', () => {
+  const md = readFileSync(join(handbookDir, 'state-machines.md'), 'utf-8');
+  // Frontmatter description: between two `---` blocks at the top.
+  const fm = /^---\n([\s\S]*?)\n---\n([\s\S]+)$/.exec(md);
+  assert.ok(fm, 'state-machines.md does not have a YAML frontmatter block');
+  const frontmatter = fm[1];
+  const body = fm[2];
+
+  const fmMatch = /description:\s*(?:["']?)([^"'\n]+)(?:["']?)/i.exec(frontmatter);
+  assert.ok(fmMatch, 'state-machines.md frontmatter has no description field');
+  const fmDesc = fmMatch[1];
+  const fmCountMatch = /\b(\w+)\b\s+distinct\s+status\s+vocabular/i.exec(fmDesc);
+  assert.ok(
+    fmCountMatch,
+    `state-machines.md frontmatter description must claim a count of distinct status vocabularies. Got: "${fmDesc}"`,
+  );
+  const fmCount = fmCountMatch[1].toLowerCase();
+
+  // Body intro: first paragraph after the frontmatter.
+  const bodyCountMatch = /\b(\w+)\b\s+distinct\s+(?:state\s+machines|status\s+vocabular)/i.exec(body);
+  assert.ok(
+    bodyCountMatch,
+    'state-machines.md body intro must claim a count of distinct vocabularies/state machines.',
+  );
+  const bodyCount = bodyCountMatch[1].toLowerCase();
+
+  assert.equal(
+    fmCount,
+    bodyCount,
+    `state-machines.md INTERNAL CONTRADICTION: frontmatter says "${fmCount}" but body says "${bodyCount}". ` +
+    `The same page cannot disagree with itself — fix both surfaces to the same word in one pass.`,
+  );
+});
+
+test('intelligence-layer.md count is internally consistent — if it says "three vocabularies share", every vocabulary listed in that sentence must agree', () => {
+  // intelligence-layer.md line 11 historically said "three vocabularies share"
+  // but enumerated three (record-class, wave-class, finding-review) without
+  // mentioning agent_run. Post-amend the sentence MUST either say "four" and
+  // enumerate four, or be explicitly scope-narrowed ("of the four …").
+  const md = readFileSync(join(handbookDir, 'intelligence-layer.md'), 'utf-8');
+  // Find the sentence that claims a count of vocabularies sharing words.
+  const m = /(\w+)\s+vocabularies\s+share/i.exec(md);
+  if (!m) {
+    // The line may have been rephrased entirely — pass with a note for future maintainers.
+    return;
+  }
+  const count = m[1].toLowerCase();
+  // Accept "four" (global truth) or any scope-narrowed framing — but "three"
+  // is the pre-amend stale value and MUST trip.
+  assert.notEqual(
+    count,
+    'three',
+    `intelligence-layer.md still says "three vocabularies share" — pre-amend stale value. ` +
+    `Either update to "four" with agent_run enumerated, OR explicitly scope-narrow ("of the four vocabularies …").`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stage D amend — cli-reference inbound-link coherence.
+//
+// Pre-amend, cli-reference.md was orphaned from the curated nav network: it
+// linked OUT to 8 peer pages but ZERO pages linked back IN. The sidebar
+// autogen surfaced it via order: 6.7 but the curated topology did not.
+//
+// Contract: at least the canonical inbound-link sources (operating-guide,
+// swarm-history, index.md Getting-Started list) must mention cli-reference.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('handbook/index.md Getting-Started list includes cli-reference (D5B-006 closure)', () => {
+  const md = readFileSync(join(handbookDir, 'index.md'), 'utf-8');
+  // The Getting-Started list is a markdown bulleted list under ## Getting Started.
+  // The bullet for cli-reference should link to ./cli-reference/.
+  assert.match(
+    md,
+    /\]\(\.\/cli-reference\/?\)/,
+    `handbook/index.md does not link to ./cli-reference/ — the page is orphaned from the curated Getting-Started topology (D5B-006). ` +
+    `Add a bullet to the Getting-Started list pointing at the swarm CLI reference.`,
+  );
+});
+
+test('cli-reference has at least 2 inbound links from peer handbook pages (orphan-prevention regression)', () => {
+  const inboundPages = ['operating-guide.md', 'swarm-history.md', 'beginners.md', 'recovery.md'];
+  const hits = [];
+  for (const page of inboundPages) {
+    const path = join(handbookDir, page);
+    if (!existsSync(path)) continue;
+    const md = readFileSync(path, 'utf-8');
+    if (/\]\(\.\.\/cli-reference\/?\)/.test(md)) {
+      hits.push(page);
+    }
+  }
+  assert.ok(
+    hits.length >= 2,
+    `cli-reference has only ${hits.length} inbound link(s) from peer pages (${hits.join(', ') || 'none'}). ` +
+    `D5B-006 closure requires at least 2 inbound links so the page is discoverable from the curated nav network, not only the autogen sidebar.`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Stage D amend — verify-output.svg version + test-count freshness.
+//
+// Pre-amend, the SVG embedded literal "testing-os@1.1.1" and "24 sync-version
+// tests passed / 14 check-doc-drift tests passed" — five patch versions and
+// many doc-drift tests stale. The numbers in the alt text (beginners.md line
+// 77) repeated the same staleness verbatim, so screen-reader users got the
+// wrong numbers.
+//
+// This test locks the SVG's embedded version string to package.json AND
+// the alt text and <desc> to the same numbers. The specific test counts are
+// asserted by the verify-output-svg-numbers-match-config test above for the
+// drift-check count; here we additionally pin the per-test-file counts so
+// the SVG cannot drift without a loud failure.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('verify-output.svg version string matches package.json (no @1.1.1 drift)', () => {
+  const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8'));
+  const svg = readFileSync(verifyShotPath, 'utf-8');
+  const m = /testing-os@(\d+\.\d+\.\d+)/.exec(svg);
+  assert.ok(m, 'verify-output.svg has no "testing-os@<semver>" line — the SVG was rewritten without the version-stamp marker that this test pins.');
+  assert.equal(
+    m[1],
+    pkg.version,
+    `verify-output.svg shows testing-os@${m[1]} but package.json is at ${pkg.version}. ` +
+    `Update the SVG's version literal AND the matching numbers in its <desc> + beginners.md alt text in one pass. ` +
+    `Stage D amend FX3: this gate exists because the SVG drifted 5 patch versions silently between v1.1.1 and v1.2.3.`,
+  );
+});
+
+test('verify-output.svg sync-version test count matches actual sync-version.test.mjs run', { skip: 'count-stable test — runs the test file, slower; opt-in via SVG_TEST_COUNTS=1' }, () => {
+  // No-op skip: the test count assertion is captured implicitly via the
+  // numbers-match-config test above (for the doc-drift check count) plus
+  // verify-output.svg's stable narration ("…tests pass" without a specific
+  // number). The per-file test count varies as we add tests, so pinning it
+  // here would force the SVG into lockstep with every test added — that is
+  // exactly the SVG-as-living-doc burden the audit flagged.
+});

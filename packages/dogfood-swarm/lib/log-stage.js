@@ -45,11 +45,63 @@ export function logStage(stage, fields = {}) {
   // accidental duplicate from the leading default by deleting the
   // intermediate key — but since spread preserves last-wins, the order
   // above is already correct: component-default → fields-overrides.
-  console.error(JSON.stringify(line));
+
+  // D3B-021 (Wave A2 Stage C): wrap JSON.stringify in safeStringify so a
+  // circular reference, BigInt field, or other non-serializable value in
+  // the caller-supplied fields cannot crash the logger itself. The logger
+  // is the operator's last forensic channel — it MUST never throw.
+  let serialized;
+  let serializationFailed = null;
+  try {
+    serialized = JSON.stringify(line);
+    if (serialized === undefined) {
+      // JSON.stringify returns undefined for a top-level non-serializable
+      // value (e.g. a Symbol). Treat that as a serialization failure too.
+      serializationFailed = new Error('JSON.stringify returned undefined');
+    }
+  } catch (e) {
+    serializationFailed = e;
+  }
+
+  if (serializationFailed) {
+    // Emit a known-safe structured fallback line so NDJSON consumers see
+    // the failure as a typed event rather than no event at all (the latter
+    // is the silent-degradation pattern this fix exists to prevent).
+    const fallback = {
+      ts: new Date().toISOString(),
+      component: line.component,
+      stage: 'log_stage_serialization_failed',
+      kind: 'log_stage_serialization_failed',
+      original_stage: typeof stage === 'string' ? stage : '(non-string)',
+      error: truncate(String(serializationFailed.message || serializationFailed), 240),
+    };
+    try {
+      console.error(JSON.stringify(fallback));
+    } catch {
+      // Absolute last-resort: a fixed-shape literal that is known to
+      // serialize. Operator at least sees that SOMETHING tried to log.
+      console.error(
+        '{"stage":"log_stage_serialization_failed","kind":"log_stage_serialization_failed","error":"unable to serialize fallback"}'
+      );
+    }
+    return;
+  }
+
+  console.error(serialized);
 
   if (shouldEmitHuman()) {
-    console.error(formatHumanBanner(line));
+    try {
+      console.error(formatHumanBanner(line));
+    } catch {
+      // Banner failure must not crash the logger; NDJSON line already
+      // landed above, which is the load-bearing surface.
+    }
   }
+}
+
+function truncate(s, n) {
+  if (typeof s !== 'string') return s;
+  return s.length > n ? s.slice(0, n - 3) + '...' : s;
 }
 
 /**

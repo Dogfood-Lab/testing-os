@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
+import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 
 /**
  * Build a receipt object from DB truth.
@@ -47,12 +48,19 @@ export function buildReceipt(opts) {
   }
   if (!wave) throw new Error('No waves found');
 
-  // Agent runs
+  // Agent runs — F-H6 (Wave A1 D3): wave-9 latest-per-(wave, domain) filter
+  // via the shared helper. Without the filter the receipt surfaced stale
+  // failed agent_run rows alongside the redispatched complete row, making a
+  // recovered wave's receipt show 4 agents (3 domains + 1 stale) instead of
+  // 3. The downstream queries at :62-91 (state events, artifacts, ownership
+  // violations) join through the filtered agent_runs id list so they
+  // inherit the wave-9 discipline for free.
   const agentRuns = db.prepare(`
     SELECT ar.*, d.name as domain_name, d.ownership_class
     FROM agent_runs ar
     JOIN domains d ON ar.domain_id = d.id
     WHERE ar.wave_id = ?
+      ${LATEST_AGENT_RUN_PER_DOMAIN}
     ORDER BY d.name
   `).all(wave.id);
 

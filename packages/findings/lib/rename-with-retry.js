@@ -16,6 +16,13 @@
  * appender) are themselves synchronous, and Promise-based retries would
  * leak the async boundary into otherwise-deterministic flush paths.
  *
+ * D1B-002-findings — the backoff used to be a CPU-busy `while (Date.now() <
+ * until)` spin. The repo already ships `sleepSync` via `Atomics.wait` on a
+ * tiny SharedArrayBuffer (see `file-lock.js:286`). Atomics.wait yields the
+ * thread instead of pegging a core, with the same sync API. The retry
+ * envelope and visible behaviour are preserved; only the cost of the wait
+ * changes.
+ *
  * @param {string} tmp - Source path (the just-written temp file).
  * @param {string} dest - Destination path (the canonical artifact).
  * @param {object} [opts]
@@ -25,6 +32,24 @@
  */
 import { renameSync } from 'node:fs';
 
+/**
+ * Sleep synchronously for `ms` milliseconds via `Atomics.wait` on a tiny
+ * SharedArrayBuffer. Yields the thread (does not spin). Mirrors the
+ * `sleepSync` in `file-lock.js:286` — the contract is identical; the
+ * helper is duplicated here because rename-with-retry must not import the
+ * larger file-lock module (cyclic-import risk: atomic-write imports
+ * rename-with-retry, and file-lock imports atomic-write transitively
+ * through the lock-event write path).
+ *
+ * @param {number} ms
+ */
+function sleepSync(ms) {
+  if (ms <= 0) return;
+  const sab = new SharedArrayBuffer(4);
+  const view = new Int32Array(sab);
+  Atomics.wait(view, 0, 0, ms);
+}
+
 export function renameWithRetry(tmp, dest, { retries = 10, baseMs = 15, maxMs = 200 } = {}) {
   for (let i = 0; i <= retries; i++) {
     try {
@@ -33,11 +58,10 @@ export function renameWithRetry(tmp, dest, { retries = 10, baseMs = 15, maxMs = 
     } catch (err) {
       if ((err.code !== 'EPERM' && err.code !== 'EBUSY') || i === retries) throw err;
       const delay = Math.min(baseMs * (1 << i), maxMs);
-      // Synchronous sleep — the public API is sync (matches renameSync), so
-      // setTimeout would change the contract. Spin-wait is acceptable here
-      // because the delays are bounded (≤200ms) and the failure mode is rare.
-      const until = Date.now() + delay;
-      while (Date.now() < until) { /* spin */ }
+      // Synchronous sleep via Atomics.wait — yields the thread instead of
+      // spinning. The public API stays sync (matches renameSync). The
+      // delays remain bounded (≤200ms) and the failure mode is rare.
+      sleepSync(delay);
     }
   }
 }

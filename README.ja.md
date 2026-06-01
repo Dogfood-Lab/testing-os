@@ -13,60 +13,62 @@
 [![CI](https://github.com/dogfood-lab/testing-os/actions/workflows/ci.yml/badge.svg)](https://github.com/dogfood-lab/testing-os/actions/workflows/ci.yml)
 [![Pages](https://github.com/dogfood-lab/testing-os/actions/workflows/pages.yml/badge.svg)](https://dogfood-lab.github.io/testing-os/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](package.json)
 
-**AI時代におけるテストのためのオペレーティングシステム**
+**AI時代におけるテスト用のオペレーティングシステム**
 
-*AIを活用したソフトウェア開発のためのプロトコル、証拠保存、学習ループ。*
+*AIによる支援を受けたソフトウェアのためのプロトコル、証拠ストア、および学習ループ。*
 
-**v1.2.3** — 7つのパッケージ (`@dogfood-lab/*`)、ワークスペース全体のテストスイート、データ取り込み機能のライブ運用開始、ハンドブックのデプロイ。
+<!-- version:start -->
+**v1.3.0** — 7つのパッケージ (`@dogfood-lab/*`)、ワークスペース全体のテストスイート、インジェストレシーバーが稼働、ハンドブックがデプロイ。
+<!-- version:end -->
 
 📖 **[ハンドブックを読む →](https://dogfood-lab.github.io/testing-os/handbook/)**
 
-</div
+</div>
 
 ---
 
-## このプロジェクトについて
+## 概要
 
-`testing-os` は、[Dogfood Lab](https://github.com/dogfood-lab) GitHub組織の主要なモノレポです。これは、現在アーカイブされている [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs) の後継です。このプロジェクトは、AIを活用した開発ワークフローでテストを実行、記録し、学習するためのプロトコルとインフラストラクチャをまとめて提供します。
+`testing-os`は、[Dogfood Lab](https://github.com/dogfood-lab) GitHub組織の主要なモノリポジトリであり、現在はアーカイブされた[`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs)の後継です。AIネイティブな開発ワークフローで、テストを実行、記録、および学習するためのプロトコルとインフラストラクチャをまとめて提供します。
 
-- コードベースに対して並列エージェントによる監査を実行するための **スウォームプロトコル**。
-- 記録、結果、パターン、推奨事項を保存するための **証拠保存とスキーマ**。
-- 「検証済み」とみなされるものを決定し、それをすべての関連リポジトリに適用する **ポリシーと検証機能**。
-- 生のデータから再利用可能なパターンと原則を生成する **インテリジェンスレイヤー**。
+- コードベースに対して並列エージェント監査を実行するための**スワームプロトコル**。
+- 上記の実行から得られる記録、結果、パターン、および推奨事項のための**証拠ストア + スキーマバックボーン**。
+- 何が「検証済み」であるかを決定し、それをすべてのコンシューマーリポジトリに適用する**ポリシー + 検証者**レイヤー。
+- 生のデータを再利用可能なパターンとドクトリンに変換する**インテリジェンスレイヤー**。
 
-## 状態
+## ステータス
 
-**v1.2.3** — health-passのクリーンアップリリース。v1.2.2に対して、4段階の内部テスト（段階A：バグ/セキュリティ → 段階B：積極的な改善 → 段階C：人間工学的な改善 → 段階D：視覚的な調整）を実施した結果、50件以上の問題点が発見されました。今回のリリースでは、重要な修正が含まれています。具体的には、データ取り込みパイプラインのセキュリティ強化（`execFileSync`の引数形式の検証、エージェントからの出力に対する`JSON.parse`の制限、`repository_dispatch`ペイロードがnullの場合の防御）、オペレーターが対応可能なエラーメッセージの追加（`loadGlobalPolicy`におけるENOENT/YAMLエラー、インデックス再構築の失敗時のスタックトレースと復旧ヒントの表示）、Node.jsのバージョンに関する情報の正確性チェック（README、CHANGELOG、CLAUDE.md）、17個の未ドキュメント化された`swarm`コマンドを網羅した新しいCLIリファレンスハンドブックページの追加、カスタム404ページ、ソーシャルカードのメタデータ。パッケージの構造やAPIに変更はありません。v1.2.2からの互換性を維持しています。フェーズ5のすべての機能が引き続き利用可能です。具体的には、ウェーブレベルの状態遷移、3つのR（再検証、巻き戻し、再送信）による復旧機能、`swarm history`による監査ログ機能。6つのパッケージが`@dogfood-lab`から公開されています：`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1105/1105のテストが合格しました。** リポジトリ全体の累積テスト結果（v1.0.0以降）：フェーズ7の内部テスト（約31ウェーブ、約115件の修正、14種類の監査範囲）、v1.2.xの最初のnpm公開、v1.2.3のhealth-passクリーンアップ。公式の`swarm`カタログ：[`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)。
+**v1.3.0** — すべてのコンシューマーで単一の標準スキーマ検証器（スキーマごとに1つのAjvインスタンス、プロセスごと）。安定したコード（`ISOLATION_FAILED`、`DUPLICATE_RUN_ID`、`STATE_MACHINE_*`、`DISPATCH_*`、`VALIDATOR_FAULT_*`、…）を持つ構造化された最上位レベルのエラーと、すべての失敗パスに「次へ」のヒント。ポリシーYAMLは、ロード時にスキーマによってゲートされ、構造的に無効なポリシーファイルは、サイレントに緩いデフォルトにフォールバックするのではなく、明確にエラーを発生させます。ハンドブックは[dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/)で公開されており、ライト/ダークテーマのパリティ、ページごとのWCAG-AAアクセシビリティ（CIでのpa11yによる再試行）、1つの`swarm` CLIリファレンス、およびカスタム404を備えています。6つのパッケージがv1.3.0でロックステップでnpmに公開され、`@dogfood-lab`の下に公開されます。v1.2.xからの破壊的な変更はありません。[CHANGELOG.md](CHANGELOG.md)を参照して、v1.3.0の完全なエントリを確認してください。
 
-受信機能は稼働中です。コンシューマーリポジトリの `dogfood.yml` ワークフローがこのリポジトリに送信され、[`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) が、結果の記録とインデックスを `main` ブランチにコミットします。ハンドブックは [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) で公開されています。インストール方法: `npm install -g @dogfood-lab/dogfood-swarm`。受信機能は、コンシューマーリポジトリから送信される形式で利用されます。詳細は、ハンドブックの「統合」セクションを参照してください。
+レシーバーが稼働しています。コンシューマーリポジトリの`dogfood.yml`ワークフローは、このリポジトリにディスパッチされ、[.github/workflows/ingest.yml](.github/workflows/ingest.yml)が結果のレコードとインデックスを`main`にコミットします。ハンドブックは[dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/)にデプロイされています。主要なインストール：`npm install -g @dogfood-lab/dogfood-swarm`。レシーバー側は、ディスパッチを介して消費されます。詳細は、ハンドブックの統合ページを参照してください。
 
-**プラットフォーム:** Darwin/APFS上でエンドツーエンドの検証済み (Session G の一部として、[`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md) を参照)。サポートされているファイルシステムについては、[Local Development](#local-development) を参照してください。各バージョンに関する詳細は、[CHANGELOG.md](CHANGELOG.md) に記載されています。
+**プラットフォーム:** Darwin/APFS上でエンドツーエンドで検証済み（Session Gの一部として、[`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)）。サポートされているファイルシステムについては、[ローカル開発](#local-development)を参照してください。バージョンごとの詳細は、[CHANGELOG.md](CHANGELOG.md)を参照してください。
 
 ## 脅威モデル
 
-`testing-os` は、`mcp-tool-shop-org/*` および `dogfood-lab/*` の信頼できるGitHubリポジトリから `repository_dispatch` を使用して送信された dogfood データを処理します。検証機能は、GitHub Actions の認証情報を必要とします。主張された実行 ID は、GitHub API を使用して確認され、不正な形式、参照の欠落、または無効なポリシーの主張を含む送信は拒否されます。
+testing-osは、`mcp-tool-shop-org/*`および`dogfood-lab/*`の下にある信頼できるGitHubリポジトリから`repository_dispatch`を介してディスパッチされたdogfoodの送信を処理します。検証者はGitHub Actionsのプロビナンスを必要とします。主張された実行IDはGitHub APIを介して確認され、形状が不正、参照が欠落している、またはポリシーの主張が無効な送信は拒否されます。
 
-`testing-os` が扱うデータ: 各 `repository_dispatch` ペイロードに含まれる送信 JSON データ; このリポジトリ内の `policies/`, `fixtures/`, `records/`, および `indexes/` ディレクトリ; `api.github.com` へのアウトバウンド呼び出し (認証情報の検証用)。
+**testing-osが扱うもの:** 各`repository_dispatch`ペイロード内の送信JSON、このリポジトリ内の`policies/`、`fixtures/`、`records/`、および`indexes/`、およびプロビナンス検証のための`api.github.com`へのアウトバウンド呼び出し。
 
-**testing-os が扱わないもの:** ユーザー向けのソースコード、ユーザーリポジトリ内の、ディスパッチ範囲を超える機密情報、およびこのリポジトリのワーキングツリー外にあるもの。
+**testing-osが扱わないもの:** コンシューマーのソースコード、コンシューマーリポジトリ内のディスパッチエンベロープを超えたシークレット、またはこのリポジトリのワーキングツリー外のすべてのもの。
 
-**必要な権限:** レシーバーワークフローは、このリポジトリのみに限定された `contents: write` スコープで実行されます。 プロヴェナンス検証では、ワークフローのデフォルトの `GITHUB_TOKEN` を使用して、読み取り専用の Actions API への呼び出しを行います。 **テレメトリー、サードパーティサービス、分析機能は一切ありません。このコードベースは、外部サーバーへの通信を行わず、GitHub 以外のネットワークへの接続も許可しません。**
+**必要な権限:** レシーバーワークフローは、このリポジトリに限定された`contents: write`で実行されます。プロビナンス検証は、ワークフローのデフォルトの`GITHUB_TOKEN`を使用して、読み取り専用のActions API呼び出しを行います。**テレメトリ、サードパーティサービス、分析はありません。このコードベースは、ホームに電話をかけたり、GitHubを超えてネットワークインターフェイスを公開したりしません。**
 
 ## パッケージ
 
 | パッケージ | ソース | 目的 |
 |---------|--------|---------|
-| `@dogfood-lab/schemas` | TypeScript | 8つの JSON スキーマ (record, finding, pattern, recommendation, doctrine, policy, scenario, submission)。 |
-| `@dogfood-lab/verify` | JS | 中央のサブミッションバリデータ。サブミッションは、永続化される前にここを経由します。 |
-| `@dogfood-lab/findings` | JS | ファインディング契約 + derive/review/synthesis/advise パイプライン。 |
-| `@dogfood-lab/ingest` | JS | パイプラインの連携: dispatch → verify → persist → index。 |
-| `@dogfood-lab/report` | JS | ソースリポジトリ用のサブミッションビルダー。 |
+| `@dogfood-lab/schemas` | TypeScript | 8つのJSONスキーマ（レコード、結果、パターン、推奨事項、ドクトリン、ポリシー、シナリオ、送信）。 |
+| `@dogfood-lab/verify` | JS | 中央の送信検証器。送信は、永続化される前にここを通過します。 |
+| `@dogfood-lab/findings` | JS | 結果のコントラクト + 派生/レビュー/合成/アドバイスのパイプライン。 |
+| `@dogfood-lab/ingest` | JS | パイプラインのグルー：ディスパッチ → 検証 → 永続化 → インデックス作成。 |
+| `@dogfood-lab/report` | JS | ソースリポジトリ用の送信ビルダー。 |
 | `@dogfood-lab/portfolio` | JS | クロスリポジトリポートフォリオジェネレーター。 |
-| `@dogfood-lab/dogfood-swarm` | JS | 10段階の並列エージェントプロトコル + SQLite コントロールプレーン + `swarm` バイナリ。 |
+| `@dogfood-lab/dogfood-swarm` | JS | 10段階の並列エージェントプロトコル + SQLiteコントロールプレーン + `swarm`バイナリ。 |
 
-**独立**性を保ちながら、公開された API を介して統合される、関連するテストツール: [`shipcheck`](https://github.com/mcp-tool-shop-org/shipcheck), [`repo-knowledge`](https://github.com/mcp-tool-shop-org/repo-knowledge), [`ai-eyes-mcp`](https://github.com/mcp-tool-shop-org/ai-eyes-mcp), [`taste-engine`](https://github.com/mcp-tool-shop-org/taste-engine), [`style-dataset-lab`](https://github.com/mcp-tool-shop-org/style-dataset-lab)。
+公開されたAPIを介して統合されるが、**独立性を維持する**兄弟のテストツール：[`shipcheck`](https://github.com/mcp-tool-shop-org/shipcheck)、[`repo-knowledge`](https://github.com/mcp-tool-shop-org/repo-knowledge)、[`ai-eyes-mcp`](https://github.com/mcp-tool-shop-org/ai-eyes-mcp)、[`taste-engine`](https://github.com/mcp-tool-shop-org/taste-engine)、[`style-dataset-lab`](https://github.com/mcp-tool-shop-org/style-dataset-lab)。
 
 ## レイアウト
 
@@ -95,13 +97,13 @@ npm test            # vitest for schemas, node --test for the rest
 npm run verify      # build + test (canonical pre-commit check)
 ```
 
-Node ≥ 20 が必要です。CI マトリックスでは、Node 20 と 22 を `ubuntu-latest` で実行し、ローカルでは Node 25 で検証します。
+Node 22以上が必要です。CIマトリックスでは、`ubuntu-latest`上でNode 22と24を実行し、ローカル環境でNode 25で検証します。
 
-**サポートされているファイルシステム:** APFS, HFS+, ext4 (CI のベースライン), NTFS — POSIX の `link(2)` を実装しているもの。 **サポートされていないもの:** exFAT, FAT32。 [`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js) にあるファイルロック CAS は、アトミックな公開のためにハードリンクのセマンティクスを必要とします。exFAT では、`linkSync` が `ENOTSUP` エラーを発生させます (サイレントではなく、エラーが発生します)。よくある問題: クロスプラットフォームの外部 SSD は、多くの場合 exFAT でフォーマットされています。リポジトリをローカルの APFS/HFS+ にクローンしてください。完全なセッション G 検証マトリックスについては、[`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md) を参照してください。
+**サポートされているファイルシステム:** APFS、HFS+、ext4（CIの基本設定）、NTFS — POSIX `link(2)`を実装しているもの。**サポート対象外:** exFAT、FAT32。[`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js)内のファイルロックCASは、アトミックな公開のためにハードリンクのセマンティクスを必要とします。exFATの場合、`linkSync`は`ENOTSUP`エラーを発生させます（エラーメッセージが表示されます）。注意点：クロスプラットフォームの外部SSDは、多くの場合exFATでフォーマットされています。代わりに、リポジトリをローカルのAPFS/HFS+にクローンしてください。完全なSession G検証マトリックスについては、[`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)を参照してください。
 
 ## バージョン管理
 
-すべての `@dogfood-lab/*` パッケージで一貫したバージョンを使用します。バージョンは、この README のバージョン行で、`scripts/sync-version.mjs` (prebuild として実行) を使用して `package.json` から自動的に更新されます。 **v1.2.0** 以降、`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm` の 6 つのパッケージが、`@dogfood-lab` スコープで npm に公開されています。7 番目のパッケージ (`@dogfood-lab/portfolio`) は、モノリポジトリ内で使用されます。
+すべての`@dogfood-lab/*`パッケージで、バージョンが同期して更新されます。このREADMEのバージョン行は、`scripts/sync-version.mjs`（`prebuild`として実行）によって`package.json`から自動的に取得されます。**v1.2.0**では、6つのパッケージが`@dogfood-lab`スコープの下でnpmに公開されます：`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`。7番目のパッケージ（`@dogfood-lab/portfolio`）は、モノリポジトリ内で内部的に使用されます。
 
 ## ライセンス
 
@@ -111,8 +113,8 @@ Node ≥ 20 が必要です。CI マトリックスでは、Node 20 と 22 を `
 
 <div align="center">
 
-**[マニュアル](https://dogfood-lab.github.io/testing-os/handbook/)** · **[すべてのリポジトリ](https://github.com/orgs/dogfood-lab/repositories)** · **[プロフィール](https://github.com/dogfood-lab)**
+**[ハンドブック](https://dogfood-lab.github.io/testing-os/handbook/)** · **[すべてのリポジトリ](https://github.com/orgs/dogfood-lab/repositories)** · **[プロフィール](https://github.com/dogfood-lab)**
 
-*まず食べる。次に、リリースする。*
+まずは食べて、次にリリースしましょう。
 
-</div
+</div>

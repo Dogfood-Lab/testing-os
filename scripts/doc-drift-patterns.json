@@ -6,11 +6,14 @@
       "id": "error-codes",
       "kind": "source-vs-target-coverage",
       "title": "All error codes documented",
-      "description": "Every error.code value emitted from packages/**/lib/errors.js (including STATE_MACHINE_<KIND> expansions) must appear in the error-codes handbook page.",
+      "description": "Every error.code value emitted from packages/**/lib/errors.js (including STATE_MACHINE_<KIND> expansions, the D2/D1 batch + singleton collision/schema-invalid families, the DISPATCH_* union on DispatchPreconditionError, and the VALIDATOR_FAULT_* template-literal family on verify/index.js's runValidator helper) must appear in the error-codes handbook page. Stage C Wave A2.1 FX2 closed the vacuous-extractor root cause: the prior `reasons.push(`VALIDATOR_FAULT_` regex matched ZERO lines because verify/index.js pushes a *variable* (`reasons.push(faultReason)`) where the template literal lives in the runValidator helper a few lines up; the prior DISPATCH_* coverage was zero because no extractor existed at all (DispatchPreconditionError sets `this.code = opts.code` from a JSDoc-typed union, so the general `this.code = 'X'` literal extractor missed it). Fixed extractors target the MINT site (template-literal definition + JSDoc type union) rather than the assignment site, asserted non-vacuous by scripts/check-doc-drift.test.mjs's `error-codes META` test which strips each enforced code from the handbook and asserts drift fires.",
       "sources": [
         "packages/dogfood-swarm/lib/errors.js",
         "packages/ingest/validate-record.js",
-        "packages/ingest/persist.js"
+        "packages/ingest/persist.js",
+        "packages/findings/derive/write-findings.js",
+        "packages/findings/synthesis/write-artifacts.js",
+        "packages/verify/index.js"
       ],
       "sourceExtractors": [
         {
@@ -20,12 +23,24 @@
         {
           "regex": "this\\.code\\s*=\\s*`STATE_MACHINE_\\$\\{opts\\.kind\\}`",
           "expand": ["STATE_MACHINE_BLOCKED", "STATE_MACHINE_TERMINAL", "STATE_MACHINE_INVALID"]
+        },
+        {
+          "regex": "code:\\s*['\"]FINDING_ID_COLLISION['\"]",
+          "expand": ["FINDING_ID_COLLISION"]
+        },
+        {
+          "regex": "`VALIDATOR_FAULT_\\$\\{cls\\}",
+          "expand": ["VALIDATOR_FAULT_SCHEMA", "VALIDATOR_FAULT_POLICY", "VALIDATOR_FAULT_STEPS"]
+        },
+        {
+          "regex": "'(DISPATCH_[A-Z_]+)'",
+          "captureGroup": 1
         }
       ],
       "targets": [
         "site/src/content/docs/handbook/error-codes.md"
       ],
-      "hint": "Document the missing error code in site/src/content/docs/handbook/error-codes.md following the existing format (### `CODE_NAME`, Class, Trigger, Message shape, Hint, Operator action)."
+      "hint": "Document the missing error code in site/src/content/docs/handbook/error-codes.md following the existing format (### `CODE_NAME`, Class, Trigger, Message shape, Hint, Operator action). The error-codes gate's source list covers: dogfood-swarm/lib/errors.js (typed class `this.code = 'X'` literals for IsolationError/CollectUpsertError/CliInvalidGlobsError, the STATE_MACHINE_${kind} template literal, AND the DISPATCH_* JSDoc-type-union string literals on DispatchPreconditionError — the class itself uses `this.code = opts.code` so the union IS the contract), ingest/validate-record.js + ingest/persist.js (typed class .code literals), findings/derive/write-findings.js + findings/synthesis/write-artifacts.js (the `this.code = 'X'` literals on the SCHEMA_INVALID + ID_COLLISION classes — caught by the general literal extractor, no per-code expand needed), and verify/index.js (the `VALIDATOR_FAULT_${cls}` template-literal definition in the runValidator helper — extracts at the MINT site, NOT the `reasons.push(faultReason)` callsite, because the latter pushes a variable and was vacuous pre-FX2)."
     },
     {
       "id": "statuses",
@@ -226,7 +241,7 @@
       "id": "agent-output-schema",
       "kind": "schema-conformance",
       "title": "Agent JSON outputs (audit / feature / amend) conform to scripts/agent-output.schema.json",
-      "description": "The canonical envelope is { domain, summary, [findings|features|fixes], ... }. Phase-7-wave-1 productization (F-252713-017): replaces silent normalization in collect.js with a structured AgentOutputValidationError pointing the agent at the canonical shape. The schema is permissive at top level (only `domain` + `summary` required) so it can govern audit, feature, AND amend outputs, with phase-specific $defs for the inner shapes. Targets a fixture path today — the live wiring is a cross-wave dependency on backend (Phase 7 wave 2 will (a) extend the categories enum to absorb historical wave-15/wave-20 categories or migrate those files, and (b) wire the validator into collect.js's mergeFindings flow).",
+      "description": "The canonical envelope is { domain, summary, [findings|features|fixes], ... }. Phase-7-wave-1 productization (F-252713-017): replaces silent normalization in collect.js with a structured AgentOutputValidationError pointing the agent at the canonical shape. The schema is permissive at top level (only `domain` + `summary` required) so it can govern audit, feature, AND amend outputs, with phase-specific $defs for the inner shapes. Stage C Wave A2 D4-004 closed the vacuous-gate root cause: previously this check carried `allowEmpty: true` and both target globs matched ZERO committed files — the gate was structurally green forever. Now `swarms/__schema-fixtures__/` ships 3 hand-curated positive fixtures (basic, audit-with-findings, amend-with-fixes) plus 1 negative fixture (invalid-missing-domain.json). The handler reads `negativeFilenamePattern` (default `^invalid-`): basenames matching that regex MUST fail Ajv validation. If a negative fixture passes, the gate emits `NEGATIVE_FIXTURE_PASSED` — proof that the schema loosened or the fixture went stale.",
       "schema": "scripts/agent-output.schema.json",
       "targets": [
         "swarms/__schema-fixtures__/*.json",
@@ -234,8 +249,8 @@
       ],
       "allowlist": [],
       "errorClass": "AgentOutputValidationError",
-      "allowEmpty": true,
-      "hint": "Match scripts/agent-output.schema.json. Required at top level: domain, summary. Audit outputs add `findings[]` (with severity ∈ CRITICAL/HIGH/MEDIUM/LOW and category ∈ AUDIT_CATEGORIES); feature outputs add `features[]`; amend outputs add `fixes[]` + `files_changed[]`. Live-run target glob expanded 2026-05-14 (study-swarm Prevention-A): wave-2 amend's coordinator-brief drift (fixes_applied vs fixes) was caught at collect-time after agents had already run — moving the schema-conformance check to CI fires the gate at push time so brief-vs-schema drift surfaces before agents are dispatched."
+      "negativeFilenamePattern": "^invalid-",
+      "hint": "Match scripts/agent-output.schema.json. Required at top level: domain, summary. Audit outputs add `findings[]` (with severity ∈ CRITICAL/HIGH/MEDIUM/LOW and category ∈ AUDIT_CATEGORIES); feature outputs add `features[]`; amend outputs add `fixes[]` + `files_changed[]`. Live-run target glob expanded 2026-05-14 (study-swarm Prevention-A): wave-2 amend's coordinator-brief drift (fixes_applied vs fixes) was caught at collect-time after agents had already run — moving the schema-conformance check to CI fires the gate at push time so brief-vs-schema drift surfaces before agents are dispatched. Stage C Wave A2 follow-up: a positive fixture that no longer validates means the schema tightened without updating the fixture (fix one side); a negative fixture that validates means the schema loosened without updating the negative test (fix the schema or the fixture)."
     },
 
     {

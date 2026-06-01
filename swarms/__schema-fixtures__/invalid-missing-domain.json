@@ -1,0 +1,5 @@
+{
+  "stage": "C",
+  "summary": "NEGATIVE fixture — intentionally OMITS the required top-level `domain` field. The schema-conformance handler's negative-fixture convention (filename starts with `invalid-`) means this file MUST fail Ajv validation. If the schema is loosened to no longer require `domain`, this fixture will validate and the gate will report `NEGATIVE_FIXTURE_PASSED` drift, surfacing the contract regression. Do NOT add a domain field to this file.",
+  "findings": []
+}

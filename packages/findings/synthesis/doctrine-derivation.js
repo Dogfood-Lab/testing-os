@@ -11,16 +11,23 @@
 import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import { resolve, join } from 'node:path';
 import yaml from 'js-yaml';
-import { loadAcceptedPatterns } from './recommendation-derivation.js';
+import { loadAcceptedPatterns, loadAcceptedPatternsWithSkips } from './recommendation-derivation.js';
 
 /**
  * Derive doctrine from strong accepted patterns.
  *
+ * D2B-001 — return shape carries a `skipped: [{path, error}]` field so the
+ * silent-loader signal propagates through the derive API. A torn pattern
+ * that WOULD have been considered for doctrine synthesis no longer
+ * disappears with no signal. Legacy callers reading `doctrines` / `stats`
+ * are unaffected.
+ *
  * @param {string} rootDir - dogfood-labs repo root
- * @returns {{ doctrines: Array, stats: { patternsConsidered: number, doctrinesEmitted: number, belowThreshold: number } }}
+ * @returns {{ doctrines: Array, skipped: Array<{path: string, error: string}>, stats: { patternsConsidered: number, doctrinesEmitted: number, belowThreshold: number, patternsSkipped: number } }}
  */
 export function deriveDoctrine(rootDir) {
-  const patterns = loadAcceptedPatterns(rootDir);
+  const { entries, skipped } = loadAcceptedPatternsWithSkips(rootDir);
+  const patterns = entries.map(e => e.data);
   const strong = patterns.filter(p =>
     p.pattern_strength === 'strong' || p.pattern_strength === 'portfolio_stable'
   );
@@ -44,10 +51,12 @@ export function deriveDoctrine(rootDir) {
 
   return {
     doctrines,
+    skipped, // D2B-001: structured skip list for operator legibility
     stats: {
       patternsConsidered: patterns.length,
       doctrinesEmitted: doctrines.length,
-      belowThreshold
+      belowThreshold,
+      patternsSkipped: skipped.length
     }
   };
 }

@@ -63,6 +63,16 @@ function deriveHintForCode(e) {
       return `inspect ${e.outputPath || 'the agent output JSON'} against scripts/agent-output.schema.json and fix the invalid fields. Required at top level: domain, summary. Audit outputs add findings[]; feature outputs add features[]; amend outputs add fixes[] + files_changed[]. Then \`swarm revalidate ${e.runId ?? '<run-id>'} --reason "<text>" --domain=${e.domain ?? '<domain>'}:${e.outputPath ?? '<corrected.json>'} --apply\` to repair the blocked agent_run lawfully (dry-run without --apply)`;
     case 'DUPLICATE_RUN_ID':
       return 'a run with this id already exists — use a fresh run id or `swarm runs` to inspect the existing one';
+    // D3B-003 (Wave A2 Stage C): dispatch precondition codes.
+    case 'DISPATCH_RUN_NOT_FOUND':
+      return 'check `swarm runs` for the correct run id, or `swarm init <repo>` to create a fresh run';
+    case 'DISPATCH_DOMAINS_NOT_FROZEN':
+      return `run \`swarm domains ${e.runId ?? '<run-id>'} --freeze\` after reviewing the domain map, or re-run dispatch with --auto-freeze`;
+    case 'DISPATCH_NO_DOMAINS':
+      return `run \`swarm domains ${e.runId ?? '<run-id>'} --add <name> --globs "[...]"\` then --freeze`;
+    // D3B-004 (Wave A2 Stage C): CLI globs JSON parse / shape failure.
+    case 'CLI_INVALID_GLOBS_JSON':
+      return 'pass --globs \'["packages/foo/**"]\' — wrap the JSON in single quotes so the shell preserves it, and use double quotes for each glob string';
     default:
       return null;
   }

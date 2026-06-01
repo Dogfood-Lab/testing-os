@@ -410,5 +410,24 @@
         }
       }
     }
-  }
+  },
+
+  "allOf": [
+    {
+      "$comment": "H4 / F-stage-a-h4 — additive conditional constraint: when status is 'rejected', review.reject_reason MUST be set. The property's own description has always said this; until wave A1 it was an honor-system rule that the engine silently dropped on merge/supersede transitions. The schema now enforces it. Engine-side enforcement lives in packages/findings/review/review-engine.js performAction (auto-populates reject_reason when target status is 'rejected' and the operator did not supply one).",
+      "if": {
+        "properties": { "status": { "const": "rejected" } },
+        "required": ["status"]
+      },
+      "then": {
+        "required": ["review"],
+        "properties": {
+          "review": {
+            "type": "object",
+            "required": ["reject_reason"]
+          }
+        }
+      }
+    }
+  ]
 }

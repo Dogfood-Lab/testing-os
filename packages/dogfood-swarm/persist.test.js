@@ -7,7 +7,8 @@ import assert from 'node:assert/strict';
 
 import { openMemoryDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains } from './lib/domains.js';
-import { buildRunExport, computeRunVerdict } from './lib/persist/export.js';
+import { buildRunExport, computeRunVerdict, EXPORT_VERSION } from './lib/persist/export.js';
+import { SCHEMA_VERSION } from './db/schema.js';
 import { buildDogfoodSubmission } from './lib/persist/dogfood-bridge.js';
 import { buildAuditPayload } from './lib/persist/repoknowledge-bridge.js';
 
@@ -77,11 +78,33 @@ describe('Canonical export', () => {
     buildCompleteRun(db);
     const exp = buildRunExport(db, 'r1');
 
-    assert.equal(exp.export_version, '1.0.0');
+    // D3B-014 (Phase 10 Step 1): export.export_version sourced from
+    // EXPORT_VERSION constant in export.js, NOT a hardcoded literal —
+    // pin so a future literal-vs-constant drift trips this gate.
+    assert.equal(exp.export_version, EXPORT_VERSION);
     assert.equal(exp.provenance.system, 'swarm-control-plane');
     assert.ok(exp.provenance.content_hash);
     assert.equal(exp.run.repo, 'mcp-tool-shop-org/stillpoint');
     assert.equal(exp.run.status, 'complete');
+    db.close();
+  });
+
+  it('D3B-014: provenance.schema_version is sourced from db/schema.js SCHEMA_VERSION (single source of truth)', () => {
+    // Pre-fix: export.js hardcoded `schema_version: 3` while
+    // db/schema.js was at SCHEMA_VERSION = 5 — stale by 2 versions
+    // with no compile-time signal. The fix imports SCHEMA_VERSION at
+    // the canonical seam so the export envelope can never lag.
+    buildCompleteRun(db);
+    const exp = buildRunExport(db, 'r1');
+
+    assert.equal(
+      exp.provenance.schema_version,
+      SCHEMA_VERSION,
+      `export.provenance.schema_version must equal SCHEMA_VERSION (${SCHEMA_VERSION}); ` +
+      `got ${exp.provenance.schema_version}. If the DB schema bumped without the export ` +
+      `updating, this gate trips — fix by importing SCHEMA_VERSION from db/schema.js ` +
+      `(do not re-introduce the hardcoded literal).`,
+    );
     db.close();
   });
 

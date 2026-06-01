@@ -50,6 +50,78 @@ import {
 import { setTimeoutPolicy, getTimeoutPolicy } from './lib/state-machine.js';
 import { buildDigest } from './lib/findings-digest.js';
 import { renderTopLevelError } from './lib/error-render.js';
+import { CliInvalidGlobsError } from './lib/errors.js';
+
+/**
+ * D3B-004 (Wave A2 Stage C): parse + shape-validate a `--globs <JSON>`
+ * argument. Throws CliInvalidGlobsError (.code = CLI_INVALID_GLOBS_JSON)
+ * on:
+ *   - JSON.parse failure (operator typo)
+ *   - parsed value is not an array
+ *   - array is empty
+ *   - any element is not a string
+ *
+ * The caller (the `domains --add` / `domains --edit` path) gets a stable
+ * code that the top-level handler renders as a structured envelope with
+ * an actionable hint.
+ *
+ * @param {string} raw — the raw arg string after `--globs`
+ * @returns {string[]} — validated globs array
+ */
+function parseGlobsArgOrThrow(raw) {
+  if (typeof raw !== 'string' || raw.length === 0) {
+    throw new CliInvalidGlobsError(
+      '--globs requires a JSON array of glob strings; got empty input',
+      {
+        received: '',
+        hint: 'pass --globs \'["packages/foo/**", "packages/bar/**"]\' (note the quoting)',
+      }
+    );
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    throw new CliInvalidGlobsError(
+      `--globs requires a JSON array of glob strings; could not parse input: ${e.message}`,
+      {
+        received: raw.length > 120 ? raw.slice(0, 117) + '...' : raw,
+        cause: e.message,
+        hint: 'pass --globs \'["packages/foo/**"]\' — note the surrounding single quotes so the shell doesn\'t eat the JSON, and the double quotes around each glob string',
+      }
+    );
+  }
+  if (!Array.isArray(parsed)) {
+    throw new CliInvalidGlobsError(
+      `--globs must be a JSON array of glob strings; got ${typeof parsed === 'object' && parsed !== null ? 'an object' : typeof parsed}`,
+      {
+        received: raw.length > 120 ? raw.slice(0, 117) + '...' : raw,
+        hint: 'wrap in [ ] — e.g. --globs \'["packages/foo/**"]\'',
+      }
+    );
+  }
+  if (parsed.length === 0) {
+    throw new CliInvalidGlobsError(
+      '--globs must be a non-empty array of glob strings; got []',
+      {
+        received: raw,
+        hint: 'at least one glob is required — e.g. --globs \'["packages/foo/**"]\'',
+      }
+    );
+  }
+  for (let i = 0; i < parsed.length; i++) {
+    if (typeof parsed[i] !== 'string') {
+      throw new CliInvalidGlobsError(
+        `--globs array element at index ${i} must be a string; got ${typeof parsed[i]}`,
+        {
+          received: raw.length > 120 ? raw.slice(0, 117) + '...' : raw,
+          hint: 'every element must be a glob string — e.g. --globs \'["packages/foo/**", "packages/bar/**"]\'',
+        }
+      );
+    }
+  }
+  return parsed;
+}
 
 // ── Resolve DB path ──
 // Default: F:\AI\dogfood-labs\swarms\control-plane.db
@@ -138,7 +210,8 @@ function cmdDomains(args) {
 
     const changes = {};
     const globsIdx = args.indexOf('--globs');
-    if (globsIdx >= 0) changes.globs = JSON.parse(args[globsIdx + 1]);
+    // D3B-004 (Wave A2 Stage C): structured guard around operator JSON input.
+    if (globsIdx >= 0) changes.globs = parseGlobsArgOrThrow(args[globsIdx + 1]);
     const ownerIdx = args.indexOf('--ownership');
     if (ownerIdx >= 0) changes.ownership_class = args[ownerIdx + 1];
     const descIdx = args.indexOf('--desc');
@@ -158,7 +231,8 @@ function cmdDomains(args) {
       console.error('--add requires: <name> --globs "[...]"');
       process.exit(1);
     }
-    const globs = JSON.parse(args[globsIdx + 1]);
+    // D3B-004 (Wave A2 Stage C): structured guard around operator JSON input.
+    const globs = parseGlobsArgOrThrow(args[globsIdx + 1]);
     const ownerIdx = args.indexOf('--ownership');
     const ownership = ownerIdx >= 0 ? args[ownerIdx + 1] : 'owned';
     addDomain(db, runId, { name: domainName, globs, ownership_class: ownership });

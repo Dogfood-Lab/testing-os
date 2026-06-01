@@ -91,7 +91,7 @@ This repo mirrors `world-forge` deliberately (npm workspaces, `tsc --build` comp
 - Package names mirror the directory: `packages/findings/` → `@dogfood-lab/findings`. Exception: `dogfood-swarm` (the directory name disambiguates from generic "swarm")
 
 ### Versioning
-**Lockstep.** All packages bump together. Currently **`1.0.0`** ([release v1.0.0 cut 2026-04-25](https://github.com/dogfood-lab/testing-os/releases/tag/v1.0.0)). The README's `<!-- version:start -->` block is auto-stamped by `scripts/sync-version.mjs` (runs as `prebuild`). Use `npm run sync-version:check` as a CI gate when you bump.
+**Lockstep.** All packages bump together. Currently **`1.2.3`** ([release v1.2.3 cut 2026-05-20](https://github.com/dogfood-lab/testing-os/releases/tag/v1.2.3); first stable v1.0.0 cut 2026-04-25). Six of seven `@dogfood-lab/*` packages have shipped to npm since v1.2.0; the seventh (`portfolio`) remains workspace-internal. The README's `<!-- version:start -->` block is auto-stamped by `scripts/sync-version.mjs` (runs as `prebuild`). Use `npm run sync-version:check` as a CI gate when you bump.
 
 ### TypeScript
 `tsconfig.base.json` is the only place to set compiler options. Per-package `tsconfig.json` extends it and adds `outDir`/`rootDir`/`include`. `composite: true` everywhere. Never set `baseUrl` (deprecated; bit repo-knowledge in CI).
@@ -123,7 +123,7 @@ JSON Schema 2020-12. Title and description on every schema and every property. `
 `$id` URLs point at the canonical monorepo path: `https://github.com/dogfood-lab/testing-os/packages/schemas/src/json/<name>.schema.json`. If you ever change a schema in a way that consumers should treat as a contract change, bump the workspace lockstep version — `$id` is a contract field.
 
 ### Ship gate
-`SHIP_GATE.md` at the repo root tracks what shipcheck audits. Hard gates A–D (Security, Errors, Operator Docs, Hygiene) currently pass at 100% (20 checked / 17 SKIP-with-justification / 0 unchecked). Soft gate E (Identity) is fully met. Re-run `node F:/AI/shipcheck/bin/shipcheck.mjs audit` before any release; if a previously-checked item fails, fix the underlying gap before bumping the version.
+`SHIP_GATE.md` at the repo root tracks what shipcheck audits. Hard gates A–D (Security, Errors, Operator Docs, Hygiene) currently pass at 100% (21 checked / 17 SKIP-with-justification / 0 unchecked at v1.2.3, re-affirmed 2026-05-31). Soft gate E (Identity) is fully met. Re-run `npx @mcptoolshop/shipcheck audit` before any release; if a previously-checked item fails, fix the underlying gap before bumping the version.
 
 ### Runtime data dirs at the repo root
 `policies/`, `fixtures/`, `records/`, `indexes/`, `reports/`, `swarms/`, `dogfood/`, `docs/`. These are the **shared backing store** that consumers (e.g. `repo-knowledge`, `shipcheck`) read from via `raw.githubusercontent.com/dogfood-lab/testing-os/main/...` URLs. The paths inside those dirs are part of the public API. **Don't reorganize them without thinking about every consumer first.**
@@ -151,7 +151,7 @@ CI runs the same `verify` flow on Node 22 + 24.
 
 ## Working with the legacy
 
-The legacy repo (`mcp-tool-shop-org/dogfood-labs`) is **archived but not deleted**. The 30-day grace window before Session H delete started 2026-04-25. Several historical references remain on purpose:
+The legacy repo (`mcp-tool-shop-org/dogfood-labs`) is **archived but not deleted**. The 30-day grace window before Session H delete started 2026-04-25 and **passed on 2026-05-25**; deletion still gated on Mike's explicit go/no-go (current date 2026-05-31). Several historical references remain on purpose:
 
 - Old records have `repo: "mcp-tool-shop-org/dogfood-labs"` and old paths in their provenance — these are historical truth, not bugs
 - `dogfood-lab/testing-os/policies/repos/mcp-tool-shop-org/dogfood-labs.yaml` — the policy file *for* the legacy repo itself; archived artifact

@@ -20,7 +20,7 @@
  */
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -897,6 +897,180 @@ test('schema-conformance: schema file missing reports config-error', async (t) =
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// schema-conformance — negative-fixture discrimination (D4-004, Wave A2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('schema-conformance: negative fixture (basename matches negativeFilenamePattern) MUST fail validation (D4-004)', async (t) => {
+  // A file matching the negative-filename pattern that DOES validate must
+  // be reported as drift — the gate is asserting "this fixture intentionally
+  // violates the schema; if it passes, the schema loosened".
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  // A negative fixture that *accidentally* passes the schema:
+  fx.write(
+    'fixtures/invalid-broken-on-purpose.json',
+    JSON.stringify(VALID_AMEND_OUTPUT),
+  );
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json'],
+      negativeFilenamePattern: '^invalid-',
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  assert.match(result.reports[0].message, /NEGATIVE fixture passed validation/);
+  assert.equal(result.reports[0].error?.code, 'NEGATIVE_FIXTURE_PASSED');
+});
+
+test('schema-conformance: negative fixture that FAILS validation passes the gate (the happy path) (D4-004)', async (t) => {
+  // The correct shape of a negative fixture: it intentionally violates the
+  // schema. The handler silently accepts that as the expected outcome.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write(
+    'fixtures/invalid-missing-domain.json',
+    JSON.stringify({ summary: 'no domain field — must fail' }),
+  );
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json'],
+      negativeFilenamePattern: '^invalid-',
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('schema-conformance: positive + negative fixtures wired together (D4-004 end-to-end)', async (t) => {
+  // Mixed-mode test: one positive fixture that validates + one negative
+  // fixture that does not. The gate stays clean.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write('fixtures/valid-basic.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  fx.write(
+    'fixtures/invalid-missing-summary.json',
+    JSON.stringify({ domain: 'x' }),
+  );
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json'],
+      negativeFilenamePattern: '^invalid-',
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('schema-conformance: default negativeFilenamePattern is `^invalid-` (D4-004 default)', async (t) => {
+  // No explicit pattern; the default fires. Confirms the live config
+  // (which sets negativeFilenamePattern explicitly for documentation
+  // purposes) and the default behavior stay aligned.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write(
+    'fixtures/invalid-no-summary.json',
+    JSON.stringify({ domain: 'x' }),
+  );
+  fx.write('fixtures/valid.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json'],
+      // No negativeFilenamePattern set → default ^invalid- applies.
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live-tree wiring for the agent-output-schema check (D4-004 — behavioral
+// assertion, not just structural).
+//
+// Before Wave A2, the live `agent-output-schema` check carried `allowEmpty:
+// true` and both globs matched zero committed files. The framework-self-
+// test only checked STRUCTURE (required fields present) — vacuous gates
+// stayed vacuous forever. These tests assert the BEHAVIOR: the live check
+// matches positive + negative committed fixtures, the positives validate,
+// the negative validates-as-rejected, and `allowEmpty` is GONE so a future
+// zero-match (someone deletes the fixtures directory) fails loud.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('LIVE WIRING: agent-output-schema check has at least one positive AND one negative fixture committed (D4-004)', async () => {
+  const cfgPath = resolve(repoRoot, 'scripts/doc-drift-patterns.json');
+  const { readFileSync: read } = await import('node:fs');
+  const config = JSON.parse(read(cfgPath, 'utf8'));
+  const entry = config.checks.find((c) => c.id === 'agent-output-schema');
+  assert.ok(entry, 'expected an agent-output-schema check entry in scripts/doc-drift-patterns.json');
+
+  // The first target glob is the canonical hand-curated fixture path.
+  // Read it via the same expandGlobs helper the framework uses.
+  const matched = expandGlobs(entry.targets, repoRoot, { recursive: true });
+  const basenames = matched.map((f) => f.replace(/\\/g, '/').split('/').pop());
+
+  const negPattern = new RegExp(entry.negativeFilenamePattern ?? '^invalid-');
+  const positives = basenames.filter((b) => !negPattern.test(b));
+  const negatives = basenames.filter((b) => negPattern.test(b));
+
+  assert.ok(
+    positives.length >= 1,
+    `expected at least 1 POSITIVE fixture matching ${entry.targets.join(' | ')}; got 0. ` +
+      `D4-004 invariant: hand-curated fixtures live under swarms/__schema-fixtures__/ — ` +
+      `a positive shape proves the schema's required[] passes for legitimate envelopes.`,
+  );
+  assert.ok(
+    negatives.length >= 1,
+    `expected at least 1 NEGATIVE fixture matching ${entry.targets.join(' | ')} ` +
+      `(basename starts with 'invalid-'); got 0. D4-004 invariant: at least one fixture ` +
+      `must intentionally violate the schema so a future schema-loosening is caught.`,
+  );
+});
+
+test('LIVE WIRING: agent-output-schema check does NOT carry allowEmpty:true (D4-004 — vacuous-gate root cause closed)', async () => {
+  const cfgPath = resolve(repoRoot, 'scripts/doc-drift-patterns.json');
+  const { readFileSync: read } = await import('node:fs');
+  const config = JSON.parse(read(cfgPath, 'utf8'));
+  const entry = config.checks.find((c) => c.id === 'agent-output-schema');
+  assert.ok(entry);
+  assert.notEqual(
+    entry.allowEmpty,
+    true,
+    'D4-004: `allowEmpty: true` was the vacuous-gate enabler. Drop it. ' +
+      'If both target globs match zero files, the gate must fail loud — that is the whole point.',
+  );
+});
+
+test('LIVE WIRING: running the agent-output-schema check validates the committed positive fixtures (D4-004)', async () => {
+  // Behavior assertion: the live check, run against the live tree, passes.
+  // This is the operator-facing contract — `npm run check-doc-drift` stays
+  // green only as long as positives validate AND negatives fail.
+  const result = await runDriftChecks({ repoRoot, checkId: 'agent-output-schema' });
+  assert.equal(
+    result.clean,
+    true,
+    `agent-output-schema check should pass against the committed fixtures. ` +
+      `Reports: ${JSON.stringify(result.reports, null, 2)}`,
+  );
+  assert.equal(result.checksRun, 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // framework-self-test handler — meta-check
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -1015,4 +1189,158 @@ test('expandGlobs: doublestar glob (recursive) walks subtrees when opts.recursiv
   fx.write('packages/c/skip.txt', '');
   const matched = expandGlobs(['packages/**/*.js'], fx.dir, { recursive: true });
   assert.equal(matched.length, 3, JSON.stringify(matched));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// META-TEST: error-codes gate non-vacuity (Wave A2.1 FX2)
+//
+// The error-codes check is `source-vs-target-coverage` — it claims to extract
+// every error code emitted by the listed source files and assert each one
+// appears in site/src/content/docs/handbook/error-codes.md. The vacuity
+// failure mode is silent: an extractor regex that matches ZERO lines in its
+// declared source file produces ZERO tokens, so the handbook can drop the
+// corresponding code with NO drift signal — the gate stays green forever.
+//
+// Pre-FX2 this happened to 6 of the 19 codes the gate claimed to enforce:
+//   - VALIDATOR_FAULT_{SCHEMA,POLICY,STEPS}: extractor regex
+//     `reasons\.push\(\s*\`VALIDATOR_FAULT_` matched nothing because
+//     packages/verify/index.js pushes a *variable* (reasons.push(faultReason))
+//     where faultReason is minted as `VALIDATOR_FAULT_${cls}` on a different
+//     line, in a helper function. The mint site and the push site are
+//     decoupled — the extractor watched the wrong line.
+//   - DISPATCH_{RUN_NOT_FOUND,DOMAINS_NOT_FROZEN,NO_DOMAINS}: NO extractor
+//     existed at all. DispatchPreconditionError uses `this.code = opts.code`
+//     (variable), so the general `this.code = 'X'` literal extractor misses
+//     them; the codes only appear as literals in the JSDoc @param type union
+//     on the class constructor in packages/dogfood-swarm/lib/errors.js.
+//
+// The test STRATEGY:
+//   For each code claimed to be enforced, build a fixture that mirrors the
+//   live tree (same config + same source files) but with that one code's
+//   mentions stripped from the handbook copy. Run `runDriftChecks` on the
+//   fixture. If the gate is honestly extracting that code, the result MUST
+//   report drift AND list that code in `missing[]`. If the gate stayed clean
+//   the extractor is vacuous — the failure surface of this meta-test.
+//
+// What this test CANNOT catch: schema-level claims of what should be
+// extracted vs what actually is. If a future code is added to the handbook
+// without being added to EXPECTED_ENFORCED_CODES, the test won't pin it. The
+// list is the test's spec; updating the handbook requires updating the spec.
+// That tradeoff is deliberate — it forces a deliberate decision on whether
+// a new code is gated, instead of letting "documented but un-extracted"
+// codes accumulate silently.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('error-codes META: removing any enforced code from the handbook MUST trigger drift (no vacuous extractors)', async (t) => {
+  // The 19 codes the live `error-codes` check is documented to enforce. Pre-
+  // FX2, 6 of these (VALIDATOR_FAULT_* + DISPATCH_*) were vacuous — the
+  // extractor regex matched nothing in its declared source file, so the
+  // gate let an operator silently delete the heading from the handbook.
+  // This array is the contract. Adding a new code to the handbook without
+  // adding it here will not fail this test; that's the spec — explicit
+  // opt-in to enforcement, no implicit "if it's documented it must be
+  // enforced" leaks. Removing a code here without removing it from the
+  // handbook ALSO won't fail this test directly, but that combination will
+  // surface as a stale-config smell in review.
+  const EXPECTED_ENFORCED_CODES = [
+    'RECORD_SCHEMA_INVALID',
+    'DUPLICATE_RUN_ID',
+    'ISOLATION_FAILED',
+    'COLLECT_UPSERT_FAILED',
+    'DISPATCH_RUN_NOT_FOUND',
+    'DISPATCH_DOMAINS_NOT_FROZEN',
+    'DISPATCH_NO_DOMAINS',
+    'CLI_INVALID_GLOBS_JSON',
+    'FINDING_ID_COLLISION',
+    'PATTERN_ID_COLLISION',
+    'RECOMMENDATION_ID_COLLISION',
+    'DOCTRINE_ID_COLLISION',
+    'FINDING_SCHEMA_INVALID',
+    'PATTERN_SCHEMA_INVALID',
+    'RECOMMENDATION_SCHEMA_INVALID',
+    'DOCTRINE_SCHEMA_INVALID',
+    'VALIDATOR_FAULT_SCHEMA',
+    'VALIDATOR_FAULT_POLICY',
+    'VALIDATOR_FAULT_STEPS',
+  ];
+  assert.equal(EXPECTED_ENFORCED_CODES.length, 19,
+    'spec invariant: 19 enforced codes (3 STATE_MACHINE_* expansions live elsewhere)');
+
+  // Read the live config + live handbook + live source files. The config is
+  // the contract under test — we copy it into the fixture verbatim.
+  const liveCfgPath = resolve(repoRoot, 'scripts/doc-drift-patterns.json');
+  const liveCfg = JSON.parse(readFileSync(liveCfgPath, 'utf8'));
+  const ecEntry = liveCfg.checks.find((c) => c.id === 'error-codes');
+  assert.ok(ecEntry, 'expected an error-codes check entry in scripts/doc-drift-patterns.json');
+  assert.equal(ecEntry.kind, 'source-vs-target-coverage');
+
+  const liveHandbookPath = resolve(repoRoot, 'site/src/content/docs/handbook/error-codes.md');
+  const liveHandbook = readFileSync(liveHandbookPath, 'utf8');
+
+  // Sanity: the targets array in the config should resolve to the handbook
+  // path. We mirror just that one target file into the fixture.
+  assert.ok(
+    ecEntry.targets.includes('site/src/content/docs/handbook/error-codes.md'),
+    `expected error-codes.md in targets[]; got ${JSON.stringify(ecEntry.targets)}`,
+  );
+
+  // Snapshot every source file the live entry reads so the fixture's
+  // extractors see identical input to the real ones. Source paths are
+  // concrete (no globs) in the error-codes entry.
+  const sourceSnapshots = new Map();
+  for (const src of ecEntry.sources ?? []) {
+    sourceSnapshots.set(src, readFileSync(resolve(repoRoot, src), 'utf8'));
+  }
+
+  const vacuous = [];
+  for (const code of EXPECTED_ENFORCED_CODES) {
+    const fx = makeFixture(t);
+    // Mirror source files verbatim.
+    for (const [src, content] of sourceSnapshots) {
+      fx.write(src, content);
+    }
+    // Mirror the config verbatim — we want to exercise the LIVE extractor
+    // regexes, not a hand-picked subset.
+    fx.write('scripts/doc-drift-patterns.json', JSON.stringify(liveCfg, null, 2));
+    // Strip the code from the handbook. Use word boundaries so we don't
+    // accidentally damage substrings (irrelevant for the canonical names
+    // since they're all distinct identifiers, but defensible if a future
+    // code shares a prefix with another).
+    const stripped = liveHandbook.replace(
+      new RegExp(`\\b${code}\\b`, 'g'),
+      '__REMOVED_BY_META_TEST__',
+    );
+    assert.notEqual(stripped, liveHandbook,
+      `precondition: handbook must contain at least one literal mention of ${code} before stripping`);
+    fx.write('site/src/content/docs/handbook/error-codes.md', stripped);
+
+    const result = await runDriftChecks({
+      repoRoot: fx.dir,
+      configPath: resolve(fx.dir, 'scripts/doc-drift-patterns.json'),
+      checkId: 'error-codes',
+    });
+
+    // The gate must fail AND `missing[]` must contain THIS code. A "fails
+    // for other reasons" pass is not OK — the contract is per-code.
+    const allMissing = result.reports.flatMap((r) => r.missing ?? []);
+    const enforced = !result.clean && allMissing.includes(code);
+    if (!enforced) {
+      vacuous.push({
+        code,
+        clean: result.clean,
+        missing: allMissing,
+        reports: result.reports.map((r) => ({ severity: r.severity, message: r.message })),
+      });
+    }
+  }
+
+  assert.equal(
+    vacuous.length,
+    0,
+    `Vacuous error-codes extractors detected (${vacuous.length} of ${EXPECTED_ENFORCED_CODES.length} codes are not actually enforced).\n` +
+    `Each vacuous code can be deleted from the handbook with NO drift signal — the gate is silently broken for it.\n` +
+    `Details:\n${vacuous.map((v) => `  - ${v.code}: clean=${v.clean} missing=${JSON.stringify(v.missing)}`).join('\n')}\n` +
+    `Fix in scripts/doc-drift-patterns.json: ensure every code has an extractor whose regex matches AT LEAST ONE line in its declared source file. ` +
+    `For codes minted via a variable (e.g. \`this.code = opts.code\`), match at the MINT site (template literal definition, JSDoc type union, or object-literal callsite), not the assignment site.`,
+  );
 });

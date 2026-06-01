@@ -191,10 +191,39 @@ describe('Schema: enum integrity', () => {
   });
 
   it('accepts all valid status values', () => {
-    for (const status of ['candidate', 'reviewed', 'accepted', 'rejected']) {
+    // H4 / F-stage-a-h4 — the schema's additive `if/then` requires
+    // `review.reject_reason` whenever `status === 'rejected'`. The enum
+    // integrity test still proves every status value is a legal enum
+    // member; for 'rejected' it now also supplies the conditionally-
+    // required reject_reason so the test exercises enum integrity without
+    // colliding with the cross-field constraint.
+    for (const status of ['candidate', 'reviewed', 'accepted']) {
       const result = validateFinding(makeValid({ status }));
       assert.equal(result.valid, true, `Status ${status} should be valid`);
     }
+    const rejected = validateFinding(makeValid({
+      status: 'rejected',
+      review: { reviewed_by: 'test', last_action: 'reject', reject_reason: 'insufficient_evidence' },
+    }));
+    assert.equal(rejected.valid, true, `Status rejected should be valid when reject_reason is set: ${JSON.stringify(rejected.errors)}`);
+  });
+
+  it('rejects status="rejected" without review.reject_reason (H4 if/then enforcement)', () => {
+    // Two failure paths under the if/then: no review at all (so `review` is
+    // missing) OR review is present without reject_reason. Both are
+    // invalid; this test covers both shapes.
+    const noReview = validateFinding(makeValid({ status: 'rejected' }));
+    assert.equal(noReview.valid, false, 'rejected with no review block must be invalid');
+    const noReviewMsgs = JSON.stringify(noReview.errors);
+    assert.match(noReviewMsgs, /review|then/);
+
+    const reviewNoReason = validateFinding(makeValid({
+      status: 'rejected',
+      review: { reviewed_by: 'op', last_action: 'reject' },
+    }));
+    assert.equal(reviewNoReason.valid, false, 'rejected with review but no reject_reason must be invalid');
+    const reasonMsgs = JSON.stringify(reviewNoReason.errors);
+    assert.match(reasonMsgs, /reject_reason/);
   });
 });
 

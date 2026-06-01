@@ -66,4 +66,3 @@ tags:
 
 automation:
   timeout_ms: 600000
-  retry_on_failure: false

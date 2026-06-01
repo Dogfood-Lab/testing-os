@@ -98,6 +98,213 @@ A wave is now in a half-written state: artifact rows + file_claims + agent state
   2. Diagnose the underlying SQLite issue from `Caused by:`. `busy_timeout` usually means another process holds the DB; check for stuck `swarm` processes. UNIQUE collision usually means the fingerprint algorithm matched an existing row — check `swarms/control-plane.db` for the colliding finding.
   3. Re-run `swarm collect` for the same wave once resolved. The outer wrapper is idempotent at the upsert level.
 
+### `DISPATCH_RUN_NOT_FOUND`
+
+:::caution[Severity: HIGH]
+`swarm dispatch <run-id> <phase>` was invoked with a `run-id` that does not exist in the control plane. No wave is created; no agents are dispatched.
+:::
+
+- **Class:** `DispatchPreconditionError` (`packages/dogfood-swarm/lib/errors.js`)
+- **Trigger:** `dispatch()` looked up `runs.id` and got no row. Either the run id is mistyped, or no `swarm init` has been run for this repo.
+- **Message shape:** `Run not found: <run-id>`
+- **Hint:** `check \`swarm runs\` for the correct run id, or \`swarm init <repo>\` to create a fresh run`
+- **NDJSON event emitted before throw:** `dispatch_precondition_failed` with `code=DISPATCH_RUN_NOT_FOUND`, `runId`, `phase`, `correlation_id`.
+- **Operator action:**
+  1. `swarm runs` to list all known runs.
+  2. If the run doesn't exist, `swarm init <repo-path>` to create it.
+
+### `DISPATCH_DOMAINS_NOT_FROZEN`
+
+:::caution[Severity: HIGH]
+`swarm dispatch` refused because the domain map is still in DRAFT state. Domains must be frozen before dispatching to lock the ownership contract that `swarm collect` will enforce.
+:::
+
+- **Class:** `DispatchPreconditionError` (`packages/dogfood-swarm/lib/errors.js`)
+- **Trigger:** `aredomainsFrozen(runId)` returned false and `--auto-freeze` was not passed.
+- **Message shape:** `Domains are not frozen. Review and freeze before dispatching, or pass --auto-freeze.`
+- **Hint:** `run \`swarm domains <run-id> --freeze\` after reviewing, or re-run dispatch with --auto-freeze`
+- **NDJSON event emitted before throw:** `dispatch_precondition_failed` with `code=DISPATCH_DOMAINS_NOT_FROZEN`.
+- **Operator action:**
+  1. `swarm domains <run-id>` to inspect the current draft.
+  2. `swarm domains <run-id> --freeze` to lock the map, OR re-run with `--auto-freeze`.
+
+### `DISPATCH_NO_DOMAINS`
+
+:::caution[Severity: HIGH]
+`swarm dispatch` refused because the run has zero domains defined. There's nothing to dispatch.
+:::
+
+- **Class:** `DispatchPreconditionError` (`packages/dogfood-swarm/lib/errors.js`)
+- **Trigger:** `getDomains(runId).length === 0`. Usually means `swarm init` produced no auto-detected domains and the operator hasn't added any manually.
+- **Message shape:** `No domains defined for this run`
+- **Hint:** `run \`swarm domains <run-id> --add <name> --globs "[...]"\` then --freeze`
+- **NDJSON event emitted before throw:** `dispatch_precondition_failed` with `code=DISPATCH_NO_DOMAINS`.
+- **Operator action:**
+  1. `swarm domains <run-id> --add <name> --globs '["packages/foo/**"]'` to define at least one domain.
+  2. `swarm domains <run-id> --freeze`.
+
+### `CLI_INVALID_GLOBS_JSON`
+
+:::note[Severity: MEDIUM]
+The operator-supplied `--globs <JSON>` could not be parsed or has the wrong shape (not an array, empty array, non-string element). System state is unchanged; the command refused before mutating anything.
+:::
+
+- **Class:** `CliInvalidGlobsError` (`packages/dogfood-swarm/lib/errors.js`)
+- **Trigger:** `swarm domains --add` / `--edit --globs <raw>` invoked with a `raw` value that:
+  - is empty
+  - fails `JSON.parse`
+  - parses to a non-array
+  - parses to an empty array
+  - contains a non-string element
+- **Message shape:** `--globs requires a JSON array of glob strings; <specific reason>`
+- **Hint:** `pass --globs '["packages/foo/**"]' — wrap the JSON in single quotes so the shell preserves it, and use double quotes for each glob string`
+- **Carries:** `received` (the raw input, possibly truncated), `cause` (the inner JSON.parse error message).
+- **Operator action:**
+  1. Re-invoke with shell-safe quoting: `--globs '["packages/foo/**", "packages/bar/**"]'`.
+  2. On Windows PowerShell, escape inner double quotes or use the single-quote outer form per shell rules.
+
+### `FINDING_ID_COLLISION`
+
+:::caution[Severity: HIGH]
+A second write attempted the same `finding_id` as a finding already written. The collision is refused fail-closed; the first finding remains on disk untouched. Pre-fix, the second write silently clobbered the first via atomic temp+rename — operator-invisible data loss.
+:::
+
+- **Class:** object-literal `{ code: 'FINDING_ID_COLLISION', findingId, error }` (in `writeFindings` errors array) AND `FindingIdCollisionError` class (in `writeFinding` singleton) — `packages/findings/derive/write-findings.js`
+- **Trigger:** Two derivation rules generate the same `dfind-<repoSlug>-<lessonSlug>` for the same submission (the id generator does NOT yet discriminate by `rule_id`), and the resulting batch — OR two same-process singleton calls — try to write to the same path. The batch helper `writeFindings` collects collisions into `errors[]`; the singleton `writeFinding` throws.
+- **Message shape:** `intra-batch finding_id collision: '<id>' already claimed by index <N>; refused write at index <M> to avoid silent clobber (D2B-008)` (batch) or `finding_id collision: '<id>' already written in this process; refused to silently clobber (D2B-008 / L3-001 family-seal)` (singleton).
+- **Hint:** rename or skip the colliding finding before re-running `dogfood findings derive --write`. If two rules legitimately share a lesson slug, the structural fix is to differentiate them in `generateFindingId` (rule_id in the slug) — deferred to a follow-on wave.
+- **Operator action:**
+  1. Run `dogfood findings derive` (without `--write`) to see which rule pairs are colliding.
+  2. Either skip the duplicate at the source rule, or extend the id generator to include `rule_id` in the slug.
+  3. If a re-write is legitimate (e.g. after an intentional disk wipe in a test), call `resetSeenWrites(rootDir)` between the two calls.
+
+### `PATTERN_ID_COLLISION`
+
+:::caution[Severity: HIGH]
+A second write attempted the same `pattern_id` as a pattern already written. Same silent-clobber data-loss class as `FINDING_ID_COLLISION`, now fail-closed.
+:::
+
+- **Class:** object-literal `{ code: 'PATTERN_ID_COLLISION', patternId, error }` (in `writePatterns` errors array) AND `PatternIdCollisionError` class (in `writePattern` singleton) — `packages/findings/synthesis/write-artifacts.js`
+- **Trigger:** Two synthesis rules emit the same `dpat-<slug>` (cluster-key collision) and the resulting batch tries to write both, or two same-process singleton calls collide.
+- **Message shape:** `intra-batch pattern_id collision: '<id>' already claimed by index <N>; refused write at index <M> to avoid silent clobber (D2B-008)` (batch) or singleton variant.
+- **Hint:** same as `FINDING_ID_COLLISION` — fix the duplicating rule or wipe and re-run.
+- **Operator action:** as above, for patterns.
+
+### `RECOMMENDATION_ID_COLLISION`
+
+:::caution[Severity: HIGH]
+A second write attempted the same `recommendation_id` as a recommendation already written. Same silent-clobber data-loss class, fail-closed.
+:::
+
+- **Class:** object-literal `{ code: 'RECOMMENDATION_ID_COLLISION', recommendationId, error }` (batch) AND `RecommendationIdCollisionError` (singleton) — `packages/findings/synthesis/write-artifacts.js`
+- **Trigger:** Two recommendation derivations emit the same `drec-<slug>`.
+- **Message shape:** as above, with `recommendation_id` in the message.
+- **Hint:** as above.
+- **Operator action:** as above, for recommendations.
+
+### `DOCTRINE_ID_COLLISION`
+
+:::caution[Severity: HIGH]
+A second write attempted the same `doctrine_id` as a doctrine already written. Same silent-clobber data-loss class, fail-closed.
+:::
+
+- **Class:** object-literal `{ code: 'DOCTRINE_ID_COLLISION', doctrineId, error }` (batch) AND `DoctrineIdCollisionError` (singleton) — `packages/findings/synthesis/write-artifacts.js`
+- **Trigger:** Two doctrine derivations emit the same `ddoc-<slug>`.
+- **Message shape:** as above, with `doctrine_id` in the message.
+- **Hint:** as above.
+- **Operator action:** as above, for doctrine.
+
+### `FINDING_SCHEMA_INVALID`
+
+:::danger[Severity: CRITICAL]
+A finding payload failed `dogfood-finding.schema.json` validation BEFORE touching the filesystem. The write is refused fail-closed; no orphan file lands on disk.
+:::
+
+- **Class:** `FindingValidationError` (`packages/findings/derive/write-findings.js`)
+- **Trigger:** `writeFinding` / `writeFindings` invoked with a finding object that fails AJV validation. Pre-fix, library-path writers had no schema gate (the CLI gated, but programmatic callers did not).
+- **Message shape:** `finding failed schema validation (<finding_id>): <path> <message>; <path> <message>; …`
+- **Hint:** inspect each path against `packages/schemas/src/json/dogfood-finding.schema.json` and fix the upstream emitter. Schema is a contract.
+- **Carries:** `findingId`, `errors[]` (AJV-shaped `{ path, message }`).
+- **Operator action:** same as `RECORD_SCHEMA_INVALID` — fix the emitter, not the schema.
+
+### `PATTERN_SCHEMA_INVALID`
+
+:::danger[Severity: CRITICAL]
+A pattern payload failed `dogfood-pattern.schema.json` validation BEFORE touching the filesystem. Write refused; no orphan file.
+:::
+
+- **Class:** `PatternValidationError` (`packages/findings/synthesis/write-artifacts.js`)
+- **Trigger:** `writePattern` / `writePatterns` invoked with a malformed pattern. Pre-fix, the synthesis writers had ZERO validation (not even CLI-side) — this was the worst gap of the family.
+- **Message shape:** `pattern failed schema validation (<pattern_id>): <path> <message>; …`
+- **Hint:** inspect against `packages/schemas/src/json/dogfood-pattern.schema.json` and fix the derivation rule.
+- **Carries:** `patternId`, `errors[]`.
+- **Operator action:** fix the derivation rule.
+
+### `RECOMMENDATION_SCHEMA_INVALID`
+
+:::danger[Severity: CRITICAL]
+A recommendation payload failed `dogfood-recommendation.schema.json` validation BEFORE touching the filesystem. Write refused; no orphan file.
+:::
+
+- **Class:** `RecommendationValidationError` (`packages/findings/synthesis/write-artifacts.js`)
+- **Trigger:** `writeRecommendation` / `writeRecommendations` invoked with a malformed recommendation.
+- **Message shape:** `recommendation failed schema validation (<recommendation_id>): <path> <message>; …`
+- **Hint:** inspect against the recommendation schema and fix the rule.
+- **Carries:** `recommendationId`, `errors[]`.
+- **Operator action:** fix the derivation rule.
+
+### `DOCTRINE_SCHEMA_INVALID`
+
+:::danger[Severity: CRITICAL]
+A doctrine payload failed `dogfood-doctrine.schema.json` validation BEFORE touching the filesystem. Write refused; no orphan file.
+:::
+
+- **Class:** `DoctrineValidationError` (`packages/findings/synthesis/write-artifacts.js`)
+- **Trigger:** `writeDoctrine` / `writeDoctrines` invoked with a malformed doctrine.
+- **Message shape:** `doctrine failed schema validation (<doctrine_id>): <path> <message>; …`
+- **Hint:** inspect against the doctrine schema and fix the rule.
+- **Carries:** `doctrineId`, `errors[]`.
+- **Operator action:** fix the derivation rule.
+
+### `VALIDATOR_FAULT_SCHEMA`
+
+:::caution[Severity: HIGH]
+The schema validator itself threw an internal exception while processing a submission. This is an **operational fault** in the verifier, NOT a submission-bad signal — the operator should investigate the verifier itself, not route this back to the submitter as a "fix your payload" message.
+:::
+
+- **Class:** template-literal `\`VALIDATOR_FAULT_${cls}\`` emitted by `runValidator('schema', fn)` catch — `packages/verify/index.js`
+- **Trigger:** the `validateSchema` call threw (e.g. AJV crash on a pathological regex, an unexpected reference resolution failure, or an internal assertion). The error string-prefix discriminates `VALIDATOR_FAULT_SCHEMA:` from the submission-bad `schema:` prefix.
+- **Message shape:** appears as a string entry in `verification.rejection_reasons`: `VALIDATOR_FAULT_SCHEMA: <thrown message>`.
+- **Hint:** the verifier itself crashed mid-validation — escalate to ops; do not page the submitter. Inspect the validator stack and patch the verifier.
+- **Operator action:**
+  1. Pull the `VALIDATOR_FAULT_SCHEMA:` reasons out of `verification.rejection_reasons` and triage them as a system incident.
+  2. Re-run with verbose logging on the schema validator to capture the throw site.
+  3. Patch the validator; the submission is a useful repro fixture, NOT the bug.
+
+### `VALIDATOR_FAULT_POLICY`
+
+:::caution[Severity: HIGH]
+The policy validator itself threw an internal exception. Same operational-fault class as `VALIDATOR_FAULT_SCHEMA`.
+:::
+
+- **Class:** template-literal `\`VALIDATOR_FAULT_${cls}\`` emitted by `runValidator('policy', fn)` catch — `packages/verify/index.js`
+- **Trigger:** the policy-validator call threw (e.g. deep-merge corrupted by a prototype-pollution probe, an unexpected policy shape from `loadRepoPolicy`).
+- **Message shape:** `VALIDATOR_FAULT_POLICY: <thrown message>` in `rejection_reasons[]`.
+- **Hint:** as above — verifier-side incident, not submission-bad.
+- **Operator action:** triage as a system incident, patch the policy validator.
+
+### `VALIDATOR_FAULT_STEPS`
+
+:::caution[Severity: HIGH]
+The steps validator itself threw an internal exception. Same operational-fault class.
+:::
+
+- **Class:** template-literal `\`VALIDATOR_FAULT_${cls}\`` emitted by `runValidator('steps', fn)` catch — `packages/verify/index.js`
+- **Trigger:** the step-contract checker threw (e.g. an evidence-shape walk hit an unexpected nesting, a gate-accumulation arithmetic edge).
+- **Message shape:** `VALIDATOR_FAULT_STEPS: <thrown message>` in `rejection_reasons[]`.
+- **Hint:** as above — verifier-side incident.
+- **Operator action:** triage as a system incident, patch the steps validator.
+
 ### `STATE_MACHINE_<KIND>` — `BLOCKED`, `TERMINAL`, `INVALID`
 
 :::tip[Severity: LOW]

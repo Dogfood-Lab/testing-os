@@ -13,13 +13,15 @@
 [![CI](https://github.com/dogfood-lab/testing-os/actions/workflows/ci.yml/badge.svg)](https://github.com/dogfood-lab/testing-os/actions/workflows/ci.yml)
 [![Pages](https://github.com/dogfood-lab/testing-os/actions/workflows/pages.yml/badge.svg)](https://dogfood-lab.github.io/testing-os/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](package.json)
 
-**Sistema operativo per i test nell'era dell'intelligenza artificiale**
+**Sistema operativo per il testing nell'era dell'IA**
 
-*Protocolli, archivi di dati e cicli di apprendimento per lo sviluppo software assistito dall'intelligenza artificiale.*
+*Protocolli, archivi di evidenze e cicli di apprendimento per software assistito dall'IA.*
 
-**v1.2.3** — 7 pacchetti (`@dogfood-lab/*`), suite di test a livello di workspace, ricevitore di ingest attivo, manuale utente pubblicato.
+<!-- version:start -->
+**v1.3.0** — 7 pacchetti (`@dogfood-lab/*`), suite di test a livello di workspace, ricevitore di dati attivo, manuale pubblicato.
+<!-- version:end -->
 
 📖 **[Leggi il manuale →](https://dogfood-lab.github.io/testing-os/handbook/)**
 
@@ -27,48 +29,48 @@
 
 ---
 
-## Cos'è questo
+## Cos'è
 
-`testing-os` è il monorepo principale dell'organizzazione GitHub [Dogfood Lab](https://github.com/dogfood-lab) — successore di [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs), ora archiviata.  Raggruppa i protocolli e l'infrastruttura per eseguire, registrare e apprendere dai test in un flusso di lavoro di sviluppo nativo per l'intelligenza artificiale:
+`testing-os` è il principale monorepo dell'organizzazione [Dogfood Lab](https://github.com/dogfood-lab) su GitHub, successore del [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs), ora archiviato. Raggruppa i protocolli e l'infrastruttura per eseguire, registrare e apprendere dai test in un flusso di lavoro di sviluppo nativo per l'IA:
 
-- Un **protocollo di swarm** per eseguire audit paralleli su una base di codice.
-- Un **archivio di dati + schema** per i record, i risultati, i modelli e le raccomandazioni che derivano da tali esecuzioni.
-- Un livello di **policy + verifier** che decide cosa conta come "verificato" e lo applica a tutti i repository.
-- Un livello di **intelligenza** che trasforma i risultati grezzi in modelli e principi riutilizzabili.
+- Un **protocollo swarm** per eseguire audit paralleli su una base di codice.
+- Un **archivio di evidenze + struttura di schema** per i record, le scoperte, i modelli e le raccomandazioni che derivano da tali esecuzioni.
+- Un livello di **policy + verificatore** che decide cosa conta come "verificato" e lo applica su tutti i repository.
+- Un livello di **intelligenza** che trasforma i risultati grezzi in modelli e dottrine riutilizzabili.
 
 ## Stato
 
-**v1.2.3** — Versione di pulizia relativa al "health-pass". Un test intensivo in quattro fasi (Fase A: bug/sicurezza → Fase B: proattiva → Fase C: ottimizzazione dell'esperienza utente → Fase D: rifinitura visiva) su v1.2.2 ha evidenziato più di 50 problemi; questa versione include le correzioni più importanti: miglioramenti della sicurezza attorno alla pipeline del ricevitore (`execFileSync` con argomenti in verify runner, `JSON.parse` limitato sull'output dell'agente, protezione contro payload null di `repository_dispatch`), messaggi di errore più chiari per gli operatori (`loadGlobalPolicy`: errori ENOENT/YAML, i fallimenti di ricostruzione degli indici ora includono lo stack e un suggerimento per il ripristino), una verifica della versione di Node.js (README, CHANGELOG e CLAUDE.md), una nuova pagina del manuale di riferimento della CLI che copre 17 comandi `swarm` precedentemente non documentati, una pagina 404 personalizzata e metadati per le immagini condivise sui social media. Nessuna modifica alla struttura dei pacchetti, nessuna modifica incompatibile rispetto alla versione 1.2.2. Tutte le funzionalità della Fase 5 sono incluse: macchina a stati a livello di "wave" + contratto di ripristino "Three R's" (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + comando `swarm history` per la tracciabilità. Sei pacchetti sono pubblicati sotto `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1105 test superati su 1105.** Totale dei test eseguiti durante la vita del repository (a partire dalla versione v1.0.0, rilasciata il 2026-04-25): il test intensivo della Fase 7 (circa 31 "wave", circa 115 correzioni verificate e implementate, 14 classi di copertura per l'audit), l'arco di pubblicazione iniziale su npm per la versione v1.2.x e la pulizia relativa al "health-pass" nella versione v1.2.3. Catalogo completo dei comandi `swarm`: [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
+**v1.3.0** — un singolo validatore di schema canonico in tutti i repository (un'istanza Ajv per schema per processo; una suddivisione a livello di workspace è un limite invalicabile). Errori strutturati di livello superiore con codici stabili (`ISOLATION_FAILED`, `DUPLICATE_RUN_ID`, `STATE_MACHINE_*`, `DISPATCH_*`, `VALIDATOR_FAULT_*`, ...) e un suggerimento `Next:` su ogni percorso di errore. Il file YAML delle policy ora è controllato dallo schema al momento del caricamento: un file di policy strutturalmente non valido genera un errore evidente invece di passare silenziosamente a valori predefiniti più permissivi. Il manuale è disponibile su [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) e include temi chiaro/scuro, accessibilità WCAG-AA per pagina (pa11y in CI con ripetizione), un riferimento CLI `swarm` per verbo e un 404 personalizzato. Sei pacchetti vengono pubblicati su npm sotto `@dogfood-lab` nella versione v1.3.0 in modo sincronizzato: vedere la tabella qui sotto. Nessuna modifica incompatibile rispetto alla v1.2.x. Consultare [CHANGELOG.md](CHANGELOG.md) per la versione completa v1.3.0.
 
-Il ricevitore è attivo: i workflow `dogfood.yml` nei repository dei clienti vengono inviati a questo repository, e il file [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) committa i record risultanti e li indicizza nella directory `main`. Il manuale è disponibile all'indirizzo [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Installazione: `npm install -g @dogfood-lab/dogfood-swarm`. Il lato ricevente viene utilizzato tramite dispatch; vedere la pagina di integrazione del manuale.
+Il ricevitore è attivo: i flussi di lavoro `dogfood.yml` nei repository dei consumatori inviano i dati a questo repository e [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) esegue il commit dei record e degli indici risultanti in `main`. Il manuale è pubblicato su [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Installazione principale: `npm install -g @dogfood-lab/dogfood-swarm`. Il lato ricevitore continua a essere utilizzato tramite l'invio: vedere la pagina Integrazione nel manuale.
 
-**Piattaforma:** validato end-to-end su Darwin/APFS come parte della Sessione G ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)). Consultare [Local Development](#local-development) per i filesystem supportati. Dettagli per versione in [CHANGELOG.md](CHANGELOG.md).
+**Piattaforma:** convalidata end-to-end su Darwin/APFS come parte della Sessione G ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)). Vedere [Sviluppo locale](#local-development) per i file system supportati. Dettagli per versione in [CHANGELOG.md](CHANGELOG.md).
 
 ## Modello di minaccia
 
-testing-os elabora le proposte di dogfood inviate tramite `repository_dispatch` da repository GitHub attendibili sotto `mcp-tool-shop-org/*` e `dogfood-lab/*`. Il verifier richiede la provenienza di GitHub Actions; gli ID di esecuzione dichiarati vengono confermati tramite l'API di GitHub e le proposte con formati errati, riferimenti mancanti o affermazioni di policy non valide vengono rifiutate.
+testing-os elabora le richieste di Dogfood inviate tramite `repository_dispatch` da repository GitHub affidabili sotto `mcp-tool-shop-org/*` e `dogfood-lab/*`. Il verificatore richiede la provenienza di GitHub Actions: gli ID di esecuzione dichiarati vengono confermati tramite l'API di GitHub e le richieste con forme errate, riferimenti mancanti o richieste di policy non valide vengono rifiutate.
 
-**Cosa tocca testing-os:** il file JSON di invio in ogni payload `repository_dispatch`; le directory `policies/`, `fixtures/`, `records/` e `indexes/` in questo repository; chiamate in uscita a `api.github.com` per la verifica della provenienza.
+**Cosa tocca testing-os:** il JSON della richiesta in ogni payload `repository_dispatch`; `policies/`, `fixtures/`, `records/` e `indexes/` in questo repository; chiamate in uscita a `api.github.com` per la verifica della provenienza.
 
-**Cosa testing-os NON tocca:** il codice sorgente dei consumer, i segreti nei repository dei consumer al di fuori dell'inviluppo di dispatch, o qualsiasi cosa al di fuori dell'albero di lavoro di questo repository.
+**Cosa testing-os NON tocca:** il codice sorgente del consumatore, i segreti nei repository del consumatore oltre all'invio o qualsiasi cosa al di fuori dell'albero di lavoro di questo repository.
 
-**Permessi richiesti:** il workflow del ricevitore viene eseguito con `contents: write` limitato solo a questo repository. La verifica della provenienza utilizza il `GITHUB_TOKEN` predefinito del workflow per le chiamate API di Actions in sola lettura. **Nessuna telemetria, nessun servizio di terze parti, nessuna analisi: questo codice non invia dati e non espone una superficie di rete al di fuori di GitHub.**
+**Autorizzazioni richieste:** il flusso di lavoro del ricevitore viene eseguito con `contents: write` limitato a questo repository. La verifica della provenienza utilizza il `GITHUB_TOKEN` predefinito del flusso di lavoro per le chiamate API di Actions in sola lettura. **Nessun telemetria, nessun servizio di terze parti, nessuna analisi: questo codice non invia dati a casa né espone una superficie di rete oltre a GitHub.**
 
 ## Pacchetti
 
 | Pacchetto | Origine | Scopo |
 |---------|--------|---------|
 | `@dogfood-lab/schemas` | TypeScript | Gli 8 schemi JSON (record, finding, pattern, recommendation, doctrine, policy, scenario, submission). |
-| `@dogfood-lab/verify` | JS | Validatore centrale delle inviazioni. Le inviazioni passano attraverso questo componente prima di essere memorizzate. |
-| `@dogfood-lab/findings` | JS | Contratto di "finding" + pipeline di derivazione/revisione/sintesi/consulenza. |
-| `@dogfood-lab/ingest` | JS | Componente di collegamento delle pipeline: dispatch → verify → persist → index. |
-| `@dogfood-lab/report` | JS | Costruttore di inviazioni per i repository di origine. |
-| `@dogfood-lab/portfolio` | JS | Generatore di portfolio multi-repository. |
-| `@dogfood-lab/dogfood-swarm` | JS | Protocollo parallelo a 10 fasi + piano di controllo SQLite + binario `swarm`. |
+| `@dogfood-lab/verify` | JS | Validatore di richieste centrale. Le richieste passano attraverso questo validatore prima di essere memorizzate. |
+| `@dogfood-lab/findings` | JS | Contratto di finding + pipeline di derivazione/revisione/sintesi/consiglio. |
+| `@dogfood-lab/ingest` | JS | Collegamento della pipeline: invio → verifica → memorizzazione → indicizzazione. |
+| `@dogfood-lab/report` | JS | Costruttore di richieste per i repository di origine. |
+| `@dogfood-lab/portfolio` | JS | Generatore di portfolio tra repository. |
+| `@dogfood-lab/dogfood-swarm` | JS | Il protocollo parallelo a 10 fasi + piano di controllo SQLite + bin `swarm`. |
 
-Strumenti di test correlati che **rimangono indipendenti** ma si integrano tramite API pubblicate: [`shipcheck`](https://github.com/mcp-tool-shop-org/shipcheck), [`repo-knowledge`](https://github.com/mcp-tool-shop-org/repo-knowledge), [`ai-eyes-mcp`](https://github.com/mcp-tool-shop-org/ai-eyes-mcp), [`taste-engine`](https://github.com/mcp-tool-shop-org/taste-engine), [`style-dataset-lab`](https://github.com/mcp-tool-shop-org/style-dataset-lab).
+Strumenti di testing secondari che **rimangono indipendenti** ma si integrano tramite API pubblicate: [`shipcheck`](https://github.com/mcp-tool-shop-org/shipcheck), [`repo-knowledge`](https://github.com/mcp-tool-shop-org/repo-knowledge), [`ai-eyes-mcp`](https://github.com/mcp-tool-shop-org/ai-eyes-mcp), [`taste-engine`](https://github.com/mcp-tool-shop-org/taste-engine), [`style-dataset-lab`](https://github.com/mcp-tool-shop-org/style-dataset-lab).
 
-## Struttura
+## Layout
 
 ```
 testing-os/
@@ -95,13 +97,13 @@ npm test            # vitest for schemas, node --test for the rest
 npm run verify      # build + test (canonical pre-commit check)
 ```
 
-Richiede Node ≥ 20. La matrice CI esegue Node 20 + 22 su `ubuntu-latest`; è stata validata localmente con Node 25.
+Richiede Node ≥ 22. La matrice CI esegue Node 22 e 24 su `ubuntu-latest`; è stata convalidata localmente su Node 25.
 
-**Sistemi di file supportati:** APFS, HFS+, ext4 (baseline CI), NTFS — qualsiasi sistema che implementi `link(2)` POSIX. **Non supportati:** exFAT, FAT32. Il meccanismo di blocco dei file CAS in [`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js) richiede la semantica dei collegamenti hard per la pubblicazione atomica; su exFAT, `linkSync` genera un errore `ENOTSUP` (in modo evidente, non silenzioso). Un problema comune: le unità SSD esterne multipiattaforma sono spesso formattate in exFAT; clonare il repository in un disco locale APFS/HFS+ invece. Consultare [`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md) per la matrice completa di validazione della Sessione G.
+**Filesystem supportati:** APFS, HFS+, ext4 (configurazione di base CI), NTFS — qualsiasi filesystem che implementi POSIX `link(2)`. **Non supportati:** exFAT, FAT32. Il meccanismo di blocco dei file in [`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js) richiede la semantica dei collegamenti fisici per la pubblicazione atomica; su exFAT, `linkSync` genera l'errore `ENOTSUP` (un errore evidente, non silenzioso). Un errore comune: gli SSD esterni multipiattaforma sono spesso formattati in exFAT; è consigliabile clonare il repository in locale su APFS/HFS+. Consultare [`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md) per la matrice completa di validazione della Sessione G.
 
-## Versioning
+## Gestione delle versioni
 
-Sincronizzazione tra tutti i pacchetti `@dogfood-lab/*`: vengono aggiornati contemporaneamente. La riga di versione in questo file README viene aggiornata automaticamente dal file `package.json` tramite `scripts/sync-version.mjs` (eseguito come `prebuild`). A partire dalla versione **v1.2.0**, sei pacchetti vengono pubblicati su npm con il prefisso `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. Il settimo (`@dogfood-lab/portfolio`) rimane interno al monorepo.
+Le versioni di tutti i pacchetti `@dogfood-lab/*` sono sincronizzate: vengono aggiornate insieme. La riga della versione in questo file README viene generata automaticamente da `package.json` tramite `scripts/sync-version.mjs` (viene eseguito come `prebuild`). A partire dalla versione **v1.2.0**, sei pacchetti vengono pubblicati su npm all'interno dello spazio dei nomi `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. Il settimo (`@dogfood-lab/portfolio`) rimane interno al monorepository.
 
 ## Licenza
 
@@ -113,6 +115,6 @@ Sincronizzazione tra tutti i pacchetti `@dogfood-lab/*`: vengono aggiornati cont
 
 **[Manuale](https://dogfood-lab.github.io/testing-os/handbook/)** · **[Tutti i repository](https://github.com/orgs/dogfood-lab/repositories)** · **[Profilo](https://github.com/dogfood-lab)**
 
-*Mangia prima. Spedisci dopo.*
+*Prima mangia, poi pubblica.*
 
 </div

@@ -229,7 +229,17 @@ function main() {
 // API worked. `pathToFileURL(...).href` is the canonical Node cross-
 // platform "is this script the entrypoint" pattern. Caught by wave-31
 // audit-the-audit (Class #14 5th-iteration instance).
-if (import.meta.url === pathToFileURL(process.argv[1]).href) {
+//
+// Stage C Wave A2 D4B-003 (Class #14 6th-iteration instance): the
+// canonical sibling form is `process.argv[1] && pathToFileURL(...).href`.
+// Without the short-circuit, dynamic-import / REPL / certain test-harness
+// invocation paths (where `process.argv[1]` is undefined) throw `TypeError:
+// The "path" argument must be of type string` instead of cleanly no-op'ing
+// the main-entry block. sync-version.mjs:167, check-finding-regression-
+// pins.mjs:285, and check-doc-drift.mjs:994 all carry the short-circuit;
+// this guard finally matches. Regression test: scripts/apply-finding-
+// migration.test.mjs.
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   main();
 }
 

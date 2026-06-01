@@ -28,7 +28,23 @@ import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, unlink
 import { join, relative } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
+import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-stage.js';
 import { stageWriteFileSync, promoteStaged, discardStaged } from './lib/atomic-write.js';
+
+/**
+ * D1B-005 (Stage C humanization): one structured `logStage('warn', ...)`
+ * helper, component-pinned to `ingest` so the NDJSON line is greppable
+ * with the rest of the pipeline. Wave-22 sibling pattern — see
+ * `packages/ingest/run.js`'s private `logStage` wrapper for the same
+ * `component: 'ingest'` pinning convention.
+ */
+function logStage(stage, fields = {}) {
+  // Defensive: strip any caller-supplied `stage:` before delegating so
+  // the outer positional stage always wins. Same shape as run.js (see
+  // wave-22 F-827321-035 hardening rationale).
+  const { stage: _ignored, ...rest } = fields;
+  sharedLogStage(stage, { component: 'ingest', ...rest });
+}
 
 /**
  * Recursively find all .json files under a directory.
@@ -103,12 +119,24 @@ export function rebuildIndexes(repoRoot, options = {}) {
     const { record, error } = loadRecord(f);
     if (error) {
       corrupted.push({ path: relPath, error });
-      console.error(`[rebuild-indexes] corrupted record skipped: ${relPath} — ${error}`);
+      // D1B-005: structured warn event so the NDJSON stream carries the
+      // skip with the same discipline as the ingest pipeline. Greppable
+      // via `"kind":"record_skipped"` + `"reason":"corrupted"`.
+      logStage('warn', {
+        kind: 'record_skipped',
+        reason: 'corrupted',
+        path: relPath,
+        error
+      });
       continue;
     }
     if (!record || !record.run_id) {
       skipped.push({ path: relPath, reason: 'missing run_id' });
-      console.error(`[rebuild-indexes] record skipped (missing run_id): ${relPath}`);
+      logStage('warn', {
+        kind: 'record_skipped',
+        reason: 'missing_run_id',
+        path: relPath
+      });
       continue;
     }
     record._path = relPath;

@@ -6,10 +6,48 @@
  * Never upgrades a proposed verdict.
  */
 
-import { validateSubmissionSchema } from './validators/schema.js';
-import { validatePolicy } from './validators/policy.js';
-import { validateStepResults } from './validators/steps.js';
+import { validateSubmissionSchema as _defaultValidateSubmissionSchema } from './validators/schema.js';
+import { validatePolicy as _defaultValidatePolicy } from './validators/policy.js';
+import { validateStepResults as _defaultValidateStepResults } from './validators/steps.js';
 import { computeVerdict } from './validators/verdict.js';
+
+/**
+ * D1B-003 (Stage C humanization): the SOLE catch wrapper for synchronous
+ * validator calls. Distinguishes operator-actionable signals:
+ *
+ *   - Validator returned a structured result → caller pushes the existing
+ *     `'<class>: <details>'` prefix into `rejection_reasons` (unchanged
+ *     submission-bad path; back-compat is preserved).
+ *   - Validator THREW (operational incident — ajv compile fault, policy
+ *     merge cycle, out-of-memory) → wrapper synthesizes a STABLE coded
+ *     prefix `'VALIDATOR_FAULT_<NAME>: <details>'` for the caller to push.
+ *     The prefix is greppable across runner logs:
+ *       `grep -E '"VALIDATOR_FAULT_' …`  → every operational incident
+ *       `grep -E '^(schema|policy|steps): ' …` → every submission-bad signal
+ *
+ * `name` is upper-cased to match the prefix vocabulary documented in
+ * verify/README.md (SCHEMA / POLICY / STEPS). Returns:
+ *   { ok: true, result }   when fn() returned cleanly
+ *   { ok: false, faultReason } when fn() threw
+ *
+ * The helper is the canonical seam for any new synchronous validator
+ * — adding a 4th validator class becomes a one-call site, not a
+ * five-line try/catch boilerplate.
+ *
+ * @param {string} name - Validator class name (will be upper-cased).
+ * @param {() => T} fn - The validator call.
+ * @returns {{ ok: true, result: T } | { ok: false, faultReason: string }}
+ * @template T
+ */
+function runValidator(name, fn) {
+  try {
+    return { ok: true, result: fn() };
+  } catch (e) {
+    const cls = name.toUpperCase();
+    const detail = e && e.message ? e.message : String(e);
+    return { ok: false, faultReason: `VALIDATOR_FAULT_${cls}: ${detail}` };
+  }
+}
 
 /**
  * Verify a dogfood submission and produce a persisted record.
@@ -20,6 +58,14 @@ import { computeVerdict } from './validators/verdict.js';
  * @param {object|null} options.repoPolicy - Parsed repo policy (null if none)
  * @param {object} options.provenance - Provenance adapter { confirm(source) => Promise<boolean> }
  * @param {string} options.policyVersion - Semver of the policy set being applied
+ * @param {object} [options.validators] - Test-only override hook (D1B-003).
+ *   Pass `{ validateSubmissionSchema, validateStepResults, validatePolicy }`
+ *   to swap in fault-injecting stubs. Production callers leave this unset
+ *   and the helper falls back to the module-level imports. The override
+ *   exists so the wrapper's catch behaviour can be tested deterministically
+ *   without monkey-patching ESM modules (which is a no-op for live bindings).
+ *   Documented but not part of the public stability contract — the parameter
+ *   may shift shape in future minors.
  * @returns {Promise<object>} Persisted record (accepted or rejected)
  */
 export async function verify(submission, options) {
@@ -42,7 +88,13 @@ export async function verify(submission, options) {
     };
   }
 
-  const { globalPolicy, repoPolicy, provenance, policyVersion } = options;
+  const { globalPolicy, repoPolicy, provenance, policyVersion, validators: validatorOverrides = {} } = options;
+  // Resolve the three validators per-call so tests can inject fault-
+  // injecting stubs. Production callers leave `validators` unset and the
+  // module-level imports flow through unchanged.
+  const validateSubmissionSchema = validatorOverrides.validateSubmissionSchema || _defaultValidateSubmissionSchema;
+  const validateStepResults = validatorOverrides.validateStepResults || _defaultValidateStepResults;
+  const validatePolicy = validatorOverrides.validatePolicy || _defaultValidatePolicy;
   const now = new Date().toISOString();
   const reasons = [];
 
@@ -68,14 +120,18 @@ export async function verify(submission, options) {
   }
 
   // 1. Schema validation
+  // D1B-003: route both happy + fault paths through `runValidator` so
+  // submission-bad (`'schema: …'`) and operational incidents
+  // (`'VALIDATOR_FAULT_SCHEMA: …'`) emit DISTINCT, greppable prefixes.
   let schemaResult = { valid: false, errors: [] };
-  try {
-    schemaResult = validateSubmissionSchema(submission);
+  const schemaRun = runValidator('schema', () => validateSubmissionSchema(submission));
+  if (schemaRun.ok) {
+    schemaResult = schemaRun.result;
     if (!schemaResult.valid) {
       reasons.push(...schemaResult.errors.map(e => `schema: ${e}`));
     }
-  } catch (e) {
-    reasons.push('validator error: ' + e.message);
+  } else {
+    reasons.push(schemaRun.faultReason);
   }
 
   // 2. Reject if submission includes verifier-owned fields
@@ -103,26 +159,45 @@ export async function verify(submission, options) {
   }
 
   // 4. Step results validation (only if schema passed)
+  // D1B-003: same submission-bad-vs-operational-fault split as schema.
   if (schemaResult.valid && submission.scenario_results) {
     for (const scenario of submission.scenario_results) {
-      try {
-        const stepErrors = validateStepResults(scenario);
-        reasons.push(...stepErrors.map(e => `steps[${scenario.scenario_id}]: ${e}`));
-      } catch (e) {
-        reasons.push('validator error: ' + e.message);
+      const stepsRun = runValidator('steps', () => validateStepResults(scenario));
+      if (stepsRun.ok) {
+        reasons.push(...stepsRun.result.map(e => `steps[${scenario.scenario_id}]: ${e}`));
+      } else {
+        reasons.push(stepsRun.faultReason);
       }
     }
   }
 
   // 5. Policy evaluation (only if schema passed)
+  // D1B-003: see runValidator JSDoc for the split. Policy-fault on
+  // `globalPolicy` corruption surfaces as `VALIDATOR_FAULT_POLICY:` and
+  // is the operator's signal that the POLICY FILE (not the submission)
+  // is broken.
+  //
+  // D1B-006: a torn repo-policy file (sentinel `{ __torn: true, reason }`
+  // returned by `loadRepoPolicy`) MUST reject the submission with
+  // `policy_valid=false` + a `policy: repo policy unreadable` rejection
+  // reason. Pre-fix the sentinel was a silent `null` — the verifier
+  // happily ran defaults against a corrupt policy. Catch the sentinel
+  // BEFORE handing the (broken) policy to `validatePolicy`, so the
+  // operator sees a real "policy:" rejection in `rejection_reasons`.
   let policyValid = false;
   if (schemaResult.valid) {
-    try {
-      const policyResult = validatePolicy(submission, { globalPolicy, repoPolicy });
-      policyValid = policyResult.valid;
-      reasons.push(...policyResult.errors.map(e => `policy: ${e}`));
-    } catch (e) {
-      reasons.push('validator error: ' + e.message);
+    if (repoPolicy && repoPolicy.__torn === true) {
+      const detail = repoPolicy.reason || 'repo policy YAML failed to parse';
+      reasons.push(`policy: repo policy unreadable — ${detail}`);
+      // policyValid stays false.
+    } else {
+      const policyRun = runValidator('policy', () => validatePolicy(submission, { globalPolicy, repoPolicy }));
+      if (policyRun.ok) {
+        policyValid = policyRun.result.valid;
+        reasons.push(...policyRun.result.errors.map(e => `policy: ${e}`));
+      } else {
+        reasons.push(policyRun.faultReason);
+      }
     }
   }
 

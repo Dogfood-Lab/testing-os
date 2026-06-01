@@ -5,18 +5,26 @@
  * pattern kind, dimensions, and transfer scope.
  */
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
-import yaml from 'js-yaml';
+import { resolve } from 'node:path';
+
+import { loadYamlDir } from '../lib/safe-yaml-load.js';
 
 /**
  * Derive recommendations from accepted patterns.
  *
+ * D2B-001 — return shape carries a `skipped: [{path, error}]` field so the
+ * silent-loader signal that Wave A1 wired through `loadYamlDir` now propagates
+ * through the derive API to the operator surface (CLI). Legacy callers that
+ * only read `recommendations` / `stats` are unaffected — the field is
+ * additive. A torn pattern that WOULD have been considered for recommendation
+ * synthesis no longer disappears with no signal.
+ *
  * @param {string} rootDir - dogfood-labs repo root
- * @returns {{ recommendations: Array, stats: { patternsConsidered: number, recommendationsEmitted: number } }}
+ * @returns {{ recommendations: Array, skipped: Array<{path: string, error: string}>, stats: { patternsConsidered: number, recommendationsEmitted: number, patternsSkipped: number } }}
  */
 export function deriveRecommendations(rootDir) {
-  const patterns = loadAcceptedPatterns(rootDir);
+  const { entries, skipped } = loadAcceptedPatternsWithSkips(rootDir);
+  const patterns = entries.map(e => e.data);
   const recommendations = [];
 
   for (const pat of patterns) {
@@ -26,9 +34,11 @@ export function deriveRecommendations(rootDir) {
 
   return {
     recommendations,
+    skipped, // D2B-001: structured skip list for operator legibility
     stats: {
       patternsConsidered: patterns.length,
-      recommendationsEmitted: recommendations.length
+      recommendationsEmitted: recommendations.length,
+      patternsSkipped: skipped.length
     }
   };
 }
@@ -137,20 +147,41 @@ function fmtSurfaces(pattern) {
 
 /**
  * Load accepted patterns from disk.
+ *
+ * Legacy array shape: returns only accepted patterns. Torn pattern YAML
+ * files are NO LONGER silently dropped — they surface via the sibling
+ * structured API `loadAcceptedPatternsWithSkips`. This call delegates to
+ * that one and discards the skipped list for callers that don't yet care
+ * about pipeline honesty.
+ *
+ * H2 / F-721047-010 — silent-loader closure: the previous implementation
+ * wrapped `yaml.load(readFileSync(...))` in a bare `try { ... } catch {}`,
+ * silently dropping every torn pattern. Now delegated to the shared
+ * `loadYamlDir` helper which returns structured skip records.
  */
 function loadAcceptedPatterns(rootDir) {
-  const dir = resolve(rootDir, 'patterns');
-  if (!existsSync(dir)) return [];
-
-  const patterns = [];
-  for (const file of readdirSync(dir)) {
-    if (!file.endsWith('.yaml')) continue;
-    try {
-      const data = yaml.load(readFileSync(join(dir, file), 'utf-8'));
-      if (data?.status === 'accepted') patterns.push(data);
-    } catch { /* skip */ }
-  }
-  return patterns;
+  return loadAcceptedPatternsWithSkips(rootDir).entries.map(e => e.data);
 }
 
-export { loadAcceptedPatterns };
+/**
+ * Load accepted patterns from disk, surfacing structured skip records for
+ * any torn pattern file. The audit-honesty API.
+ *
+ * Only `entries[].data` whose `status === 'accepted'` are returned in
+ * entries — the legacy `loadAcceptedPatterns` filter is preserved. The
+ * `skipped` list captures every torn file (status unknowable) so a torn
+ * pattern that WOULD have been accepted does not silently vanish.
+ *
+ * @param {string} rootDir
+ * @returns {{ entries: Array<{ path: string, data: object }>, skipped: Array<{ path: string, error: string }> }}
+ */
+function loadAcceptedPatternsWithSkips(rootDir) {
+  const dir = resolve(rootDir, 'patterns');
+  const { entries, skipped } = loadYamlDir(dir, { recursive: false });
+  return {
+    entries: entries.filter(e => e.data?.status === 'accepted'),
+    skipped,
+  };
+}
+
+export { loadAcceptedPatterns, loadAcceptedPatternsWithSkips };

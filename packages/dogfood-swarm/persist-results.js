@@ -8,7 +8,7 @@
  * Exit codes: 0 = success, 1 = dogfood ingest failure, 2 = error
  */
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
+import { readdirSync, existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { execSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -16,13 +16,21 @@ import { fileURLToPath } from 'node:url';
 import { buildSubmission } from '@dogfood-lab/report/build-submission.js';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 
+import { readBoundedJson } from './lib/bounded-json-read.js';
+
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../..');
 
 // --- Helpers ---
 
+// F-H5 (Wave A1 D3): operator-supplied manifest dir contents (audit/* and
+// remediate/* JSONs) go through the bounded helper instead of bare
+// readFileSync + JSON.parse. The persist-results CLI is invoked by a
+// coordinator from the command line; pointing it at a path that contains a
+// huge spurious JSON file should fail loudly with a structured size-limit
+// error, not silently OOM the coordinator.
 function readJson(filePath) {
-  return JSON.parse(readFileSync(filePath, 'utf-8'));
+  return readBoundedJson(filePath);
 }
 
 function readJsonDir(dirPath) {
@@ -49,8 +57,16 @@ function deriveVerdict(findings) {
   return 'pass';
 }
 
+/**
+ * Emit a single step_result. The dogfood-record-submission schema requires
+ * `step_id` (pattern `^[a-z0-9][a-z0-9-]*$`) and `status` (enum) on each item
+ * AND has `additionalProperties:false` on step_results items — so the legacy
+ * `{step, status}` shape was loudly rejected by `validatePayload`. F-C1 (Wave
+ * A1 D3): align with the in-package sibling `lib/persist/dogfood-bridge.js`
+ * which already emits `step_id`.
+ */
 function stepResult(name, ok) {
-  return { step: name, status: ok ? 'pass' : 'fail' };
+  return { step_id: name, status: ok ? 'pass' : 'fail' };
 }
 
 // --- Path A: Dogfood submission ---
@@ -68,9 +84,34 @@ function buildScenarioResults(auditResults, remediateResults) {
     const openFindings = findings.filter(f => f.status !== 'fixed');
     const verdict = deriveVerdict(findings);
 
+    // F-C1 (Wave A1 D3): execution_mode is REQUIRED on each scenario_result
+    // by dogfood-record-submission.schema.json (line 135). Swarm audits run
+    // headless via the swarm control plane — 'bot' matches the sibling
+    // dogfood-bridge.js which already emits execution_mode:'bot'.
+    //
+    // The schema also requires `evidence` (when present) to be an ARRAY of
+    // {kind, url} items. The previous shape — an OBJECT carrying counts —
+    // was schema-invalid. We keep the count data inside the array item's
+    // `description` so the audit-payload path (Path B) still carries the
+    // counts; the scenario-results path now emits schema-clean evidence.
+    const totalFindings = findings.length;
+    const openCount = openFindings.length;
+    const fixedCount = totalFindings - openCount;
+    const sev = {
+      critical: findings.filter(f => f.severity === 'critical').length,
+      high: findings.filter(f => f.severity === 'high').length,
+      medium: findings.filter(f => f.severity === 'medium').length,
+      low: findings.filter(f => f.severity === 'low').length,
+    };
+    const evidenceDescription =
+      `${totalFindings} finding(s): ${openCount} open, ${fixedCount} fixed; ` +
+      `severities — critical:${sev.critical} high:${sev.high} ` +
+      `medium:${sev.medium} low:${sev.low}`;
+
     return {
       scenario_id: `swarm-audit-${cid}`,
       product_surface: surfaceFromType(audit.component_type),
+      execution_mode: 'bot',
       verdict,
       step_results: [
         stepResult('explore', true),
@@ -78,17 +119,11 @@ function buildScenarioResults(auditResults, remediateResults) {
         stepResult('remediate', !!remediation),
         stepResult('verify', verdict === 'pass'),
       ],
-      evidence: {
-        total_findings: findings.length,
-        open_findings: openFindings.length,
-        fixed: findings.length - openFindings.length,
-        severities: {
-          critical: findings.filter(f => f.severity === 'critical').length,
-          high: findings.filter(f => f.severity === 'high').length,
-          medium: findings.filter(f => f.severity === 'medium').length,
-          low: findings.filter(f => f.severity === 'low').length,
-        },
-      },
+      evidence: [{
+        kind: 'artifact',
+        url: `swarm://audit/${cid}`,
+        description: evidenceDescription,
+      }],
     };
   });
 }

@@ -10,6 +10,7 @@
 import { openDb } from '../db/connection.js';
 import { isBlocked, isInFlight, getTimeoutPolicy } from '../lib/state-machine.js';
 import { getWaveTransitionHistory, BLOCKED_STATUSES } from '../lib/wave-state-machine.js';
+import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 
 /**
  * @param {object} opts
@@ -34,7 +35,11 @@ export function status(opts) {
   // Current wave (latest)
   const currentWave = waves[waves.length - 1] || null;
 
-  // Agent runs for current wave
+  // Agent runs for current wave — F-H7 (Wave A1 D3): wave-9 latest-per-
+  // (wave, domain) filter via the shared helper. Without the filter the
+  // operator-display chrome showed the stale failed row alongside the
+  // recovered complete row. Lower impact than the receipt/export sites but
+  // same fix shape; sealed via the shared helper so it can't re-divide.
   let currentAgents = [];
   if (currentWave) {
     currentAgents = db.prepare(`
@@ -42,6 +47,7 @@ export function status(opts) {
       FROM agent_runs ar
       JOIN domains d ON ar.domain_id = d.id
       WHERE ar.wave_id = ?
+        ${LATEST_AGENT_RUN_PER_DOMAIN}
     `).all(currentWave.id);
   }
 
@@ -70,13 +76,21 @@ export function status(opts) {
     };
   }
 
-  // Violations across all waves
+  // Violations across all waves — F-L1-001 (Wave A1 D3 fix-up): the
+  // wave-9 family's same-file unlisted sibling. The `currentAgents` query
+  // above adopted the helper; this violations subquery (advisor verifier
+  // Lens-1 surfaced) inlined `agent_run_id IN (SELECT ar.id …)` with no
+  // wave-9 filter, so stale file_claims rows from a redispatched failed
+  // agent_run still inflated `cnt` after `swarm resume`. Apply the same
+  // helper inside the subquery — `ar` is the agent_runs alias here, so the
+  // fragment slots in directly.
   const violations = db.prepare(`
     SELECT COUNT(*) as cnt FROM file_claims
     WHERE violation = 1 AND agent_run_id IN (
       SELECT ar.id FROM agent_runs ar
       JOIN waves w ON ar.wave_id = w.id
       WHERE w.run_id = ?
+        ${LATEST_AGENT_RUN_PER_DOMAIN}
     )
   `).get(opts.runId);
 

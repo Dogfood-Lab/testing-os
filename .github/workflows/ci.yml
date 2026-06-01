@@ -70,7 +70,7 @@ jobs:
         # beats permissive engines-with-no-test-coverage.
         node-version: [22, 24]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2 (node24 runtime)
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: ${{ matrix.node-version }}
@@ -80,12 +80,74 @@ jobs:
       # README must all agree on the workspace version. Catches the F-178611-015
       # drift class (lockfile stamped from a prior version) before tests run.
       - run: npm run sync-version:check
+      # H10 / Wave A1 amend: durable lockfile-drift guard. `npm install --package-lock-only`
+      # regenerates the lockfile from package.json + the workspace tree without
+      # touching node_modules; the follow-up `git diff --exit-code` fails CI on
+      # ANY lockfile drift class (version, engines.node, transitive deps, new
+      # workspace, deleted workspace). This is strictly broader than
+      # sync-version:check, which only inspects two version fields — at HEAD
+      # d0f7a58 the lockfile shipped with all 7 packages/* entries pinned at
+      # 1.2.2 (root was 1.2.3) and engines.node at >=20 (root was >=22), and
+      # sync-version:check passed despite both classes of drift.
+      #
+      # Stage C Wave A2 D4B-001 / D4B-002 (humanization — operator-legible
+      # failures):
+      #
+      # D4B-001 — split install vs diff so a registry timeout (transient
+      # network) does NOT look identical to real lockfile drift. The
+      # previous one-shot `npm install --package-lock-only && git diff` made
+      # an operator chase a phantom diff on red CI every time the upstream
+      # registry hiccuped. The install step writes its log to install.log;
+      # if it fails we inspect for the canonical network-error fingerprints
+      # (ETIMEDOUT/ECONNRESET/ENETUNREACH/registry.npmjs.org HTTP 5xx) and
+      # emit a ::warning:: so the leg passes but the operator knows the
+      # gate was skipped (versus an ::error:: + non-zero exit on any other
+      # install failure).
+      #
+      # D4B-002 — pin the lockfile-drift gate to ONE Node version (the
+      # lower one in the matrix, 22) instead of running on every matrix
+      # leg. The lockfile is normative regardless of which Node version
+      # produced it; running it once is sufficient. Running on both legs
+      # opened a phantom-drift class: npm 10.9 vs npm 11.x produce subtly
+      # different lockfile shape (sorted-keys, integrity-hash format),
+      # which a 24-leg can write but a 22-leg can't and vice versa. The
+      # `if:` condition gates the install + diff steps to the 22 leg only.
+      - name: Lockfile-drift gate — install (Node 22 only; D4B-002)
+        if: ${{ matrix.node-version == 22 }}
+        id: lockfile_install
+        run: |
+          set +e
+          npm install --package-lock-only --no-audit --no-fund 2> install.log
+          install_exit=$?
+          set -e
+          if [ $install_exit -ne 0 ]; then
+            # D4B-001: classify the failure. Network-class failures get a
+            # warning + a non-blocking skip; everything else is a hard
+            # error so an operator never confuses "lockfile mismatch" with
+            # "registry was down".
+            if grep -E -i "ETIMEDOUT|ECONNRESET|ENETUNREACH|ENOTFOUND|EAI_AGAIN|socket hang up|network timeout|registry\.npmjs\.org.*5[0-9][0-9]|ERR_SOCKET_TIMEOUT" install.log >/dev/null 2>&1; then
+              echo "::warning::lockfile-drift gate skipped: 'npm install --package-lock-only' hit a transient network error. Lockfile NOT checked this run. Re-run if a drift was actually expected."
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::lockfile-drift gate failed: 'npm install --package-lock-only' exited non-zero with a non-network error. Install log:"
+            cat install.log
+            exit 1
+          fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+      - name: Lockfile-drift gate — diff (Node 22 only; D4B-002)
+        if: ${{ matrix.node-version == 22 && steps.lockfile_install.outputs.skipped != 'true' }}
+        run: |
+          git diff --exit-code package-lock.json || {
+            echo "::error::package-lock.json drifted from package.json. Run 'npm install' locally and commit the regenerated lockfile. (This failure is a REAL lockfile mismatch — the install step succeeded, so no transient-network suspicion.)"
+            exit 1
+          }
       # Class #11 sweep gate: assert source-of-truth/doc cross-refs hold.
       # Catches the F-COORD-004 drift class (error code added to lib/errors.js
       # without a sibling entry in error-codes.md, status enum added to
       # schema.js without state-machines.md mention, legacy paths leaking back
       # into user-facing handbook pages). See scripts/doc-drift-patterns.json
-      # for the 5 active checks; adding a new instance is a config edit.
+      # for the active checks; adding a new instance is a config edit.
       - run: npm run check-doc-drift
       # VD-NEW-2 (Phase 2-B verification-discipline): `npm run verify` runs
       # check-regression-pins as the third gate; CI was missing it. The local
@@ -93,6 +155,15 @@ jobs:
       # push could land a regression-pin drift that local pre-commit would
       # have caught. scripts/check-finding-regression-pins.mjs.
       - run: npm run check-regression-pins
-      - run: npm run test:scripts
+      # Phase 10 release-prep fix-up (post-H3): `test:scripts` historically
+      # ran BEFORE `build`, which was safe back when every scripts/*.test.mjs
+      # was a pure-JS script with no workspace dependencies. The new
+      # D2B-015 invariant test (scripts/check-validator-cache-singleton.test.mjs,
+      # landed with H3) imports `@dogfood-lab/schemas` to assert the
+      # single-cache invariant across consumers — and that import needs
+      # the TypeScript schemas package built to `dist/` first. Reorder so
+      # `build` runs before `test:scripts`. The package.json `verify` script
+      # mirrors this order.
       - run: npm run build
+      - run: npm run test:scripts
       - run: npm test

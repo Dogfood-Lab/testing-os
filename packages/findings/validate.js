@@ -1,35 +1,25 @@
 /**
  * Finding schema validator.
  * Validates YAML finding files against dogfood-finding.schema.json.
+ *
+ * H3 hop 2: delegates to the canonical {@link validatePayload} from
+ * `@dogfood-lab/schemas`. Pre-H3 this module compiled its own
+ * Ajv2020 + ajv-formats instance for the finding schema; that
+ * duplicated the verifier's compile path and was the second of four
+ * sites contributing to the C1 two-Ajv structural gap. The migration
+ * collapses finding-validation to the single cached validator the
+ * canonical seam shares with the rest of the workspace.
+ *
+ * Return contract preserved: `{ valid, errors: [{ path, message, params }] }`.
+ * The canonical ValidationError now also carries `keyword`; finding
+ * callers don't read it today, but it is forwarded so a downstream
+ * consumer that wraps validateFinding (e.g. a future review-time
+ * keyword pin parallel to ingest.test.js:208-220) can lean on it.
  */
 
 import { readFileSync } from 'node:fs';
-import { createRequire } from 'node:module';
-import Ajv2020 from 'ajv/dist/2020.js';
-import addFormats from 'ajv-formats';
 import yaml from 'js-yaml';
-
-const require = createRequire(import.meta.url);
-
-/** Load and compile the finding schema once. */
-function createValidator() {
-  const schemaPath = require.resolve('@dogfood-lab/schemas/json/dogfood-finding.schema.json');
-  const schema = JSON.parse(readFileSync(schemaPath, 'utf-8'));
-
-  const ajv = new Ajv2020({ allErrors: true, strict: false });
-  addFormats(ajv);
-
-  return ajv.compile(schema);
-}
-
-let _validator = null;
-
-function getValidator() {
-  if (!_validator) {
-    _validator = createValidator();
-  }
-  return _validator;
-}
+import { validatePayload } from '@dogfood-lab/schemas';
 
 /**
  * Parse a YAML finding file and return the data.
@@ -52,23 +42,15 @@ export function parseFinding(filePath) {
 /**
  * Validate a parsed finding object against the schema.
  * @param {object} finding - Parsed finding data.
- * @returns {{ valid: boolean, errors: Array<{ path: string, message: string }> }}
+ * @returns {{ valid: boolean, errors: Array<{ path: string, message: string, keyword?: string, params?: object }> }}
  */
 export function validateFinding(finding) {
-  const validate = getValidator();
-  const valid = validate(finding);
-
-  if (valid) {
-    return { valid: true, errors: [] };
-  }
-
-  const errors = (validate.errors || []).map(err => ({
-    path: err.instancePath || '/',
-    message: err.message || 'unknown error',
-    params: err.params
-  }));
-
-  return { valid: false, errors };
+  // H3: delegate to canonical seam. The pre-H3 implementation manually
+  // mapped Ajv.errors → { path, message, params }; canonical does the
+  // same and adds `keyword`. Forward the full canonical shape — finding
+  // callers consume `path`/`message`/`params` today, and the keyword
+  // forward keeps the door open for future review-side keyword pins.
+  return validatePayload('finding', finding);
 }
 
 /**

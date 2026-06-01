@@ -15,6 +15,23 @@
 
 import { openDb } from '../../db/connection.js';
 import { createHash } from 'node:crypto';
+import { LATEST_AGENT_RUN_PER_DOMAIN } from '../queries/latest-agent-runs.js';
+import { SCHEMA_VERSION } from '../../db/schema.js';
+
+/**
+ * D3B-014 (Phase 10 Step 1): version of the canonical export ENVELOPE
+ * itself — the JSON shape `{ export_version, exported_at, provenance,
+ * run, domains, waves, findings, verification, promotions }`. Distinct
+ * from `SCHEMA_VERSION` (which is the DB SQL-schema version, sourced
+ * from db/schema.js). Bump this when the export envelope's shape
+ * changes in a way consumers care about.
+ *
+ * Lives here (not in db/schema.js) because the envelope and the DB
+ * schema are independent contracts — the DB might bump for a column
+ * add without affecting any exported field, and vice versa. One
+ * constant per concept, each owned by its consumer.
+ */
+export const EXPORT_VERSION = '1.0.0';
 
 /**
  * Build a canonical run export from DB truth.
@@ -34,22 +51,35 @@ export function buildRunExport(db, runId) {
 
   // Build wave summaries
   const waveSummaries = waves.map(w => {
+    // F-H8 (Wave A1 D3): wave-9 latest-per-(wave, domain) filter via the
+    // shared helper. The bug shape: after `swarm resume` redispatches a
+    // failed agent, the original failed row remains in agent_runs. Iterating
+    // all rows surfaced the stale failed row to the audit-DB ground truth,
+    // flipping the dogfood-bridge `every(complete)` check to non-pass for
+    // recovered waves. See lib/queries/latest-agent-runs.js header.
     const agents = db.prepare(`
       SELECT ar.*, d.name as domain_name
       FROM agent_runs ar JOIN domains d ON ar.domain_id = d.id
       WHERE ar.wave_id = ?
+        ${LATEST_AGENT_RUN_PER_DOMAIN}
     `).all(w.id);
 
     const verification = db.prepare(
       'SELECT * FROM verification_receipts WHERE wave_id = ? ORDER BY created_at DESC LIMIT 1'
     ).get(w.id);
 
+    // F-H8-sibling (advisor-surfaced, Wave A1 D3): the violations subquery
+    // is the OTHER read site in export.js that lacked the wave-9 filter. A
+    // violation recorded against a stale failed agent_run row would surface
+    // here even after a clean redispatch. Apply the same filter so the
+    // audit-DB export shows only the surviving agent_run's violations.
     const violations = db.prepare(`
       SELECT fc.file_path, d.name as domain_name
       FROM file_claims fc
       JOIN agent_runs ar ON fc.agent_run_id = ar.id
       JOIN domains d ON ar.domain_id = d.id
       WHERE fc.violation = 1 AND ar.wave_id = ?
+        ${LATEST_AGENT_RUN_PER_DOMAIN}
     `).all(w.id);
 
     return {
@@ -112,13 +142,21 @@ export function buildRunExport(db, runId) {
     at: p.created_at,
   }));
 
-  // Compute content hash for provenance
+  // Compute content hash for provenance.
+  //
+  // D3B-014 (Phase 10 Step 1): `export_version` sources from the local
+  // EXPORT_VERSION constant (envelope shape); `provenance.schema_version`
+  // sources from db/schema.js SCHEMA_VERSION (DB SQL schema). Pre-fix
+  // both were hardcoded literals — the schema_version had drifted to a
+  // stale `3` while SCHEMA_VERSION had bumped to 5, with no compile-time
+  // signal. Each constant is now imported at the module's top so a
+  // future bump propagates without an editor sweep.
   const exportPayload = {
-    export_version: '1.0.0',
+    export_version: EXPORT_VERSION,
     exported_at: new Date().toISOString(),
     provenance: {
       system: 'swarm-control-plane',
-      schema_version: 3,
+      schema_version: SCHEMA_VERSION,
       run_id: runId,
     },
     run: {

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-04-27T04:17:52.110Z",
+  "generatedAt": "2026-06-01T05:10:21.039Z",
   "coverage": {
     "total_repos": 13,
     "surfaces_covered": 8,
@@ -11,7 +11,7 @@
       "surface": "web",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 31,
+      "freshness_days": 66,
       "scenario": "build-and-verify-site",
       "scenarios": [
         "build-and-verify-site"
@@ -24,33 +24,33 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 32,
+      "freshness_days": 13,
       "scenario": "resolve-real-loadout",
       "scenarios": [
         "resolve-real-loadout"
       ],
-      "run_id": "ai-loadout-23566269375-1",
-      "finished_at": "2026-03-25T21:59:20Z"
+      "run_id": "ai-loadout-26069980543-1",
+      "finished_at": "2026-05-19T01:10:55Z"
     },
     {
       "repo": "mcp-tool-shop-org/claude-guardian",
       "surface": "mcp-server",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 2,
+      "freshness_days": 32,
       "scenario": "status-preflight-roundtrip",
       "scenarios": [
         "status-preflight-roundtrip"
       ],
-      "run_id": "claude-guardian-24922209099-1",
-      "finished_at": "2026-04-25T04:09:45Z"
+      "run_id": "claude-guardian-25095040144-1",
+      "finished_at": "2026-04-29T06:52:47Z"
     },
     {
       "repo": "mcp-tool-shop-org/code-batch",
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "scenario": "init-and-run-pipeline",
       "scenarios": [
         "init-and-run-pipeline"
@@ -63,7 +63,7 @@
       "surface": "desktop",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 38,
+      "freshness_days": 73,
       "scenario": "export-roundtrip-16x16",
       "scenarios": [
         "export-roundtrip-16x16"
@@ -76,7 +76,7 @@
       "surface": "plugin",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 31,
+      "freshness_days": 66,
       "scenario": "build-and-test-extension",
       "scenarios": [
         "build-and-test-extension"
@@ -89,7 +89,7 @@
       "surface": "mcp-server",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "scenario": "crawl-real-repo",
       "scenarios": [
         "crawl-real-repo"
@@ -102,33 +102,33 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 32,
+      "freshness_days": 6,
       "scenario": "self-gate-real-repo",
       "scenarios": [
         "self-gate-real-repo"
       ],
-      "run_id": "shipcheck-23571363808-1",
-      "finished_at": "2026-03-26T00:32:46Z"
+      "run_id": "shipcheck-26432510066-1",
+      "finished_at": "2026-05-26T04:47:25Z"
     },
     {
       "repo": "mcp-tool-shop-org/site-theme",
       "surface": "npm-package",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 31,
+      "freshness_days": 6,
       "scenario": "scaffold-and-verify",
       "scenarios": [
         "scaffold-and-verify"
       ],
-      "run_id": "site-theme-23630385933-1",
-      "finished_at": "2026-03-27T03:56:32Z"
+      "run_id": "site-theme-26432147726-1",
+      "finished_at": "2026-05-26T04:24:17Z"
     },
     {
       "repo": "mcp-tool-shop-org/tool-scan",
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "scenario": "scan-real-mcp-definition",
       "scenarios": [
         "scan-real-mcp-definition"
@@ -141,7 +141,7 @@
       "surface": "api",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "scenario": "health-and-presets-roundtrip",
       "scenarios": [
         "health-and-presets-roundtrip"
@@ -154,7 +154,7 @@
       "surface": "library",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "scenario": "import-and-compile",
       "scenarios": [
         "import-and-compile"
@@ -167,7 +167,7 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "scenario": "profile-real-repo",
       "scenarios": [
         "profile-real-repo"
@@ -180,73 +180,61 @@
     {
       "repo": "mcp-tool-shop-org/a11y-demo-site",
       "surface": "web",
-      "freshness_days": 31,
+      "freshness_days": 66,
       "max_age_days": 30
     },
     {
-      "repo": "mcp-tool-shop-org/ai-loadout",
-      "surface": "cli",
+      "repo": "mcp-tool-shop-org/claude-guardian",
+      "surface": "mcp-server",
       "freshness_days": 32,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/code-batch",
       "surface": "cli",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/glyphstudio",
       "surface": "desktop",
-      "freshness_days": 38,
+      "freshness_days": 73,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/polyglot-vscode",
       "surface": "plugin",
-      "freshness_days": 31,
+      "freshness_days": 66,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/repo-crawler-mcp",
       "surface": "mcp-server",
-      "freshness_days": 32,
-      "max_age_days": 30
-    },
-    {
-      "repo": "mcp-tool-shop-org/shipcheck",
-      "surface": "cli",
-      "freshness_days": 32,
-      "max_age_days": 30
-    },
-    {
-      "repo": "mcp-tool-shop-org/site-theme",
-      "surface": "npm-package",
-      "freshness_days": 31,
+      "freshness_days": 67,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/tool-scan",
       "surface": "cli",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/vocal-synth-engine",
       "surface": "api",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/voice-soundboard",
       "surface": "library",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/zip-meta-map",
       "surface": "cli",
-      "freshness_days": 32,
+      "freshness_days": 67,
       "max_age_days": 30
     }
   ],

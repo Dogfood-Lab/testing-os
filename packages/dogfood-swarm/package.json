@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/dogfood-swarm",
-  "version": "1.2.3",
+  "version": "1.3.0",
   "type": "module",
   "description": "10-phase parallel-agent protocol runner for testing-os. SQLite-backed control plane, durable receipts, domain-aware orchestration. Three R's recovery contract: revalidate / rewind / redrive.",
   "main": "cli.js",
@@ -13,7 +13,7 @@
     "./lib/*": "./lib/*"
   },
   "scripts": {
-    "test": "node --test control-plane.test.js hardening.test.js verify.test.js verify-fixed.test.js verify-verb-family.test.js advance.test.js persist.test.js swarm.test.js dispatch-amend-filter.test.js dispatch-state-machine.test.js dispatch-prompt-schema.test.js self-inspection.test.js wave9-defensive-depth.test.js wave10-docs-identity-drift.test.js wave12-observability.test.js wave17-display-layer.test.js wave18-operator-ux.test.js wave23-findings-format.test.js wave28-cross-fix.test.js revalidate.test.js verification-discipline.test.js stage-c-truth-pins.test.js cli-smoke.test.js wave-state-machine.test.js wave-history-breadcrumb.test.js rewind.test.js redrive.test.js lib/verify-classifier-v2.test.js"
+    "test": "node --test \"*.test.js\" \"lib/*.test.js\""
   },
   "files": [
     "cli.js",

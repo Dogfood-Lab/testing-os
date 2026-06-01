@@ -163,10 +163,14 @@ describe('collect — wave-10 coordinated: latest-per-domain + observable transi
     // Now intentionally call collect WITHOUT the output file. collect's
     // "Output file not found" branch will try to transition complete → failed,
     // which is illegal (complete is terminal). Pre-fix: silent swallow.
-    // Post-fix: stderr warning with full context.
-    const origWarn = console.warn;
-    const warnCalls = [];
-    console.warn = (...args) => warnCalls.push(args.join(' '));
+    // Post-fix (wave-10): stderr warning with full context.
+    // Post-fix (D3B-011 Wave A2 Stage C): structured NDJSON logStage event
+    // on stderr via console.error with stage='transition_skipped' and
+    // reason='state_machine_rejected'. Test asserts the new shape; the
+    // legacy console.warn path is now silent.
+    const origErr = console.error;
+    const errCalls = [];
+    console.error = (...args) => errCalls.push(args.map(String).join(' '));
     try {
       collect({
         runId: RUN_ID,
@@ -174,16 +178,24 @@ describe('collect — wave-10 coordinated: latest-per-domain + observable transi
         outputs: {}, // no outputs → "file not found" branch fires
       });
     } finally {
-      console.warn = origWarn;
+      console.error = origErr;
     }
 
-    const matched = warnCalls.find(s =>
-      s.includes('state-machine rejected transition') &&
-      s.includes('domain=backend') &&
-      s.includes('from=complete') &&
-      s.includes('to=failed'));
+    // Parse structured NDJSON lines emitted by logStage.
+    const ndjson = [];
+    for (const ln of errCalls) {
+      if (!ln.startsWith('{')) continue;
+      try { ndjson.push(JSON.parse(ln)); } catch { /* not ndjson */ }
+    }
+    const matched = ndjson.find(o =>
+      o.stage === 'transition_skipped' &&
+      o.reason === 'state_machine_rejected' &&
+      (o.domain === 'backend' || o.agent_run_id === ar.id) &&
+      o.from_status === 'complete' &&
+      o.attempted_status === 'failed'
+    );
     assert.ok(matched,
-      `expected stderr warn with from=complete, to=failed, domain=backend; got:\n${warnCalls.join('\n')}`);
+      `expected stage=transition_skipped reason=state_machine_rejected with from_status=complete attempted_status=failed; got:\n${errCalls.join('\n')}`);
   });
 });
 

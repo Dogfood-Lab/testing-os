@@ -30,6 +30,7 @@
 import { openDb } from '../db/connection.js';
 import { isBlocked, isInFlight } from './state-machine.js';
 import { transitionWave } from './wave-state-machine.js';
+import { LATEST_AGENT_RUN_PER_DOMAIN } from './queries/latest-agent-runs.js';
 
 /**
  * Phase progression map.
@@ -87,17 +88,15 @@ export function checkGates(db, runId) {
   // failed/timed_out row remains. Iterating ALL rows would surface the stale
   // row to checkAgentCompletion() and report "BLOCK: <N> agent(s) not complete"
   // even when every redispatched agent finished cleanly — silently blocking
-  // `swarm advance` after every successful resume cycle. Mirrors the
-  // latest-per-domain filter that collect.js (line ~130) and resume.js
-  // (line ~72) already apply. F-W1-BACK-005 / F-084568-005.
+  // `swarm advance` after every successful resume cycle.
+  //
+  // F-W1-BACK-005 / F-084568-005 (mutation-side fix). F-H6/H7/H8 (Wave A1 D3):
+  // SQL fragment now lives in lib/queries/latest-agent-runs.js.
   const agents = db.prepare(`
     SELECT ar.*, d.name as domain_name
     FROM agent_runs ar JOIN domains d ON ar.domain_id = d.id
     WHERE ar.wave_id = ?
-      AND ar.id = (
-        SELECT MAX(ar2.id) FROM agent_runs ar2
-        WHERE ar2.wave_id = ar.wave_id AND ar2.domain_id = ar.domain_id
-      )
+      ${LATEST_AGENT_RUN_PER_DOMAIN}
   `).all(wave.id);
 
   const gates = [];

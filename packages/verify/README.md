@@ -30,9 +30,11 @@ const result = verify(submission, {
 });
 
 if (!result.ok) {
+  // rejection_reasons is an array of STRINGS with stable prefixes (see
+  // "Error shape" below). Operators discriminate failure class via the
+  // prefix; the rest of the string carries the human-readable detail.
   for (const reason of result.rejection_reasons) {
-    console.error(`[${reason.code}] ${reason.message}`);
-    if (reason.hint) console.error(`  hint: ${reason.hint}`);
+    console.error(reason);
   }
   process.exit(1);
 }
@@ -76,16 +78,59 @@ Provenance fields (`github_run_id`, `github_workflow_ref`) are required when `pr
 
 ## Error shape
 
-Each `rejection_reasons[]` entry follows the testing-os structured error shape:
+`rejection_reasons[]` is an array of **strings** — the persisted-record schema (`dogfood-record.schema.json` → `verification.rejection_reasons`) enforces `items: { type: 'string' }`. Machine-readable discrimination happens via **stable string prefixes**.
 
-```ts
-{
-  code: 'POLICY_GATE_FAILED' | 'SCHEMA_MISMATCH' | 'PROVENANCE_UNVERIFIED' | ...,
-  message: string,
-  path: string,        // JSON path to the offending field
-  hint?: string,       // operator-facing remediation hint
+### Prefix taxonomy
+
+The verifier emits two prefix classes:
+
+**Submission-bad** (the submitter's payload failed a validator gate — the operator should fix the submission and resubmit):
+
+| Prefix | Source | Meaning |
+|---|---|---|
+| `schema:` | `validators/schema.js` | JSON Schema check on the submission/record envelope failed. The rest of the string carries the AJV path + message. |
+| `policy:` | `validators/policy.js` | Per-repo policy gate failed (forbidden tags, missing required fields, version-floor violation, etc.). |
+| `steps[<id>]:` | `validators/steps.js` | Step-level contract check failed on a specific step id (gate accumulation, ordering, evidence shape). |
+| `provenance:` | `validators/provenance.js` | The GitHub run-id confirmation could not match the submitted commit/repo at the GitHub API. |
+| `scenario-load:` | `packages/ingest/load-context.js` | A scenario referenced by `scenario_results` could not be loaded from the source repo (typed-reason: `timeout` / `not_found` / `parse_error` / `invalid_id`). |
+
+**Validator-crashed** (the validator itself threw an internal error — this is an operational fault, NOT submission-bad; the operator should investigate the verifier itself):
+
+| Prefix | Source | Meaning |
+|---|---|---|
+| `VALIDATOR_FAULT_SCHEMA:` | `runValidator('schema', …)` catch | Internal exception inside the schema validator. The rest of the string carries the thrown `.message`. |
+| `VALIDATOR_FAULT_POLICY:` | `runValidator('policy', …)` catch | Internal exception inside the policy validator. |
+| `VALIDATOR_FAULT_STEPS:` | `runValidator('steps', …)` catch | Internal exception inside the steps validator. |
+
+### Operator hygiene
+
+```js
+// Discriminate by prefix
+for (const r of result.rejection_reasons) {
+  if (r.startsWith('VALIDATOR_FAULT_')) {
+    // Operational incident — verifier-side. Page someone; do NOT route
+    // back to the submitter as a "fix your payload" message.
+    notifyOps(r);
+  } else if (r.startsWith('schema:') || r.startsWith('policy:') || r.startsWith('steps[')) {
+    // Submission-bad — surface to the submitter.
+    surfaceToSubmitter(r);
+  } else if (r.startsWith('provenance:')) {
+    // May be either class — GitHub API timeouts are operational; a real
+    // commit/repo mismatch is submission-bad. The string detail carries
+    // the discriminator.
+    triageProvenance(r);
+  } else if (r.startsWith('scenario-load:')) {
+    // Ingest-side: scenario fetch reason determines class. timeout is
+    // operational; not_found / parse_error / invalid_id are submission-bad.
+    triageScenarioLoad(r);
+  } else {
+    // Unknown prefix — log and surface as raw text.
+    log.warn('unknown rejection_reason prefix', r);
+  }
 }
 ```
+
+Persistence note: every entry above is round-tripped verbatim through `verification.rejection_reasons` in the persisted-record JSON; the schema enforces `array of string` so any consumer of the audit-DB ground truth sees the same prefix vocabulary.
 
 ## Docs
 

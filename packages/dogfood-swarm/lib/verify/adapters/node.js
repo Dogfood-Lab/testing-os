@@ -5,9 +5,10 @@
  * Commands: npm run lint, tsc --noEmit, npm test, npm run build.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { runSteps } from '../runner.js';
+import { readBoundedJson } from '../../bounded-json-read.js';
 
 function probe(repoPath) {
   const evidence = {};
@@ -18,14 +19,19 @@ function probe(repoPath) {
     score += 50;
     evidence.packageJson = true;
     try {
-      const pkg = JSON.parse(readFileSync(pkgPath, 'utf-8'));
+      // F-H5 (Wave A1 D3): UNTRUSTED target-repo package.json (the most
+      // exotic input — we audit arbitrary external repos). A malicious or
+      // accidentally bloated package.json would otherwise hang the probe's
+      // JSON.parse. The size gate caps reads at 50 MB by default; any sane
+      // package.json is <1 MB.
+      const pkg = readBoundedJson(pkgPath);
       evidence.scripts = Object.keys(pkg.scripts || {});
       evidence.hasTest = !!pkg.scripts?.test;
       evidence.hasLint = !!(pkg.scripts?.lint || pkg.scripts?.['lint:check']);
       evidence.hasBuild = !!pkg.scripts?.build;
       evidence.name = pkg.name;
       if (evidence.hasTest) score += 20;
-    } catch { /* corrupt package.json */ }
+    } catch { /* corrupt or oversized package.json */ }
   }
 
   const tsconfigPath = join(repoPath, 'tsconfig.json');

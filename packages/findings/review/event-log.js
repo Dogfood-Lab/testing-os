@@ -4,13 +4,14 @@
  * Events are stored as YAML arrays in reviews/<YYYY>/<date>-finding-review-log.yaml
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync, readdirSync, statSync } from 'node:fs';
-import { resolve, dirname, join } from 'node:path';
+import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import yaml from 'js-yaml';
 
 import { withFileLock } from '../lib/file-lock.js';
 import { renameWithRetry } from '../lib/rename-with-retry.js';
+import { loadYamlDir } from '../lib/safe-yaml-load.js';
 
 let _eventCounter = 0;
 
@@ -147,31 +148,56 @@ export function getEventsForFinding(rootDir, findingId) {
 
 /**
  * Read all events across all findings.
+ *
+ * Legacy shape: returns an array of events. Torn log files are NOT silently
+ * dropped — they surface as structured skip records via the sibling API
+ * `getAllEventsWithSkips()`. Callers that need to see which log files
+ * failed to load should use that API; this one is kept array-shaped for
+ * backward compatibility with the existing read sites (CLI display,
+ * `getEventsForFinding`, the review.test.js / event-log-race.test.js
+ * fixtures).
+ *
+ * H1 / F-721047-010 — silent-loader closure: previously the internal
+ * `walkYaml` helper wrapped the whole `readdir`/`statSync`/`readFileSync`/
+ * `yaml.load` loop in a single `try { ... } catch { /* skip bad files * / }`,
+ * which made torn YAML, EACCES, and ENOENT all disappear with no signal.
+ * The walk is now delegated to `loadYamlDir`, which returns
+ * `{ entries, skipped }` — every torn file is recorded with a structured
+ * error rather than dropped.
  */
 export function getAllEvents(rootDir) {
-  const reviewsDir = resolve(rootDir, 'reviews');
-  if (!existsSync(reviewsDir)) return [];
-
-  const events = [];
-  walkYaml(reviewsDir, data => {
-    if (Array.isArray(data)) events.push(...data);
-  });
-
-  return events.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+  return getAllEventsWithSkips(rootDir).events;
 }
 
-/** Walk directory tree for .yaml files, parse and call cb with data. */
-function walkYaml(dir, cb) {
-  for (const entry of readdirSync(dir)) {
-    const full = join(dir, entry);
-    try {
-      if (statSync(full).isDirectory()) {
-        walkYaml(full, cb);
-      } else if (entry.endsWith('.yaml')) {
-        const raw = readFileSync(full, 'utf-8');
-        const data = yaml.load(raw);
-        if (data) cb(data);
-      }
-    } catch { /* skip bad files */ }
+/**
+ * Read all events across all findings, plus a list of any log files that
+ * failed to load (torn YAML, EACCES, etc.). The structured-skip API the
+ * audit asked for — callers that care about pipeline honesty (rebuild
+ * scripts, doctor commands, CI checks) should consume this one rather
+ * than the array-shaped legacy `getAllEvents`.
+ *
+ * @param {string} rootDir
+ * @returns {{ events: object[], skipped: Array<{ path: string, error: string }> }}
+ */
+export function getAllEventsWithSkips(rootDir) {
+  const reviewsDir = resolve(rootDir, 'reviews');
+  if (!existsSync(reviewsDir)) return { events: [], skipped: [] };
+
+  const { entries, skipped } = loadYamlDir(reviewsDir, { recursive: true });
+
+  const events = [];
+  for (const entry of entries) {
+    const data = entry.data;
+    if (!data) continue;
+    if (Array.isArray(data)) {
+      events.push(...data);
+    } else {
+      // A single-event YAML file (defensive: shouldn't happen for daily logs,
+      // but the original walkYaml tolerated either shape).
+      events.push(data);
+    }
   }
+
+  events.sort((a, b) => (a.timestamp || '').localeCompare(b.timestamp || ''));
+  return { events, skipped };
 }

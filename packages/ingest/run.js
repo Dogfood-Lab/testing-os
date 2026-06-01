@@ -100,7 +100,7 @@ function resolveCorrelationId(submission) {
  *
  * @param {object} submission - Source-authored submission payload
  * @param {object} options
- * @param {string} options.repoRoot - Absolute path to dogfood-labs repo root
+ * @param {string} options.repoRoot - Absolute path to the dogfood-lab/testing-os repo root
  * @param {object} options.provenance - Provenance adapter (REQUIRED — no default, no implicit stub)
  * @param {object} [options.scenarioFetcher] - Scenario fetch adapter
  * @returns {Promise<{ record: object, path: string, written: boolean, duplicate: boolean }>}
@@ -435,6 +435,31 @@ export async function verifyOnly(submission, options) {
   return { record, would_persist_to, verify_only: true };
 }
 
+/**
+ * D1B-001: emit a single structured `stage:'error'` NDJSON event for any
+ * CLI-toplevel exit-2 failure, mirroring the shape used by the
+ * `rebuild_indexes` inner catch. Truncates the stack to 20 lines so the
+ * event stays grep-friendly. The human-readable `console.error` line is
+ * preserved so log-only readers continue to get the same actionable hint.
+ *
+ * Keep this hoisted (above the `isMain` block) so it is callable from every
+ * branch inside the CLI body — including the JSON.parse catch which fires
+ * BEFORE the pipeline has assigned a correlation_id from `submission.run_id`.
+ */
+function emitCliErrorEvent({ failedStage, correlationId, submissionId = null, err, humanPrefix }) {
+  const truncatedStack = err && err.stack
+    ? err.stack.split('\n').slice(0, 20).join('\n')
+    : null;
+  logStage('error', {
+    submission_id: submissionId,
+    correlation_id: correlationId,
+    failed_stage: failedStage,
+    message: err && err.message ? err.message : String(err),
+    stack: truncatedStack
+  });
+  console.error(`ERROR: ${humanPrefix}: ${err && err.message ? err.message : String(err)}`);
+}
+
 // --- CLI entrypoint ---
 // When run directly, reads submission from stdin or file argument
 
@@ -455,7 +480,24 @@ if (isMain) {
       provenanceMode = args[++i];
     } else if (args[i] === '--file' && args[i + 1]) {
       const { readFileSync } = await import('node:fs');
-      submissionJson = readFileSync(resolve(args[++i]), 'utf-8');
+      // D1B-001 family (operator-legibility): a --file read failure
+      // (ENOENT/EACCES) routes through the structured error event and exits 2
+      // — pre-fix it propagated as a raw uncaught stack + exit 1, with NO
+      // grep-able `"stage":"error"` NDJSON line. This read runs during
+      // arg-parsing, BEFORE `cliCorrelationId` is seeded below, so synth a
+      // correlation id here (the same pivot the JSON.parse catch uses when
+      // there is no submission to derive a run_id from yet).
+      try {
+        submissionJson = readFileSync(resolve(args[++i]), 'utf-8');
+      } catch (err) {
+        emitCliErrorEvent({
+          failedStage: 'cli_read_file',
+          correlationId: synthCorrelationId(),
+          err,
+          humanPrefix: 'could not read --file payload'
+        });
+        process.exit(2);
+      }
     } else if (args[i] === '--payload' && args[i + 1]) {
       submissionJson = args[++i];
     } else if (args[i] === '--verify-only') {
@@ -476,23 +518,53 @@ if (isMain) {
     submissionJson = Buffer.concat(chunks).toString('utf-8');
   }
 
+  // D1B-001 (Stage C humanization): every CLI exit-2 path emits a structured
+  // `logStage('error', ...)` event before `process.exit(2)` so a grep of
+  // `"stage":"error"` across runner logs surfaces the failure with the same
+  // discipline as the inner `rebuild_indexes` catch. `failed_stage` names
+  // the last-successful pipeline stage; `correlation_id` carries the pivot
+  // key (submission.run_id when available, synth `ing-…` otherwise).
+  let lastSuccessfulStage = 'cli_startup';
+  let cliCorrelationId = synthCorrelationId();
+
   let submission;
   try {
     submission = JSON.parse(submissionJson);
     if (typeof submission === 'string') {
       submission = JSON.parse(submission);
     }
+    lastSuccessfulStage = 'cli_parse_payload';
+    // Promote the synth id to submission.run_id when we have one.
+    cliCorrelationId = resolveCorrelationId(submission);
   } catch (err) {
-    console.error(`ERROR: invalid JSON payload: ${err.message}`);
+    emitCliErrorEvent({
+      failedStage: 'cli_parse_payload',
+      correlationId: cliCorrelationId,
+      err,
+      humanPrefix: 'invalid JSON payload'
+    });
     process.exit(2);
   }
 
-  // Resolve provenance adapter — explicit, never implicit
+  // Resolve provenance adapter — explicit, never implicit.
+  //
+  // L1-001 (Wave A2 amend2): every exit-2 path here routes through
+  // `emitCliErrorEvent` so the D1B-001 documented invariant ("every CLI
+  // exit-2 path emits a structured logStage('error', …) event") holds.
+  // `failed_stage='cli_provenance_resolve'` names the precondition; the
+  // `console.error` line is preserved inside the helper so log-only
+  // readers keep the same actionable hint.
   let provenance;
   if (provenanceMode === 'stub') {
     // Structural anti-misuse: stub only allowed outside CI
     if (process.env.CI || process.env.GITHUB_ACTIONS) {
-      console.error('ERROR: --provenance=stub is not allowed in CI/production. Use --provenance=github.');
+      emitCliErrorEvent({
+        failedStage: 'cli_provenance_resolve',
+        correlationId: cliCorrelationId,
+        submissionId: submission && submission.run_id ? submission.run_id : null,
+        err: new Error('--provenance=stub is not allowed in CI/production. Use --provenance=github.'),
+        humanPrefix: 'provenance precondition unmet'
+      });
       process.exit(2);
     }
     console.error('WARNING: Using stub provenance (test/dev only). Records will NOT have real provenance verification.');
@@ -500,7 +572,13 @@ if (isMain) {
   } else if (provenanceMode === 'github') {
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     if (!token) {
-      console.error('ERROR: --provenance=github requires GITHUB_TOKEN or GH_TOKEN environment variable.');
+      emitCliErrorEvent({
+        failedStage: 'cli_provenance_resolve',
+        correlationId: cliCorrelationId,
+        submissionId: submission && submission.run_id ? submission.run_id : null,
+        err: new Error('--provenance=github requires GITHUB_TOKEN or GH_TOKEN environment variable.'),
+        humanPrefix: 'provenance precondition unmet'
+      });
       process.exit(2);
     }
     provenance = githubProvenance(token);
@@ -508,18 +586,40 @@ if (isMain) {
     // In CI without explicit flag: default to github provenance, fail if no token
     const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
     if (!token) {
-      console.error('ERROR: Running in CI without --provenance flag and no GITHUB_TOKEN. Cannot verify provenance.');
+      emitCliErrorEvent({
+        failedStage: 'cli_provenance_resolve',
+        correlationId: cliCorrelationId,
+        submissionId: submission && submission.run_id ? submission.run_id : null,
+        err: new Error('Running in CI without --provenance flag and no GITHUB_TOKEN. Cannot verify provenance.'),
+        humanPrefix: 'provenance precondition unmet'
+      });
       process.exit(2);
     }
     provenance = githubProvenance(token);
   } else {
-    console.error('ERROR: --provenance flag is required. Use --provenance=github (production) or --provenance=stub (test/dev only).');
+    emitCliErrorEvent({
+      failedStage: 'cli_provenance_resolve',
+      correlationId: cliCorrelationId,
+      submissionId: submission && submission.run_id ? submission.run_id : null,
+      err: new Error('--provenance flag is required. Use --provenance=github (production) or --provenance=stub (test/dev only).'),
+      humanPrefix: 'provenance precondition unmet'
+    });
     process.exit(2);
   }
 
+  // D1B-001: track the last successful pipeline stage so the outer catch
+  // can surface a useful `failed_stage` in its structured error event.
+  // We update it once the verify/ingest call has RETURNED — anything
+  // thrown inside `ingest()` or `verifyOnly()` is, by definition, a
+  // pipeline-runtime failure for which the wrapper itself is the failing
+  // boundary. `cli_pipeline` is the right label there; the inner code
+  // paths that throw have already emitted their own structured rejection
+  // events (`rejected_pre_persist`, `rebuild_indexes_complete` etc.)
+  // when they could.
   try {
     if (verifyOnlyFlag) {
       const result = await verifyOnly(submission, { repoRoot, provenance });
+      lastSuccessfulStage = 'verify_only';
 
       console.log(JSON.stringify({
         status: result.record.verification.status,
@@ -537,6 +637,7 @@ if (isMain) {
     }
 
     const result = await ingest(submission, { repoRoot, provenance });
+    lastSuccessfulStage = 'ingest';
 
     if (result.duplicate) {
       console.log(JSON.stringify({ status: 'duplicate', run_id: submission.run_id }));
@@ -554,7 +655,22 @@ if (isMain) {
 
     process.exit(result.record.verification.status === 'accepted' ? 0 : 1);
   } catch (err) {
-    console.error(`ERROR: ingest failed: ${err.message}`);
+    // D1B-001 (Stage C humanization): emit the structured error event
+    // BEFORE exit 2 so `"stage":"error"` greps land. `failed_stage` is
+    // the last stage that DID complete — anything inside `ingest()` /
+    // `verifyOnly()` that throws has, by definition, blown the boundary
+    // we were about to cross.
+    const submissionId =
+      submission && typeof submission === 'object' && !Array.isArray(submission)
+        ? (submission.run_id || null)
+        : null;
+    emitCliErrorEvent({
+      failedStage: lastSuccessfulStage,
+      correlationId: cliCorrelationId,
+      submissionId,
+      err,
+      humanPrefix: 'ingest failed'
+    });
     process.exit(2);
   }
 }
