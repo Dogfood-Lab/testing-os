@@ -9,10 +9,19 @@ export const config: SiteConfig = {
   footerText: 'MIT Licensed — built by <a href="https://github.com/dogfood-lab" style="color:var(--color-muted);text-decoration:underline">dogfood-lab</a>',
 
   hero: {
-    badge: 'Testing OS — v1.2.3 on npm',
+    // Version-agnostic per R6 spirit (Phase 10 release-honesty sweep,
+    // 2026-06-01). Pre-fix the badge + description were stamped with the
+    // current release number (`v1.2.3 on npm`, `v1.2.3 lands a 4-stage…`),
+    // which drifted on every bump because nothing cross-checked these
+    // ungated marketing surfaces against `package.json`. The v1.3.0
+    // release surfaced the drift class — SHIP_GATE / SCORECARD /
+    // CLAUDE.md all carried stale `v1.2.3` text after the bump too. R6's
+    // doctrine: don't re-pin a number that'll drift next bump. The npm
+    // badge below is a live shields.io query → always current.
+    badge: 'Testing OS — on npm',
     headline: 'testing-os',
     headlineAccent: 'proves it ships.',
-    description: 'Centralized dogfood evidence system. 13 active repos (14 governed — the 14th, `dogfood-labs`, is the archived legacy repo retained for historical evidence), 8 surfaces, all currently-tracked active repos: last verdict = pass, all enforcement required. v1.2.3 lands a 4-stage dogfood-swarm health cleanup over v1.2.2: defense-in-depth around the receiver pipeline, actionable error messages, a new CLI reference handbook page, and a custom 404.',
+    description: 'Centralized dogfood evidence system. 13 active repos (14 governed — the 14th, `dogfood-labs`, is the archived legacy repo retained for historical evidence), 8 surfaces, all currently-tracked active repos: last verdict = pass, all enforcement required. Single canonical schema validator across every consumer (one Ajv instance per schema per process; workspace-hoist split is a hard gate). Structured top-level errors with stable codes and a `Next:` hint on every failure path. See the [CHANGELOG](https://github.com/dogfood-lab/testing-os/blob/main/CHANGELOG.md) for the current release entry.',
     primaryCta: { href: '#architecture', label: 'How it works' },
     secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
