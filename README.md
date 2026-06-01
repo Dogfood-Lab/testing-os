@@ -20,7 +20,7 @@
 *Protocols, evidence stores, and learning loops for AI-assisted software.*
 
 <!-- version:start -->
-**v1.2.3** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
+**v1.3.0** — 7 packages (`@dogfood-lab/*`), workspace-wide test suite, ingest receiver live, handbook deployed.
 <!-- version:end -->
 
 📖 **[Read the handbook →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -40,7 +40,7 @@
 
 ## Status
 
-**v1.2.3** — health-pass cleanup release. A four-stage dogfood swarm (Stage A bug/security → Stage B proactive → Stage C humanization → Stage D visual polish) against v1.2.2 surfaced 50+ findings; this release lands the load-bearing fixes: defense-in-depth around the receiver pipeline (`execFileSync` argv form in verify runner, bounded `JSON.parse` on agent output, defensive guard against null `repository_dispatch` payload), operator-actionable error messages (`loadGlobalPolicy` ENOENT/YAML errors, rebuild-indexes failures now carry stack + recovery hint), a Node-version honesty pass (README + CHANGELOG + CLAUDE.md), a new CLI reference handbook page covering 17 previously-undocumented `swarm` verbs, a custom 404 page, and social-card meta. No package shape changes, no breaking changes from 1.2.2. All Phase 5 features carry over: wave-level state machine + Three R's recovery contract (`swarm revalidate`, `swarm rewind`, `swarm redrive`) + `swarm history` audit-trail verb. Six packages publish under `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. **1204 tests (7 workspace packages + repo scripts).** Cumulative across the repo lifetime (since v1.0.0 cut 2026-04-25): the Phase 7 dogfood swarm (~31 waves, ~115 verified-holding fixes, 14 audit-coverage classes), the v1.2.x first-npm-publish arc, and the v1.2.3 health-pass cleanup. Authoritative swarm catalog: [`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md).
+**v1.3.0** — single canonical schema validator across every consumer (one Ajv instance per schema per process; a workspace-hoist split is a hard gate). Structured top-level errors with stable codes (`ISOLATION_FAILED`, `DUPLICATE_RUN_ID`, `STATE_MACHINE_*`, `DISPATCH_*`, `VALIDATOR_FAULT_*`, …) and a `Next:` hint on every failure path. Policy YAML is now schema-gated at load time — a structurally-invalid policy file fails loud instead of silently passing through to lenient defaults. Handbook at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/handbook/) ships with light/dark theme parity, per-page WCAG-AA accessibility (pa11y in CI with retry), a per-verb `swarm` CLI reference, and a custom 404. Six packages publish to npm under `@dogfood-lab` at v1.3.0 in lockstep — see the table below. No breaking changes from v1.2.x. See [CHANGELOG.md](CHANGELOG.md) for the full v1.3.0 entry.
 
 Receiver is live: `dogfood.yml` workflows in consumer repos dispatch to this repo, and [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) commits the resulting records and indexes back to `main`. Handbook is deployed at [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Headline install: `npm install -g @dogfood-lab/dogfood-swarm`. The receiver side stays consumed via dispatch — see the handbook's Integration page.
 

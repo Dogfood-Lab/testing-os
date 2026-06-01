@@ -13,62 +13,64 @@
 [![CI](https://github.com/dogfood-lab/testing-os/actions/workflows/ci.yml/badge.svg)](https://github.com/dogfood-lab/testing-os/actions/workflows/ci.yml)
 [![Pages](https://github.com/dogfood-lab/testing-os/actions/workflows/pages.yml/badge.svg)](https://dogfood-lab.github.io/testing-os/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](package.json)
+[![Node](https://img.shields.io/badge/node-%3E%3D22-brightgreen)](package.json)
 
-**用于人工智能时代的测试操作系统**
+**人工智能时代下的测试操作系统**
 
 *用于人工智能辅助软件的协议、证据存储和学习循环。*
 
-**v1.2.3** — 包含 7 个软件包 (`@dogfood-lab/*`)，整个工作空间的测试套件，数据接收器已上线，用户手册已部署。
+<!-- version:start -->
+**v1.3.0** — 7 个包 (`@dogfood-lab/*`)，工作区范围内的测试套件，接收器已上线，手册已部署。
+<!-- version:end -->
 
-📖 **[阅读用户手册 →](https://dogfood-lab.github.io/testing-os/handbook/)**
+📖 **[阅读手册 →](https://dogfood-lab.github.io/testing-os/handbook/)**
 
-</div
+</div>
 
 ---
 
-## 简介
+## 这是什么
 
-`testing-os` 是 [Dogfood Lab](https://github.com/dogfood-lab) GitHub 组织的旗舰单仓库项目，它是取代现在已归档的 [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs) 的。它集成了运行、记录和从测试中学习的协议和基础设施，以实现人工智能原生开发流程：
+`testing-os` 是 [Dogfood Lab](https://github.com/dogfood-lab) GitHub 组织的旗舰单仓库项目——它是现在已存档的 [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs) 的继任者。它将协议和基础设施打包在一起，用于在人工智能原生开发工作流程中运行、记录和学习测试：
 
-- 一种 **集群协议**，用于对代码库执行并行代理审计。
-- 一种 **证据存储 + 模式框架**，用于记录、发现、模式和建议。
-- 一种 **策略 + 验证器** 层，用于确定哪些内容被认为是“已验证”，并在所有客户端仓库中强制执行。
-- 一种 **智能层**，用于将原始发现转换为可重用的模式和规范。
+- 一个**集群协议**，用于针对代码库运行并行代理审计。
+- 一个**证据存储 + 模式框架**，用于存储来自这些运行的记录、发现、模式和建议。
+- 一个**策略 + 验证器**层，用于确定哪些内容被认为是“已验证的”——并在所有消费者仓库中强制执行。
+- 一个**智能层**，将原始发现转化为可重用的模式和原则。
 
 ## 状态
 
-**v1.2.3** — 健康检查模块的清理版本。针对 v1.2.2 版本，我们进行了四阶段的内部测试（阶段 A：错误/安全问题 → 阶段 B：主动改进 → 阶段 C：用户体验优化 → 阶段 D：视觉优化），发现了 50 多个问题；本次发布包含关键修复：加强了数据接收器流水线的安全性（验证运行器中的 `execFileSync` 参数形式，对代理输出的 `JSON.parse` 进行限制，防御性措施以防止 `repository_dispatch` 负载为空），提供了可供操作员使用的错误信息（`loadGlobalPolicy` 的 ENOENT/YAML 错误，重建索引失败时会显示堆栈信息和恢复提示），以及 Node 版本验证（README、CHANGELOG 和 CLAUDE.md 文件），新增了一篇 CLI 参考手册页面，涵盖了 17 个之前未记录的 `swarm` 命令，还包括一个自定义的 404 页面和社交媒体卡片元数据。没有软件包结构的变化，也没有与 1.2.2 版本相比的破坏性更改。所有第五阶段的功能都已保留：波级别状态机 + 三个 R 的恢复机制（`swarm revalidate`、`swarm rewind`、`swarm redrive`）+ `swarm history` 审计跟踪命令。共有 6 个软件包在 `@dogfood-lab` 下发布：`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`。**1105/1105 个测试通过。** 从仓库的整个生命周期（自 v1.0.0 版本发布，即 2026-04-25）开始，包括第七阶段的内部测试（约 31 个波次，约 115 个已验证的修复，14 个审计覆盖类别），v1.2.x 版本的首次 npm 发布，以及 v1.2.3 版本的健康检查模块清理。权威的 `swarm` 目录：[`docs/swarm-evidence-2026-04-27.md`](docs/swarm-evidence-2026-04-27.md)。
+**v1.3.0** — 所有消费者都使用单个规范模式验证器（每个模式每个进程一个 Ajv 实例；工作区提升是一种硬性限制）。结构化的顶级错误，具有稳定的代码（`ISOLATION_FAILED`、`DUPLICATE_RUN_ID`、`STATE_MACHINE_*`、`DISPATCH_*`、`VALIDATOR_FAULT_*`……），并且在每个失败路径上都有一个“下一步：”提示。策略 YAML 现在在加载时通过模式进行验证——结构上无效的策略文件会发出明确的错误，而不是默默地回退到宽松的默认设置。手册位于 [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/)，具有浅色/深色主题的对等性、每个页面的 WCAG-AA 可访问性（在 CI 中进行 pa11y 测试并重试）、每个动词的 `swarm` CLI 参考以及自定义的 404 页面。六个包以 v1.3.0 的形式同步发布到 npm 上，位于 `@dogfood-lab` 下——请参阅下表。与 v1.2.x 相比，没有重大更改。有关完整的 v1.3.0 条目，请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
-数据接收器已启用：客户端仓库中的 `dogfood.yml` 工作流会发送到此仓库，并且 [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) 提交将生成的记录和索引回写到 `main` 分支。用户手册已部署在 [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/)。 快速安装：`npm install -g @dogfood-lab/dogfood-swarm`。 客户端通过分发方式进行消费，详情请参阅用户手册的“集成”页面。
+接收器已上线：消费者仓库中的 `dogfood.yml` 工作流程会将其发送到此仓库，并且 ` .github/workflows/ingest.yml` 会将生成的记录和索引提交回 `main`。手册已部署到 [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/)。主要安装：`npm install -g @dogfood-lab/dogfood-swarm`。接收器端通过发送进行消费——请参阅手册的“集成”页面。
 
-**平台：** 已在 Darwin/APFS 上进行端到端验证，作为 Session G 的一部分 ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md))。有关受支持的文件系统，请参阅 [本地开发](#local-development)。每个版本的详细信息请参阅 [CHANGELOG.md](CHANGELOG.md)。
+**平台：**作为 Session G 的一部分，在 Darwin/APFS 上进行了端到端验证（[`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)）。请参阅[本地开发](#local-development)，了解支持的文件系统。每个版本的详细信息请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
-## 安全模型
+## 威胁模型
 
-`testing-os` 处理通过 `repository_dispatch` 从受信任的 GitHub 仓库（`mcp-tool-shop-org/*` 和 `dogfood-lab/*`）发送的 dogfood 提交。验证器需要 GitHub Actions 的凭证 — 声明的运行 ID 会通过 GitHub API 进行确认，并且具有不规范的结构、缺少引用或无效策略声明的提交将被拒绝。
+testing-os 处理通过 `repository_dispatch` 从受信任的 GitHub 仓库（`mcp-tool-shop-org/*` 和 `dogfood-lab/*`）发送的 dogfood 提交。验证器需要 GitHub Actions 溯源——声明的运行 ID 通过 GitHub API 进行确认，并且具有格式错误、缺少引用或无效策略声明的提交将被拒绝。
 
-**testing-os 涉及的内容：** 每个 `repository_dispatch` 负载中的提交 JSON；此仓库中的 `policies/`、`fixtures/`、`records/` 和 `indexes/` 目录；用于验证来源信息的对 `api.github.com` 的出站调用。
+**testing-os 涉及的内容：**每个 `repository_dispatch` 有效负载中的提交 JSON；此仓库中的 `policies/`、`fixtures/`、`records/` 和 `indexes/`；到 `api.github.com` 的传出调用，用于进行溯源验证。
 
-**testing-os 不涉及的内容：** 消费者源代码，超出 dispatch 范围的消费者仓库中的密钥，以及此仓库工作目录之外的任何内容。
+**testing-os 不涉及的内容：**消费者源代码、消费者仓库中的秘密（超出发送范围），或任何超出此仓库工作树的内容。
 
-**所需权限：** 接收器工作流程以 `contents: write` 的权限运行，仅限于此仓库。 验证来源信息使用工作流程的默认 `GITHUB_TOKEN` 进行只读的 Actions API 调用。 **没有遥测，没有第三方服务，没有分析功能——此代码库既不向外部发送数据，也不暴露任何超出 GitHub 的网络接口。**
+**所需的权限：**接收器工作流程仅在此仓库中运行，并具有 `contents: write` 权限。溯源验证使用工作流程的默认 `GITHUB_TOKEN` 进行只读的 Actions API 调用。**没有遥测、没有第三方服务、没有分析——此代码库既不会“回家报告”，也不会暴露超出 GitHub 的网络接口。**
 
-## Packages
+## 包
 
-| Package | Source | Purpose |
+| 包 | 来源 | 目的 |
 |---------|--------|---------|
-| `@dogfood-lab/schemas` | TypeScript | The 8 JSON schemas (record, finding, pattern, recommendation, doctrine, policy, scenario, submission)。 |
-| `@dogfood-lab/verify` | JS | Central submission validator. Submissions pass through here before they're persisted. |
-| `@dogfood-lab/findings` | JS | Finding contract + derive/review/synthesis/advise pipelines. |
-| `@dogfood-lab/ingest` | JS | Pipeline glue: dispatch → verify → persist → index. |
-| `@dogfood-lab/report` | JS | Submission builder for source repos. |
-| `@dogfood-lab/portfolio` | JS | Cross-repo portfolio generator. |
-| `@dogfood-lab/dogfood-swarm` | JS | The 10-phase parallel-agent protocol + SQLite control plane + `swarm` bin. |
+| `@dogfood-lab/schemas` | TypeScript | 8 个 JSON 模式（记录、发现、模式、建议、原则、策略、场景、提交）。 |
+| `@dogfood-lab/verify` | JS | 中央提交验证器。提交在持久化之前会通过此验证器。 |
+| `@dogfood-lab/findings` | JS | 发现契约 + 推导/审查/综合/建议流水线。 |
+| `@dogfood-lab/ingest` | JS | 流水线粘合剂：发送 → 验证 → 持久化 → 索引。 |
+| `@dogfood-lab/report` | JS | 用于源仓库的提交构建器。 |
+| `@dogfood-lab/portfolio` | JS | 跨仓库组合生成器。 |
+| `@dogfood-lab/dogfood-swarm` | JS | 10 阶段的并行代理协议 + SQLite 控制平面 + `swarm` 二进制文件。 |
 
-Sibling testing tools that **stay independent** but integrate via published APIs: [`shipcheck`](https://github.com/mcp-tool-shop-org/shipcheck), [`repo-knowledge`](https://github.com/mcp-tool-shop-org/repo-knowledge), [`ai-eyes-mcp`](https://github.com/mcp-tool-shop-org/ai-eyes-mcp), [`taste-engine`](https://github.com/mcp-tool-shop-org/taste-engine), [`style-dataset-lab`](https://github.com/mcp-tool-shop-org/style-dataset-lab).
+**保持独立**但通过已发布的 API 进行集成的其他测试工具：[`shipcheck`](https://github.com/mcp-tool-shop-org/shipcheck)、[`repo-knowledge`](https://github.com/mcp-tool-shop-org/repo-knowledge)、[`ai-eyes-mcp`](https://github.com/mcp-tool-shop-org/ai-eyes-mcp)、[`taste-engine`](https://github.com/mcp-tool-shop-org/taste-engine)、[`style-dataset-lab`](https://github.com/mcp-tool-shop-org/style-dataset-lab)。
 
-## Layout
+## 布局
 
 ```
 testing-os/
@@ -84,7 +86,7 @@ testing-os/
 └── .github/workflows/         # ci.yml, ingest.yml, pages.yml
 ```
 
-## Local Development
+## 本地开发
 
 ```bash
 git clone https://github.com/dogfood-lab/testing-os.git
@@ -95,15 +97,15 @@ npm test            # vitest for schemas, node --test for the rest
 npm run verify      # build + test (canonical pre-commit check)
 ```
 
-Requires Node ≥ 20. CI matrix runs Node 20 + 22 on `ubuntu-latest`; locally validated on Node 25.
+需要 Node 版本 ≥ 22。CI 矩阵在 `ubuntu-latest` 上运行 Node 22 + 24；本地验证使用 Node 25。
 
-**Supported filesystems:** APFS, HFS+, ext4 (CI baseline), NTFS — anything that implements POSIX `link(2)`. **Not supported:** exFAT, FAT32. The file-lock CAS in [`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js) requires hardlink semantics for atomic publication; on exFAT, `linkSync` throws `ENOTSUP` (loud, not silent). Common gotcha: cross-platform external SSDs are often formatted exFAT — clone the repo to local APFS/HFS+ instead. See [`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md) for the full Session G validation matrix.
+**支持的文件系统：**APFS、HFS+、ext4（CI 基准）、NTFS——任何实现 POSIX `link(2)` 的文件系统。**不支持：**exFAT、FAT32。`[`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js)` 中的文件锁定 CAS 需要硬链接语义来实现原子发布；在 exFAT 上，`linkSync` 会抛出 `ENOTSUP` 错误（会发出明显错误，而不是静默错误）。常见问题：跨平台的外部 SSD 通常格式化为 exFAT——请将仓库克隆到本地的 APFS/HFS+ 文件系统。有关完整的 Session G 验证矩阵，请参阅 [`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)。
 
-## Versioning
+## 版本控制
 
-Lockstep across all `@dogfood-lab/*` packages — they bump together. The version line in this README is auto-stamped from `package.json` via `scripts/sync-version.mjs` (runs as `prebuild`). As of **v1.2.0**, six packages publish to npm under the `@dogfood-lab` scope: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains internal to the monorepo.
+所有 `@dogfood-lab/*` 包都采用同步版本控制——它们一起更新。此 README 文件中的版本号会从 `package.json` 文件中自动提取，并通过 `scripts/sync-version.mjs` 脚本进行更新（作为 `prebuild` 脚本运行）。截至 **v1.2.0**，有六个包发布到 npm，并使用 `@dogfood-lab` 命名空间：`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`。第七个包（`@dogfood-lab/portfolio`）仍然是 monorepo 内部使用的。
 
-## License
+## 许可证
 
 [MIT](LICENSE) © 2026 mcp-tool-shop
 
@@ -111,8 +113,8 @@ Lockstep across all `@dogfood-lab/*` packages — they bump together. The versio
 
 <div align="center">
 
-**[Handbook](https://dogfood-lab.github.io/testing-os/handbook/)** · **[All Repositories](https://github.com/orgs/dogfood-lab/repositories)** · **[Profile](https://github.com/dogfood-lab)**
+**[手册](https://dogfood-lab.github.io/testing-os/handbook/)** · **[所有仓库](https://github.com/orgs/dogfood-lab/repositories)** · **[个人资料](https://github.com/dogfood-lab)**
 
-*先吃，后发。*
+*先吃饱，再开始工作。*
 
-</div
+</div>
