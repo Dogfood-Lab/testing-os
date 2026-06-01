@@ -217,9 +217,21 @@ export function upsertFindings(db, runId, waveId, classified) {
   let inserted = 0, updated = 0, fixed = 0, unverified = 0;
 
   const tx = db.transaction(() => {
-    // Insert new findings
+    // Insert new findings.
+    //
+    // D3B-006: finding_id is content-addressed from the fingerprint
+    // (F-<first 8 hex chars>) so that:
+    //   - it is deterministic across `swarm collect` invocations — two
+    //     sub-second collect calls cannot mint identical finding_ids for
+    //     different findings the way the prior `F-<6 ts digits>-<counter>`
+    //     scheme could;
+    //   - downstream readers keyed on finding_id (notably `swarm approve
+    //     --ids`) get a stable handle that survives wave-to-wave reruns;
+    //   - a fingerprint-prefix collision (≤2.3e-4 at 1000 findings/run)
+    //     fails LOUD via the (run_id, finding_id) UNIQUE index instead of
+    //     silently double-inserting under the same id.
     for (const f of classified.new) {
-      const fid = `F-${String(Date.now()).slice(-6)}-${String(inserted + 1).padStart(3, '0')}`;
+      const fid = `F-${String(f.fingerprint).slice(0, 8)}`;
       const result = insertFinding.run(
         runId, fid, f.fingerprint, f.severity, f.category,
         f.file || null, f.line || null, f.symbol || null,

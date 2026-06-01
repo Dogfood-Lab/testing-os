@@ -17,10 +17,10 @@
 
 **Sistema operativo para pruebas en la era de la IA**
 
-*Protocolos, almacenes de pruebas y ciclos de aprendizaje para software asistido por IA.*
+*Protocolos, almacenes de evidencia y ciclos de aprendizaje para software asistido por IA.*
 
 <!-- version:start -->
-**v1.3.0** — 7 paquetes (`@dogfood-lab/*`), suite de pruebas a nivel de espacio de trabajo, receptor de datos activo, manual implementado.
+**v1.3.1** — versión actual. Consulte [CHANGELOG.md](CHANGELOG.md) para ver qué se incluyó en esta versión.
 <!-- version:end -->
 
 📖 **[Lea el manual →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -34,21 +34,22 @@
 `testing-os` es el repositorio monorepo principal de la organización [Dogfood Lab](https://github.com/dogfood-lab) de GitHub, sucesor del ahora archivado [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs). Agrupa los protocolos y la infraestructura para ejecutar, registrar y aprender de las pruebas en un flujo de trabajo de desarrollo nativo de la IA:
 
 - Un **protocolo de enjambre** para ejecutar auditorías de agentes paralelos en una base de código.
-- Un **almacén de pruebas + estructura de esquema** para los registros, los hallazgos, los patrones y las recomendaciones que se obtienen de esas ejecuciones.
+- Un **almacén de evidencia + estructura de esquema** para los registros, los hallazgos, los patrones y las recomendaciones que se obtienen de esas ejecuciones.
 - Una **capa de políticas + verificador** que decide qué se considera "verificado" y lo aplica en todos los repositorios de consumidores.
 - Una **capa de inteligencia** que convierte los hallazgos brutos en patrones y doctrinas reutilizables.
 
-## Estado
+## Guía de inicio rápido
 
-**v1.3.0** — un único validador de esquemas canónico en todos los consumidores (una instancia de Ajv por esquema por proceso; la división a nivel de espacio de trabajo es una restricción estricta). Errores estructurados de nivel superior con códigos estables (`ISOLATION_FAILED`, `DUPLICATE_RUN_ID`, `STATE_MACHINE_*`, `DISPATCH_*`, `VALIDATOR_FAULT_*`, …) y una indicación `Next:` en cada ruta de error. El archivo YAML de políticas ahora se valida a nivel de esquema en el momento de la carga; un archivo de políticas estructuralmente inválido genera un error en lugar de pasar silenciosamente a valores predeterminados permisivos. El manual en [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) incluye temas claros y oscuros, accesibilidad WCAG-AA por página (pa11y en CI con reintento), una referencia CLI `swarm` por verbo y una página 404 personalizada. Seis paquetes se publican en npm bajo `@dogfood-lab` en v1.3.0 de forma sincronizada; consulte la tabla a continuación. No hay cambios importantes con respecto a v1.2.x. Consulte [CHANGELOG.md](CHANGELOG.md) para obtener la entrada completa de v1.3.0.
+```bash
+npm install -g @dogfood-lab/dogfood-swarm
+swarm --help
+```
 
-El receptor está activo: los flujos de trabajo `dogfood.yml` en los repositorios de consumidores se envían a este repositorio, y [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) confirma los registros y los índices resultantes de nuevo en `main`. El manual se implementa en [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Instalación principal: `npm install -g @dogfood-lab/dogfood-swarm`. El lado del receptor se mantiene a través del envío; consulte la página de Integración del manual.
-
-**Plataforma:** validada de extremo a extremo en Darwin/APFS como parte de la Sesión G ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)). Consulte [Desarrollo local](#local-development) para conocer los sistemas de archivos compatibles. Detalles por versión en [CHANGELOG.md](CHANGELOG.md).
+La guía del operador, la referencia de la interfaz de línea de comandos (CLI), la referencia del esquema y las recetas de integración se encuentran en el **[manual](https://dogfood-lab.github.io/testing-os/handbook/)**. Los detalles específicos de cada versión se encuentran en [CHANGELOG.md](CHANGELOG.md).
 
 ## Modelo de amenazas
 
-testing-os procesa los envíos de Dogfood enviados a través de `repository_dispatch` desde repositorios de GitHub confiables bajo `mcp-tool-shop-org/*` y `dogfood-lab/*`. El verificador requiere la procedencia de GitHub Actions; se confirman los ID de ejecución declarados a través de la API de GitHub, y se rechazan los envíos con formas incorrectas, referencias faltantes o reclamaciones de políticas no válidas.
+testing-os procesa los envíos de dogfood enviados a través de `repository_dispatch` desde repositorios de GitHub confiables bajo `mcp-tool-shop-org/*` y `dogfood-lab/*`. El verificador requiere la procedencia de GitHub Actions; los ID de ejecución declarados se confirman a través de la API de GitHub, y los envíos con formas incorrectas, referencias faltantes o afirmaciones de políticas inválidas se rechazan.
 
 **Qué toca testing-os:** el JSON de envío en cada carga útil de `repository_dispatch`; `policies/`, `fixtures/`, `records/` e `indexes/` en este repositorio; llamadas salientes a `api.github.com` para la verificación de la procedencia.
 
@@ -63,7 +64,7 @@ testing-os procesa los envíos de Dogfood enviados a través de `repository_disp
 | `@dogfood-lab/schemas` | TypeScript | Los 8 esquemas JSON (registro, hallazgo, patrón, recomendación, doctrina, política, escenario, envío). |
 | `@dogfood-lab/verify` | JS | Validador de envíos central. Los envíos pasan por aquí antes de que se almacenen. |
 | `@dogfood-lab/findings` | JS | Contrato de hallazgo + tuberías de derivación/revisión/síntesis/asesoramiento. |
-| `@dogfood-lab/ingest` | JS | Conexión de la tubería: envío → verificación → persistencia → indexación. |
+| `@dogfood-lab/ingest` | JS | Pegamento de la tubería: envío → verificación → persistencia → indexación. |
 | `@dogfood-lab/report` | JS | Constructor de envíos para repositorios de origen. |
 | `@dogfood-lab/portfolio` | JS | Generador de carteras entre repositorios. |
 | `@dogfood-lab/dogfood-swarm` | JS | El protocolo de agentes paralelos de 10 fases + plano de control SQLite + bin `swarm`. |
@@ -99,11 +100,11 @@ npm run verify      # build + test (canonical pre-commit check)
 
 Requiere Node ≥ 22. La matriz de CI ejecuta Node 22 y 24 en `ubuntu-latest`; se valida localmente en Node 25.
 
-**Sistemas de archivos compatibles:** APFS, HFS+, ext4 (línea de base de CI), NTFS; cualquier sistema que implemente POSIX `link(2)`. **No compatibles:** exFAT, FAT32. El CAS de bloqueo de archivos en [`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js) requiere semántica de enlace duro para la publicación atómica; en exFAT, `linkSync` genera `ENOTSUP` (mensaje visible, no silencioso). Un error común: los SSD externos multiplataforma a menudo están formateados en exFAT; en su lugar, clone el repositorio en APFS/HFS+ local. Consulte [`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md) para obtener la matriz completa de validación de la Sesión G.
+**Sistemas de archivos compatibles:** APFS, HFS+, ext4 (línea de base de CI), NTFS; cualquier sistema que implemente POSIX `link(2)`. **No compatibles:** exFAT, FAT32. El CAS de bloqueo de archivos en [`packages/findings/lib/file-lock.js`](packages/findings/lib/file-lock.js) requiere semántica de enlace físico para la publicación atómica; en exFAT, `linkSync` genera `ENOTSUP` (mensaje visible, no silencioso). Un error común: los SSD externos multiplataforma a menudo están formateados en exFAT; en su lugar, clone el repositorio en APFS/HFS+ local. Consulte [`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md) para obtener la matriz completa de validación de la Sesión G.
 
 ## Control de versiones
 
-Control de versiones sincronizado en todos los paquetes `@dogfood-lab/*`; se actualizan juntos. La línea de versión en este archivo README se genera automáticamente a partir de `package.json` mediante `scripts/sync-version.mjs` (se ejecuta como `prebuild`). A partir de la **versión 1.2.0**, seis paquetes se publican en npm bajo el ámbito `@dogfood-lab`: `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. El séptimo (`@dogfood-lab/portfolio`) permanece interno al monorepositorio.
+Todos los paquetes `@dogfood-lab/*` se actualizan juntos, con un único número de versión para todo el repositorio. Se publican seis paquetes en npm bajo `@dogfood-lab` en la versión v1.3.1, de forma sincronizada (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); el séptimo, `@dogfood-lab/portfolio`, permanece interno. La línea de versión que aparece en la parte superior de este archivo README se actualiza automáticamente desde `package.json` mediante [`scripts/sync-version.mjs`](scripts/sync-version.mjs) cada vez que se ejecuta `npm run build`.
 
 ## Licencia
 

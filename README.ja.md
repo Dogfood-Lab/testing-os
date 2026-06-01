@@ -20,7 +20,7 @@
 *AIによる支援を受けたソフトウェアのためのプロトコル、証拠ストア、および学習ループ。*
 
 <!-- version:start -->
-**v1.3.0** — 7つのパッケージ (`@dogfood-lab/*`)、ワークスペース全体のテストスイート、インジェストレシーバーが稼働、ハンドブックがデプロイ。
+**v1.3.1** — 現在のリリース版。今回のリリース内容については、[CHANGELOG.md](CHANGELOG.md) を参照してください。
 <!-- version:end -->
 
 📖 **[ハンドブックを読む →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -38,13 +38,14 @@
 - 何が「検証済み」であるかを決定し、それをすべてのコンシューマーリポジトリに適用する**ポリシー + 検証者**レイヤー。
 - 生のデータを再利用可能なパターンとドクトリンに変換する**インテリジェンスレイヤー**。
 
-## ステータス
+## クイックスタート
 
-**v1.3.0** — すべてのコンシューマーで単一の標準スキーマ検証器（スキーマごとに1つのAjvインスタンス、プロセスごと）。安定したコード（`ISOLATION_FAILED`、`DUPLICATE_RUN_ID`、`STATE_MACHINE_*`、`DISPATCH_*`、`VALIDATOR_FAULT_*`、…）を持つ構造化された最上位レベルのエラーと、すべての失敗パスに「次へ」のヒント。ポリシーYAMLは、ロード時にスキーマによってゲートされ、構造的に無効なポリシーファイルは、サイレントに緩いデフォルトにフォールバックするのではなく、明確にエラーを発生させます。ハンドブックは[dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/)で公開されており、ライト/ダークテーマのパリティ、ページごとのWCAG-AAアクセシビリティ（CIでのpa11yによる再試行）、1つの`swarm` CLIリファレンス、およびカスタム404を備えています。6つのパッケージがv1.3.0でロックステップでnpmに公開され、`@dogfood-lab`の下に公開されます。v1.2.xからの破壊的な変更はありません。[CHANGELOG.md](CHANGELOG.md)を参照して、v1.3.0の完全なエントリを確認してください。
+```bash
+npm install -g @dogfood-lab/dogfood-swarm
+swarm --help
+```
 
-レシーバーが稼働しています。コンシューマーリポジトリの`dogfood.yml`ワークフローは、このリポジトリにディスパッチされ、[.github/workflows/ingest.yml](.github/workflows/ingest.yml)が結果のレコードとインデックスを`main`にコミットします。ハンドブックは[dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/)にデプロイされています。主要なインストール：`npm install -g @dogfood-lab/dogfood-swarm`。レシーバー側は、ディスパッチを介して消費されます。詳細は、ハンドブックの統合ページを参照してください。
-
-**プラットフォーム:** Darwin/APFS上でエンドツーエンドで検証済み（Session Gの一部として、[`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)）。サポートされているファイルシステムについては、[ローカル開発](#local-development)を参照してください。バージョンごとの詳細は、[CHANGELOG.md](CHANGELOG.md)を参照してください。
+オペレーターガイド、CLIリファレンス、スキーマリファレンス、および統合レシピは、**[ハンドブック](https://dogfood-lab.github.io/testing-os/handbook/)** に収録されています。バージョンごとの詳細については、[CHANGELOG.md](CHANGELOG.md) を参照してください。
 
 ## 脅威モデル
 
@@ -103,7 +104,7 @@ Node 22以上が必要です。CIマトリックスでは、`ubuntu-latest`上�
 
 ## バージョン管理
 
-すべての`@dogfood-lab/*`パッケージで、バージョンが同期して更新されます。このREADMEのバージョン行は、`scripts/sync-version.mjs`（`prebuild`として実行）によって`package.json`から自動的に取得されます。**v1.2.0**では、6つのパッケージが`@dogfood-lab`スコープの下でnpmに公開されます：`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`。7番目のパッケージ（`@dogfood-lab/portfolio`）は、モノリポジトリ内で内部的に使用されます。
+すべての`@dogfood-lab/*`パッケージは、まとめてバージョンアップされます。つまり、モノリポ全体でバージョン番号が1つだけ上がります。6つのパッケージ（`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`）が、`v1.3.1`としてnpmに公開されます。7番目のパッケージである`@dogfood-lab/portfolio`は、引き続き内部利用のみとします。このREADMEの先頭付近にあるバージョン番号は、`npm run build`を実行するたびに、`package.json`から[`scripts/sync-version.mjs`](scripts/sync-version.mjs)を通じて自動的に更新されます。
 
 ## ライセンス
 

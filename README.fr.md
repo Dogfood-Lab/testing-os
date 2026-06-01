@@ -20,7 +20,7 @@
 *Protocoles, référentiels de preuves et boucles d’apprentissage pour les logiciels assistés par l’IA.*
 
 <!-- version:start -->
-**v1.3.0** — 7 paquets (`@dogfood-lab/*`), suite de tests à l’échelle de l’espace de travail, récepteur d’ingestion en ligne, manuel déployé.
+**v1.3.1** — version actuelle. Consultez le fichier [CHANGELOG.md](CHANGELOG.md) pour connaître les nouveautés.
 <!-- version:end -->
 
 📖 **[Consultez le manuel →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -38,13 +38,14 @@
 - Une **couche de politique + de vérificateur** qui détermine ce qui est considéré comme « vérifié » et l’applique dans tous les référentiels consommateurs.
 - Une **couche d’intelligence** qui transforme les résultats bruts en modèles et en doctrines réutilisables.
 
-## État
+## Guide de démarrage rapide
 
-**v1.3.0** — un seul validateur de schéma canonique dans tous les consommateurs (une instance Ajv par schéma par processus ; une séparation à l’échelle de l’espace de travail est une condition sine qua non). Erreurs structurées de haut niveau avec des codes stables (`ISOLATION_FAILED`, `DUPLICATE_RUN_ID`, `STATE_MACHINE_*`, `DISPATCH_*`, `VALIDATOR_FAULT_*`, …) et un indice `Next:` sur chaque chemin d’échec. Le fichier YAML de politique est désormais validé par un schéma au moment du chargement : un fichier de politique structurellement invalide génère une erreur au lieu de passer silencieusement à des valeurs par défaut permissives. Le manuel est disponible à l’adresse [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/) et propose une compatibilité de thème clair/sombre, une accessibilité WCAG-AA par page (pa11y dans CI avec nouvelle tentative), une référence CLI `swarm` par verbe et une page 404 personnalisée. Six paquets sont publiés sur npm sous `@dogfood-lab` en v1.3.0, en synchronisation ; voir le tableau ci-dessous. Aucune modification importante par rapport à la v1.2.x. Consultez [CHANGELOG.md](CHANGELOG.md) pour l’entrée complète de la v1.3.0.
+```bash
+npm install -g @dogfood-lab/dogfood-swarm
+swarm --help
+```
 
-Le récepteur est en ligne : les flux de travail `dogfood.yml` dans les référentiels consommateurs sont envoyés vers ce référentiel, et [`.github/workflows/ingest.yml`](.github/workflows/ingest.yml) valide les enregistrements et les index résultants et les renvoie vers `main`. Le manuel est déployé à l’adresse [dogfood-lab.github.io/testing-os/](https://dogfood-lab.github.io/testing-os/). Installation principale : `npm install -g @dogfood-lab/dogfood-swarm`. Le côté récepteur est géré via l’envoi ; consultez la page Intégration du manuel.
-
-**Plateforme :** validée de bout en bout sur Darwin/APFS dans le cadre de la session G ([`docs/m5-validation-2026-04-29.md`](docs/m5-validation-2026-04-29.md)). Consultez [Développement local](#local-development) pour connaître les systèmes de fichiers pris en charge. Détails par version dans [CHANGELOG.md](CHANGELOG.md).
+Le guide de l’utilisateur, la référence de l’interface en ligne de commande, la référence du schéma et les exemples d’intégration se trouvent dans le **[manuel](https://dogfood-lab.github.io/testing-os/handbook/)**. Les détails spécifiques à chaque version se trouvent dans le fichier [CHANGELOG.md](CHANGELOG.md).
 
 ## Modèle de menace
 
@@ -103,7 +104,7 @@ Nécessite Node ≥ 22. La matrice CI exécute Node 22 + 24 sur `ubuntu-latest`;
 
 ## Gestion des versions
 
-Mise à jour synchronisée de tous les paquets `@dogfood-lab/*` — ils sont mis à jour ensemble. La ligne de version dans ce fichier README est automatiquement générée à partir de `package.json` via `scripts/sync-version.mjs` (s’exécute en tant que `prebuild`). À partir de la version **v1.2.0**, six paquets sont publiés sur npm sous le nom de domaine `@dogfood-lab` : `schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`. Le septième (`@dogfood-lab/portfolio`) reste interne au monorepo.
+Tous les paquets commençant par `@dogfood-lab/*` sont mis à jour simultanément, avec un seul numéro de version pour l’ensemble du monorepo. Six paquets sont publiés sur npm sous `@dogfood-lab` à la version v1.3.1, de manière synchronisée (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); le septième, `@dogfood-lab/portfolio`, reste interne. La ligne de version située en haut de ce fichier README est automatiquement mise à jour à partir du fichier `package.json` via le script [`scripts/sync-version.mjs`](scripts/sync-version.mjs) à chaque exécution de `npm run build`.
 
 ## Licence
 
