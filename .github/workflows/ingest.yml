@@ -86,6 +86,20 @@ jobs:
           fi
 
       - name: Commit records and indexes
+        # F-FA-001 (Phase 10 Step 1): push-retry loop with exponential
+        # backoff + per-attempt structured telemetry. Pre-amend the
+        # loop ran 3 tight attempts with no backoff and a generic
+        # "All push attempts failed" terminus — an operator looking at
+        # the workflow run after a transient push failure (concurrent
+        # ingest, GitHub-API blip) had the SAME signal as a real
+        # conflict, masking which attempt recovered the run. Mirrors
+        # the Stage D pa11y retry pattern in pages.yml (which closed
+        # D4B-015).
+        #
+        # 3 attempts with 10s/20s backoff between them (matching the
+        # pa11y step). Per-attempt `::warning::` annotations let an
+        # operator see which attempt landed; the final `::error::`
+        # only fires when all 3 failed.
         if: steps.result.outputs.written == 'true'
         run: |
           git config user.name "dogfood-bot"
@@ -96,9 +110,17 @@ jobs:
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "ingest: ${STATUS} dogfood record ${RUN_ID}"
 
-          for i in 1 2 3; do
-            git push && exit 0
-            echo "Push attempt $i failed, pulling and retrying..."
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "::notice::Push succeeded on attempt $attempt for run ${RUN_ID}"
+              exit 0
+            fi
+            if [ $attempt -lt 3 ]; then
+              wait_s=$((attempt * 10))
+              echo "::warning::Push attempt $attempt failed for run ${RUN_ID} — rebasing and sleeping ${wait_s}s before retry"
+            else
+              echo "::warning::Push attempt $attempt failed for run ${RUN_ID} — final attempt"
+            fi
             # Surface rebase failures immediately rather than continuing the
             # retry loop with a half-rebased working tree. A concurrent ingest
             # touching the same records/ or indexes/ paths produces a merge
@@ -107,13 +129,17 @@ jobs:
             # push attempts failed" with no signal that the underlying issue
             # was a content conflict.
             git pull --rebase || {
-              echo "::error::rebase failed during push retry — likely concurrent ingest conflict on records/ or indexes/"
+              echo "::error::rebase failed during push retry attempt $attempt — likely concurrent ingest conflict on records/ or indexes/ for run ${RUN_ID}"
               git status --porcelain=v2 || true
               git rebase --abort 2>/dev/null || true
               exit 1
             }
+            if [ $attempt -lt 3 ]; then
+              sleep $((attempt * 10))
+            fi
           done
-          echo "All push attempts failed" && exit 1
+          echo "::error::All 3 push attempts failed for run ${RUN_ID} (no rebase conflict — likely sustained GitHub-API issue or branch protection)"
+          exit 1
 
       - name: Summary
         if: always()

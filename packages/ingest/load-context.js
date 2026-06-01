@@ -14,8 +14,28 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 
+import { validatePayload } from '@dogfood-lab/schemas';
 import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-stage.js';
 import { isUnsafeSegment } from './lib/unsafe-segment.js';
+
+/**
+ * D2B-005 (Phase 10 Step 1): summarise a `validatePayload('policy', …)`
+ * result down to a single-line operator-actionable reason string. The
+ * canonical seam returns `{ path, message, keyword, params }` per error;
+ * we collapse the first 3 violations into a `path message` join so the
+ * sentinel's `reason` field stays grep-friendly without truncating the
+ * structural detail an operator needs to find the offending YAML key.
+ *
+ * Three errors is a deliberate ceiling — a policy with 20 violations
+ * almost certainly has a single root cause (wrong section nesting,
+ * malformed root); flooding the reason string with 20 lines makes the
+ * error harder to read, not easier.
+ */
+function summarizePolicyErrors(errors) {
+  const trimmed = errors.slice(0, 3).map(e => `${e.path || '/'} ${e.message}`);
+  const ellipsis = errors.length > 3 ? `; (+${errors.length - 3} more)` : '';
+  return trimmed.join('; ') + ellipsis;
+}
 
 /**
  * D1B-006 (Stage C humanization): one structured `logStage(...)` helper,
@@ -57,8 +77,9 @@ export function loadGlobalPolicy(repoRoot) {
     }
     throw new Error(`Global policy unreadable: ${path} — ${e.message}`);
   }
+  let parsed;
   try {
-    return yaml.load(raw);
+    parsed = yaml.load(raw);
   } catch (e) {
     const where = e.mark ? ` at line ${e.mark.line + 1}, column ${e.mark.column + 1}` : '';
     throw new Error(
@@ -66,6 +87,22 @@ export function loadGlobalPolicy(repoRoot) {
       `Fix the YAML and re-run.`
     );
   }
+
+  // D2B-005: schema-gate the parsed policy against policy.schema.json.
+  // Pre-fix, a YAML that parsed but didn't conform (extra fields, wrong
+  // enums, missing required) silently loaded and the verifier ran with
+  // ad-hoc field probing — a structurally-invalid policy could produce
+  // "verifier accepts everything." Post-H3 the canonical seam is one
+  // call away. Global policy is required + load-once, so a schema fault
+  // here is fail-loud (matches the YAML-invalid sibling above).
+  const validation = validatePayload('policy', parsed);
+  if (!validation.valid) {
+    throw new Error(
+      `Global policy schema-invalid: ${path} — ${summarizePolicyErrors(validation.errors)}\n` +
+      `Fix the policy to conform to policy.schema.json and re-run.`
+    );
+  }
+  return parsed;
 }
 
 /**
@@ -97,10 +134,13 @@ export function loadRepoPolicy(repoSlug, repoRoot) {
   const path = join(repoRoot, 'policies', 'repos', org, `${repo}.yaml`);
 
   if (!existsSync(path)) return null;
+  let parsed;
   try {
-    return yaml.load(readFileSync(path, 'utf-8'));
+    parsed = yaml.load(readFileSync(path, 'utf-8'));
   } catch (e) {
-    // D1B-006: torn-policy sentinel + structured warn event.
+    // D1B-006: torn-policy sentinel + structured warn event for YAML
+    // parse failures. The verifier (verify/index.js:189-192) surfaces
+    // this as a `policy: <reason>` rejection.
     const reason = e && e.message ? e.message : String(e);
     logStage('warn', {
       kind: 'repo_policy_unreadable',
@@ -110,6 +150,27 @@ export function loadRepoPolicy(repoSlug, repoRoot) {
     });
     return { __torn: true, reason, path };
   }
+
+  // D2B-005 (Phase 10 Step 1): schema-gate the parsed repo policy.
+  // Reuses the `__torn` sentinel so the verifier's existing single-
+  // branch handler (verify/index.js:189) catches both "YAML failed
+  // to parse" (D1B-006) and "YAML parsed but doesn't conform to
+  // policy.schema.json" (D2B-005). The verify-side reason prefix
+  // (`policy: repo policy unreadable — <reason>`) covers both
+  // classes; the embedded schema-violation detail tells the operator
+  // which YAML key to fix.
+  const validation = validatePayload('policy', parsed);
+  if (!validation.valid) {
+    const reason = `schema-invalid — ${summarizePolicyErrors(validation.errors)}`;
+    logStage('warn', {
+      kind: 'repo_policy_unreadable',
+      repo: repoSlug,
+      path,
+      error: reason
+    });
+    return { __torn: true, reason, path };
+  }
+  return parsed;
 }
 
 /**

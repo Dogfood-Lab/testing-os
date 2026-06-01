@@ -16,6 +16,22 @@
 import { openDb } from '../../db/connection.js';
 import { createHash } from 'node:crypto';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../queries/latest-agent-runs.js';
+import { SCHEMA_VERSION } from '../../db/schema.js';
+
+/**
+ * D3B-014 (Phase 10 Step 1): version of the canonical export ENVELOPE
+ * itself — the JSON shape `{ export_version, exported_at, provenance,
+ * run, domains, waves, findings, verification, promotions }`. Distinct
+ * from `SCHEMA_VERSION` (which is the DB SQL-schema version, sourced
+ * from db/schema.js). Bump this when the export envelope's shape
+ * changes in a way consumers care about.
+ *
+ * Lives here (not in db/schema.js) because the envelope and the DB
+ * schema are independent contracts — the DB might bump for a column
+ * add without affecting any exported field, and vice versa. One
+ * constant per concept, each owned by its consumer.
+ */
+export const EXPORT_VERSION = '1.0.0';
 
 /**
  * Build a canonical run export from DB truth.
@@ -126,13 +142,21 @@ export function buildRunExport(db, runId) {
     at: p.created_at,
   }));
 
-  // Compute content hash for provenance
+  // Compute content hash for provenance.
+  //
+  // D3B-014 (Phase 10 Step 1): `export_version` sources from the local
+  // EXPORT_VERSION constant (envelope shape); `provenance.schema_version`
+  // sources from db/schema.js SCHEMA_VERSION (DB SQL schema). Pre-fix
+  // both were hardcoded literals — the schema_version had drifted to a
+  // stale `3` while SCHEMA_VERSION had bumped to 5, with no compile-time
+  // signal. Each constant is now imported at the module's top so a
+  // future bump propagates without an editor sweep.
   const exportPayload = {
-    export_version: '1.0.0',
+    export_version: EXPORT_VERSION,
     exported_at: new Date().toISOString(),
     provenance: {
       system: 'swarm-control-plane',
-      schema_version: 3,
+      schema_version: SCHEMA_VERSION,
       run_id: runId,
     },
     run: {
