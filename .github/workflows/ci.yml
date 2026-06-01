@@ -155,6 +155,15 @@ jobs:
       # push could land a regression-pin drift that local pre-commit would
       # have caught. scripts/check-finding-regression-pins.mjs.
       - run: npm run check-regression-pins
-      - run: npm run test:scripts
+      # Phase 10 release-prep fix-up (post-H3): `test:scripts` historically
+      # ran BEFORE `build`, which was safe back when every scripts/*.test.mjs
+      # was a pure-JS script with no workspace dependencies. The new
+      # D2B-015 invariant test (scripts/check-validator-cache-singleton.test.mjs,
+      # landed with H3) imports `@dogfood-lab/schemas` to assert the
+      # single-cache invariant across consumers — and that import needs
+      # the TypeScript schemas package built to `dist/` first. Reorder so
+      # `build` runs before `test:scripts`. The package.json `verify` script
+      # mirrors this order.
       - run: npm run build
+      - run: npm run test:scripts
       - run: npm test
