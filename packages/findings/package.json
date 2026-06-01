@@ -18,7 +18,7 @@
     "findings": "./cli.js"
   },
   "scripts": {
-    "test": "node --test findings.test.js derive/derive.test.js derive/load-records-skip.test.js review/review.test.js review/event-log-loader.test.js review/h4-engine-auto-reject-reason.test.js synthesis/synthesis.test.js synthesis/loaders-skip.test.js advise/advise.test.js lib/atomic-write.test.js lib/safe-yaml-load.test.js"
+    "test": "node --test findings.test.js derive/derive.test.js derive/load-records-skip.test.js derive/d2b-008-collision-guard.test.js derive/d2b-002-write-schema-gate.test.js review/review.test.js review/event-log-loader.test.js review/h4-engine-auto-reject-reason.test.js synthesis/synthesis.test.js synthesis/loaders-skip.test.js synthesis/d2b-001-derive-skipped-signal.test.js advise/advise.test.js lib/atomic-write.test.js lib/safe-yaml-load.test.js lib/d1b-002-findings-sleepsync.test.js"
   },
   "files": [
     "index.js",

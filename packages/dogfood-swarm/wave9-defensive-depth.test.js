@@ -285,16 +285,25 @@ describe('applyTimeoutPolicy — F-375053-004 NULL started_at defense', () => {
       VALUES (1, ?, 'dispatched', NULL)`).run(domain.id);
     const arId = Number(ar.lastInsertRowid);
 
-    // Suppress the deliberate stderr warning the law engine emits.
+    // Suppress + capture the deliberate stderr signal the law engine emits.
+    // Pre-D3B-012 the signal was a bare console.warn; post-fix (Wave A2
+    // Stage C) it is a structured logStage NDJSON event on console.error
+    // with stage='timeout_skip_null_started_at'. Capture BOTH so the
+    // assertion below works regardless of which surface the law engine
+    // ultimately uses.
     const origWarn = console.warn;
+    const origErr = console.error;
     const warnCalls = [];
+    const errCalls = [];
     console.warn = (...args) => warnCalls.push(args);
+    console.error = (...args) => errCalls.push(args.map(String).join(' '));
 
     let timedOut;
     try {
       timedOut = applyTimeoutPolicy(db, 1, 30 * 60 * 1000); // 30-min timeout
     } finally {
       console.warn = origWarn;
+      console.error = origErr;
     }
 
     assert.equal(timedOut.length, 0,
@@ -302,8 +311,20 @@ describe('applyTimeoutPolicy — F-375053-004 NULL started_at defense', () => {
     const row = db.prepare("SELECT status FROM agent_runs WHERE id = ?").get(arId);
     assert.equal(row.status, 'dispatched',
       'agent must remain dispatched, not be flipped to timed_out');
-    assert.ok(warnCalls.length > 0,
-      'state machine must surface the broken invariant via console.warn');
+
+    // The law engine must surface the broken invariant. Accept either the
+    // legacy console.warn path OR the structured logStage NDJSON event
+    // (stage='timeout_skip_null_started_at') that D3B-012 wired in.
+    const sawWarnSignal = warnCalls.length > 0;
+    const sawStructuredSignal = errCalls.some(ln => {
+      if (!ln.startsWith('{')) return false;
+      try {
+        const obj = JSON.parse(ln);
+        return obj && obj.stage === 'timeout_skip_null_started_at';
+      } catch { return false; }
+    });
+    assert.ok(sawWarnSignal || sawStructuredSignal,
+      `state machine must surface the broken invariant via console.warn OR a stage=timeout_skip_null_started_at NDJSON event; got warns=${warnCalls.length} errCalls=${errCalls.length}`);
   });
 });
 

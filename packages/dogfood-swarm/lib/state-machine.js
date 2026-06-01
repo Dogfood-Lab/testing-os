@@ -35,6 +35,7 @@
  */
 
 import { StateMachineRejectionError } from './errors.js';
+import { logStage } from './log-stage.js';
 
 /**
  * Allowed transitions: from → [to, to, ...]
@@ -207,11 +208,21 @@ export function applyTimeoutPolicy(db, waveId, timeoutMs, nowMs) {
     // which already terminates with 'Z'. Appending another 'Z' yielded NaN
     // and caused every timeout check to silently no-op. See F-742440-001.
     if (!agent.started_at) {
-      console.warn(
-        `state-machine: agent ${agent.id} (${agent.domain_name}) has ` +
-        `status=${agent.status} with NULL started_at — invariant broken; ` +
-        `treating as just-dispatched and skipping timeout this pass`
-      );
+      // D3B-012 (Wave A2 Stage C): the prior console.warn was an
+      // unstructured message buried inside stderr — operators tailing the
+      // NDJSON stream had no way to detect it. Replace with a structured,
+      // coded, greppable logStage event. The defensive skip stays — we
+      // still cannot prove timing — but the operator now sees it.
+      logStage('timeout_skip_null_started_at', {
+        component: 'dogfood-swarm',
+        agent_run_id: agent.id,
+        agentRunId: agent.id,
+        domain: agent.domain_name,
+        status: agent.status,
+        wave_id: waveId,
+        waveId,
+        reason: 'started_at NULL despite in-flight status — state-machine bypass somewhere; skipping timeout this pass',
+      });
       continue;
     }
     const startedAt = new Date(agent.started_at).getTime();

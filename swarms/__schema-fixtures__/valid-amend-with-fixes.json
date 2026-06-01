@@ -1,0 +1,23 @@
+{
+  "domain": "d4-tooling",
+  "summary": "Amend-pass output — exercises the fixes[] + files_changed[] branch (Phase 7 wave 1 contract). Mirrors the canonical amend-output shape: each fix carries finding_id + description, optional file pointer.",
+  "fixes": [
+    {
+      "finding_id": "F-FIXTURE-AMEND-001",
+      "file": "scripts/example.mjs",
+      "description": "Example amend fixture — covers the fix shape with file pointer."
+    },
+    {
+      "finding_id": "F-FIXTURE-AMEND-002",
+      "description": "Second amend fix — file field is optional; this entry confirms the schema allows the leaner shape."
+    }
+  ],
+  "files_changed": ["scripts/example.mjs", "swarms/__schema-fixtures__/valid-amend-with-fixes.json"],
+  "skipped": [
+    {
+      "finding_id": "F-FIXTURE-AMEND-003",
+      "reason": "Cross-domain dependency — fixture covers the skipped[] shape."
+    }
+  ],
+  "verification_skipped": true
+}

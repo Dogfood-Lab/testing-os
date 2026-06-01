@@ -89,11 +89,57 @@ jobs:
       # d0f7a58 the lockfile shipped with all 7 packages/* entries pinned at
       # 1.2.2 (root was 1.2.3) and engines.node at >=20 (root was >=22), and
       # sync-version:check passed despite both classes of drift.
-      - name: Lockfile-drift gate
+      #
+      # Stage C Wave A2 D4B-001 / D4B-002 (humanization — operator-legible
+      # failures):
+      #
+      # D4B-001 — split install vs diff so a registry timeout (transient
+      # network) does NOT look identical to real lockfile drift. The
+      # previous one-shot `npm install --package-lock-only && git diff` made
+      # an operator chase a phantom diff on red CI every time the upstream
+      # registry hiccuped. The install step writes its log to install.log;
+      # if it fails we inspect for the canonical network-error fingerprints
+      # (ETIMEDOUT/ECONNRESET/ENETUNREACH/registry.npmjs.org HTTP 5xx) and
+      # emit a ::warning:: so the leg passes but the operator knows the
+      # gate was skipped (versus an ::error:: + non-zero exit on any other
+      # install failure).
+      #
+      # D4B-002 — pin the lockfile-drift gate to ONE Node version (the
+      # lower one in the matrix, 22) instead of running on every matrix
+      # leg. The lockfile is normative regardless of which Node version
+      # produced it; running it once is sufficient. Running on both legs
+      # opened a phantom-drift class: npm 10.9 vs npm 11.x produce subtly
+      # different lockfile shape (sorted-keys, integrity-hash format),
+      # which a 24-leg can write but a 22-leg can't and vice versa. The
+      # `if:` condition gates the install + diff steps to the 22 leg only.
+      - name: Lockfile-drift gate — install (Node 22 only; D4B-002)
+        if: ${{ matrix.node-version == 22 }}
+        id: lockfile_install
         run: |
-          npm install --package-lock-only
+          set +e
+          npm install --package-lock-only --no-audit --no-fund 2> install.log
+          install_exit=$?
+          set -e
+          if [ $install_exit -ne 0 ]; then
+            # D4B-001: classify the failure. Network-class failures get a
+            # warning + a non-blocking skip; everything else is a hard
+            # error so an operator never confuses "lockfile mismatch" with
+            # "registry was down".
+            if grep -E -i "ETIMEDOUT|ECONNRESET|ENETUNREACH|ENOTFOUND|EAI_AGAIN|socket hang up|network timeout|registry\.npmjs\.org.*5[0-9][0-9]|ERR_SOCKET_TIMEOUT" install.log >/dev/null 2>&1; then
+              echo "::warning::lockfile-drift gate skipped: 'npm install --package-lock-only' hit a transient network error. Lockfile NOT checked this run. Re-run if a drift was actually expected."
+              echo "skipped=true" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "::error::lockfile-drift gate failed: 'npm install --package-lock-only' exited non-zero with a non-network error. Install log:"
+            cat install.log
+            exit 1
+          fi
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+      - name: Lockfile-drift gate — diff (Node 22 only; D4B-002)
+        if: ${{ matrix.node-version == 22 && steps.lockfile_install.outputs.skipped != 'true' }}
+        run: |
           git diff --exit-code package-lock.json || {
-            echo "::error::package-lock.json drifted from package.json. Run 'npm install' locally and commit the regenerated lockfile."
+            echo "::error::package-lock.json drifted from package.json. Run 'npm install' locally and commit the regenerated lockfile. (This failure is a REAL lockfile mismatch — the install step succeeded, so no transient-network suspicion.)"
             exit 1
           }
       # Class #11 sweep gate: assert source-of-truth/doc cross-refs hold.

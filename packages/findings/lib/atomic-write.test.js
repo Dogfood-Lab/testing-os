@@ -15,8 +15,8 @@ import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 
 import { atomicWriteFileSync } from './atomic-write.js';
-import { writeFinding } from '../derive/write-findings.js';
-import { writePattern, writeRecommendation, writeDoctrine } from '../synthesis/write-artifacts.js';
+import { writeFinding, resetSeenWrites } from '../derive/write-findings.js';
+import { writePattern, writeRecommendation, writeDoctrine, resetSeenArtifactWrites } from '../synthesis/write-artifacts.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -87,20 +87,33 @@ describe('writeFinding (derive) — torn-write does not corrupt', () => {
   beforeEach(() => { tmpRoot = makeTmpDir('derive'); });
   afterEach(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
+  // Schema-conformant fixture (D2B-002 — writeFinding now schema-gates).
+  // Pre-D2B-002 the writers were schema-blind, so these regression tests
+  // shipped with placeholder fields. The torn-write invariant they probe is
+  // still load-bearing; only the fixture shape needed updating.
   const finding = {
     schema_version: '1.0.0',
-    finding_id: 'F-test-001',
-    finding_type: 'evidence_gap',
-    severity: 'low',
+    finding_id: 'dfind-test-001',
+    title: 'placeholder torn-write fixture',
+    status: 'candidate',
     repo: 'mcp-tool-shop-org/x',
-    title: 'placeholder',
-    summary: 'placeholder finding for torn-write regression',
-    derived_at: '2026-04-26T00:00:00Z',
-    rule_id: 'R-TEST',
+    product_surface: 'cli',
+    journey_stage: 'first_run',
+    issue_kind: 'entrypoint_truth',
+    root_cause_kind: 'contract_drift',
+    remediation_kind: 'docs_change',
+    transfer_scope: 'surface_archetype',
+    summary: 'placeholder finding for torn-write regression test fixture.',
     source_record_ids: ['r-1'],
-    evidence: [{ evidence_kind: 'record_field', record_id: 'r-1', field_path: '$.x', observed_value: 1 }],
-    confidence: 0.5,
-    status: 'candidate'
+    evidence: [{ evidence_kind: 'record', record_id: 'r-1' }],
+    derived: {
+      method: 'deterministic_rule',
+      rule_id: 'rule-test',
+      derived_at: '2026-04-26T00:00:00Z',
+      rationale: 'torn-write regression test rationale.'
+    },
+    created_at: '2026-04-26T00:00:00Z',
+    updated_at: '2026-04-26T00:00:00Z',
   };
 
   it('preserves prior file when underlying writeFileSync throws', () => {
@@ -109,9 +122,15 @@ describe('writeFinding (derive) — torn-write does not corrupt', () => {
     const filePath = writeFinding(tmpRoot, finding);
     const original = readFileSync(filePath, 'utf-8');
 
+    // L3-001 family-seal: writeFinding refuses same-process same-id by default.
+    // Explicitly opt back in for this legitimate "rewrite with new contents"
+    // test so the torn-write hook (NOT the collision guard) is what trips
+    // the assertion.
+    resetSeenWrites(tmpRoot);
+
     const restore = installTornWrite();
     try {
-      assert.throws(() => writeFinding(tmpRoot, { ...finding, summary: 'CHANGED' }));
+      assert.throws(() => writeFinding(tmpRoot, { ...finding, summary: 'CHANGED summary for torn-write fixture.' }));
     } finally {
       restore();
     }
@@ -127,9 +146,49 @@ describe('write-artifacts (synthesis) — torn-write does not corrupt', () => {
   afterEach(() => rmSync(tmpRoot, { recursive: true, force: true }));
 
   it('pattern + recommendation + doctrine all roll back on torn write', () => {
-    const pattern = { pattern_id: 'PAT-001', name: 'p', description: 'd' };
-    const rec = { recommendation_id: 'REC-001', title: 't', body: 'b' };
-    const doc = { doctrine_id: 'DOC-001', title: 't', body: 'b' };
+    // Schema-conformant fixtures (D2B-002 — synthesis writers now schema-gate).
+    const pattern = {
+      schema_version: '1.0.0',
+      pattern_id: 'dpat-torn-001',
+      title: 'p torn-write fixture',
+      status: 'candidate',
+      pattern_kind: 'recurring_failure',
+      summary: 'placeholder pattern for torn-write regression test fixture.',
+      source_finding_ids: ['dfind-a', 'dfind-b'],
+      support: { finding_count: 2, repo_count: 1, surface_count: 1 },
+      dimensions: { product_surfaces: ['cli'], issue_kinds: ['entrypoint_truth'] },
+      transfer_scope: 'surface_archetype',
+      created_at: '2026-04-26T00:00:00Z',
+      updated_at: '2026-04-26T00:00:00Z',
+    };
+    const rec = {
+      schema_version: '1.0.0',
+      recommendation_id: 'drec-torn-001',
+      title: 't torn-write rec fixture',
+      status: 'candidate',
+      recommendation_kind: 'starter_check',
+      summary: 'placeholder recommendation for torn-write regression test.',
+      based_on_pattern_ids: ['dpat-x'],
+      applies_to: { product_surfaces: ['cli'], transfer_scope: 'surface_archetype' },
+      action: { type: 'add_check', target: 'rollout', details: 'placeholder action details' },
+      confidence: 'emerging',
+      created_at: '2026-04-26T00:00:00Z',
+      updated_at: '2026-04-26T00:00:00Z',
+    };
+    const doc = {
+      schema_version: '1.0.0',
+      doctrine_id: 'ddoc-torn-001',
+      title: 't torn-write doc fixture',
+      status: 'candidate',
+      doctrine_kind: 'rollout_law',
+      statement: 'placeholder doctrine statement for torn-write regression test fixture.',
+      rationale: 'placeholder rationale for torn-write regression test fixture spans enough chars.',
+      based_on_pattern_ids: ['dpat-x'],
+      transfer_scope: 'surface_archetype',
+      strength: 'proven',
+      created_at: '2026-04-26T00:00:00Z',
+      updated_at: '2026-04-26T00:00:00Z',
+    };
 
     const pPath = writePattern(tmpRoot, pattern);
     const rPath = writeRecommendation(tmpRoot, rec);
@@ -140,10 +199,13 @@ describe('write-artifacts (synthesis) — torn-write does not corrupt', () => {
       d: readFileSync(dPath, 'utf-8')
     };
 
+    // Schema-conformant mutation: tweak `title` (a string field present on all
+    // three artifact shapes) so the schema gate passes and the torn-write
+    // hook is what trips the assertion.
     for (const [fn, payload, prior, dir] of [
-      [writePattern, { ...pattern, name: 'CHANGED' }, orig.p, dirname(pPath)],
-      [writeRecommendation, { ...rec, title: 'CHANGED' }, orig.r, dirname(rPath)],
-      [writeDoctrine, { ...doc, title: 'CHANGED' }, orig.d, dirname(dPath)]
+      [writePattern, { ...pattern, title: 'CHANGED title' }, orig.p, dirname(pPath)],
+      [writeRecommendation, { ...rec, title: 'CHANGED title' }, orig.r, dirname(rPath)],
+      [writeDoctrine, { ...doc, title: 'CHANGED title' }, orig.d, dirname(dPath)]
     ]) {
       const restore = installTornWrite();
       try {
@@ -167,23 +229,41 @@ describe('review-engine — torn-write does not corrupt finding', () => {
     // Lazy import so the seed write happens before any fs hook is installed.
     const { performAction } = await import('../review/review-engine.js');
 
+    // Schema-conformant fixture (D2B-002).
     const finding = {
       schema_version: '1.0.0',
-      finding_id: 'F-rev-001',
-      finding_type: 'evidence_gap',
-      severity: 'low',
+      finding_id: 'dfind-rev-001',
+      title: 'rev placeholder torn-write fixture',
+      status: 'candidate',
       repo: 'mcp-tool-shop-org/x',
-      title: 'rev placeholder',
-      summary: 'review torn-write regression',
-      derived_at: '2026-04-26T00:00:00Z',
-      rule_id: 'R-TEST',
+      product_surface: 'cli',
+      journey_stage: 'first_run',
+      issue_kind: 'entrypoint_truth',
+      root_cause_kind: 'contract_drift',
+      remediation_kind: 'docs_change',
+      transfer_scope: 'surface_archetype',
+      summary: 'review torn-write regression test fixture summary.',
       source_record_ids: ['r-1'],
-      evidence: [{ evidence_kind: 'record_field', record_id: 'r-1', field_path: '$.x', observed_value: 1 }],
-      confidence: 0.5,
-      status: 'candidate'
+      evidence: [{ evidence_kind: 'record', record_id: 'r-1' }],
+      derived: {
+        method: 'deterministic_rule',
+        rule_id: 'rule-test',
+        derived_at: '2026-04-26T00:00:00Z',
+        rationale: 'review torn-write regression rationale.'
+      },
+      created_at: '2026-04-26T00:00:00Z',
+      updated_at: '2026-04-26T00:00:00Z',
     };
     const filePath = writeFinding(tmpRoot, finding);
     const original = readFileSync(filePath, 'utf-8');
+
+    // L3-001 family-seal: performAction internally rewrites the finding;
+    // explicitly opt back in for this legitimate "seed-then-update" flow
+    // so the torn-write hook is what trips, not the collision guard.
+    // (performAction itself uses atomicWriteFileSync, not writeFinding, so
+    // this reset is defensive — it future-proofs the test against any
+    // refactor that routes performAction through writeFinding.)
+    resetSeenWrites(tmpRoot);
 
     const restore = installTornWrite();
     let result;
@@ -192,7 +272,7 @@ describe('review-engine — torn-write does not corrupt finding', () => {
       // The torn write trips on the first writeFileSync — the finding write — and bubbles.
       assert.throws(() => {
         result = performAction(tmpRoot, {
-          findingId: 'F-rev-001',
+          findingId: 'dfind-rev-001',
           action: 'accept',
           actor: 'tester'
         });

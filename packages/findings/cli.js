@@ -51,6 +51,9 @@ import {
   writePattern,
   writeRecommendation,
   writeDoctrine,
+  writePatterns,
+  writeRecommendations,
+  writeDoctrines,
   loadPatterns,
   loadRecommendations,
   loadDoctrines
@@ -429,7 +432,10 @@ Filters (for list):
     if (errors.length > 0) {
       console.error(`Errors: ${errors.length}`);
       for (const e of errors) {
-        console.error(`  ${e.findingId}: ${e.error}`);
+        // L2-004 (Wave A2 amend2): surface the structured `.code` so
+        // operators can grep for FINDING_ID_COLLISION etc., matching
+        // the sibling artifact CLIs (cli.js:676/756/832).
+        console.error(`  ${e.findingId || '<unknown>'}: ${e.code || 'WRITE_ERROR'} ${e.error}`);
       }
       process.exit(1);
     }
@@ -663,9 +669,16 @@ Filters (for list):
       }
 
       if (write && patterns.length > 0) {
-        for (const p of patterns) {
-          const path = writePattern(ROOT, p);
-          console.log(`Written: ${relative(ROOT, path)}`);
+        const { written, errors } = writePatterns(ROOT, patterns);
+        for (const p of written) {
+          console.log(`Written: ${relative(ROOT, p)}`);
+        }
+        if (errors.length > 0) {
+          console.error(`Errors: ${errors.length}`);
+          for (const e of errors) {
+            console.error(`  ${e.patternId || '<unknown>'}: ${e.code || 'WRITE_ERROR'} ${e.error}`);
+          }
+          process.exit(1);
         }
       } else if (!write && patterns.length > 0) {
         console.log(`(dry-run) ${patterns.length} pattern(s) would be written. Use --write to materialize.`);
@@ -714,7 +727,17 @@ Filters (for list):
     const sub = positional[0];
     if (sub === 'derive') {
       const write = flags.write;
-      const { recommendations, stats } = deriveRecommendations(ROOT);
+      const { recommendations, skipped, stats } = deriveRecommendations(ROOT);
+
+      // D2B-001 — surface structured skip signal to operators. The derive
+      // engine still emits clean recommendations from the patterns it could
+      // read; the skipped list documents the partial-completion honestly.
+      if (skipped && skipped.length > 0) {
+        console.error(`${skipped.length} pattern(s) skipped (torn/unreadable):`);
+        for (const s of skipped) {
+          console.error(`  ${relative(ROOT, s.path)} — ${s.error}`);
+        }
+      }
 
       console.log(`Patterns considered: ${stats.patternsConsidered}`);
       console.log(`Recommendations emitted: ${stats.recommendationsEmitted}\n`);
@@ -726,9 +749,16 @@ Filters (for list):
       }
 
       if (write && recommendations.length > 0) {
-        for (const r of recommendations) {
-          const path = writeRecommendation(ROOT, r);
-          console.log(`Written: ${relative(ROOT, path)}`);
+        const { written, errors } = writeRecommendations(ROOT, recommendations);
+        for (const p of written) {
+          console.log(`Written: ${relative(ROOT, p)}`);
+        }
+        if (errors.length > 0) {
+          console.error(`Errors: ${errors.length}`);
+          for (const e of errors) {
+            console.error(`  ${e.recommendationId || '<unknown>'}: ${e.code || 'WRITE_ERROR'} ${e.error}`);
+          }
+          process.exit(1);
         }
       } else if (!write && recommendations.length > 0) {
         console.log(`(dry-run) ${recommendations.length} recommendation(s) would be written. Use --write to materialize.`);
@@ -774,7 +804,15 @@ Filters (for list):
     const sub = positional[0];
     if (sub === 'derive') {
       const write = flags.write;
-      const { doctrines, stats } = deriveDoctrine(ROOT);
+      const { doctrines, skipped, stats } = deriveDoctrine(ROOT);
+
+      // D2B-001 — surface structured skip signal to operators.
+      if (skipped && skipped.length > 0) {
+        console.error(`${skipped.length} pattern(s) skipped (torn/unreadable):`);
+        for (const s of skipped) {
+          console.error(`  ${relative(ROOT, s.path)} — ${s.error}`);
+        }
+      }
 
       console.log(`Patterns considered: ${stats.patternsConsidered}`);
       console.log(`Doctrines emitted: ${stats.doctrinesEmitted}`);
@@ -787,9 +825,16 @@ Filters (for list):
       }
 
       if (write && doctrines.length > 0) {
-        for (const d of doctrines) {
-          const path = writeDoctrine(ROOT, d);
-          console.log(`Written: ${relative(ROOT, path)}`);
+        const { written, errors } = writeDoctrines(ROOT, doctrines);
+        for (const p of written) {
+          console.log(`Written: ${relative(ROOT, p)}`);
+        }
+        if (errors.length > 0) {
+          console.error(`Errors: ${errors.length}`);
+          for (const e of errors) {
+            console.error(`  ${e.doctrineId || '<unknown>'}: ${e.code || 'WRITE_ERROR'} ${e.error}`);
+          }
+          process.exit(1);
         }
       } else if (!write && doctrines.length > 0) {
         console.log(`(dry-run) ${doctrines.length} doctrine(s) would be written. Use --write to materialize.`);

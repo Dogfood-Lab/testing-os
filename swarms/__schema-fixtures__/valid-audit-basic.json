@@ -1,0 +1,6 @@
+{
+  "domain": "ci-tooling",
+  "stage": "C",
+  "summary": "Stage C audit output — basic shape: domain + summary only. This is the minimum the schema requires; the other fixtures exercise the richer audit / amend shapes.",
+  "verification_skipped": true
+}

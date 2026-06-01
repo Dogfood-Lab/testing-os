@@ -521,15 +521,24 @@ describe('rebuild-indexes corrupted-record surfacing (F-246817-004)', () => {
     const badPath = resolve(TEST_ROOT, 'records/mcp-tool-shop-org/dogfood-labs/2026/03/19/run-bad-001.json');
     writeFileSync(badPath, '{ this is not valid json');
 
+    // D1B-005 (Stage C): the corrupted-record skip is now surfaced via
+    // structured `logStage('warn', { kind: 'record_skipped', reason: …, path: … })`
+    // on stderr instead of an unstructured `[rebuild-indexes]` prefix.
+    // Capturing via `console.error` would miss the NDJSON line because
+    // `logStage` writes directly to `process.stderr`. Capture the raw
+    // stderr stream.
     const captured = [];
-    const origErr = console.error;
-    console.error = (...args) => { captured.push(args.join(' ')); };
+    const origStderr = process.stderr.write.bind(process.stderr);
+    process.stderr.write = (chunk) => {
+      captured.push(chunk.toString());
+      return true;
+    };
 
     let result;
     try {
       result = rebuildIndexes(TEST_ROOT);
     } finally {
-      console.error = origErr;
+      process.stderr.write = origStderr;
     }
 
     assert.ok(Array.isArray(result.corrupted), 'corrupted must be an array');
@@ -538,10 +547,15 @@ describe('rebuild-indexes corrupted-record surfacing (F-246817-004)', () => {
     assert.ok(result.corrupted[0].error, 'corrupted entry must include error message');
     // The good record still made it into latestByRepo.
     assert.ok(result.latestByRepo['mcp-tool-shop-org/dogfood-labs']);
-    // Stderr saw the bad file.
+    // Stderr saw the bad file — structured `record_skipped` warn event
+    // names the path.
     assert.ok(
-      captured.some(line => line.includes('[rebuild-indexes]') && line.includes('run-bad-001')),
-      `expected stderr log for corrupted file, got: ${JSON.stringify(captured)}`
+      captured.some(line =>
+        line.includes('"kind":"record_skipped"') &&
+        line.includes('"reason":"corrupted"') &&
+        line.includes('run-bad-001')
+      ),
+      `expected stderr NDJSON warn for corrupted file, got: ${JSON.stringify(captured)}`
     );
   });
 

@@ -46,6 +46,22 @@ const ALLOWLIST = [
   // applyTimeoutPolicy routes through transitionAgent which goes through
   // executeTransition (self-wrapping). The file legitimately mentions
   // UPDATE agent_runs only via the executeTransition path (no raw UPDATE).
+  //
+  // D3B-013 (Wave A2 Stage C): redrive.js has a same-status branch
+  // (dispatched → dispatched) that records the operator's intent via a
+  // raw `INSERT INTO agent_state_events`. canTransition rejects self-
+  // loops in TRANSITIONS so we cannot route the no-op through the state
+  // machine. The raw INSERT lives INSIDE the outer apply db.transaction()
+  // so atomicity is preserved at the SQLite level; the file-level guard
+  // above (text.includes('db.transaction(')) already accepts it. This
+  // entry documents the special case so a future scan understands the
+  // intent and a stricter line-level guard
+  // (amend2-d3b-013-redrive-tx.test.js) pins the INSERT-inside-tx
+  // structural invariant.
+  {
+    file: 'commands/redrive.js',
+    reason: 'same-status (dispatched → dispatched) redrive intentionally uses a raw INSERT INTO agent_state_events because canTransition rejects self-loops. Raw INSERT lives inside the outer apply db.transaction() — pinned by amend2-d3b-013-redrive-tx.test.js.',
+  },
 ];
 
 function walkSync(dir, files = []) {

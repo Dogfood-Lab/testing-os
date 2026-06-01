@@ -15,7 +15,7 @@
     "clean": "tsc --build --clean",
     "test": "npm test --workspaces --if-present",
     "test:vitest": "vitest run --passWithNoTests",
-    "test:scripts": "node --test scripts/sync-version.test.mjs scripts/check-doc-drift.test.mjs scripts/check-severity-contrast.test.mjs scripts/check-accent-color.test.mjs scripts/check-handbook-imagery.test.mjs scripts/check-finding-regression-pins.test.mjs",
+    "test:scripts": "node --test \"scripts/*.test.mjs\"",
     "verify": "npm run sync-version:check && npm run check-doc-drift && npm run check-regression-pins && npm run test:scripts && npm run build && npm run test",
     "sync-version": "node scripts/sync-version.mjs",
     "sync-version:check": "node scripts/sync-version.mjs --check",

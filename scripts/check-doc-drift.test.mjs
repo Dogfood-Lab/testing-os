@@ -897,6 +897,180 @@ test('schema-conformance: schema file missing reports config-error', async (t) =
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// schema-conformance — negative-fixture discrimination (D4-004, Wave A2)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('schema-conformance: negative fixture (basename matches negativeFilenamePattern) MUST fail validation (D4-004)', async (t) => {
+  // A file matching the negative-filename pattern that DOES validate must
+  // be reported as drift — the gate is asserting "this fixture intentionally
+  // violates the schema; if it passes, the schema loosened".
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  // A negative fixture that *accidentally* passes the schema:
+  fx.write(
+    'fixtures/invalid-broken-on-purpose.json',
+    JSON.stringify(VALID_AMEND_OUTPUT),
+  );
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json'],
+      negativeFilenamePattern: '^invalid-',
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  assert.match(result.reports[0].message, /NEGATIVE fixture passed validation/);
+  assert.equal(result.reports[0].error?.code, 'NEGATIVE_FIXTURE_PASSED');
+});
+
+test('schema-conformance: negative fixture that FAILS validation passes the gate (the happy path) (D4-004)', async (t) => {
+  // The correct shape of a negative fixture: it intentionally violates the
+  // schema. The handler silently accepts that as the expected outcome.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write(
+    'fixtures/invalid-missing-domain.json',
+    JSON.stringify({ summary: 'no domain field — must fail' }),
+  );
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json'],
+      negativeFilenamePattern: '^invalid-',
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('schema-conformance: positive + negative fixtures wired together (D4-004 end-to-end)', async (t) => {
+  // Mixed-mode test: one positive fixture that validates + one negative
+  // fixture that does not. The gate stays clean.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write('fixtures/valid-basic.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  fx.write(
+    'fixtures/invalid-missing-summary.json',
+    JSON.stringify({ domain: 'x' }),
+  );
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json'],
+      negativeFilenamePattern: '^invalid-',
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('schema-conformance: default negativeFilenamePattern is `^invalid-` (D4-004 default)', async (t) => {
+  // No explicit pattern; the default fires. Confirms the live config
+  // (which sets negativeFilenamePattern explicitly for documentation
+  // purposes) and the default behavior stay aligned.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write(
+    'fixtures/invalid-no-summary.json',
+    JSON.stringify({ domain: 'x' }),
+  );
+  fx.write('fixtures/valid.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json'],
+      // No negativeFilenamePattern set → default ^invalid- applies.
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Live-tree wiring for the agent-output-schema check (D4-004 — behavioral
+// assertion, not just structural).
+//
+// Before Wave A2, the live `agent-output-schema` check carried `allowEmpty:
+// true` and both globs matched zero committed files. The framework-self-
+// test only checked STRUCTURE (required fields present) — vacuous gates
+// stayed vacuous forever. These tests assert the BEHAVIOR: the live check
+// matches positive + negative committed fixtures, the positives validate,
+// the negative validates-as-rejected, and `allowEmpty` is GONE so a future
+// zero-match (someone deletes the fixtures directory) fails loud.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('LIVE WIRING: agent-output-schema check has at least one positive AND one negative fixture committed (D4-004)', async () => {
+  const cfgPath = resolve(repoRoot, 'scripts/doc-drift-patterns.json');
+  const { readFileSync: read } = await import('node:fs');
+  const config = JSON.parse(read(cfgPath, 'utf8'));
+  const entry = config.checks.find((c) => c.id === 'agent-output-schema');
+  assert.ok(entry, 'expected an agent-output-schema check entry in scripts/doc-drift-patterns.json');
+
+  // The first target glob is the canonical hand-curated fixture path.
+  // Read it via the same expandGlobs helper the framework uses.
+  const matched = expandGlobs(entry.targets, repoRoot, { recursive: true });
+  const basenames = matched.map((f) => f.replace(/\\/g, '/').split('/').pop());
+
+  const negPattern = new RegExp(entry.negativeFilenamePattern ?? '^invalid-');
+  const positives = basenames.filter((b) => !negPattern.test(b));
+  const negatives = basenames.filter((b) => negPattern.test(b));
+
+  assert.ok(
+    positives.length >= 1,
+    `expected at least 1 POSITIVE fixture matching ${entry.targets.join(' | ')}; got 0. ` +
+      `D4-004 invariant: hand-curated fixtures live under swarms/__schema-fixtures__/ — ` +
+      `a positive shape proves the schema's required[] passes for legitimate envelopes.`,
+  );
+  assert.ok(
+    negatives.length >= 1,
+    `expected at least 1 NEGATIVE fixture matching ${entry.targets.join(' | ')} ` +
+      `(basename starts with 'invalid-'); got 0. D4-004 invariant: at least one fixture ` +
+      `must intentionally violate the schema so a future schema-loosening is caught.`,
+  );
+});
+
+test('LIVE WIRING: agent-output-schema check does NOT carry allowEmpty:true (D4-004 — vacuous-gate root cause closed)', async () => {
+  const cfgPath = resolve(repoRoot, 'scripts/doc-drift-patterns.json');
+  const { readFileSync: read } = await import('node:fs');
+  const config = JSON.parse(read(cfgPath, 'utf8'));
+  const entry = config.checks.find((c) => c.id === 'agent-output-schema');
+  assert.ok(entry);
+  assert.notEqual(
+    entry.allowEmpty,
+    true,
+    'D4-004: `allowEmpty: true` was the vacuous-gate enabler. Drop it. ' +
+      'If both target globs match zero files, the gate must fail loud — that is the whole point.',
+  );
+});
+
+test('LIVE WIRING: running the agent-output-schema check validates the committed positive fixtures (D4-004)', async () => {
+  // Behavior assertion: the live check, run against the live tree, passes.
+  // This is the operator-facing contract — `npm run check-doc-drift` stays
+  // green only as long as positives validate AND negatives fail.
+  const result = await runDriftChecks({ repoRoot, checkId: 'agent-output-schema' });
+  assert.equal(
+    result.clean,
+    true,
+    `agent-output-schema check should pass against the committed fixtures. ` +
+      `Reports: ${JSON.stringify(result.reports, null, 2)}`,
+  );
+  assert.equal(result.checksRun, 1);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // framework-self-test handler — meta-check
 // ─────────────────────────────────────────────────────────────────────────────
 

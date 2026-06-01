@@ -528,10 +528,25 @@ const helperAdoptionSweepHandler = {
  * collect.js may eventually call validateAgainstSchema() before merge — that
  * wiring is a backend-domain edit (cross-wave dependency), but the gate
  * itself runs here on every CI build.
+ *
+ * Stage C Wave A2 D4-004 (the SOUND half of R9 — close the vacuous gate):
+ * the original handler treated every matched file as "must validate" and
+ * the config relied on `allowEmpty: true` because both target globs matched
+ * zero committed files. That made the check structurally vacuous —
+ * a future zero-match (schema rot, stray globs) stays silently green.
+ *
+ * The handler now discriminates POSITIVE vs NEGATIVE fixtures by filename:
+ * a basename matching `negativeFilenamePattern` (default `^invalid-`) MUST
+ * fail validation; everything else MUST pass. A negative fixture that
+ * accidentally validates is reported as drift — proof that the negative
+ * fixture isn't actually testing the constraint it claims to test.
+ * Combined with dropping `allowEmpty: true` in the config, the gate is now
+ * behaviorally fail-loud: zero fixtures → config-error; positive fixture
+ * that fails → drift; negative fixture that passes → drift.
  */
 const schemaConformanceHandler = {
   kind: 'schema-conformance',
-  description: 'Target JSON files validate against the configured JSON Schema.',
+  description: 'Target JSON files validate against the configured JSON Schema. Negative fixtures (basename matches negativeFilenamePattern) must fail validation; everything else must pass.',
   requiredFields: ['schema', 'targets'],
   async run(check, repoRoot) {
     const schemaAbs = resolve(repoRoot, check.schema);
@@ -576,6 +591,15 @@ const schemaConformanceHandler = {
     const allowlist = new Set((check.allowlist ?? []).map((p) => resolve(repoRoot, p)));
     const errorClass = check.errorClass ?? 'AgentOutputValidationError';
 
+    // D4-004: negative-fixture convention — basenames matching this regex
+    // MUST fail validation. Default `^invalid-` picks up the canonical
+    // hand-curated negative fixtures under swarms/__schema-fixtures__/
+    // (e.g. invalid-missing-domain.json). Configurable per check so a
+    // different fixture-tree convention can override without code edits.
+    const negFilenameRe = new RegExp(
+      check.negativeFilenamePattern ?? '^invalid-',
+    );
+
     if (targetFiles.length === 0 && !check.allowEmpty) {
       return [{
         checkId: check.id,
@@ -588,12 +612,16 @@ const schemaConformanceHandler = {
     const reports = [];
     for (const file of targetFiles) {
       if (allowlist.has(file)) continue;
+      const basename = file.replace(/\\/g, '/').split('/').pop() ?? file;
+      const isNegative = negFilenameRe.test(basename);
 
       let parsed;
       try {
         parsed = JSON.parse(readFileSync(file, 'utf8'));
       } catch (err) {
         const rel = relative(repoRoot, file).replace(/\\/g, '/');
+        // Negative fixtures intentionally violate the schema, not the JSON
+        // grammar. Malformed JSON is a real bug in either case — surface it.
         reports.push({
           checkId: check.id,
           severity: 'drift',
@@ -606,8 +634,33 @@ const schemaConformanceHandler = {
       }
 
       const ok = validate(parsed);
+      const rel = relative(repoRoot, file).replace(/\\/g, '/');
+
+      if (isNegative) {
+        // Negative fixture: MUST fail validation. If it passes, the fixture
+        // is no longer testing the constraint it claims to test (schema
+        // loosened, fixture out of date, etc.) — surface as drift.
+        if (ok) {
+          reports.push({
+            checkId: check.id,
+            severity: 'drift',
+            message: `[${check.id}] ${rel}: NEGATIVE fixture passed validation but must fail`,
+            file: rel,
+            error: {
+              name: errorClass,
+              code: 'NEGATIVE_FIXTURE_PASSED',
+              message: `Negative fixture ${rel} validated against ${check.schema} but is expected to fail. The schema may have loosened, or the fixture no longer violates the constraint it claims to test.`,
+              hint: 'Either tighten the fixture to violate a current constraint, or remove it if the constraint is gone.',
+            },
+            hint: check.hint,
+          });
+        }
+        // Negative-fixture-correctly-failed: silent pass, no report.
+        continue;
+      }
+
+      // Positive fixture: MUST pass validation.
       if (!ok) {
-        const rel = relative(repoRoot, file).replace(/\\/g, '/');
         const ajvErrors = validate.errors ?? [];
         const summary = ajvErrors
           .slice(0, 5)

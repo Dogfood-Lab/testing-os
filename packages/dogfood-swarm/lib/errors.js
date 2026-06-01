@@ -89,6 +89,74 @@ export class CollectUpsertError extends Error {
  * handler can render a code-specific actionable hint. Sibling concept to
  * IsolationError + CollectUpsertError: structured shape > prose-only.
  */
+/**
+ * Thrown when a `swarm dispatch` precondition fails (missing run, frozen-
+ * domain check, missing domains).
+ *
+ * Pre-fix history (D3B-003, Wave A2 Stage C): dispatch threw bare
+ * `new Error('Run not found: ...')` / `new Error('Domains are not
+ * frozen...')` strings that left the CLI's top-level handler with no
+ * stable signal to render an actionable hint. The typed shape carries a
+ * stable .code so consumers can pattern-match without substring grep on
+ * .message, mirroring IsolationError / StateMachineRejectionError.
+ *
+ * Codes:
+ *   DISPATCH_RUN_NOT_FOUND       — `runs.id` does not exist
+ *   DISPATCH_DOMAINS_NOT_FROZEN  — domains still draft, no --auto-freeze
+ *   DISPATCH_NO_DOMAINS          — frozen but the domain set is empty
+ */
+export class DispatchPreconditionError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} opts
+   * @param {'DISPATCH_RUN_NOT_FOUND' | 'DISPATCH_DOMAINS_NOT_FROZEN' | 'DISPATCH_NO_DOMAINS'} opts.code
+   * @param {string} [opts.runId]
+   * @param {string} [opts.phase]
+   * @param {string} [opts.hint]
+   */
+  constructor(message, opts) {
+    super(message);
+    this.name = 'DispatchPreconditionError';
+    this.code = opts.code;
+    if (opts.runId != null) this.runId = opts.runId;
+    if (opts.phase != null) this.phase = opts.phase;
+    if (opts.hint) this.hint = opts.hint;
+  }
+}
+
+/**
+ * Thrown when `swarm <verb> --globs <JSON>` cannot be parsed (or the
+ * parsed value has the wrong shape).
+ *
+ * Pre-fix history (D3B-004, Wave A2 Stage C): cli.js wrapped
+ * `JSON.parse(args[idx+1])` with no try/catch and no shape check. An
+ * operator typo yielded a raw `SyntaxError: Unexpected token ...` at
+ * stderr with no actionable hint. The typed shape gives the top-level
+ * renderer something to bind a clear "expected JSON array of strings"
+ * message to.
+ *
+ * Codes:
+ *   CLI_INVALID_GLOBS_JSON  — the JSON.parse call threw OR the parsed
+ *                             value is not a non-empty array of strings
+ */
+export class CliInvalidGlobsError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} [opts]
+   * @param {string} [opts.received] — the raw input string (may be truncated)
+   * @param {string} [opts.cause]    — the inner JSON.parse error message
+   * @param {string} [opts.hint]
+   */
+  constructor(message, opts = {}) {
+    super(message);
+    this.name = 'CliInvalidGlobsError';
+    this.code = 'CLI_INVALID_GLOBS_JSON';
+    if (opts.received != null) this.received = opts.received;
+    if (opts.cause) this.cause = opts.cause;
+    if (opts.hint) this.hint = opts.hint;
+  }
+}
+
 export class StateMachineRejectionError extends Error {
   /**
    * @param {string} message

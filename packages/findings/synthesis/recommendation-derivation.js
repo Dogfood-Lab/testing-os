@@ -12,11 +12,19 @@ import { loadYamlDir } from '../lib/safe-yaml-load.js';
 /**
  * Derive recommendations from accepted patterns.
  *
+ * D2B-001 — return shape carries a `skipped: [{path, error}]` field so the
+ * silent-loader signal that Wave A1 wired through `loadYamlDir` now propagates
+ * through the derive API to the operator surface (CLI). Legacy callers that
+ * only read `recommendations` / `stats` are unaffected — the field is
+ * additive. A torn pattern that WOULD have been considered for recommendation
+ * synthesis no longer disappears with no signal.
+ *
  * @param {string} rootDir - dogfood-labs repo root
- * @returns {{ recommendations: Array, stats: { patternsConsidered: number, recommendationsEmitted: number } }}
+ * @returns {{ recommendations: Array, skipped: Array<{path: string, error: string}>, stats: { patternsConsidered: number, recommendationsEmitted: number, patternsSkipped: number } }}
  */
 export function deriveRecommendations(rootDir) {
-  const patterns = loadAcceptedPatterns(rootDir);
+  const { entries, skipped } = loadAcceptedPatternsWithSkips(rootDir);
+  const patterns = entries.map(e => e.data);
   const recommendations = [];
 
   for (const pat of patterns) {
@@ -26,9 +34,11 @@ export function deriveRecommendations(rootDir) {
 
   return {
     recommendations,
+    skipped, // D2B-001: structured skip list for operator legibility
     stats: {
       patternsConsidered: patterns.length,
-      recommendationsEmitted: recommendations.length
+      recommendationsEmitted: recommendations.length,
+      patternsSkipped: skipped.length
     }
   };
 }

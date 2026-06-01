@@ -81,10 +81,17 @@ const MAX_ERROR_MESSAGE_CHARS = 512;
 function tryTransition(db, agentRunId, to, reason, domainHint) {
   const ar = db.prepare('SELECT status FROM agent_runs WHERE id = ?').get(agentRunId);
   if (!ar) {
-    console.warn(
-      `collect: tryTransition skipped — agent_run ${agentRunId} not found ` +
-      `(domain=${domainHint || '?'}, attempted to=${to})`
-    );
+    // D3B-011 (Wave A2 Stage C): structured logStage instead of
+    // console.warn so NDJSON consumers see the explicit no-op.
+    logStage('transition_skipped', {
+      component: 'dogfood-swarm',
+      agent_run_id: agentRunId,
+      agentRunId,
+      domain: domainHint || null,
+      attempted_status: to,
+      reason: 'agent_run_not_found',
+      detail: `agent_run ${agentRunId} not found`,
+    });
     return { skipped: true };
   }
   if (ar.status === to) {
@@ -92,20 +99,38 @@ function tryTransition(db, agentRunId, to, reason, domainHint) {
   }
   const check = canTransition(ar.status, to);
   if (!check.allowed) {
-    console.warn(
-      `collect: state-machine rejected transition for agent_run=${agentRunId} ` +
-      `(domain=${domainHint || '?'}, from=${ar.status}, to=${to}): ${check.reason}`
-    );
+    // D3B-011 (Wave A2 Stage C): state-machine rejection is a real
+    // observability signal — surface as structured event.
+    logStage('transition_skipped', {
+      component: 'dogfood-swarm',
+      agent_run_id: agentRunId,
+      agentRunId,
+      domain: domainHint || null,
+      from_status: ar.status,
+      attempted_status: to,
+      reason: 'state_machine_rejected',
+      detail: check.reason,
+    });
     return { skipped: true, rejected: true, reason: check.reason };
   }
   try {
     transitionAgent(db, agentRunId, to, reason);
     return { transitioned: true };
   } catch (e) {
-    console.warn(
-      `collect: transitionAgent threw for agent_run=${agentRunId} ` +
-      `(domain=${domainHint || '?'}, from=${ar.status}, to=${to}): ${e.message}`
-    );
+    // D3B-011 (Wave A2 Stage C): a downstream throw from transitionAgent
+    // is the most operator-relevant case (FK violation, prepared-statement
+    // crash, future state-machine change). Structured event includes the
+    // error message for grep.
+    logStage('transition_skipped', {
+      component: 'dogfood-swarm',
+      agent_run_id: agentRunId,
+      agentRunId,
+      domain: domainHint || null,
+      from_status: ar.status,
+      attempted_status: to,
+      reason: 'transition_threw',
+      detail: e.message,
+    });
     return { skipped: true, error: e.message };
   }
 }
@@ -212,7 +237,23 @@ export function collect(opts) {
 
   const allFindings = [];
 
-  for (const ar of agentRuns) {
+  // L3-003 (Wave A2 amend2 — family seal of D3B-002): wrap the per-agent
+  // collection loop in a single db.transaction() so a mid-loop crash
+  // rolls back EVERY DB write across all agents iterated so far. Pre-fix,
+  // agent A's artifacts + file_claims + tryTransition could commit while
+  // agent B's readFileSync / git probe / tryTransition threw — leaving
+  // partial DB state that swarm resume could not recover. better-sqlite3
+  // nests the inner executeTransition self-wrap (Wave A1 H9) as a
+  // SAVEPOINT inside the outer tx, so atomicity composes correctly.
+  //
+  // Filesystem-side ops (readFileSync, git status, etc.) happen inside
+  // the tx body. They cannot be rolled back, but the tx guarantees that
+  // if any of them throws, no DB row carries the partial result. Same
+  // FS-orphan trade-off as D3B-002 on dispatch.js: a worktree state
+  // that was probed before the throw is unchanged; only DB rows are
+  // rolled back.
+  db.transaction(() => {
+    for (const ar of agentRuns) {
     const domain = domains.find(d => d.id === ar.domain_id);
     if (!domain) continue;
 
@@ -444,6 +485,7 @@ export function collect(opts) {
 
     report.agents.push(agentReport);
   }
+  })(); // L3-003 — invoke the db.transaction() wrap immediately
 
   // Fingerprint + dedup.
   //

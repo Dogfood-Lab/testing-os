@@ -93,6 +93,14 @@ export function resume(opts) {
     prompts: [],
   };
 
+  // Stage 1 — classify each agent_run and stash redispatch candidates so the
+  // DB-mutation loop runs inside a single db.transaction() (D3B-002 sibling
+  // to commands/dispatch.js). On any throw the whole redispatch wave rolls
+  // back: zero new agent_runs, zero new agent_state_events. FS-side prompt
+  // files for any iterations that already completed are NOT rolled back —
+  // they become FS orphans (operator can grep + clean), same trade-off as
+  // dispatch documents.
+  const redispatchCandidates = [];
   for (const ar of agentRuns) {
     // Terminal: skip
     if (isTerminal(ar.status)) {
@@ -122,57 +130,72 @@ export function resume(opts) {
       continue;
     }
 
-    // Redispatchable: create new agent_run via state machine
     if (isRedispatchable(ar.status)) {
-      // Create a new agent_run for this domain
+      redispatchCandidates.push(ar);
+    }
+  }
+
+  // Stage 2 — wrap the per-candidate INSERT agent_runs + transitionAgent
+  // pair in one tx so the redispatch wave is all-or-nothing at the DB
+  // level. better-sqlite3 nests the inner executeTransition self-wrap as a
+  // SAVEPOINT inside this outer tx.
+  const redispatched = [];
+  const buildRedispatch = db.transaction(() => {
+    for (const ar of redispatchCandidates) {
       const newAr = db.prepare(`
         INSERT INTO agent_runs (wave_id, domain_id, status)
         VALUES (?, ?, 'pending')
       `).run(wave.id, ar.domain_id);
       const newArId = Number(newAr.lastInsertRowid);
 
-      // Transition new agent to dispatched
       transitionAgent(db, newArId, 'dispatched',
         `Redispatch: previous agent ${ar.id} was "${ar.status}"`);
 
-      // Generate prompt
-      const globs = JSON.parse(ar.globs);
-      const promptOpts = {
-        repoPath: run.local_path,
-        repo: run.repo,
-        domainName: ar.domain_name,
-        globs,
-        phase: wave.phase,
-        waveNumber: wave.wave_number,
-      };
-
-      let prompt;
-      if (wave.phase === 'feature-audit') {
-        prompt = buildFeatureAuditPrompt(promptOpts);
-      } else if (wave.phase.includes('amend') || wave.phase.includes('execute')) {
-        // Same domain-glob filter as dispatch — see lib/findings-filter.js.
-        // The previous code unconditionally sent every approved finding to
-        // every redispatched agent (F-742440-003).
-        const findings = findingsForDomain(db, opts.runId, { globs });
-        prompt = buildAmendPrompt({ ...promptOpts, findings });
-      } else {
-        prompt = buildAuditPrompt(promptOpts);
-      }
-
-      const promptDir = join(opts.outputDir, `wave-${wave.wave_number}-resume`);
-      if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
-      const promptPath = join(promptDir, `${ar.domain_name}.md`);
-      atomicWriteFileSync(promptPath, prompt, 'utf-8');
-
-      report.redispatch.push({
-        domain: ar.domain_name,
-        oldAgentRunId: ar.id,
-        newAgentRunId: newArId,
-        promptPath,
-        previousStatus: ar.status,
-      });
-      report.prompts.push(promptPath);
+      redispatched.push({ ar, newArId });
     }
+  });
+  buildRedispatch();
+
+  // Stage 3 — FS-side prompt rendering. Outside the tx by design; a throw
+  // here leaves the new agent rows committed (operator can re-render with
+  // the prompt helpers; the redispatched wave is recoverable).
+  for (const { ar, newArId } of redispatched) {
+    const globs = JSON.parse(ar.globs);
+    const promptOpts = {
+      repoPath: run.local_path,
+      repo: run.repo,
+      domainName: ar.domain_name,
+      globs,
+      phase: wave.phase,
+      waveNumber: wave.wave_number,
+    };
+
+    let prompt;
+    if (wave.phase === 'feature-audit') {
+      prompt = buildFeatureAuditPrompt(promptOpts);
+    } else if (wave.phase.includes('amend') || wave.phase.includes('execute')) {
+      // Same domain-glob filter as dispatch — see lib/findings-filter.js.
+      // The previous code unconditionally sent every approved finding to
+      // every redispatched agent (F-742440-003).
+      const findings = findingsForDomain(db, opts.runId, { globs });
+      prompt = buildAmendPrompt({ ...promptOpts, findings });
+    } else {
+      prompt = buildAuditPrompt(promptOpts);
+    }
+
+    const promptDir = join(opts.outputDir, `wave-${wave.wave_number}-resume`);
+    if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
+    const promptPath = join(promptDir, `${ar.domain_name}.md`);
+    atomicWriteFileSync(promptPath, prompt, 'utf-8');
+
+    report.redispatch.push({
+      domain: ar.domain_name,
+      oldAgentRunId: ar.id,
+      newAgentRunId: newArId,
+      promptPath,
+      previousStatus: ar.status,
+    });
+    report.prompts.push(promptPath);
   }
 
   // Determine overall action

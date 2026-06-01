@@ -14,7 +14,18 @@ import { readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import yaml from 'js-yaml';
 
+import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-stage.js';
 import { isUnsafeSegment } from './lib/unsafe-segment.js';
+
+/**
+ * D1B-006 (Stage C humanization): one structured `logStage(...)` helper,
+ * component-pinned to `ingest` so the NDJSON stream is greppable with the
+ * rest of the pipeline. Same wave-22 wrapper-strip pattern as `run.js`.
+ */
+function logStage(stage, fields = {}) {
+  const { stage: _ignored, ...rest } = fields;
+  sharedLogStage(stage, { component: 'ingest', ...rest });
+}
 
 /**
  * Load the global policy.
@@ -58,11 +69,27 @@ export function loadGlobalPolicy(repoRoot) {
 }
 
 /**
- * Load repo-specific policy. Returns null if no policy exists.
+ * Load repo-specific policy.
+ *
+ * Three discriminable return shapes:
+ *   - `null`            → no repo-policy file exists; defaults apply
+ *     (documented design — submission is NOT rejected for absent policy).
+ *   - parsed YAML object → policy loaded cleanly.
+ *   - `{ __torn: true, reason, path }` → D1B-006 sentinel: the policy
+ *     file EXISTS but cannot be parsed. Pre-fix this case returned null,
+ *     which the verifier then treated as "no policy → defaults apply →
+ *     accept". That sentinel inversion silently approved every
+ *     submission against a corrupt policy. The torn sentinel surfaces
+ *     the broken state so the verifier can reject with a
+ *     `'policy: <reason>'` rejection AND `policy_valid=false`.
+ *
+ * The sentinel is intentionally a distinct shape (`__torn: true`) so the
+ * verifier pattern-match needs no schema knowledge — the existence of
+ * `__torn` discriminates without parsing the policy twice.
  *
  * @param {string} repoSlug - e.g. "mcp-tool-shop-org/dogfood-labs"
  * @param {string} repoRoot
- * @returns {object|null}
+ * @returns {object|null|{ __torn: true, reason: string, path: string }}
  */
 export function loadRepoPolicy(repoSlug, repoRoot) {
   const [org, repo] = repoSlug.split('/');
@@ -72,9 +99,16 @@ export function loadRepoPolicy(repoSlug, repoRoot) {
   if (!existsSync(path)) return null;
   try {
     return yaml.load(readFileSync(path, 'utf-8'));
-  } catch {
-    console.warn(`load-context: malformed YAML in repo policy for ${repoSlug}`);
-    return null;
+  } catch (e) {
+    // D1B-006: torn-policy sentinel + structured warn event.
+    const reason = e && e.message ? e.message : String(e);
+    logStage('warn', {
+      kind: 'repo_policy_unreadable',
+      repo: repoSlug,
+      path,
+      error: reason
+    });
+    return { __torn: true, reason, path };
   }
 }
 
@@ -97,63 +131,152 @@ export function localScenarioFetcher(repoRoot) {
 }
 
 /**
+ * Default per-request timeout for the GitHub scenario fetch. Mirrors the
+ * sibling `GITHUB_PROVENANCE_TIMEOUT_MS` constant at
+ * `packages/verify/validators/provenance.js`: a hung GitHub API call
+ * would otherwise stall ingest until the surrounding GitHub Actions
+ * runner timeout fires (default 6h). 30s fails fast with a typed
+ * `'timeout'` reason the operator can pivot on.
+ */
+export const GITHUB_SCENARIO_FETCH_TIMEOUT_MS = 30000;
+
+/**
  * GitHub scenario fetcher. Loads scenario definitions from a source repo
  * via the GitHub API at a specific commit SHA.
+ *
+ * Two surfaces on the returned adapter:
+ *   - `fetch(scenarioId)`: legacy contract — returns the scenario object
+ *     on success, `null` on any failure. Preserved for back-compat with
+ *     callers that pattern-match on the truthiness of the result.
+ *   - `fetchWithReason(scenarioId)`: D1B-004 typed contract — always
+ *     returns `{ scenario, reason }` where `scenario` is the loaded
+ *     object on success or `null` on failure, and `reason` is one of
+ *     `'timeout' | 'not_found' | 'parse_error' | 'invalid_id'` on
+ *     failure (absent on success). The reason gives operators a
+ *     pivot key when diagnosing a stale scenario-load chain.
+ *
+ * Both surfaces honour the per-request AbortController timeout
+ * (`GITHUB_SCENARIO_FETCH_TIMEOUT_MS`, overridable via `opts.timeoutMs`).
  *
  * @param {string} token - GitHub PAT
  * @param {string} repoSlug - e.g. "mcp-tool-shop-org/shipcheck"
  * @param {string} commitSha - Commit to fetch scenarios from
- * @returns {object} Scenario fetch adapter
+ * @param {{ timeoutMs?: number, fetchImpl?: typeof fetch }} [opts]
+ * @returns {{ fetch(scenarioId: string): Promise<object|null>, fetchWithReason(scenarioId: string): Promise<{ scenario: object|null, reason?: string }> }}
  */
-export function githubScenarioFetcher(token, repoSlug, commitSha) {
+export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
+  const timeoutMs = opts.timeoutMs ?? GITHUB_SCENARIO_FETCH_TIMEOUT_MS;
+  const fetchImpl = opts.fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
+
   const [org, repo] = repoSlug.split('/');
   if (!org || !repo || isUnsafeSegment(org) || isUnsafeSegment(repo)) {
-    return { async fetch() { return null; } };
+    return {
+      async fetch() { return null; },
+      async fetchWithReason() { return { scenario: null, reason: 'invalid_id' }; }
+    };
   }
-  return {
-    async fetch(scenarioId) {
-      if (!/^[\w-]+$/.test(scenarioId)) return null;
-      const path = `dogfood/scenarios/${scenarioId}.yaml`;
-      const url = `https://api.github.com/repos/${repoSlug}/contents/${path}?ref=${commitSha}`;
 
-      try {
-        const resp = await globalThis.fetch(url, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github.raw+json',
-            'X-GitHub-Api-Version': '2022-11-28'
-          }
-        });
-        if (!resp.ok) return null;
-        const text = await resp.text();
-        return yaml.load(text);
-      } catch {
-        return null;
-      }
+  async function fetchWithReason(scenarioId) {
+    if (!/^[\w-]+$/.test(scenarioId)) {
+      return { scenario: null, reason: 'invalid_id' };
     }
+    const path = `dogfood/scenarios/${scenarioId}.yaml`;
+    const url = `https://api.github.com/repos/${repoSlug}/contents/${path}?ref=${commitSha}`;
+
+    // D1B-004: AbortController-bounded request. Copied from
+    // `packages/verify/validators/provenance.js:80-104`. The 30s default
+    // matches that sibling so a single end-to-end ingest cannot stall
+    // longer than ~60s on cumulative GitHub-API timeouts.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+    let text;
+    try {
+      const resp = await fetchImpl(url, {
+        headers: {
+          Authorization: `Bearer ${token}`,
+          Accept: 'application/vnd.github.raw+json',
+          'X-GitHub-Api-Version': '2022-11-28'
+        },
+        signal: controller.signal
+      });
+      if (!resp.ok) {
+        return { scenario: null, reason: 'not_found' };
+      }
+      text = await resp.text();
+    } catch (err) {
+      if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+        return { scenario: null, reason: 'timeout' };
+      }
+      // Network reject, DNS failure, etc. — surface as not_found for
+      // back-compat with the legacy null contract.
+      return { scenario: null, reason: 'not_found' };
+    } finally {
+      clearTimeout(timer);
+    }
+
+    try {
+      const scenario = yaml.load(text);
+      if (!scenario || typeof scenario !== 'object') {
+        return { scenario: null, reason: 'parse_error' };
+      }
+      return { scenario };
+    } catch {
+      return { scenario: null, reason: 'parse_error' };
+    }
+  }
+
+  return {
+    // Legacy: success returns the scenario object, failure returns null
+    // — every existing caller pattern-matches on truthiness.
+    async fetch(scenarioId) {
+      const result = await fetchWithReason(scenarioId);
+      return result.scenario;
+    },
+    fetchWithReason
   };
 }
 
 /**
  * Load all scenario definitions referenced by a submission's scenario_results.
  *
+ * D1B-004 / L1-007 (Wave A2 Stage C amend2): when the fetcher exposes
+ * the typed `fetchWithReason` surface (the canonical
+ * `githubScenarioFetcher` does; the legacy `localScenarioFetcher` and any
+ * legacy test stub may not), the discriminated `reason` (`timeout` /
+ * `not_found` / `parse_error` / `invalid_id`) is propagated into the
+ * error string so the operator can pivot on the failure class. Otherwise
+ * we fall back to the legacy `fetch(id)` truthiness contract.
+ *
  * @param {object} submission
- * @param {object} scenarioFetcher - { fetch(scenarioId) => Promise<object|null> }
+ * @param {object} scenarioFetcher - { fetch(scenarioId), fetchWithReason?(scenarioId) }
  * @returns {Promise<{ scenarios: Map<string, object>, errors: string[] }>}
  */
 export async function loadScenarios(submission, scenarioFetcher) {
   const scenarios = new Map();
   const errors = [];
 
+  const supportsTypedReason = typeof scenarioFetcher.fetchWithReason === 'function';
+
   for (const sr of submission.scenario_results || []) {
     const id = sr.scenario_id;
     if (scenarios.has(id)) continue;
 
-    const definition = await scenarioFetcher.fetch(id);
-    if (definition) {
-      scenarios.set(id, definition);
+    if (supportsTypedReason) {
+      const result = await scenarioFetcher.fetchWithReason(id);
+      if (result && result.scenario) {
+        scenarios.set(id, result.scenario);
+      } else {
+        const reason = result && result.reason ? result.reason : 'unknown';
+        errors.push(`scenario "${id}" could not be loaded from source repo (reason: ${reason})`);
+      }
     } else {
-      errors.push(`scenario "${id}" could not be loaded from source repo`);
+      const definition = await scenarioFetcher.fetch(id);
+      if (definition) {
+        scenarios.set(id, definition);
+      } else {
+        errors.push(`scenario "${id}" could not be loaded from source repo`);
+      }
     }
   }
 

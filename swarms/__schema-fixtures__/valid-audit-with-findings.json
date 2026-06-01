@@ -1,0 +1,29 @@
+{
+  "domain": "backend",
+  "stage": "B",
+  "summary": "Stage B audit output — exercises the audit-pass findings[] branch. Hand-crafted to cover every required finding field (id, severity, category, description) plus the common optional fields (file, line, symbol, recommendation, rule_id).",
+  "findings": [
+    {
+      "id": "F-FIXTURE-001",
+      "severity": "HIGH",
+      "category": "observability",
+      "file": "packages/dogfood-swarm/lib/log-stage.js",
+      "line": 42,
+      "symbol": "logStage",
+      "description": "Example finding fixture — exercises the HIGH/observability slot in the audit envelope so the schema's enum constraints have at least one positive test case under CI.",
+      "recommendation": "n/a — this is a fixture; no production change is implied.",
+      "rule_id": "fixture-rule-1"
+    },
+    {
+      "id": "F-FIXTURE-002",
+      "severity": "MEDIUM",
+      "category": "silent_failure",
+      "description": "Second finding to confirm arrays of more than one item pass; uses one of the historical Phase 7 wave 2 W2-BACK-002 categories (silent_failure) so the absorbed-enum branch is covered."
+    }
+  ],
+  "verification_skipped": true,
+  "holdings_checked": {
+    "schema_version_compat": true,
+    "negative_fixtures_present": true
+  }
+}
