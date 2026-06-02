@@ -14,7 +14,18 @@
  *                                     overlapping globs both "owned" the same
  *                                     file with zero violation. Fixed at the
  *                                     freeze boundary (reject) + a runtime
- *                                     first-match-wins guard.
+ *                                     specificity-arbitrated owner guard.
+ *   sm-r-001(HIGH) lib/domains.js   — REGRESSION of sm-002: the freeze guard
+ *                                     rejected ANY glob-level overlap, so the
+ *                                     auto-detected default full-stack map
+ *                                     (frontend's globs ⊂ backend's `src/**`)
+ *                                     could no longer be frozen, breaking
+ *                                     init→freeze→dispatch. Coupled latent bug:
+ *                                     resolveExclusiveOwner iterated alphabetical
+ *                                     getDomains order, misattributing a `.tsx`
+ *                                     file to backend. Fix: most-specific-glob-
+ *                                     wins (order-independent) ownership; freeze
+ *                                     rejects ONLY equal-specificity criss-cross.
  *   sm-003 (MED)   lib/advance.js   — recordPromotion ran three durable writes
  *                                     unwrapped; a mid-sequence throw left an
  *                                     orphan promotion row.
@@ -25,13 +36,14 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openMemoryDb } from './db/connection.js';
 import {
-  saveDomainDraft, freezeDomains, unfreezeDomains, aredomainsFrozen,
+  detectDomains, saveDomainDraft, freezeDomains, unfreezeDomains, aredomainsFrozen,
   checkOwnership, hasActiveWave,
 } from './lib/domains.js';
 import { recordPromotion, getPromotions } from './lib/advance.js';
@@ -106,35 +118,104 @@ describe('sm-001 — unfreezeDomains in-flight-wave guard', () => {
 });
 
 // ═══════════════════════════════════════════
-// sm-002 — overlapping OWNED globs rejected / arbitrated
+// sm-002 / sm-r-001 — overlapping OWNED globs arbitrated by specificity
 // ═══════════════════════════════════════════
 
-describe('sm-002 — overlapping owned globs', () => {
+describe('sm-002 / sm-r-001 — overlapping owned globs', () => {
   let db;
   const RUN_ID = 'sm2';
 
   beforeEach(() => { db = openMemoryDb(); });
   afterEach(() => { db.close(); });
 
-  it('rejects freezing two owned domains whose globs overlap', () => {
-    // frontend's `src/**/*.tsx` is a strict subset of backend's `src/**` — the
-    // exact DEFAULT_BUCKETS overlap the finding proves end-to-end.
+  // A real full-stack tree exercising the SUBSET overlap detectDomains resolves:
+  // `src/ui/App.tsx` is owned by frontend (`src/ui/**`, `src/**/*.tsx`) yet also
+  // matches backend's broad `src/**`. The saved draft persists the verbatim
+  // bucket globs (init.js does not narrow them), so this is the literal map a
+  // shipped full-stack repo freezes.
+  function makeFullStackTree() {
+    const root = mkdtempSync(join(tmpdir(), 'sm-r-001-'));
+    mkdirSync(join(root, 'src/ui'), { recursive: true });
+    mkdirSync(join(root, 'src/server'), { recursive: true });
+    mkdirSync(join(root, 'tests'), { recursive: true });
+    writeFileSync(join(root, 'src/ui/App.tsx'), 'export default function App(){}\n');
+    writeFileSync(join(root, 'src/server/api.ts'), 'export const api = 1;\n');
+    writeFileSync(join(root, 'tests/app.test.js'), 'export {};\n');
+    writeFileSync(join(root, 'README.md'), '# repo\n');
+    return root;
+  }
+
+  it('sm-r-001: the literal default detectDomains() full-stack map FREEZES', () => {
+    // The regression: frontend's globs (`src/ui/**`, `src/**/*.tsx`, …) are
+    // strict SUBSETS of backend's `src/**`. detectDomains resolves this fine
+    // (frontend precedes backend, claims the files first), but the sm-002 freeze
+    // guard rejected the glob-level overlap, so the COMMON full-stack shape could
+    // no longer be frozen → init→freeze→dispatch broke. A subset overlap is
+    // legal: specificity arbitration gives every file one owner.
+    const root = makeFullStackTree();
+    const { domains } = detectDomains(root);
+    // Sanity: detection produced the overlapping frontend+backend shape.
+    assert.ok(domains.find(d => d.name === 'frontend'), 'frontend detected');
+    assert.ok(domains.find(d => d.name === 'backend'), 'backend detected');
+
+    seedRun(db, RUN_ID, domains);
+    freezeDomains(db, RUN_ID); // must NOT throw — this is the regression assertion
+    assert.equal(aredomainsFrozen(db, RUN_ID), true,
+      'the auto-detected default full-stack map must be freezable');
+  });
+
+  it('sm-r-001: checkOwnership attributes a src/**/*.tsx file to frontend, not backend', () => {
+    // Coupled ordering bug: resolveExclusiveOwner iterated getDomains ORDER BY
+    // name (alphabetical → backend before frontend), which disagreed with
+    // detection order and resolved `src/ui/App.tsx`'s owner as backend. The
+    // specificity fix attributes it to frontend (`src/ui/**` / `src/**/*.tsx`
+    // out-rank `src/**`), independent of row order.
+    const root = makeFullStackTree();
+    const { domains } = detectDomains(root);
+    seedRun(db, RUN_ID, domains);
+    freezeDomains(db, RUN_ID);
+
+    const tsx = 'src/ui/App.tsx';
+    const fe = checkOwnership(db, RUN_ID, 'frontend', [tsx]);
+    assert.equal(fe.valid.length, 1, 'frontend owns the .tsx file');
+    assert.equal(fe.violations.length, 0);
+
+    const be = checkOwnership(db, RUN_ID, 'backend', [tsx]);
+    assert.equal(be.valid.length, 0, 'backend must NOT own the .tsx file');
+    assert.equal(be.violations.length, 1);
+    assert.equal(be.violations[0].actual_owner, 'frontend',
+      'the .tsx file resolves to frontend, not the alphabetically-first backend');
+  });
+
+  it('sm-r-001: a GENUINE equal-specificity criss-cross STILL throws at freeze', () => {
+    // The narrowed guard must still catch a real exclusive-ownership breach:
+    // two owned domains whose best matching globs are EQUALLY specific (here both
+    // `['**']`) genuinely double-own every file — no specificity can arbitrate.
     seedRun(db, RUN_ID, [
-      { name: 'frontend', globs: ['src/**/*.tsx'], ownership_class: 'owned' },
-      { name: 'backend', globs: ['src/**'], ownership_class: 'owned' },
+      { name: 'alpha', globs: ['**'], ownership_class: 'owned' },
+      { name: 'beta', globs: ['**'], ownership_class: 'owned' },
     ]);
     assert.throws(
       () => freezeDomains(db, RUN_ID),
       /overlapping owned domains/i,
-      'freeze must reject overlapping exclusive owners',
+      'an equal-specificity tie still breaches exclusive ownership',
     );
     // Naming the conflict is part of the contract (operator must know which).
     try {
       freezeDomains(db, RUN_ID);
     } catch (e) {
-      assert.match(e.message, /frontend/);
-      assert.match(e.message, /backend/);
+      assert.match(e.message, /alpha/);
+      assert.match(e.message, /beta/);
     }
+  });
+
+  it('sm-r-001: identical owned globs (src/a/** vs src/a/**) still throw', () => {
+    // A second equal-specificity shape — same lead segments, same literal chars.
+    seedRun(db, RUN_ID, [
+      { name: 'one', globs: ['src/a/**'], ownership_class: 'owned' },
+      { name: 'two', globs: ['src/a/**'], ownership_class: 'owned' },
+    ]);
+    assert.throws(() => freezeDomains(db, RUN_ID), /overlapping owned domains/i);
   });
 
   it('still freezes disjoint owned globs (no false positive)', () => {
@@ -159,12 +240,14 @@ describe('sm-002 — overlapping owned globs', () => {
     assert.equal(aredomainsFrozen(db, RUN_ID), true);
   });
 
-  it('runtime checkOwnership gives a file exactly ONE owned owner (first-match-wins)', () => {
-    // Defense-in-depth: even on a hand-built map that still has the overlap
-    // (freeze would reject it, so we exercise the unfrozen draft directly),
-    // the two owned agents must NOT both pass for the same file. Exactly one
-    // resolves as owner; the other gets a violation. Pre-fix BOTH returned
-    // valid.length=1 / violations.length=0.
+  it('runtime checkOwnership gives a file exactly ONE owned owner (most-specific-wins)', () => {
+    // Defense-in-depth: on the SUBSET overlap (frontend's `src/**/*.tsx` ⊂
+    // backend's `src/**`) the two owned agents must NOT both pass for the same
+    // file. Specificity arbitration resolves a single owner — frontend, whose
+    // `.tsx` glob is strictly more specific than backend's bare `src/**`; the
+    // other gets a violation. Pre-fix BOTH returned valid.length=1 /
+    // violations.length=0 (sm-002); pre-sm-r-001 the loser/winner could flip to
+    // backend on row order.
     seedRun(db, RUN_ID, [
       { name: 'frontend', globs: ['src/**/*.tsx'], ownership_class: 'owned' },
       { name: 'backend', globs: ['src/**'], ownership_class: 'owned' },
@@ -180,11 +263,11 @@ describe('sm-002 — overlapping owned globs', () => {
     // Exactly one of the two owns it — the silent double-ownership is gone.
     assert.ok(feOwns !== beOwns,
       'exactly one owned domain may claim a file; both-pass is the sm-002 bug');
-    // The non-owner is flagged, and the violation names the resolved owner.
-    const loser = feOwns ? be : fe;
-    assert.equal(loser.valid.length, 0);
-    assert.equal(loser.violations.length, 1);
-    assert.ok(['frontend', 'backend'].includes(loser.violations[0].actual_owner));
+    // The more-specific glob (frontend) wins; backend is the flagged non-owner.
+    assert.ok(feOwns, 'the strictly-more-specific .tsx glob (frontend) owns the file');
+    assert.equal(be.valid.length, 0);
+    assert.equal(be.violations.length, 1);
+    assert.equal(be.violations[0].actual_owner, 'frontend');
   });
 
   it('non-overlapping ownership is unchanged (own file valid, cross-domain file a violation)', () => {

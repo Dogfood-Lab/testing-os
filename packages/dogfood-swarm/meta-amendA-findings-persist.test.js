@@ -225,6 +225,104 @@ describe('fp-002: within-wave fingerprint collisions never abort collect', () =>
     assert.equal(rows.length, 1, 'still exactly one row across both waves (deduped)');
   });
 
+  it('(e) cross-wave fp-r-001: a wave-1 singleton that gains a coarse-key sibling in wave 2 — order-independent', () => {
+    // THE regression (fp-r-001, HIGH). disambiguateFingerprints USED to award
+    // the bare-fp slot by within-wave array order, blind to prior state. So a
+    // wave-1 SINGLETON A that gains a NEW coarse-key sibling B in wave 2 could
+    // have the bare fp handed to B (whichever sorted first), making B dedupe to
+    // A's prior row → B classified `recurring` and SILENTLY SWALLOWED, while A's
+    // stable finding_id (the swarm-approve / D3B-006 handle) was hijacked and A
+    // re-inserted under a salted id. collect.js wave-mate order is
+    // non-deterministic, so BOTH input orders must now produce the same correct
+    // result. We run the whole scenario twice on FRESH DBs: wave-2 = [A, B] and
+    // wave-2 = [B, A]. Pre-fix, [B, A] is the catastrophic-swallow order.
+    //
+    // A and B share a coarse base fingerprint: same category=docs, same file, no
+    // symbol, lines 21 & 27 both bucket to 20. Different descriptions only.
+    const A = {
+      category: 'docs', file: 'packages/dogfood-swarm/README.md', line: 21, symbol: null,
+      severity: 'LOW', description: 'stale badge',
+    };
+    const B = {
+      category: 'docs', file: 'packages/dogfood-swarm/README.md', line: 27, symbol: null,
+      severity: 'LOW', description: 'broken anchor a few lines down',
+    };
+    assert.equal(
+      computeFingerprint(A), computeFingerprint(B),
+      'precondition: A and B share one coarse base fingerprint (the bug shape)',
+    );
+
+    for (const wave2Order of [[A, B], [B, A]]) {
+      const label = `wave2=[${wave2Order.map((f) => f.description.split(' ')[0]).join(',')}]`;
+
+      // Fresh DB per order so the two scenarios cannot leak state into each other.
+      const sdb = openMemoryDb();
+      try {
+        sdb.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+          .run(RUN_ID, 'dogfood-lab/testing-os', '/tmp/repo', 'c'.repeat(40));
+        sdb.prepare('INSERT INTO waves (run_id, phase, wave_number) VALUES (?, ?, ?)')
+          .run(RUN_ID, 'health-audit-a', 1);
+
+        const runWave = (waveId, findings) => {
+          const stamped = findings.map((f) => ({ ...f, fingerprint: computeFingerprint(f) }));
+          const priorMap = buildPriorMap(sdb, RUN_ID);
+          const classified = classifyFindings(stamped, priorMap);
+          return upsertFindings(sdb, RUN_ID, waveId, classified);
+        };
+
+        // Wave 1: A alone → inserted as new. Capture its stable finding_id; this
+        // is the exact handle `swarm approve --ids` pins (D3B-006).
+        const s1 = runWave(1, [A]);
+        assert.equal(s1.inserted, 1, `${label}: wave-1 A inserted as new`);
+        const aRow = sdb.prepare('SELECT id, finding_id, fingerprint FROM findings WHERE run_id = ?').get(RUN_ID);
+        const aIdOriginal = aRow.finding_id;
+        const aRowId = aRow.id;
+
+        // Wave 2: A re-reported + the NEW sibling B, in this order.
+        sdb.prepare('INSERT INTO waves (run_id, phase, wave_number) VALUES (?, ?, ?)')
+          .run(RUN_ID, 'health-audit-a', 2);
+        const s2 = runWave(2, wave2Order);
+
+        // (1) A retains its ORIGINAL finding_id and is classified recurring.
+        const aRowAfter = sdb.prepare('SELECT id, finding_id, status FROM findings WHERE id = ?').get(aRowId);
+        assert.equal(aRowAfter.finding_id, aIdOriginal,
+          `${label}: A keeps its original finding_id (no D3B-006 handle hijack)`);
+        assert.equal(aRowAfter.status, 'recurring',
+          `${label}: A is classified recurring in wave 2`);
+        assert.equal(s2.updated, 1, `${label}: exactly one recurring update (A)`);
+
+        // (2) B is inserted as a NEW distinct row (not swallowed).
+        assert.equal(s2.inserted, 1, `${label}: B inserted as a new row (not swallowed)`);
+        const rows = sdb.prepare('SELECT id, finding_id, fingerprint, description, status FROM findings WHERE run_id = ? ORDER BY id')
+          .all(RUN_ID);
+
+        // (3) total findings for the run == 2.
+        assert.equal(rows.length, 2, `${label}: exactly two rows total (A + B), nothing swallowed`);
+        assert.equal(new Set(rows.map((r) => r.finding_id)).size, 2, `${label}: distinct finding_ids`);
+        assert.equal(new Set(rows.map((r) => r.fingerprint)).size, 2, `${label}: distinct fingerprints`);
+
+        const bRow = rows.find((r) => r.id !== aRowId);
+        assert.ok(bRow, `${label}: B's row exists`);
+        assert.equal(bRow.description, B.description, `${label}: the new row carries B's content, not A's`);
+        assert.notEqual(bRow.finding_id, aIdOriginal,
+          `${label}: B does not steal A's finding_id`);
+
+        // (4) no `recurred` finding_event landed on the wrong lineage. A's row is
+        // the only one that may carry a 'recurred' event; B (brand-new) must not.
+        const aRecurred = sdb.prepare(
+          "SELECT COUNT(*) n FROM finding_events WHERE finding_id = ? AND event_type = 'recurred'",
+        ).get(aRowId).n;
+        assert.equal(aRecurred, 1, `${label}: exactly one 'recurred' event, on A's lineage`);
+        const bRecurred = sdb.prepare(
+          "SELECT COUNT(*) n FROM finding_events WHERE finding_id = ? AND event_type = 'recurred'",
+        ).get(bRow.id).n;
+        assert.equal(bRecurred, 0, `${label}: no 'recurred' event mis-attributed to the new sibling B`);
+      } finally {
+        try { sdb.close(); } catch { /* */ }
+      }
+    }
+  });
+
   it('safety net: INSERT OR IGNORE skips a true same-id-prefix collision without aborting the rest', () => {
     // Part 2 in isolation: feed classified.new two entries whose 8-hex finding_id
     // prefix collides but whose full fingerprints differ (the rare D3B-006 case

@@ -80,7 +80,8 @@ export function computeFingerprint(finding) {
 }
 
 /**
- * Disambiguate within-wave fingerprint collisions by occurrence index.
+ * Disambiguate within-wave fingerprint collisions — PRIOR-AWARE and
+ * ORDER-INDEPENDENT.
  *
  * fp-002 (the marquee fix). The base fingerprint deliberately excludes the
  * description (B-BACK-002 contract), so two genuinely-distinct findings that
@@ -92,58 +93,170 @@ export function computeFingerprint(finding) {
  * UNIQUE(run_id, finding_id) and aborting the whole collect (0 rows persisted).
  * Reproduced live: two README findings 6 lines apart, no symbol, same bucket.
  *
+ * fp-r-001 (the regression this revision repairs). The original fp-002 fix
+ * assigned the occurrence index purely from within-wave ARRAY ORDER and was
+ * blind to prior-wave state. collect.js iterates agents/domains in a
+ * non-deterministic order, so when a wave-1 SINGLETON gained a new coarse-key
+ * sibling in wave 2, the bare-fp slot was awarded by this-wave sort order — not
+ * to the member that already owned the bare fp in prior state. The genuinely-NEW
+ * sibling could be handed the bare fp, dedupe against the prior finding's row →
+ * classified `recurring` and SILENTLY SWALLOWED, while the original finding's
+ * stable finding_id (the `swarm approve --ids` / D3B-006 handle) was hijacked.
+ * Order-dependent corruption with silent data loss.
+ *
  * Design (grounded in CodeQL primaryLocationLineHash, Semgrep match_based_id's
  * occurrence index, and the WER/Sentry "default-expand, fold-never-drop"
- * principle): for each group of findings sharing an identical base fingerprint,
- * assign a deterministic occurrence index by stable input order. The FIRST
- * member (index 0) and every singleton keep their base fingerprint UNCHANGED —
- * this preserves byte-for-byte backward-compat for the common case and the
- * cross-wave dedup invariant (a re-reported singleton next wave is still a
- * singleton, so it keeps the bare fingerprint and classifies `recurring`, not
- * `new`). The 2nd..Nth members are salted as sha256(baseFp + '|occ' + index)
- * (index ≥ 1, sliced to the same 24-hex width). Genuinely-distinct findings
- * that share a coarse key thus get distinct fingerprints + finding_ids without
- * folding in the volatile description.
+ * principle): group findings by base fingerprint.
+ *
+ *   - SINGLETONS (group size 1) keep the bare fingerprint UNCHANGED — byte-for-
+ *     byte backward-compat for the common case and the cross-wave dedup
+ *     invariant (B-BACK-002).
+ *   - For each COLLISION group (size > 1) the bare-fp keeper is chosen
+ *     DETERMINISTICALLY, never by array order:
+ *       · If the group's base fp EXISTS in `priorFingerprints`, the keeper is
+ *         the member whose content best matches the prior row (description
+ *         first, then file/line). That member keeps the BARE fp so it dedupes
+ *         to its own prior row as `recurring` and KEEPS its finding_id — this
+ *         eliminates the fp-r-001 id hijack.
+ *       · If the base fp is NOT in prior, the keeper is the deterministically-
+ *         FIRST member under a STABLE content sort (description, then file, then
+ *         line) — not array order.
+ *   - Every NON-keeper is salted by a PURE function of its OWN content
+ *     (sha256(base + '|d:' + sha256(normalizedDescription))), NOT an array
+ *     index. Order-independent and stable across waves while the member stays a
+ *     non-keeper; two distinct members get distinct salts (eliminates the
+ *     fp-r-001 swallow). Genuinely-distinct findings sharing a coarse key thus
+ *     get distinct fingerprints + finding_ids without folding the volatile
+ *     description into the BASE fingerprint.
+ *
+ * Residual (honest): a member that transitions between keeper(bare) and
+ * non-keeper(salted) across waves — when a collision group grows or shrinks —
+ * can show a ONE-TIME new/recurring churn for that member. This is bounded,
+ * never data loss, never a crash. The fully-stable fix (a CodeQL-style edit-
+ * stable context-snippet hash folded into the BASE fingerprint, so distinct
+ * findings never share a base fp at all) is the noted deeper follow-up; it
+ * changes every fingerprint and is deliberately out of scope here.
  *
  * @param {Array} findings — current-wave findings; each may already carry a
  *   `fingerprint` (set by collect.js via computeFingerprint). When absent it is
- *   computed here. Input order is the occurrence-index authority.
- * @returns {Array} new array of findings with a disambiguated `fingerprint`.
- *   Inputs are not mutated.
+ *   computed here. Array order is NOT consulted for keeper/salt selection.
+ * @param {Map<string, object>} [priorFingerprints] — fingerprint → prior-wave
+ *   row (from buildPriorMap). Used only to pick the bare-fp keeper for a
+ *   collision group whose base fp already exists in prior state. Defaults to an
+ *   empty Map so direct callers/tests need not pass it.
+ * @returns {Array} new array of findings with a disambiguated `fingerprint`,
+ *   in the SAME order as the input. Inputs are not mutated.
  */
-export function disambiguateFingerprints(findings) {
-  const counts = new Map();
+export function disambiguateFingerprints(findings, priorFingerprints = new Map()) {
+  const groups = new Map();
   for (const finding of findings) {
     const base = finding.fingerprint || computeFingerprint(finding);
-    counts.set(base, (counts.get(base) || 0) + 1);
+    if (!groups.has(base)) groups.set(base, []);
+    groups.get(base).push(finding);
   }
 
-  const seen = new Map();
-  return findings.map((finding) => {
-    const base = finding.fingerprint || computeFingerprint(finding);
-    const index = seen.get(base) || 0;
-    seen.set(base, index + 1);
-
-    // First occurrence (and every singleton) keeps the bare fingerprint.
-    if (index === 0) {
-      return finding.fingerprint === base ? finding : { ...finding, fingerprint: base };
+  // Resolve the disambiguated fingerprint for each (base, member) pair up
+  // front, keyed by object identity, so the final map() can preserve input
+  // order without re-deriving the keeper per element.
+  const resolved = new Map();
+  for (const [base, members] of groups) {
+    if (members.length === 1) {
+      resolved.set(members[0], base);
+      continue;
     }
 
-    const salted = createHash('sha256')
-      .update(`${base}|occ${index}`)
-      .digest('hex')
-      .slice(0, 24);
-    logStage('fingerprint_disambiguated', {
-      component: 'dogfood-swarm',
-      base_fingerprint: base,
-      occurrence_index: index,
-      total_occurrences: counts.get(base),
-      salted_fingerprint: salted,
-      file: finding.file || finding.file_path || null,
-      category: finding.category || null,
-    });
-    return { ...finding, fingerprint: salted };
+    const keeper = chooseBareKeeper(base, members, priorFingerprints.get(base));
+    for (const member of members) {
+      if (member === keeper) {
+        resolved.set(member, base);
+        continue;
+      }
+      const salted = saltByContent(base, member);
+      logStage('fingerprint_disambiguated', {
+        component: 'dogfood-swarm',
+        base_fingerprint: base,
+        total_occurrences: members.length,
+        salted_fingerprint: salted,
+        keeper_is_prior_match: priorFingerprints.has(base),
+        file: member.file || member.file_path || null,
+        category: member.category || null,
+      });
+      resolved.set(member, salted);
+    }
+  }
+
+  return findings.map((finding) => {
+    const fp = resolved.get(finding);
+    return finding.fingerprint === fp ? finding : { ...finding, fingerprint: fp };
   });
+}
+
+/**
+ * Collapse a description to a stable discriminator: lowercase + whitespace
+ * collapsed + trimmed. Used both to match a collision member against its prior
+ * row and to derive a member's content salt. Order-independent by construction.
+ */
+function normalizeDescription(description) {
+  return String(description || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Choose the member of a collision group that keeps the BARE fingerprint.
+ *
+ * - With a prior row: prefer the member whose normalized description equals the
+ *   prior row's, else whose (file,line) matches; ties and no-match fall through
+ *   to the stable content sort so the choice is always deterministic.
+ * - Without a prior row: the first member under the stable content sort.
+ */
+function chooseBareKeeper(base, members, priorRow) {
+  if (priorRow) {
+    const priorDesc = normalizeDescription(priorRow.description);
+    const descMatches = members.filter((m) => normalizeDescription(m.description) === priorDesc);
+    if (descMatches.length === 1) return descMatches[0];
+    const pool = descMatches.length > 1 ? descMatches : members;
+
+    const priorPath = normalizePath(priorRow.file_path || priorRow.file || '');
+    const priorLine = priorRow.line_number ?? priorRow.line ?? null;
+    const locMatches = pool.filter((m) =>
+      normalizePath(m.file) === priorPath
+      && (m.line ?? null) === priorLine);
+    if (locMatches.length === 1) return locMatches[0];
+
+    return stableContentSort(locMatches.length > 0 ? locMatches : pool)[0];
+  }
+  return stableContentSort(members)[0];
+}
+
+/**
+ * Deterministic content order for a collision group: normalized description,
+ * then normalized path, then line. Independent of input array order, so the
+ * same group yields the same keeper regardless of wave-mate iteration order.
+ */
+function stableContentSort(members) {
+  return [...members].sort((a, b) => {
+    const da = normalizeDescription(a.description);
+    const db = normalizeDescription(b.description);
+    if (da !== db) return da < db ? -1 : 1;
+    const pa = normalizePath(a.file);
+    const pb = normalizePath(b.file);
+    if (pa !== pb) return pa < pb ? -1 : 1;
+    return (a.line ?? -1) - (b.line ?? -1);
+  });
+}
+
+/**
+ * Salt a non-keeper member by a PURE function of its own content — NOT an array
+ * index. Stable across waves while the member stays a non-keeper; two distinct
+ * descriptions in the same group yield two distinct salts.
+ */
+function saltByContent(base, member) {
+  const descHash = createHash('sha256')
+    .update(normalizeDescription(member.description))
+    .digest('hex');
+  return createHash('sha256')
+    .update(`${base}|d:${descHash}`)
+    .digest('hex')
+    .slice(0, 24);
 }
 
 /**
@@ -170,13 +283,18 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
   const currentSet = new Set();
   const result = { new: [], recurring: [], fixed: [], unverified: [] };
 
-  // fp-002 Part 1: salt the 2nd..Nth members of any within-wave base-fingerprint
-  // collision so two genuinely-distinct findings sharing a coarse key get
-  // distinct fingerprints (and distinct derived finding_ids in upsertFindings)
-  // instead of colliding on UNIQUE(run_id, fingerprint). Singletons + the first
-  // member of each group keep the bare fingerprint, so cross-wave dedup and
-  // backward-compat are untouched. See disambiguateFingerprints for the contract.
-  const disambiguated = disambiguateFingerprints(currentFindings);
+  // fp-002 Part 1 (fp-r-001 repair): salt the NON-keeper members of any
+  // within-wave base-fingerprint collision so two genuinely-distinct findings
+  // sharing a coarse key get distinct fingerprints (and distinct derived
+  // finding_ids in upsertFindings) instead of colliding on UNIQUE(run_id,
+  // fingerprint). The prior map is passed through so the bare-fp keeper for a
+  // collision group whose base fp already exists in prior state is the member
+  // that MATCHES the prior row — not whoever sorts first in this wave's array.
+  // That keeps the original finding on its original finding_id (no D3B-006
+  // handle hijack) and inserts the genuinely-new sibling as its own row (no
+  // silent swallow). Singletons keep the bare fingerprint, so cross-wave dedup
+  // and backward-compat are untouched. See disambiguateFingerprints.
+  const disambiguated = disambiguateFingerprints(currentFindings, priorFingerprints);
 
   for (const finding of disambiguated) {
     const fp = finding.fingerprint || computeFingerprint(finding);

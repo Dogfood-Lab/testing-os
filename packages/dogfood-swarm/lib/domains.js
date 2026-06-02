@@ -265,12 +265,64 @@ function sampleGlobPath(glob) {
 }
 
 /**
+ * Score a glob's specificity as a comparable tuple. A glob with more literal
+ * path before its first wildcard is more specific; ties break on total literal
+ * character count (so `src/**` `*.tsx` outranks `src/**` on its `.tsx` literal);
+ * a final tie-break demotes globs with more `**` (broader reach = less
+ * specific). This is what lets frontend's `src/ui/**` / `src/**` `*.tsx`
+ * out-rank backend's `src/**` for a `.tsx` file — encoding detectDomains'
+ * first-match-wins intent as an order-independent property of the globs.
+ *
+ * @returns {[number, number, number]} [literalLeadSegments, literalChars, -doubleStars]
+ */
+function globSpecificity(glob) {
+  const segments = glob.split('/');
+  let literalLead = 0;
+  for (const seg of segments) {
+    if (seg.includes('*') || seg.includes('?')) break;
+    literalLead++;
+  }
+  const literalChars = glob.replace(/[*?/]/g, '').length;
+  const doubleStars = (glob.match(/\*\*/g) || []).length;
+  return [literalLead, literalChars, -doubleStars];
+}
+
+/** Lexicographic compare of two specificity tuples (>0 ⇒ `a` more specific). */
+function compareSpecificity(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+/**
+ * The best (highest-specificity) glob in `globs` matching `file`, or null if
+ * none match. The returned score arbitrates which owned domain owns the file.
+ */
+function bestMatchingGlob(globs, file) {
+  let best = null;
+  for (const glob of globs) {
+    if (!minimatch(file, glob, { dot: true })) continue;
+    const score = globSpecificity(glob);
+    if (best === null || compareSpecificity(score, best.score) > 0) {
+      best = { glob, score };
+    }
+  }
+  return best;
+}
+
+/**
  * Find pairs of OWNED domains whose globs overlap — i.e. some file is claimed
- * by more than one exclusive owner. detectDomains() resolves this with
- * first-match-wins, but checkOwnership() tests each agent's globs in isolation,
- * so an unresolved overlap silently breaches exclusive ownership (sm-002). We
- * detect overlap by sampling a concrete path from each owned glob and testing
- * it against every OTHER owned domain's globs.
+ * by more than one exclusive owner WITH EQUAL specificity (a genuine
+ * criss-cross, e.g. two `**` domains, or `src/a/**` vs `src/a/**`). A
+ * strict-SUBSET overlap (one glob strictly more specific, like frontend's
+ * `src/ui/**` inside backend's `src/**`) is NOT a conflict: resolveExclusiveOwner
+ * arbitrates it to a single owner by specificity, exactly as detectDomains'
+ * first-match-wins does. sm-002 rejected ANY glob-level overlap, which broke
+ * freezing the auto-detected default full-stack map (sm-r-001); only an
+ * equal-specificity tie actually breaches per-domain isolation. We sample a
+ * concrete path from each owned glob and, for any OTHER owned domain that also
+ * matches it, compare both domains' best-matching specificity.
  *
  * @returns {Array<{ a: string, b: string, file: string }>} conflicting pairs
  */
@@ -284,7 +336,15 @@ function findOwnedGlobOverlaps(domains) {
       const sample = sampleGlobPath(glob);
       for (const other of owned) {
         if (other.name === domain.name) continue;
-        if (!other.globs.some(g => minimatch(sample, g, { dot: true }))) continue;
+        const here = bestMatchingGlob(domain.globs, sample);
+        const there = bestMatchingGlob(other.globs, sample);
+        if (!here || !there) continue;
+        // Only an EQUAL-specificity tie is a genuine breach; if one glob is
+        // strictly more specific, resolveExclusiveOwner arbitrates the file to
+        // a single owner (same as detectDomains' first-match-wins), so a
+        // strict-subset overlap (frontend's src/ui/** ⊂ backend's src/**) is
+        // legal — not a conflict (sm-r-001).
+        if (compareSpecificity(here.score, there.score) !== 0) continue;
         const key = [domain.name, other.name].sort().join(' ') + ' ' + sample;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -296,18 +356,33 @@ function findOwnedGlobOverlaps(domains) {
 }
 
 /**
- * Resolve the single exclusive owner of a file using the SAME first-match-wins
- * order detectDomains() uses (getDomains returns rows ORDER BY name; detection
- * order is bucket order — both are deterministic, and for a non-overlapping
- * frozen map they agree, which freezeDomains now enforces). Returns the owning
+ * Resolve the single exclusive owner of a file by specificity: the owned domain
+ * whose best-matching glob is the most specific wins, ties broken
+ * deterministically by domain name. This is ORDER-INDEPENDENT — it does not
+ * depend on getDomains' ORDER BY name nor on DEFAULT_BUCKETS order — yet it
+ * matches detectDomains' first-match-wins intent (the earlier, narrower bucket
+ * claims the file), so `src/ui/App.tsx` resolves to frontend (`src/ui/**`,
+ * `src/**` *.tsx) over backend (`src/**`). sm-r-001: the prior version iterated
+ * getDomains' alphabetical order, which DISAGREED with detection order and
+ * misattributed ownership once the freeze guard was relaxed. Returns the owning
  * domain name, or null if no owned domain matches.
  */
 function resolveExclusiveOwner(domains, file) {
+  let winner = null;
   for (const d of domains) {
     if (d.ownership_class !== 'owned') continue;
-    if (d.globs.some(g => minimatch(file, g, { dot: true }))) return d.name;
+    const match = bestMatchingGlob(d.globs, file);
+    if (!match) continue;
+    if (winner === null) {
+      winner = { name: d.name, score: match.score };
+      continue;
+    }
+    const cmp = compareSpecificity(match.score, winner.score);
+    if (cmp > 0 || (cmp === 0 && d.name < winner.name)) {
+      winner = { name: d.name, score: match.score };
+    }
   }
-  return null;
+  return winner ? winner.name : null;
 }
 
 // ── Freeze / Unfreeze ──
