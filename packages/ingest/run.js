@@ -476,9 +476,28 @@ if (isMain) {
   const positionalArgs = [];
 
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--provenance' && args[i + 1]) {
-      provenanceMode = args[++i];
-    } else if (args[i] === '--file' && args[i + 1]) {
+    // Accept BOTH the space form (`--flag value`) and the equals form
+    // (`--flag=value`). The prior parser matched only the space form, so a
+    // caller passing `--provenance=stub --file=...` (the shape dogfood-swarm's
+    // commands/persist.js builds for its execSync invocation) fell through to
+    // positionalArgs — `--provenance` then read as missing and the CLI exited 2
+    // ("--provenance flag is required"), silently breaking `swarm persist
+    // --ingest` on every platform. (dogfood-swarm self-audit follow-up.)
+    let arg = args[i];
+    let inlineValue = null;
+    if (arg.startsWith('--')) {
+      const eq = arg.indexOf('=');
+      if (eq !== -1) {
+        inlineValue = arg.slice(eq + 1);
+        arg = arg.slice(0, eq);
+      }
+    }
+    const hasValue = inlineValue !== null || args[i + 1] !== undefined;
+    const takeValue = () => (inlineValue !== null ? inlineValue : args[++i]);
+
+    if (arg === '--provenance' && hasValue) {
+      provenanceMode = takeValue();
+    } else if (arg === '--file' && hasValue) {
       const { readFileSync } = await import('node:fs');
       // D1B-001 family (operator-legibility): a --file read failure
       // (ENOENT/EACCES) routes through the structured error event and exits 2
@@ -488,7 +507,7 @@ if (isMain) {
       // correlation id here (the same pivot the JSON.parse catch uses when
       // there is no submission to derive a run_id from yet).
       try {
-        submissionJson = readFileSync(resolve(args[++i]), 'utf-8');
+        submissionJson = readFileSync(resolve(takeValue()), 'utf-8');
       } catch (err) {
         emitCliErrorEvent({
           failedStage: 'cli_read_file',
@@ -498,9 +517,9 @@ if (isMain) {
         });
         process.exit(2);
       }
-    } else if (args[i] === '--payload' && args[i + 1]) {
-      submissionJson = args[++i];
-    } else if (args[i] === '--verify-only') {
+    } else if (arg === '--payload' && hasValue) {
+      submissionJson = takeValue();
+    } else if (arg === '--verify-only') {
       // F-252714-058: dry-run the pipeline without writing or rebuilding
       // indexes. CI / operators preview what WOULD have been persisted.
       verifyOnlyFlag = true;
