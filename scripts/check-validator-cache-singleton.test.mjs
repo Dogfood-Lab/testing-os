@@ -27,10 +27,12 @@
  *   1. STATIC: no `new Ajv` outside `packages/schemas/`. This is the
  *      visible-source half — if any consumer regresses and adds its
  *      own Ajv instance back, this half trips immediately. (The
- *      build-output schema validator in dogfood-swarm/lib/validate-
- *      agent-output.js uses scripts/agent-output.schema.json which
- *      is NOT in @dogfood-lab/schemas — see that file's comment.
- *      Allowlisted explicitly here.)
+ *      agent-output schema validator in dogfood-swarm/lib/validate-
+ *      agent-output.js compiles a local Ajv: the agent-output schema now
+ *      ships via @dogfood-lab/schemas/json/ but is NOT one of the eight
+ *      payload schemas wired through the canonical compileSchema/
+ *      validatePayload seam — it is a swarm output envelope resolved as a
+ *      raw JSON file. Allowlisted explicitly here; see that file's comment.)
  *
  *   2. DYNAMIC: import `compileSchema` from `@dogfood-lab/schemas`
  *      from this script's resolution path; trigger each consumer's
@@ -79,10 +81,13 @@ const repoRoot = resolve(here, '..');
 // ──────────────────────────────────────────────────────────────────────
 
 test('D2B-015 STATIC: no `new Ajv` outside @dogfood-lab/schemas (single canonical compile site)', () => {
-  // The scripts/agent-output.schema.json validator (dogfood-swarm/lib/
-  // validate-agent-output.js) uses a NON-@dogfood-lab schema — that
-  // file's header comment explicitly states it stands apart until the
-  // schema graduates to the schemas package. Allowlisted by path.
+  // The agent-output schema validator (dogfood-swarm/lib/
+  // validate-agent-output.js) compiles its own Ajv. The agent-output
+  // schema now ships via @dogfood-lab/schemas/json/, but it is NOT one of
+  // the eight payload schemas wired through the canonical compileSchema/
+  // validatePayload seam — it is a swarm output envelope resolved as a raw
+  // JSON file, so it is compiled with a local Ajv by design. Allowlisted by
+  // path (see that file's header comment).
   //
   // The schemas package itself houses the SOLE permitted `new Ajv` call
   // (src/validate.ts + dist/validate.js). No other package may

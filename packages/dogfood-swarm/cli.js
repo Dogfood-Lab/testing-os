@@ -23,7 +23,8 @@
 
 import { parseArgs } from 'node:util';
 import { resolve, join } from 'node:path';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 
 import { init } from './commands/init.js';
 import { dispatch } from './commands/dispatch.js';
@@ -410,7 +411,14 @@ function cmdRevalidate(args) {
 
   let reason = '';
   const reasonIdx = args.indexOf('--reason');
-  if (reasonIdx >= 0 && args[reasonIdx + 1]) reason = args[reasonIdx + 1];
+  // cli-003: a following token that starts with `--` is the NEXT flag, not the
+  // reason text. Without this guard, `--reason --apply` silently captured
+  // '--apply' as the reason (polluting the mandatory audit field) while the
+  // irreversible mutation still fired. Treat that as a missing reason so the
+  // "reason required" guard below errors out instead.
+  if (reasonIdx >= 0 && args[reasonIdx + 1] && !args[reasonIdx + 1].startsWith('--')) {
+    reason = args[reasonIdx + 1];
+  }
   for (const a of args) {
     const m = a.match(/^--reason=(.+)$/s);
     if (m) reason = m[1];
@@ -499,7 +507,13 @@ function cmdRewind(args) {
 
   let reason = '';
   const reasonIdx = args.indexOf('--reason');
-  if (reasonIdx >= 0 && args[reasonIdx + 1]) reason = args[reasonIdx + 1];
+  // cli-003: a following token starting with `--` is the next flag, not the
+  // reason. `--reason --apply` must NOT capture '--apply' as the audit reason
+  // (and rewind is irreversible — the polluted reason would land in the
+  // wave/agent_state_events record). Treat it as missing so the guard fires.
+  if (reasonIdx >= 0 && args[reasonIdx + 1] && !args[reasonIdx + 1].startsWith('--')) {
+    reason = args[reasonIdx + 1];
+  }
   for (const a of args) {
     const m = a.match(/^--reason=(.+)$/s);
     if (m) reason = m[1];
@@ -571,7 +585,12 @@ function cmdRedrive(args) {
 
   let reason = '';
   const reasonIdx = args.indexOf('--reason');
-  if (reasonIdx >= 0 && args[reasonIdx + 1]) reason = args[reasonIdx + 1];
+  // cli-003: a following token starting with `--` is the next flag, not the
+  // reason. `--reason --apply` must NOT capture '--apply' as the redrive audit
+  // reason. Treat it as missing so the "reason required" guard fires.
+  if (reasonIdx >= 0 && args[reasonIdx + 1] && !args[reasonIdx + 1].startsWith('--')) {
+    reason = args[reasonIdx + 1];
+  }
   for (const a of args) {
     const m = a.match(/^--reason=(.+)$/s);
     if (m) reason = m[1];
@@ -662,22 +681,78 @@ function cmdVerify(args) {
   });
 
   console.log(formatVerify(result));
+
+  // cli-p-002: `swarm verify` is billed as a wave gate, yet it used to exit
+  // 0 on every verdict — a CI step (or a `swarm verify <run> && swarm
+  // advance <run>` chain) saw a green light on a hard FAIL. Exit 0 ONLY on a
+  // clean pass; every other verdict (fail / no_tests / skip / tool_missing)
+  // is "not a verified pass" and MUST surface as a non-zero exit so the
+  // machine signal matches the human-readable one. This aligns `verify` with
+  // its four verify-* sibling verbs, which already propagate exit codes.
+  if (result.verdict !== 'pass') {
+    // A `fail` verdict has no top-level `reason` (the runner only attaches
+    // one for skip/no_tests), so derive a why-line from the first failing
+    // required step. The operator always gets an explanation alongside the
+    // non-zero exit, never a bare verdict.
+    const failedStep = result.steps?.find(s => !s.passed && !s.optional);
+    const why = result.reason
+      || (failedStep
+        ? `required step '${failedStep.name}' failed (exit ${failedStep.exit_code})`
+        : 'not a verified pass');
+    console.error(`swarm verify: ${result.verdict.toUpperCase()} — ${why}`);
+    process.exit(1);
+  }
+}
+
+/**
+ * ve-002 guard: build a fail-loud error for a non-numeric / negative
+ * `--threshold` value. A plain Error carrying `.code` + `.hint` so the
+ * top-level `renderTopLevelError` seam prints the structured envelope and
+ * exits 1 — mirroring CliInvalidGlobsError's shape without coupling the
+ * shared verify-flag parser to a new error class. Exported-via-throw so the
+ * unit test can assert the parser rejects rather than yielding NaN.
+ *
+ * @param {string} raw — the value the operator passed after --threshold
+ */
+function thresholdError(raw) {
+  const e = new Error(
+    `--threshold expects a non-negative integer; got '${raw}'`
+  );
+  e.code = 'CLI_INVALID_THRESHOLD';
+  e.received = raw;
+  e.hint = 'pass an integer >= 0, e.g. `--threshold 0` or `--threshold=3`';
+  return e;
 }
 
 /**
  * Parse the shared verify-* CLI flags: --threshold=N, --format=text|markdown|json,
  * --legacy-v1. Returned values are plain JS so each verb's wrapper can
  * spread directly into its impl call.
+ *
+ * ve-002: the space form `--threshold <value>` is validated with
+ * Number.isFinite (and a non-negative check) so a typo like `--threshold foo`
+ * fails loud instead of yielding NaN. A NaN threshold silently disabled the
+ * gate: `offending > NaN` is always false, so the command exited 0 ("clean")
+ * even with real regressions, on all four verify-* verbs. The `--threshold=N`
+ * equals-form was already digit-guarded by its `^--threshold=(\d+)$` regex;
+ * this closes the space-form hole and keeps both forms consistent.
+ *
+ * @throws when the space-form value is not a finite non-negative integer.
  */
-function parseVerifyFlags(args) {
+export function parseVerifyFlags(args) {
   let threshold = 0;
   for (const a of args.slice(1)) {
     const m = a.match(/^--threshold=(\d+)$/);
     if (m) { threshold = parseInt(m[1], 10); break; }
   }
   const tIdx = args.indexOf('--threshold');
-  if (tIdx >= 0 && args[tIdx + 1]) {
-    threshold = parseInt(args[tIdx + 1], 10);
+  if (tIdx >= 0 && args[tIdx + 1] !== undefined) {
+    const raw = args[tIdx + 1];
+    const n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 0 || !/^\d+$/.test(String(raw).trim())) {
+      throw thresholdError(raw);
+    }
+    threshold = n;
   }
 
   let format;
@@ -857,7 +932,14 @@ function cmdAdvance(args) {
 
   const override = args.includes('--override');
   const reasonIdx = args.indexOf('--reason');
-  const overrideReason = reasonIdx >= 0 ? args[reasonIdx + 1] : undefined;
+  // cli-003: a following token that starts with `--` is the NEXT flag, not the
+  // reason text. `--override --reason <flag>` captured the flag as overrideReason
+  // (truthy), so the override proceeded with a junk audit reason — advance.js
+  // persists it into the promotion/override record as overrides:[{reason}]. No
+  // irreversible side effect here (why the amend agent declined to file it), but
+  // a polluted audit reason is still wrong. Treat a `--`-prefixed value as missing.
+  const reasonCandidate = reasonIdx >= 0 ? args[reasonIdx + 1] : undefined;
+  const overrideReason = (reasonCandidate && !reasonCandidate.startsWith('--')) ? reasonCandidate : undefined;
 
   if (override && !overrideReason) {
     console.error('--override requires --reason "explanation"');
@@ -902,31 +984,57 @@ function cmdApprove(args) {
   const idsArg = args.find((a, i) => args[i - 1] === '--ids');
   const ids = idsArg ? idsArg.split(',').map(s => s.trim()) : [];
 
-  let updated;
-  if (approveAll) {
-    updated = db.prepare(
-      "UPDATE findings SET status = 'approved' WHERE run_id = ? AND status IN ('new', 'recurring')"
-    ).run(runId);
-  } else if (ids.length > 0) {
-    const placeholders = ids.map(() => '?').join(',');
-    updated = db.prepare(
-      `UPDATE findings SET status = 'approved' WHERE run_id = ? AND finding_id IN (${placeholders}) AND status IN ('new', 'recurring')`
-    ).run(runId, ...ids);
-  } else {
+  if (!approveAll && ids.length === 0) {
     console.error('Specify --all or --ids F-001,F-002');
     process.exit(1);
   }
 
-  console.log(`Approved ${updated.changes} findings for ${runId}`);
+  // cli-002 fix: record `approved` events only for findings THIS call moves
+  // new/recurring → approved, not for every already-approved finding in the
+  // run. finding_events is append-only with no unique constraint, so the old
+  // `SELECT ... WHERE status = 'approved'` (which returned rows approved by
+  // earlier invocations too) inserted a duplicate `approved` event on every
+  // re-run of `swarm approve`, over-counting the event-sourced audit trail.
+  //
+  // Capture the about-to-flip ids BEFORE the UPDATE, then insert one event
+  // per captured id — all inside one transaction so the UPDATE and its audit
+  // rows land together (Stripe Ledger pattern, mirrors transitionWave).
+  const selectPending = approveAll
+    ? db.prepare(
+        "SELECT id FROM findings WHERE run_id = ? AND status IN ('new', 'recurring')"
+      )
+    : db.prepare(
+        `SELECT id FROM findings WHERE run_id = ? AND finding_id IN (${ids.map(() => '?').join(',')}) AND status IN ('new', 'recurring')`
+      );
 
-  // Record events
-  const approved = db.prepare(
-    "SELECT id FROM findings WHERE run_id = ? AND status = 'approved'"
-  ).all(runId);
   const insertEvent = db.prepare(
     "INSERT INTO finding_events (finding_id, event_type, notes) VALUES (?, 'approved', 'bulk approve')"
   );
-  for (const f of approved) insertEvent.run(f.id);
+
+  let changes = 0;
+  const tx = db.transaction(() => {
+    const pending = approveAll
+      ? selectPending.all(runId)
+      : selectPending.all(runId, ...ids);
+
+    let updated;
+    if (approveAll) {
+      updated = db.prepare(
+        "UPDATE findings SET status = 'approved' WHERE run_id = ? AND status IN ('new', 'recurring')"
+      ).run(runId);
+    } else {
+      const placeholders = ids.map(() => '?').join(',');
+      updated = db.prepare(
+        `UPDATE findings SET status = 'approved' WHERE run_id = ? AND finding_id IN (${placeholders}) AND status IN ('new', 'recurring')`
+      ).run(runId, ...ids);
+    }
+
+    for (const f of pending) insertEvent.run(f.id);
+    return updated.changes;
+  });
+
+  changes = tx();
+  console.log(`Approved ${changes} findings for ${runId}`);
 }
 
 function cmdPersist(args) {
@@ -948,6 +1056,24 @@ function cmdPersist(args) {
   });
 
   console.log(formatPersist(result));
+
+  // cli-p-001 / fp-p-002: when --ingest was requested (and not a dry run), the
+  // ingest is an irreversible write to the dogfood corpus. persist() catches a
+  // failed ingest into report.dogfood.reason and returns a success-shaped
+  // report, so cmdPersist used to exit 0 even when nothing was ingested — a CI
+  // step gating on $? saw a failed corpus write as green. The sibling
+  // persist-results.js exits 1 on the identical failure; align the two corpus-
+  // write surfaces on one exit-code contract. Surface the reason + a copy-
+  // pasteable reproduce line (mirroring persist-results.js) so the operator
+  // can replay the ingest with full output.
+  if (ingestDogfood && !dryRun && result.dogfood && result.dogfood.ingested !== true) {
+    console.error(`ERROR [INGEST_FAILED]: dogfood ingest did not complete — ${result.dogfood.reason}`);
+    if (result.artifacts?.dogfoodSubmission) {
+      console.error(`  Submission: ${result.artifacts.dogfoodSubmission}`);
+      console.error(`  Reproduce:  node "<repo>/packages/ingest/run.js" --provenance=stub --file "${result.artifacts.dogfoodSubmission}"`);
+    }
+    process.exit(1);
+  }
 }
 
 function cmdFindings(args) {
@@ -1013,9 +1139,6 @@ function cmdRuns() {
 
 // ── Dispatch ──
 
-const command = process.argv[2];
-const commandArgs = process.argv.slice(3);
-
 const commands = {
   init: cmdInit,
   domains: cmdDomains,
@@ -1040,8 +1163,42 @@ const commands = {
   runs: cmdRuns,
 };
 
-if (!command || !commands[command]) {
-  console.log(`swarm — Truthful swarm control plane for repo work
+/**
+ * Direct-execution guard. cli.js historically ran its argv dispatch at module
+ * load unconditionally, which means importing anything from this file (e.g.
+ * parseVerifyFlags for a unit test) would execute the dispatch under the test
+ * runner's argv and `process.exit`. The guard makes the file importable: the
+ * dispatch only runs when cli.js is the process entry point (node cli.js ...,
+ * or the `swarm` bin), not when it is imported. The subprocess smoke tests
+ * (cli-smoke.test.js, rewind.test.js) still exercise the real dispatch because
+ * they spawn `node cli.js` where argv[1] resolves to this file.
+ */
+function isDirectExecution() {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return realpathSync(entry) === realpathSync(fileURLToPath(import.meta.url));
+  } catch {
+    return entry === fileURLToPath(import.meta.url);
+  }
+}
+
+/**
+ * cli-r-002: the argv dispatch body lives in main() rather than inline under
+ * `if (isDirectExecution())`. The previous inline form left the help-text
+ * console.log + trailing process.exit indented one level shallower than their
+ * enclosing `if (!command || !commands[command])` body. Hoisting the body into
+ * a named function lets every statement sit at one consistent indentation
+ * level without a deep-nesting re-indent, and reads as a normal entry point.
+ * Behavior is identical: main() is invoked only when cli.js is the process
+ * entry point (the subprocess smoke tests still spawn `node cli.js`).
+ */
+function main() {
+  const command = process.argv[2];
+  const commandArgs = process.argv.slice(3);
+
+  if (!command || !commands[command]) {
+    console.log(`swarm — Truthful swarm control plane for repo work
 
 Commands:
   init <repo-path>           Create run, detect domains
@@ -1158,12 +1315,15 @@ Phases:
   health-audit-c   health-amend-c
   stage-d-audit    stage-d-amend
   feature-audit    feature-execute`);
-  process.exit(command ? 1 : 0);
+    process.exit(command ? 1 : 0);
+  }
+
+  try {
+    commands[command](commandArgs);
+  } catch (e) {
+    renderTopLevelError(e);
+    process.exit(1);
+  }
 }
 
-try {
-  commands[command](commandArgs);
-} catch (e) {
-  renderTopLevelError(e);
-  process.exit(1);
-}
+if (isDirectExecution()) main();

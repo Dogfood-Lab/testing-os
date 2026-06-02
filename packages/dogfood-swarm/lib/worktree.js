@@ -18,6 +18,7 @@
 import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { logStage } from './log-stage.js';
 
 /**
  * Validate that a domain name is safe to interpolate into both a filesystem
@@ -78,8 +79,25 @@ export function createWorktree(repoPath, opts) {
 
   // Remove stale worktree if it exists. Argv-array form bypasses the shell
   // so wtDir cannot trigger metacharacter interpretation.
+  //
+  // sm-p-003: this runs ONLY when wtDir is present and the `--force` remove
+  // FAILED, yet the `worktree add` below will then fail too. Bare-swallowing
+  // the precursor failure left the operator with only the downstream `add`
+  // error and no breadcrumb that cleanup failed first. Log to the NDJSON
+  // stream (no control-flow change — still best-effort) so the precursor is
+  // greppable when the subsequent add blows up. Same forensic channel D3B-012
+  // gave applyTimeoutPolicy's NULL started_at skip.
   if (existsSync(wtDir)) {
-    try { gitArgs(repoPath, ['worktree', 'remove', wtDir, '--force']); } catch { /* */ }
+    try {
+      gitArgs(repoPath, ['worktree', 'remove', wtDir, '--force']);
+    } catch (e) {
+      logStage('worktree_stale_remove_failed', {
+        component: 'dogfood-swarm',
+        wtDir,
+        branch,
+        err: e.message,
+      });
+    }
   }
 
   // Delete stale branch if it exists.
@@ -89,34 +107,6 @@ export function createWorktree(repoPath, opts) {
   gitArgs(repoPath, ['worktree', 'add', '-b', branch, wtDir]);
 
   return { worktreePath: wtDir, branch };
-}
-
-/**
- * Get the diff (changed files) from a worktree relative to its branch point.
- *
- * @param {string} repoPath — main repo path
- * @param {string} worktreePath
- * @returns {string[]} — list of changed file paths (relative to repo root)
- */
-export function getWorktreeDiff(repoPath, worktreePath) {
-  try {
-    const output = git(worktreePath, 'diff --name-only HEAD~1..HEAD');
-    return output.trim().split('\n').filter(Boolean);
-  } catch {
-    // No commits yet — check for uncommitted changes
-    const output = git(worktreePath, 'diff --name-only HEAD');
-    return output.trim().split('\n').filter(Boolean);
-  }
-}
-
-/**
- * Get all uncommitted changes in a worktree.
- */
-export function getWorktreeChanges(worktreePath) {
-  const staged = git(worktreePath, 'diff --name-only --cached').trim().split('\n').filter(Boolean);
-  const unstaged = git(worktreePath, 'diff --name-only').trim().split('\n').filter(Boolean);
-  const untracked = git(worktreePath, 'ls-files --others --exclude-standard').trim().split('\n').filter(Boolean);
-  return { staged, unstaged, untracked, all: [...new Set([...staged, ...unstaged, ...untracked])] };
 }
 
 /**
@@ -197,8 +187,18 @@ export function cleanupAllWorktrees(repoPath) {
   for (const wt of worktrees) {
     removeWorktree(repoPath, wt.path, wt.branch);
   }
-  // Prune stale worktree references
-  try { git(repoPath, 'worktree prune'); } catch { /* */ }
+  // Prune stale worktree references. sm-p-003: best-effort, but a swallowed
+  // prune failure left no breadcrumb at all; log it so a stuck prune is
+  // greppable. Control flow is unchanged — cleanup is advisory.
+  try {
+    git(repoPath, 'worktree prune');
+  } catch (e) {
+    logStage('worktree_prune_failed', {
+      component: 'dogfood-swarm',
+      repoPath,
+      err: e.message,
+    });
+  }
   return worktrees.length;
 }
 

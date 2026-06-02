@@ -36,9 +36,8 @@ import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, readFileSync, readFileSync as _rfs } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join } from 'node:path';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
 
 import { openDb, closeDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains, takeDomainSnapshot } from './lib/domains.js';
@@ -46,11 +45,8 @@ import { dispatch } from './commands/dispatch.js';
 
 const RUN_ID = 'test-dispatch-prompt-schema';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-const SCHEMA_PATH = join(__dirname, '..', '..', 'scripts', 'agent-output.schema.json');
-// eslint-disable-next-line no-unused-vars
-const _require = createRequire(import.meta.url);
+const require = createRequire(import.meta.url);
+const SCHEMA_PATH = require.resolve('@dogfood-lab/schemas/json/agent-output.schema.json');
 const CANONICAL_SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf-8'));
 
 function setupRun(dbPath) {

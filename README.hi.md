@@ -20,7 +20,7 @@
 *एआई-सहायक सॉफ़्टवेयर के लिए प्रोटोकॉल, साक्ष्य भंडार और शिक्षण लूप।*
 
 <!-- version:start -->
-**v1.3.1** — वर्तमान संस्करण। इसमें क्या शामिल किया गया है, यह देखने के लिए [CHANGELOG.md](CHANGELOG.md) देखें।
+**v1.3.2** — वर्तमान संस्करण। इसमें क्या शामिल किया गया है, यह देखने के लिए [CHANGELOG.md](CHANGELOG.md) देखें।
 <!-- version:end -->
 
 📖 **[हैंडबुक पढ़ें →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -45,7 +45,7 @@ npm install -g @dogfood-lab/dogfood-swarm
 swarm --help
 ```
 
-ऑपरेटर का मार्गदर्शन, कमांड लाइन इंटरफेस (सीएलआई) संदर्भ, स्कीमा संदर्भ और एकीकरण के लिए आवश्यक निर्देशिका **[हैंडबुक](https://dogfood-lab.github.io/testing-os/handbook/)** में उपलब्ध हैं। प्रत्येक संस्करण के लिए विस्तृत जानकारी [चेंजलॉग.एमडी](CHANGELOG.md) में दी गई है।
+ऑपरेटर का मार्गदर्शिका, सीएलआई संदर्भ, स्कीमा संदर्भ और एकीकरण व्यंजनों **[हैंडबुक](https://dogfood-lab.github.io/testing-os/handbook/)** में उपलब्ध हैं। प्रत्येक संस्करण के लिए विस्तृत जानकारी [CHANGELOG.md](CHANGELOG.md) में दी गई है।
 
 ## खतरा मॉडल
 
@@ -104,7 +104,7 @@ npm run verify      # build + test (canonical pre-commit check)
 
 ## संस्करण नियंत्रण
 
-सभी `@dogfood-lab/*` पैकेज एक साथ अपडेट किए जाते हैं — मोनोरपो में एक ही संख्या। छह पैकेज v1.3.1 पर `@dogfood-lab` के तहत npm पर प्रकाशित होते हैं (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); सातवां, `@dogfood-lab/portfolio`, आंतरिक रूप से ही रहता है। इस रीडमी के शीर्ष के पास संस्करण पंक्ति को हर `npm run build` पर [`scripts/sync-version.mjs`](scripts/sync-version.mjs) के माध्यम से `package.json` से स्वचालित रूप से अपडेट किया जाता है।
+सभी `@dogfood-lab/*` पैकेज एक साथ अपडेट किए जाते हैं — मोनोरपो में एक ही संख्या। छह पैकेज v1.3.2 पर `@dogfood-lab` के तहत npm पर प्रकाशित होते हैं (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); सातवां, `@dogfood-lab/portfolio`, आंतरिक रूप से ही रहता है। इस रीडमी के शीर्ष के पास संस्करण पंक्ति को हर `npm run build` पर [`scripts/sync-version.mjs`](scripts/sync-version.mjs) के माध्यम से `package.json` से स्वचालित रूप से अपडेट किया जाता है।
 
 ## लाइसेंस
 

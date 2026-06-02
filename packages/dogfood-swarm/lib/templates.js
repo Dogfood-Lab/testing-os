@@ -5,8 +5,9 @@
  * Templates embed: repo path, domain scope, file list, phase lens, output format.
  *
  * Authority discipline (Stage B Item 1 + Item 4):
- * The output-shape contract appended to every prompt is DERIVED FROM
- * scripts/agent-output.schema.json — not hand-typed parallel to it. The
+ * The output-shape contract appended to every prompt is DERIVED FROM the
+ * canonical agent-output schema (@dogfood-lab/schemas) — not hand-typed
+ * parallel to it. The
  * worked-example JSON below the contract block stays as a worked example,
  * but the schema fragment is the load-bearing reference. Same root-cause
  * group as Item 4: brief-vs-frozen-state parallel authority. Pact-style
@@ -16,20 +17,15 @@
 
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-
-// Resolve agent-output.schema.json the SAME way validate-agent-output.js does
-// (packages/dogfood-swarm/lib → ../../../scripts). If/when the schema graduates
-// to @dogfood-lab/schemas, both modules switch in lockstep to a
-// createRequire('@dogfood-lab/schemas/...') resolution. createRequire is
-// imported here so future refactors can pivot without re-plumbing.
-// eslint-disable-next-line no-unused-vars
-const _require = createRequire(import.meta.url);
-const SCHEMA_PATH = join(__dirname, '..', '..', '..', 'scripts', 'agent-output.schema.json');
+// Resolve the agent-output schema the SAME way validate-agent-output.js does:
+// createRequire on @dogfood-lab/schemas's `./json/*` subpath export (fp-p-006
+// consolidation — one source of truth shipped via the dependency, no
+// package-local copy to keep in sync). The prompt-builder reads the canonical
+// schema so the contract block injected into every dispatched prompt cannot
+// drift from the collect-time validator.
+const require = createRequire(import.meta.url);
+const SCHEMA_PATH = require.resolve('@dogfood-lab/schemas/json/agent-output.schema.json');
 
 let _canonicalSchema = null;
 function getCanonicalSchema() {

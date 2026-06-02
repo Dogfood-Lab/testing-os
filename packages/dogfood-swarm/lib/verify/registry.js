@@ -21,6 +21,25 @@ const ADAPTERS = new Map([
 ]);
 
 /**
+ * Deterministic tie-break priority for equal-confidence probes (ve-p-006).
+ *
+ * A polyglot repo can legitimately score equally under two adapters (e.g. a
+ * Rust core with a Node tooling layer). Sorting by score alone left the winner
+ * to the Map's insertion order — an implicit, undocumented precedence that
+ * grows more fragile as adapters are added. This makes the precedence explicit
+ * and testable: HIGHER wins on a score tie. The ordering reflects marker
+ * exclusivity — `Cargo.toml` is a near-certain Rust signal, `pyproject.toml`
+ * is Python-specific, and `package.json` is the most common file to appear
+ * incidentally in a non-Node repo (build tooling, JS assets), so it loses ties.
+ * An operator can always force a choice with `--adapter`.
+ */
+const ADAPTER_TIE_BREAK = new Map([
+  ['rust', 3],
+  ['python', 2],
+  ['node', 1],
+]);
+
+/**
  * Probe all adapters and rank by score.
  *
  * @param {string} repoPath
@@ -36,7 +55,14 @@ export function probeAll(repoPath) {
       results.push({ name, score: 0, reason: `Probe error: ${e.message}`, evidence: {} });
     }
   }
-  return results.sort((a, b) => b.score - a.score);
+  // ve-p-006: stable, documented tie-break on equal score. Without it, the
+  // winner of a score tie was whatever the engine's stable sort left first
+  // given Map insertion order — a latent surprise as adapters grow.
+  return results.sort(
+    (a, b) =>
+      b.score - a.score ||
+      (ADAPTER_TIE_BREAK.get(b.name) ?? 0) - (ADAPTER_TIE_BREAK.get(a.name) ?? 0)
+  );
 }
 
 /**

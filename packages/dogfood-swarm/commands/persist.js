@@ -95,8 +95,19 @@ export function persist(opts) {
   }
 
   // 5. Summary
+  //
+  // fp-p-004: this step only WROTE three local audit JSON files (run/
+  // findings/metrics) into <outputDir>/persist/audit via atomicWrite. It does
+  // NOT perform the `rk audit import` / `audit_submit` into the repo-knowledge
+  // DB — that is the coordinator's downstream step. Reporting a bare
+  // `exported: true` / `Status: pass` conflated "wrote audit files locally"
+  // with "audit landed in the repo-knowledge DB" and could make an operator
+  // believe the submission happened. Reflect what actually occurred: artifacts
+  // written here, submission still pending. Mirrors the dogfood path's honest
+  // Ingested: YES/NO phrasing so both downstream targets report consistently.
   report.repoKnowledge = {
-    exported: true,
+    artifactsWritten: true,
+    submitted: false,
     path: auditDir,
     status: auditPayload.run.overall_status,
     posture: auditPayload.run.overall_posture,
@@ -130,7 +141,15 @@ export function formatPersist(r) {
   lines.push('');
 
   lines.push('Repo-knowledge:');
-  lines.push(`  Status: ${r.repoKnowledge?.status} (${r.repoKnowledge?.posture})`);
+  // fp-p-004: distinguish "artifacts written locally" from "submitted to the
+  // repo-knowledge DB". The submission is the coordinator's downstream step;
+  // say so rather than implying it already happened.
+  if (r.repoKnowledge?.submitted) {
+    lines.push(`  Submitted: YES — status ${r.repoKnowledge?.status} (${r.repoKnowledge?.posture})`);
+  } else {
+    lines.push(`  Submitted: NO — artifacts written, run \`rk audit import <path>\` to submit`);
+    lines.push(`  Status (pending): ${r.repoKnowledge?.status} (${r.repoKnowledge?.posture})`);
+  }
   lines.push(`  Path:   ${r.repoKnowledge?.path}`);
 
   return lines.join('\n');

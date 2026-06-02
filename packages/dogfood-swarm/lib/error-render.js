@@ -60,7 +60,7 @@ function deriveHintForCode(e) {
     case 'RECORD_SCHEMA_INVALID':
       return 'inspect the failing record against packages/schemas/src/json/dogfood-record.schema.json and fix the invalid fields before re-ingesting';
     case 'AGENT_OUTPUT_SCHEMA_INVALID':
-      return `inspect ${e.outputPath || 'the agent output JSON'} against scripts/agent-output.schema.json and fix the invalid fields. Required at top level: domain, summary. Audit outputs add findings[]; feature outputs add features[]; amend outputs add fixes[] + files_changed[]. Then \`swarm revalidate ${e.runId ?? '<run-id>'} --reason "<text>" --domain=${e.domain ?? '<domain>'}:${e.outputPath ?? '<corrected.json>'} --apply\` to repair the blocked agent_run lawfully (dry-run without --apply)`;
+      return `inspect ${e.outputPath || 'the agent output JSON'} against packages/schemas/src/json/agent-output.schema.json and fix the invalid fields. Required at top level: domain, summary. Audit outputs add findings[]; feature outputs add features[]; amend outputs add fixes[] + files_changed[]. Then \`swarm revalidate ${e.runId ?? '<run-id>'} --reason "<text>" --domain=${e.domain ?? '<domain>'}:${e.outputPath ?? '<corrected.json>'} --apply\` to repair the blocked agent_run lawfully (dry-run without --apply)`;
     case 'DUPLICATE_RUN_ID':
       return 'a run with this id already exists — use a fresh run id or `swarm runs` to inspect the existing one';
     // D3B-003 (Wave A2 Stage C): dispatch precondition codes.

@@ -68,6 +68,8 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
+import { resolve as resolvePath } from 'node:path';
 
 import { openDb } from '../db/connection.js';
 import { transitionAgent, TERMINAL_STATUSES as AGENT_TERMINAL_STATUSES } from '../lib/state-machine.js';
@@ -174,36 +176,67 @@ export function rewind(opts) {
 
   const db = openDb(dbPath);
 
+  // cli-001 fix: resolve the run(s) that own THIS working tree before
+  // collecting anything to abort. A single control-plane.db holds every run
+  // across every repo (proved by `swarm runs`), so an unscoped abort drives
+  // OTHER runs' live waves/agent_runs to the terminal `aborted_for_rewind`
+  // status while the git reset only touches `cwd`. We match `runs.local_path`
+  // against the rewind cwd (normalized for symlinks / trailing separators /
+  // Windows casing) and scope every query below to those run ids. If no run
+  // matches (e.g. an arbitrary-ref rewind in a tree with no registered run),
+  // the abort set is empty by construction — the git reset still runs, but no
+  // DB rows are touched, which is the correct conservative behavior.
+  const cwdKey = normalizePathForMatch(cwd);
+  const targetRunIds = db.prepare('SELECT id, local_path FROM runs').all()
+    .filter(r => normalizePathForMatch(r.local_path) === cwdKey)
+    .map(r => r.id);
+
+  // Empty-set guard: `WHERE run_id IN ()` is a SQL syntax error and an empty
+  // placeholder list would match nothing anyway. Short-circuit to empty
+  // result sets so the dry-run plan + preserved counts reflect "no run owns
+  // this tree" without issuing a malformed query.
+  const runScope = targetRunIds.length > 0;
+  const runPlaceholders = targetRunIds.map(() => '?').join(',');
+
   // Collect every wave + agent_run we would touch. Filter out terminal rows
-  // (advanced waves, complete agents, prior aborted_for_rewind entries). The
-  // dry-run pass shows the operator exactly what --apply would change.
-  const waves = db.prepare(
-    'SELECT id, run_id, phase, wave_number, status FROM waves WHERE status NOT IN (' +
+  // (advanced waves, complete agents, prior aborted_for_rewind entries) AND
+  // scope to the run(s) owning this working tree. The dry-run pass shows the
+  // operator exactly what --apply would change.
+  const waves = runScope ? db.prepare(
+    'SELECT id, run_id, phase, wave_number, status FROM waves WHERE run_id IN (' +
+    runPlaceholders + ') AND status NOT IN (' +
     [...WAVE_TERMINAL_STATUSES].map(() => '?').join(',') +
     ')'
-  ).all(...WAVE_TERMINAL_STATUSES);
+  ).all(...targetRunIds, ...WAVE_TERMINAL_STATUSES) : [];
 
-  const agentRuns = db.prepare(`
+  // agent_runs has no run_id column — scope through waves.run_id via the join.
+  const agentRuns = runScope ? db.prepare(`
     SELECT ar.id, ar.wave_id, ar.status, d.name AS domain_name
     FROM agent_runs ar
     JOIN domains d ON ar.domain_id = d.id
-    WHERE ar.status NOT IN (${[...AGENT_TERMINAL_STATUSES].map(() => '?').join(',')})
-  `).all(...AGENT_TERMINAL_STATUSES);
+    JOIN waves w ON ar.wave_id = w.id
+    WHERE w.run_id IN (${runPlaceholders})
+      AND ar.status NOT IN (${[...AGENT_TERMINAL_STATUSES].map(() => '?').join(',')})
+  `).all(...targetRunIds, ...AGENT_TERMINAL_STATUSES) : [];
 
   // 5B-1 fold-in (T4): preserved-count surface. The plan summary names what
   // rewind LEFT ALONE (terminal rows survive byte-identical) alongside what
   // it tore down. The operator's mental model is "rewind erases the failure
   // tail but preserves history" — the surface should reflect that, not just
-  // the affected count.
-  const preservedWaveCount = db.prepare(
-    'SELECT COUNT(*) AS n FROM waves WHERE status IN (' +
+  // the affected count. cli-001: these counts are also scoped to the target
+  // run(s) so the preserved surface describes THIS tree's run, not the whole
+  // shared DB.
+  const preservedWaveCount = runScope ? db.prepare(
+    'SELECT COUNT(*) AS n FROM waves WHERE run_id IN (' + runPlaceholders +
+    ') AND status IN (' +
     [...WAVE_TERMINAL_STATUSES].map(() => '?').join(',') + ')'
-  ).get(...WAVE_TERMINAL_STATUSES).n;
+  ).get(...targetRunIds, ...WAVE_TERMINAL_STATUSES).n : 0;
 
-  const preservedAgentRunCount = db.prepare(
-    'SELECT COUNT(*) AS n FROM agent_runs WHERE status IN (' +
+  const preservedAgentRunCount = runScope ? db.prepare(
+    'SELECT COUNT(*) AS n FROM agent_runs ar JOIN waves w ON ar.wave_id = w.id ' +
+    'WHERE w.run_id IN (' + runPlaceholders + ') AND ar.status IN (' +
     [...AGENT_TERMINAL_STATUSES].map(() => '?').join(',') + ')'
-  ).get(...AGENT_TERMINAL_STATUSES).n;
+  ).get(...targetRunIds, ...AGENT_TERMINAL_STATUSES).n : 0;
 
   // Build the plan. Each entry carries the planned transition so the
   // operator can audit before --apply.
@@ -235,6 +268,7 @@ export function rewind(opts) {
     headShaBeforeShort: headSha.slice(0, 8),
     cwd,
     dbPath,
+    scopedRunIds: targetRunIds,
     dryRun: !apply,
     apply: !!apply,
     force: !!force,
@@ -483,4 +517,31 @@ function mintCorrelationId() {
   const ts = Date.now().toString(36);
   const rand = Math.random().toString(36).slice(2, 6);
   return `coord-${ts}-${rand}`;
+}
+
+/**
+ * cli-001 fix: normalize a filesystem path for run-scoping comparison.
+ *
+ * The git reset is scoped to one working tree (the rewind `cwd`), but the
+ * DB abort must be scoped to the SAME tree's run(s) — otherwise rewinding
+ * run A in repo X drives run B's in-flight rows (possibly in repo Y, sharing
+ * the single control-plane.db) to the terminal `aborted_for_rewind` status.
+ *
+ * `runs.local_path` is written via `resolve(repoPath)` at init time, but the
+ * operator's `process.cwd()` at rewind time can differ by symlink resolution,
+ * a trailing separator, or (on Windows) drive-letter / separator casing. We
+ * compare on realpath when the path exists (collapses symlinks + casing on
+ * case-insensitive filesystems), falling back to `resolve()` for paths that
+ * no longer exist on disk. Returns a lowercased string so Windows
+ * case-insensitive trees still match.
+ */
+function normalizePathForMatch(p) {
+  if (!p || typeof p !== 'string') return '';
+  let out;
+  try {
+    out = realpathSync(p);
+  } catch {
+    out = resolvePath(p);
+  }
+  return out.replace(/[\\/]+$/, '').toLowerCase();
 }

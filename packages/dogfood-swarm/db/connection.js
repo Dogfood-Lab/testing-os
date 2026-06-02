@@ -63,12 +63,7 @@ export function openDb(dbPath) {
 
   const db = new Database(dbPath);
 
-  // WAL for better concurrent read perf
-  db.pragma('journal_mode = WAL');
-  db.pragma('foreign_keys = ON');
-  // Give concurrent writers a brief grace window instead of failing loudly
-  // on the first SQLITE_BUSY. See BUSY_TIMEOUT_MS doc above.
-  db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  applyConnectionPragmas(db, { inMemory: false });
 
   // Apply schema idempotently
   const version = getSchemaVersion(db);
@@ -82,10 +77,56 @@ export function openDb(dbPath) {
     // Apply ALTER TABLE migrations (catch duplicates)
     applyMigrations(db);
     setSchemaVersion(db, SCHEMA_VERSION);
+  } else if (version > SCHEMA_VERSION) {
+    // sm-p-002: the on-disk DB was written by a NEWER build than this one.
+    // Neither create (version < 1) nor upgrade (version < SCHEMA_VERSION)
+    // fires, so without this branch openDb would silently proceed against an
+    // unknown-newer shape. The shared swarms/control-plane.db is committed
+    // back to main by ingest.yml; an operator on an older checkout (or a stale
+    // CI cache) can hit a DB a newer main already migrated. A newer schema may
+    // rename/repurpose a column or add a NOT NULL column this writer won't
+    // populate — silent data corruption. Refuse loudly, same fail-loud-not-
+    // silent discipline as the dead-handle sentinel and busy_timeout above.
+    db.close();
+    pool.delete(dbPath);
+    throw new Error(
+      `control-plane.db at ${dbPath} is schema v${version} but this ` +
+      `@dogfood-lab/dogfood-swarm build only understands v${SCHEMA_VERSION}. ` +
+      `Pull the latest @dogfood-lab/dogfood-swarm before opening this DB.`
+    );
   }
 
   pool.set(dbPath, db);
   return db;
+}
+
+/**
+ * Apply the per-connection pragmas shared by the file-backed (openDb) and
+ * in-memory (openMemoryDb) connection factories.
+ *
+ * sm-p-004: `foreign_keys` is per-connection and SQLite defaults it OFF, so
+ * setting it ON is load-bearing for the declared REFERENCES in schema.js — it
+ * is the one integrity-relevant pragma BOTH factories must apply, and routing
+ * both through here keeps them from drifting apart again (openDb gained the
+ * WAL + busy_timeout block historically; openMemoryDb did not follow). The
+ * file-only pragmas (WAL journal mode + busy_timeout) are gated on !inMemory:
+ * for a `:memory:` DB there is no file and no cross-process writer contention,
+ * so WAL is a no-op and a busy_timeout has nothing to wait on.
+ *
+ * @param {Database.Database} db
+ * @param {{ inMemory: boolean }} opts
+ */
+function applyConnectionPragmas(db, { inMemory }) {
+  // Integrity pragma — applied to EVERY connection regardless of backing.
+  db.pragma('foreign_keys = ON');
+
+  if (!inMemory) {
+    // WAL for better concurrent read perf.
+    db.pragma('journal_mode = WAL');
+    // Give concurrent writers a brief grace window instead of failing loudly
+    // on the first SQLITE_BUSY. See BUSY_TIMEOUT_MS doc above.
+    db.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
+  }
 }
 
 export { BUSY_TIMEOUT_MS };
@@ -107,7 +148,7 @@ export function closeDb(dbPath) {
  */
 export function openMemoryDb() {
   const db = new Database(':memory:');
-  db.pragma('foreign_keys = ON');
+  applyConnectionPragmas(db, { inMemory: true });
   db.exec(SCHEMA_SQL);
   applyMigrations(db);
   setSchemaVersion(db, SCHEMA_VERSION);
