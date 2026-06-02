@@ -21,6 +21,7 @@
     "commands/",
     "db/",
     "lib/",
+    "schema/",
     "README.md",
     "LICENSE",
     "!**/*.test.js",

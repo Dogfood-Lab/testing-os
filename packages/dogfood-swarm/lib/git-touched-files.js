@@ -23,8 +23,7 @@ import { execFileSync } from 'node:child_process';
 /**
  * Compute the actual touched-files set in a worktree relative to HEAD,
  * including untracked files (a new `.github/CODEOWNERS` or similar would be
- * invisible to `git diff --name-only HEAD` but visible to `git status
- * --porcelain`).
+ * invisible to `git diff` but visible to `git status --porcelain`).
  *
  * @param {string} repoPath — absolute path to the worktree
  * @returns {{ modified: string[], added: string[], deleted: string[], untracked: string[], all: string[] }}
@@ -38,15 +37,22 @@ export function getActualTouchedFiles(repoPath) {
   const deleted = [];
   const untracked = [];
 
-  // `git diff --name-only HEAD` covers staged + unstaged tracked changes
-  // (modified + added + deleted). `git status --porcelain` distinguishes
-  // adds from modifications and catches untracked files — needed so that a
-  // new file like `.github/CODEOWNERS` lands in the touched set even before
-  // any `git add`. We use porcelain for the categorization and diff as a
-  // belt-and-suspenders cross-check on tracked changes.
+  // `git status --porcelain` distinguishes adds from modifications and catches
+  // untracked files in one pass — needed so that a new file like
+  // `.github/CODEOWNERS` lands in the touched set even before any `git add`.
+  //
+  // fp-003: the `-z` flag is load-bearing, not a perf tweak. Without it git
+  // C-quotes any path containing a space or non-ASCII byte (default
+  // core.quotePath=true) — `naïve.js` → `"na\303\257ve.js"` — and the old
+  // `path.replace(/\\/g,'/')` then mangled the octal escapes into
+  // `na/303/257ve.js`, silently corrupting the touched set the ownership gate
+  // depends on. Under `-z` git emits raw NUL-terminated bytes with NO quoting
+  // or escaping (spaces and UTF-8 preserved verbatim), so we split on \0 and
+  // do NOT run any backslash→slash normalization on the bytes (that step
+  // corrupts multibyte UTF-8 on POSIX). `-z` paths already use forward slashes.
   let porcelain;
   try {
-    porcelain = execFileSync('git', ['status', '--porcelain', '--untracked-files=normal'], {
+    porcelain = execFileSync('git', ['status', '--porcelain', '-z', '--untracked-files=normal'], {
       cwd: repoPath,
       encoding: 'utf-8',
     });
@@ -57,24 +63,27 @@ export function getActualTouchedFiles(repoPath) {
     return { modified: [], added: [], deleted: [], untracked: [], all: [], unavailable: true };
   }
 
-  // Porcelain format: `XY path` (X = index status, Y = worktree status).
-  // Renames are `R  old -> new`; we want the destination.
-  for (const line of porcelain.split('\n')) {
-    if (!line.trim()) continue;
-    const xy = line.slice(0, 2);
-    const rest = line.slice(3);
-    let path;
-    if (xy[0] === 'R' || xy[1] === 'R') {
-      const arrow = rest.indexOf(' -> ');
-      path = arrow >= 0 ? rest.slice(arrow + 4) : rest;
-    } else {
-      path = rest;
+  // Under `-z` each record is `XY <space> path\0` (X = index status, Y =
+  // worktree status). A rename/copy record is special: the status field is
+  // followed by the DESTINATION path in this record, then the SOURCE path as a
+  // SEPARATE trailing NUL field (there is no ` -> ` separator under `-z`). We
+  // want the destination, so we consume — and discard — that extra source
+  // field when we see an R/C status.
+  const fields = porcelain.split('\0');
+  for (let i = 0; i < fields.length; i++) {
+    const record = fields[i];
+    if (!record) continue; // trailing empty field after the final NUL
+    const xy = record.slice(0, 2);
+    const path = record.slice(3); // skip the single space after XY
+    if (xy[0] === 'R' || xy[1] === 'R' || xy[0] === 'C' || xy[1] === 'C') {
+      // The next field is the rename/copy SOURCE — consume it so it is not
+      // misread as its own record. The destination (`path`) is what we keep.
+      i++;
     }
-    path = path.replace(/\\/g, '/');
     if (xy === '??') untracked.push(path);
     else if (xy[0] === 'D' || xy[1] === 'D') deleted.push(path);
     else if (xy[0] === 'A' || xy[1] === 'A') added.push(path);
-    else modified.push(path);
+    else modified.push(path); // includes R/C — destination is a touched tracked file
   }
 
   const seen = new Set();

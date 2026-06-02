@@ -41,9 +41,15 @@ const STATE_MACHINE_SRC = readFileSync(
 function seedWave(db) {
   db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, status)
     VALUES ('r1', 'org/x', '/tmp/x', ?, 'health-audit-a')`).run('a'.repeat(40));
+  // Two owned domains with DISJOINT globs. (Pre sm-002 this seed used `['**']`
+  // for both, but freezeDomains now rejects overlapping owned globs because two
+  // exclusive owners claiming the same file breaches per-domain isolation. The
+  // glob values are irrelevant to this file's agent-state-machine atomicity
+  // probes — they only need two distinct domains — so disjoint globs keep the
+  // intent and satisfy the freeze guard.)
   saveDomainDraft(db, 'r1', [
-    { name: 'd1', globs: ['**'], ownership_class: 'owned' },
-    { name: 'd2', globs: ['**'], ownership_class: 'owned' },
+    { name: 'd1', globs: ['src/**'], ownership_class: 'owned' },
+    { name: 'd2', globs: ['tests/**'], ownership_class: 'owned' },
   ]);
   freezeDomains(db, 'r1');
   db.prepare(`INSERT INTO waves (run_id, phase, wave_number, status)

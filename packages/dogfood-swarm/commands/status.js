@@ -76,6 +76,30 @@ export function status(opts) {
     };
   }
 
+  // Half-state detection (collect-crash-during-upsert). collect.js persists
+  // artifacts + flips agents to `complete` BEFORE the findings upsert and the
+  // wave-status UPDATE (see commands/collect.js:503-507). If the upsert throws
+  // (CollectUpsertError), the wave is left `dispatched` with every agent
+  // `complete` and artifacts on disk, but ZERO findings referencing it — yet
+  // `swarm status` would print *** READY TO COLLECT *** with no hint a collect
+  // already failed. We measure both halves of that signature here (artifacts
+  // present, findings absent) so computeAssessment can surface a
+  // non-destructive breadcrumb. Counts are scoped to the current wave: an
+  // artifact belongs to a wave through its agent_run; a finding through
+  // first_seen_wave / last_seen_wave.
+  let currentWaveArtifactCount = 0;
+  let currentWaveFindingCount = 0;
+  if (currentWave) {
+    currentWaveArtifactCount = db.prepare(`
+      SELECT COUNT(*) AS n FROM artifacts a
+      JOIN agent_runs ar ON a.agent_run_id = ar.id
+      WHERE ar.wave_id = ?
+    `).get(currentWave.id).n;
+    currentWaveFindingCount = allFindings.filter(
+      f => f.first_seen_wave === currentWave.id || f.last_seen_wave === currentWave.id
+    ).length;
+  }
+
   // Violations across all waves — F-L1-001 (Wave A1 D3 fix-up): the
   // wave-9 family's same-file unlisted sibling. The `currentAgents` query
   // above adopted the helper; this violations subquery (advisor verifier
@@ -134,6 +158,8 @@ export function status(opts) {
       runId: opts.runId,
       savePointTag: run.save_point_tag,
       lastVerificationPassed: lastReceipt ? !!lastReceipt.passed : null,
+      currentWaveArtifactCount,
+      currentWaveFindingCount,
     }
   );
 
@@ -455,6 +481,29 @@ function computeAssessment(wave, agents, openBySeverity, blocked, inFlight, ctx 
 
   // All complete — wave status check
   if (wave.status === 'dispatched') {
+    // Half-state breadcrumb (collect-crash-during-upsert). When the wave is
+    // still `dispatched` with every agent `complete` AND artifacts were
+    // persisted but ZERO findings reference this wave, a prior `swarm collect`
+    // most likely threw during the findings upsert (CollectUpsertError) after
+    // committing artifacts + agent transitions but before the wave-status
+    // UPDATE. The bare "READY TO COLLECT / Run `swarm collect`" output hid
+    // that a collect already ran and failed — even though the collect error
+    // itself told the operator to "inspect with swarm status". Surface a
+    // non-destructive hint; the recovery (re-run collect) is the same, so the
+    // happy path (no artifacts yet → collect never ran) is unchanged.
+    const collectMayHaveFailed =
+      ctx.currentWaveArtifactCount > 0 && ctx.currentWaveFindingCount === 0;
+    if (collectMayHaveFailed) {
+      return {
+        state: 'READY TO COLLECT',
+        blockers,
+        nextAction:
+          'Agents reported complete and artifacts were persisted, but no findings were ' +
+          'persisted for this wave — a prior `swarm collect` may have failed during the ' +
+          'findings upsert. Re-run `swarm collect`, or check logs / `swarm receipt` for the ' +
+          'collect error.',
+      };
+    }
     return {
       state: 'READY TO COLLECT',
       blockers,

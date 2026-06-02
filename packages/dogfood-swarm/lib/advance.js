@@ -185,38 +185,55 @@ export function recordPromotion(db, runId, waveId, fromPhase, toPhase, opts) {
     snapshot.byStatus[f.status] = (snapshot.byStatus[f.status] || 0) + 1;
   }
 
-  const result = db.prepare(`
-    INSERT INTO promotions (wave_id, run_id, from_phase, to_phase, authorized_by, gates_checked, overrides, finding_snapshot)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-  `).run(
-    waveId, runId, fromPhase, toPhase,
-    opts.authorizedBy || 'coordinator',
-    JSON.stringify(opts.gates),
-    opts.overrides ? JSON.stringify(opts.overrides) : null,
-    JSON.stringify(snapshot),
-  );
+  // sm-003: a promotion records an IRREVERSIBLE gate decision, so its three
+  // durable writes — INSERT promotions, transitionWave(...,'advanced'), and the
+  // runs.status UPDATE — must land together or not at all. Pre-fix they ran
+  // unwrapped: a throw in transitionWave (e.g. a concurrent collect moved the
+  // wave out of collected/verified → STATE_MACHINE_INVALID) left a promotion
+  // row with no wave transition and a stale runs.status — a half-applied
+  // advancement that corrupts the gate-evidence trail. Mirror the D3B-002
+  // pattern in dispatch.js: one outer db.transaction(); better-sqlite3 collapses
+  // transitionWave's own executeTransition self-wrap into a SAVEPOINT, so the
+  // promotion row, the wave_state_events audit row, and the runs.status update
+  // commit or roll back as a unit.
+  const promote = db.transaction(() => {
+    const result = db.prepare(`
+      INSERT INTO promotions (wave_id, run_id, from_phase, to_phase, authorized_by, gates_checked, overrides, finding_snapshot)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(
+      waveId, runId, fromPhase, toPhase,
+      opts.authorizedBy || 'coordinator',
+      JSON.stringify(opts.gates),
+      opts.overrides ? JSON.stringify(opts.overrides) : null,
+      JSON.stringify(snapshot),
+    );
 
-  // Mark wave as advanced via the lawful state machine (Phase 5A). The
-  // promotion row above is the contractual evidence of the gate-check outcome;
-  // the wave_state_events row below records the wave-status transition itself
-  // with the promotion id in the reason for forensic linkage. Legal source
-  // states are 'collected' (verify skipped or not yet run) and 'verified'
-  // (verify passed).
-  transitionWave(
-    db,
-    waveId,
-    'advanced',
-    `advance: promotion #${Number(result.lastInsertRowid)} ${fromPhase} → ${toPhase}`
-  );
+    const promotionId = Number(result.lastInsertRowid);
 
-  // Update run status
-  if (toPhase === 'complete') {
-    db.prepare("UPDATE runs SET status = 'complete', completed_at = datetime('now') WHERE id = ?").run(runId);
-  } else {
-    db.prepare('UPDATE runs SET status = ? WHERE id = ?').run(toPhase, runId);
-  }
+    // Mark wave as advanced via the lawful state machine (Phase 5A). The
+    // promotion row above is the contractual evidence of the gate-check
+    // outcome; the wave_state_events row below records the wave-status
+    // transition itself with the promotion id in the reason for forensic
+    // linkage. Legal source states are 'collected' (verify skipped or not yet
+    // run) and 'verified' (verify passed).
+    transitionWave(
+      db,
+      waveId,
+      'advanced',
+      `advance: promotion #${promotionId} ${fromPhase} → ${toPhase}`
+    );
 
-  return Number(result.lastInsertRowid);
+    // Update run status
+    if (toPhase === 'complete') {
+      db.prepare("UPDATE runs SET status = 'complete', completed_at = datetime('now') WHERE id = ?").run(runId);
+    } else {
+      db.prepare('UPDATE runs SET status = ? WHERE id = ?').run(toPhase, runId);
+    }
+
+    return promotionId;
+  });
+
+  return promote();
 }
 
 /**

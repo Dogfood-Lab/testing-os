@@ -14,7 +14,7 @@
  * fragment is present in every generated prompt.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -29,7 +29,13 @@ const __dirname = dirname(__filename);
 // imported here so future refactors can pivot without re-plumbing.
 // eslint-disable-next-line no-unused-vars
 const _require = createRequire(import.meta.url);
-const SCHEMA_PATH = join(__dirname, '..', '..', '..', 'scripts', 'agent-output.schema.json');
+// fp-001: resolve the package-local shipped copy first (see the same note in
+// lib/validate-agent-output.js). The repo-root scripts/ copy is not packaged,
+// so an installed `swarm dispatch` would crash building the agent prompt if it
+// only knew the scripts/ path. Package-local primary, scripts/ dev fallback.
+const PKG_LOCAL_SCHEMA = join(__dirname, '..', 'schema', 'agent-output.schema.json');
+const REPO_ROOT_SCHEMA = join(__dirname, '..', '..', '..', 'scripts', 'agent-output.schema.json');
+const SCHEMA_PATH = existsSync(PKG_LOCAL_SCHEMA) ? PKG_LOCAL_SCHEMA : REPO_ROOT_SCHEMA;
 
 let _canonicalSchema = null;
 function getCanonicalSchema() {

@@ -18,19 +18,28 @@ The `swarm` CLI runs parallel-agent audits against a codebase. Each wave dispatc
 npm install -g @dogfood-lab/dogfood-swarm
 ```
 
-Binary: `swarm`. Requires Node ≥ 20.
+Binary: `swarm`. Requires Node ≥ 22.
 
 ## Quick start
 
 ```bash
-# Initialize a swarm run
-swarm dispatch <run-id> <wave-number>
+# Initialize a swarm run — detects domains, records a save-point
+swarm init <repo-path>
+
+# Review the detected domain draft, then freeze it (dispatch refuses
+# to run until the domain map is frozen)
+swarm domains <run-id> --freeze
+
+# Dispatch a wave for a named phase (NOT a wave number — phase names below)
+swarm dispatch <run-id> <phase>
 
 # (Agents execute externally — e.g., parallel Claude sessions — and write
 #  their outputs to swarms/<run-id>/wave-N/<domain>/output.json)
 
-# Collect outputs through the verifier
-swarm collect <run-id>
+# Collect outputs through the verifier — one --domain per dispatched agent
+swarm collect <run-id> \
+  --domain=backend:swarms/<run-id>/wave-N/backend/output.json \
+  --domain=tests:swarms/<run-id>/wave-N/tests/output.json
 
 # Inspect current wave + agent state
 swarm status <run-id>
@@ -44,6 +53,12 @@ swarm receipt <run-id>
 # Advance to the next phase once gates pass
 swarm advance <run-id>
 ```
+
+`<phase>` is a named phase, not a wave number. The valid values are:
+`health-audit-a`, `health-audit-b`, `health-audit-c`, `stage-d-audit`,
+`feature-audit` (audit phases) and `health-amend-a`, `health-amend-b`,
+`health-amend-c`, `stage-d-amend`, `feature-execute` (amend phases). Run
+`swarm dispatch --help` for the same list.
 
 ## Recovery — the Three R's
 
@@ -62,8 +77,9 @@ All three recovery verbs share the same operator-safety contract:
 Example session:
 
 ```bash
-# Failed wave needs schema-mismatch repair
-swarm revalidate <run-id> --reason "wave-2 schema mismatch corrected" --apply
+# Failed wave needs schema-mismatch repair (re-supply the agent's output path)
+swarm revalidate <run-id> --reason "wave-2 schema mismatch corrected" \
+  --domain=backend:swarms/<run-id>/wave-2/backend/output.json --apply
 
 # Wedged wave — restart from save-point tag
 swarm rewind <save-point-tag> --reason "rolling back wedged amend wave" --apply
@@ -79,7 +95,7 @@ swarm history <wave-id>
 
 Two parallel state machines:
 
-- **Agent runs** (`lib/state-machine.js`): `pending → dispatched → complete | failed | invalid_output | ownership_violation | aborted_for_rewind`
+- **Agent runs** (`lib/state-machine.js`): `pending → dispatched → running → complete | failed | timed_out | invalid_output | ownership_violation | aborted_for_rewind`
 - **Waves** (`lib/wave-state-machine.js`): `dispatched → collected → verified → advanced | failed | aborted_for_rewind`
 
 Discipline:

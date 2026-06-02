@@ -143,6 +143,14 @@ function resolveFilePath(repoRoot, filePath) {
  * If neither produces a usable anchor, we return null and the finding
  * classifies as `unverifiable`.
  *
+ * Returns `{ regex, fromSymbol }`. `fromSymbol` records whether the anchor
+ * came from a reliable code identifier (the captured `symbol`) or from an
+ * unreliable prose token of the description. The caller uses this to decide
+ * what an anchor MISS means: a missing code identifier means the fix landed
+ * (`verified`), but a missing prose token proves nothing (route to
+ * `unverifiable`) — the description's lead word ("Race", "Unbounded") has no
+ * reason to appear in source, so its absence is not evidence (ve-001).
+ *
  * Why prefer symbol: it survives prose rewordings the way fingerprint.js
  * already trusts. Description tokens are a fallback for findings that
  * never recorded a symbol (legacy waves; security findings without an
@@ -151,7 +159,7 @@ function resolveFilePath(repoRoot, filePath) {
 function buildAnchorRegex(finding) {
   const symbol = (finding.symbol || '').trim();
   if (symbol && /^[A-Za-z_][\w$]*$/.test(symbol)) {
-    return new RegExp(`\\b${escapeRegex(symbol)}\\b`);
+    return { regex: new RegExp(`\\b${escapeRegex(symbol)}\\b`), fromSymbol: true };
   }
 
   // Description fallback — first identifier-like word with at least 4
@@ -160,7 +168,7 @@ function buildAnchorRegex(finding) {
   const desc = String(finding.description || '');
   const match = desc.match(/\b([A-Za-z_][\w$]{3,})\b/);
   if (match) {
-    return new RegExp(`\\b${escapeRegex(match[1])}\\b`);
+    return { regex: new RegExp(`\\b${escapeRegex(match[1])}\\b`), fromSymbol: false };
   }
 
   return null;
@@ -226,14 +234,18 @@ export function classifyFixedFinding(finding, repoRoot, opts = {}) {
   const recordedLine = Number(finding.line_number) || 0;
 
   // Bucket window — matches the fingerprint normalizeSpan() granularity.
-  // We scan the bucket the recorded line falls into PLUS one line of
-  // overlap on each side so a finding recorded at line 19 doesn't miss
-  // anchors that landed at line 21 (different fingerprint bucket but
-  // operationally adjacent).
+  // We scan the bucket the recorded line falls into PLUS one full adjacent
+  // bucket in EACH direction, so a still-present symbol that drifted into a
+  // neighbouring bucket is still found. The window must be SYMMETRIC: an
+  // upward-only window let a symbol that drifted into the adjacent LOWER
+  // bucket escape the search and misclassify as `verified` (ve-003). E.g. a
+  // finding recorded at line 42 (bucket [40,50]) whose symbol drifted to
+  // line 38 must still match — line 38 is a full bucket below the recorded
+  // line, so the window reaches down by FINGERPRINT_BUCKET, not one line.
   let bucketStart, bucketEnd;
   if (recordedLine > 0) {
     const bucket = Math.floor(recordedLine / FINGERPRINT_BUCKET) * FINGERPRINT_BUCKET;
-    bucketStart = Math.max(1, bucket);
+    bucketStart = Math.max(1, bucket - FINGERPRINT_BUCKET);
     bucketEnd = bucket + FINGERPRINT_BUCKET;
   } else {
     // No line recorded: scan the whole file. If anchor exists anywhere,
@@ -247,16 +259,26 @@ export function classifyFixedFinding(finding, repoRoot, opts = {}) {
   let matchedLine = null;
   for (let lineNo = bucketStart; lineNo <= Math.min(bucketEnd, lines.length); lineNo++) {
     const text = lines[lineNo - 1];
-    if (typeof text === 'string' && anchor.test(text)) {
+    if (typeof text === 'string' && anchor.regex.test(text)) {
       matchedLine = lineNo;
       break;
     }
   }
 
   if (matchedLine === null) {
+    // ve-001: only a missing code-identifier anchor (real `symbol`) proves
+    // the fix landed. A missing prose token from the description proves
+    // nothing — its lead word was never expected in source — so route a
+    // prose-anchor miss to `unverifiable` rather than `verified`.
+    if (!anchor.fromSymbol) {
+      return {
+        classification: 'unverifiable',
+        evidence: `no code-grade anchor; description token /${anchor.regex.source}/ is prose and absent at ${finding.file_path}:${bucketStart}-${bucketEnd}, cannot prove the fix landed`,
+      };
+    }
     return {
       classification: 'verified',
-      evidence: `anchor /${anchor.source}/ no longer present at ${finding.file_path}:${bucketStart}-${bucketEnd}`,
+      evidence: `anchor /${anchor.regex.source}/ no longer present at ${finding.file_path}:${bucketStart}-${bucketEnd}`,
     };
   }
 
@@ -265,13 +287,13 @@ export function classifyFixedFinding(finding, repoRoot, opts = {}) {
   if (recordedLine > 0 && Math.abs(matchedLine - recordedLine) <= EXACT_LINE_TOLERANCE) {
     return {
       classification: 'claimed-but-still-present',
-      evidence: `anchor /${anchor.source}/ still at ${finding.file_path}:${matchedLine} (recorded line ${recordedLine}); fix never landed`,
+      evidence: `anchor /${anchor.regex.source}/ still at ${finding.file_path}:${matchedLine} (recorded line ${recordedLine}); fix never landed`,
     };
   }
 
   return {
     classification: 'regressed',
-    evidence: `anchor /${anchor.source}/ reappeared at ${finding.file_path}:${matchedLine} (recorded line ${recordedLine || 'unspecified'}); looks reverted within the same bucket`,
+    evidence: `anchor /${anchor.regex.source}/ reappeared at ${finding.file_path}:${matchedLine} (recorded line ${recordedLine || 'unspecified'}); looks reverted within the same bucket`,
   };
 }
 

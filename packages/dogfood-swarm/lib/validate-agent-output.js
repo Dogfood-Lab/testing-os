@@ -31,7 +31,7 @@
 
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -45,7 +45,17 @@ import { fileURLToPath } from 'node:url';
 const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const SCHEMA_PATH = join(__dirname, '..', '..', '..', 'scripts', 'agent-output.schema.json');
+// fp-001: the schema is shipped INSIDE the package (packages/dogfood-swarm/
+// schema/) so a published `npm install -g @dogfood-lab/dogfood-swarm` actually
+// has it at runtime. The repo-root scripts/ copy is NOT in package.json `files`
+// and is therefore ABSENT from the published tarball — resolving it from an
+// installed package climbs out of node_modules to a path that does not exist,
+// crashing `swarm dispatch`/`collect`/`revalidate` with ENOENT. Package-local
+// is primary; the scripts/ path is the monorepo dev-tree fallback. The
+// byte-equality drift guard lives in meta-amendA-schema-packaging.test.js.
+const PKG_LOCAL_SCHEMA = join(__dirname, '..', 'schema', 'agent-output.schema.json');
+const REPO_ROOT_SCHEMA = join(__dirname, '..', '..', '..', 'scripts', 'agent-output.schema.json');
+const SCHEMA_PATH = existsSync(PKG_LOCAL_SCHEMA) ? PKG_LOCAL_SCHEMA : REPO_ROOT_SCHEMA;
 
 let _validator = null;
 let _loadError = null;

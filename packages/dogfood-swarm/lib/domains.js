@@ -5,8 +5,20 @@
  * Three ownership classes: owned (exclusive), shared (multi-domain), bridge (coordinator-approved).
  *
  * Every domain change is persisted as a domain_event.
- * Waves capture a domain_snapshot_id at dispatch time.
- * Collect validates against the snapshot, not the latest state.
+ *
+ * Ownership is checked (checkOwnership) against the CURRENT frozen domain map.
+ * The frozen map is kept effectively authoritative for the duration of a wave
+ * by two guards: editDomain/addDomain/removeDomain refuse while frozen, and
+ * unfreezeDomains refuses while a wave is in flight (dispatched/collecting)
+ * unless an explicit { force, reason } is given. Together these close the
+ * dispatch→collect drift window so the latest map == the dispatch-time map.
+ *
+ * Waves still capture a domain_snapshot_id at dispatch time for the audit
+ * trail (takeDomainSnapshot). Making checkOwnership consult that literal
+ * snapshot payload — rather than relying on the no-drift guards above — is a
+ * deeper follow-up (collect.js would need to thread the wave's snapshot id in);
+ * see sm-001. Until then the snapshot is forensic, and the no-drift guards are
+ * what actually keep ownership honest.
  */
 
 import { readdirSync, existsSync } from 'node:fs';
@@ -234,11 +246,164 @@ export function removeDomain(db, runId, domainName) {
   tx();
 }
 
+// ── Ownership arbitration ──
+
+/**
+ * Derive a representative concrete path from a glob by substituting its
+ * wildcard segments with a fixed token. Used only to probe whether two owned
+ * domains' glob sets can match a common file (overlap detection) — it does NOT
+ * need to enumerate every match, just to produce one path the glob owns.
+ *
+ * `src/**\/*.tsx` → `src/x/x.tsx`; `src/**` → `src/x`; `*.md` → `x.md`.
+ */
+function sampleGlobPath(glob) {
+  return glob
+    .replace(/\*\*\//g, 'x/')   // `**/` directory wildcard → one segment
+    .replace(/\*\*/g, 'x')      // bare `**` → one segment
+    .replace(/\*/g, 'x')        // `*` → token (keeps the extension on `*.tsx`)
+    .replace(/\?/g, 'x');
+}
+
+/**
+ * Score a glob's specificity as a comparable tuple. A glob with more literal
+ * path before its first wildcard is more specific; ties break on total literal
+ * character count (so `src/**` `*.tsx` outranks `src/**` on its `.tsx` literal);
+ * a final tie-break demotes globs with more `**` (broader reach = less
+ * specific). This is what lets frontend's `src/ui/**` / `src/**` `*.tsx`
+ * out-rank backend's `src/**` for a `.tsx` file — encoding detectDomains'
+ * first-match-wins intent as an order-independent property of the globs.
+ *
+ * @returns {[number, number, number]} [literalLeadSegments, literalChars, -doubleStars]
+ */
+function globSpecificity(glob) {
+  const segments = glob.split('/');
+  let literalLead = 0;
+  for (const seg of segments) {
+    if (seg.includes('*') || seg.includes('?')) break;
+    literalLead++;
+  }
+  const literalChars = glob.replace(/[*?/]/g, '').length;
+  const doubleStars = (glob.match(/\*\*/g) || []).length;
+  return [literalLead, literalChars, -doubleStars];
+}
+
+/** Lexicographic compare of two specificity tuples (>0 ⇒ `a` more specific). */
+function compareSpecificity(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return 0;
+}
+
+/**
+ * The best (highest-specificity) glob in `globs` matching `file`, or null if
+ * none match. The returned score arbitrates which owned domain owns the file.
+ */
+function bestMatchingGlob(globs, file) {
+  let best = null;
+  for (const glob of globs) {
+    if (!minimatch(file, glob, { dot: true })) continue;
+    const score = globSpecificity(glob);
+    if (best === null || compareSpecificity(score, best.score) > 0) {
+      best = { glob, score };
+    }
+  }
+  return best;
+}
+
+/**
+ * Find pairs of OWNED domains whose globs overlap — i.e. some file is claimed
+ * by more than one exclusive owner WITH EQUAL specificity (a genuine
+ * criss-cross, e.g. two `**` domains, or `src/a/**` vs `src/a/**`). A
+ * strict-SUBSET overlap (one glob strictly more specific, like frontend's
+ * `src/ui/**` inside backend's `src/**`) is NOT a conflict: resolveExclusiveOwner
+ * arbitrates it to a single owner by specificity, exactly as detectDomains'
+ * first-match-wins does. sm-002 rejected ANY glob-level overlap, which broke
+ * freezing the auto-detected default full-stack map (sm-r-001); only an
+ * equal-specificity tie actually breaches per-domain isolation. We sample a
+ * concrete path from each owned glob and, for any OTHER owned domain that also
+ * matches it, compare both domains' best-matching specificity.
+ *
+ * @returns {Array<{ a: string, b: string, file: string }>} conflicting pairs
+ */
+function findOwnedGlobOverlaps(domains) {
+  const owned = domains.filter(d => d.ownership_class === 'owned');
+  const conflicts = [];
+  const seen = new Set();
+
+  for (const domain of owned) {
+    for (const glob of domain.globs) {
+      const sample = sampleGlobPath(glob);
+      for (const other of owned) {
+        if (other.name === domain.name) continue;
+        const here = bestMatchingGlob(domain.globs, sample);
+        const there = bestMatchingGlob(other.globs, sample);
+        if (!here || !there) continue;
+        // Only an EQUAL-specificity tie is a genuine breach; if one glob is
+        // strictly more specific, resolveExclusiveOwner arbitrates the file to
+        // a single owner (same as detectDomains' first-match-wins), so a
+        // strict-subset overlap (frontend's src/ui/** ⊂ backend's src/**) is
+        // legal — not a conflict (sm-r-001).
+        if (compareSpecificity(here.score, there.score) !== 0) continue;
+        const key = [domain.name, other.name].sort().join(' ') + ' ' + sample;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        conflicts.push({ a: domain.name, b: other.name, file: sample });
+      }
+    }
+  }
+  return conflicts;
+}
+
+/**
+ * Resolve the single exclusive owner of a file by specificity: the owned domain
+ * whose best-matching glob is the most specific wins, ties broken
+ * deterministically by domain name. This is ORDER-INDEPENDENT — it does not
+ * depend on getDomains' ORDER BY name nor on DEFAULT_BUCKETS order — yet it
+ * matches detectDomains' first-match-wins intent (the earlier, narrower bucket
+ * claims the file), so `src/ui/App.tsx` resolves to frontend (`src/ui/**`,
+ * `src/**` *.tsx) over backend (`src/**`). sm-r-001: the prior version iterated
+ * getDomains' alphabetical order, which DISAGREED with detection order and
+ * misattributed ownership once the freeze guard was relaxed. Returns the owning
+ * domain name, or null if no owned domain matches.
+ */
+function resolveExclusiveOwner(domains, file) {
+  let winner = null;
+  for (const d of domains) {
+    if (d.ownership_class !== 'owned') continue;
+    const match = bestMatchingGlob(d.globs, file);
+    if (!match) continue;
+    if (winner === null) {
+      winner = { name: d.name, score: match.score };
+      continue;
+    }
+    const cmp = compareSpecificity(match.score, winner.score);
+    if (cmp > 0 || (cmp === 0 && d.name < winner.name)) {
+      winner = { name: d.name, score: match.score };
+    }
+  }
+  return winner ? winner.name : null;
+}
+
 // ── Freeze / Unfreeze ──
 
 export function freezeDomains(db, runId) {
   const domains = getDomains(db, runId);
   if (domains.length === 0) throw new Error('No domains to freeze');
+
+  // sm-002: reject overlapping OWNED globs at the freeze boundary so the bad
+  // state never exists. Two exclusive owners that both claim the same file
+  // defeat per-domain worktree isolation — fail fast and name the conflict.
+  const overlaps = findOwnedGlobOverlaps(domains);
+  if (overlaps.length > 0) {
+    const detail = overlaps
+      .map(c => `"${c.a}" and "${c.b}" both claim ${c.file}`)
+      .join('; ');
+    throw new Error(
+      `Cannot freeze: overlapping owned domains breach exclusive ownership — ${detail}. ` +
+      `Make the globs disjoint or reclassify one domain as shared/bridge.`
+    );
+  }
 
   db.prepare('UPDATE domains SET frozen = 1 WHERE run_id = ?').run(runId);
 
@@ -252,10 +417,52 @@ export function freezeDomains(db, runId) {
 }
 
 /**
- * Unfreeze domains. Requires a reason — this is a coordinator-authorized action.
+ * Statuses a wave is in while its agents are dispatched or being collected —
+ * the window during which the frozen domain map is the live ownership contract.
+ * Editing globs here would drift the map out from under in-flight agents.
  */
-export function unfreezeDomains(db, runId, reason) {
+const ACTIVE_WAVE_STATUSES = ['dispatched', 'collecting'];
+
+/**
+ * Is there a wave for this run that is still in flight (dispatched/collecting)?
+ */
+export function hasActiveWave(db, runId) {
+  const row = db.prepare(
+    `SELECT COUNT(*) as cnt FROM waves
+     WHERE run_id = ? AND status IN (${ACTIVE_WAVE_STATUSES.map(() => '?').join(', ')})`
+  ).get(runId, ...ACTIVE_WAVE_STATUSES);
+  return row.cnt > 0;
+}
+
+/**
+ * Unfreeze domains. Requires a reason — this is a coordinator-authorized action.
+ *
+ * sm-001: refuses while a wave is in flight (dispatched/collecting). Unfreezing
+ * mid-wave lets an operator broaden globs between dispatch and collect, so a
+ * file that was out-of-domain at dispatch time silently passes ownership at
+ * collect time and the captured domain_snapshot_id becomes decorative. The
+ * guard keeps the frozen map authoritative for the duration of a wave. An
+ * explicit { force: true } (still requiring a reason) is the documented escape
+ * hatch for a coordinator who has stopped the wave by hand.
+ *
+ * @param {Database} db
+ * @param {string} runId
+ * @param {string} reason
+ * @param {object} [opts]
+ * @param {boolean} [opts.force] — bypass the in-flight-wave guard
+ */
+export function unfreezeDomains(db, runId, reason, opts = {}) {
   if (!reason) throw new Error('Unfreeze requires a reason');
+
+  if (!opts.force && hasActiveWave(db, runId)) {
+    throw new Error(
+      `Cannot unfreeze: a wave is in flight (${ACTIVE_WAVE_STATUSES.join('/')}) for run ${runId}. ` +
+      `Editing the domain map now would drift ownership out from under the dispatched agents ` +
+      `(the dispatch-time snapshot would no longer match the live map). ` +
+      `Collect or abort the wave first, or pass { force: true } with a reason if you have ` +
+      `already halted the wave by hand.`
+    );
+  }
 
   const domains = getDomains(db, runId);
   db.prepare('UPDATE domains SET frozen = 0 WHERE run_id = ?').run(runId);
@@ -319,9 +526,15 @@ export function checkOwnership(db, runId, domainName, changedFiles) {
   const violations = [];
 
   for (const file of changedFiles) {
-    const matchesOwn = agentDomain.globs.some(g => minimatch(file, g, { dot: true }));
+    // sm-002: resolve the file's SINGLE exclusive owner via first-match-wins
+    // (same arbitration detectDomains uses) rather than testing the agent's
+    // globs in isolation. With overlapping owned globs (which freezeDomains now
+    // rejects, but this is the defense-in-depth runtime half) a bare
+    // `globs.some(...)` would let a non-owner pass; here a file owned by some
+    // OTHER owned domain falls through to the violation path below.
+    const exclusiveOwner = resolveExclusiveOwner(domains, file);
 
-    if (matchesOwn) {
+    if (exclusiveOwner === agentDomain.name) {
       valid.push({ file, reason: 'matches own domain' });
       continue;
     }
@@ -344,14 +557,10 @@ export function checkOwnership(db, runId, domainName, changedFiles) {
       continue;
     }
 
-    const owner = domains.find(d =>
-      d.ownership_class === 'owned' &&
-      d.globs.some(g => minimatch(file, g, { dot: true }))
-    );
     violations.push({
       file,
       agent_domain: domainName,
-      actual_owner: owner?.name || 'unassigned',
+      actual_owner: exclusiveOwner || 'unassigned',
     });
   }
 
