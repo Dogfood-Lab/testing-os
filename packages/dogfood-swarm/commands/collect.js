@@ -12,7 +12,8 @@
  * 6. Generate wave summary
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
+import { resolve as resolvePath, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { openDb } from '../db/connection.js';
 import { getDomains, checkOwnership } from '../lib/domains.js';
@@ -53,6 +54,15 @@ import { randomBytes } from 'node:crypto';
  * BR-B-004.
  */
 const MAX_ERROR_MESSAGE_CHARS = 512;
+
+/**
+ * Upper bound on a source file we will read to build a context-snippet
+ * fingerprint (fp-p-005). The snippet only needs ~7 lines, but extracting them
+ * splits the whole file, so we refuse to load a pathological (minified bundle,
+ * generated blob) file into memory; such a finding falls back to the line-bucket
+ * fingerprint. 2 MB clears any hand-written source by a wide margin.
+ */
+const MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024;
 
 /**
  * tryTransition — observability-friendly wrapper around transitionAgent.
@@ -237,6 +247,37 @@ export function collect(opts) {
 
   const allFindings = [];
 
+  // fp-p-005: source-text cache for the context-snippet fingerprint. Each
+  // finding's file is read at most once per collect; computeFingerprint folds an
+  // edit-stable hash of the ~7 lines around finding.line into the base
+  // fingerprint, so two distinct findings in one file+bucket no longer collide.
+  // Audit waves (the only ones that produce findings) do not edit the tree, so
+  // this read is the same source snapshot the auditor reported against. The
+  // cache value is the file text, or null when the file is unreadable, oversized,
+  // or resolves OUTSIDE the worktree — in which case computeFingerprint falls
+  // back to the historical line-bucket. A `finding.file` is attacker-adjacent
+  // (it comes from agent JSON), so the containment guard refuses any path that
+  // escapes the worktree root even though we only ever hash a snippet of it.
+  const sourceCache = new Map();
+  const readFindingSource = (root, file) => {
+    if (!root || !file) return null;
+    const rootResolved = resolvePath(root);
+    const resolved = resolvePath(root, String(file));
+    if (sourceCache.has(resolved)) return sourceCache.get(resolved);
+    let text = null;
+    const contained = resolved === rootResolved || resolved.startsWith(rootResolved + sep);
+    if (contained) {
+      try {
+        const st = statSync(resolved);
+        if (st.isFile() && st.size <= MAX_SOURCE_FILE_BYTES) {
+          text = readFileSync(resolved, 'utf-8');
+        }
+      } catch { text = null; }
+    }
+    sourceCache.set(resolved, text);
+    return text;
+  };
+
   // L3-003 (Wave A2 amend2 — family seal of D3B-002): wrap the per-agent
   // collection loop in a single db.transaction() so a mid-loop crash
   // rolls back EVERY DB write across all agents iterated so far. Pre-fix,
@@ -308,7 +349,7 @@ export function collect(opts) {
     // Runs BEFORE the legacy shape-specific validators below and BEFORE
     // fingerprint computation, so a malformed agent JSON is rejected with a
     // structured AgentOutputValidationError pointing the operator at
-    // scripts/agent-output.schema.json. The legacy validators stay for
+    // packages/schemas/src/json/agent-output.schema.json. The legacy validators stay for
     // shape-specific extras (e.g. 'stage' enum) but the schema is now the
     // contract gate. Wave-22 logStage wrapper-strip pattern preserved by
     // calling logStage directly with a fresh correlation_id.
@@ -452,8 +493,10 @@ export function collect(opts) {
       ? (output.findings || output.features || [])
       : [];
 
+    const sourceRoot = ar.worktree_path || run.local_path;
     for (const f of findings) {
-      f.fingerprint = computeFingerprint(f);
+      const sourceText = readFindingSource(sourceRoot, f.file);
+      f.fingerprint = computeFingerprint(f, { sourceText });
       allFindings.push(f);
     }
 

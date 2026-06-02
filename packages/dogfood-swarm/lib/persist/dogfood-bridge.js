@@ -84,8 +84,17 @@ export function buildDogfoodSubmission(exportData, overallVerdict) {
     });
   }
 
+  // fp-p-003: the dogfood ingest is duplicate-guarded on
+  // (run_id, repo, timing.finished_at) (packages/ingest/run.js). Falling back
+  // to `new Date()` for an INCOMPLETE run (run.completed null) made finished_at
+  // wall-clock-at-persist, so it shifted on every invocation, the duplicate
+  // probe never matched, and each re-persist minted a NEW corpus record (which
+  // ingest.yml commits to main). Derive both timestamps from a STABLE run
+  // column — run.created is non-null for any persisted run — so the dedup key
+  // is deterministic for a given run regardless of completion state, making
+  // `swarm persist --ingest` idempotent on re-run even mid-flight.
   const startedAt = run.created || new Date().toISOString();
-  const finishedAt = run.completed || new Date().toISOString();
+  const finishedAt = run.completed || run.created || new Date().toISOString();
 
   return buildSubmission({
     repo: run.repo,

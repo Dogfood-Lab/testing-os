@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/dogfood-lab/testing-os/scripts/agent-output.schema.json",
+  "$id": "https://github.com/dogfood-lab/testing-os/packages/schemas/src/json/agent-output.schema.json",
   "title": "Swarm Agent Output (canonical envelope)",
   "description": "JSON contract for agent JSON outputs written to swarms/<run-id>/wave-N/<domain>.json. F-252713-017 (Phase 7 wave 1): collect-time schema-conformance gate. Replaces silent normalization in collect.js with a structured error pointing the agent at the canonical shape. Validates the OUTER envelope — every agent output regardless of phase has { domain, summary } at minimum. Phase-specific oneOf branches govern the inner shape: audit outputs carry findings[], feature outputs carry features[], amend outputs carry fixes[] + files_changed[]. Mirrors AUDIT_CATEGORIES + FEATURE_CATEGORIES + SEVERITY_ENUM in packages/dogfood-swarm/lib/output-schema.js — kept in lockstep.",
   "type": "object",

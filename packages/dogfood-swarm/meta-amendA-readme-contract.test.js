@@ -21,16 +21,29 @@
  *       `<phase>` placeholder rather than a bare wave number;
  *   (c) the README's "Requires Node ≥ N" string equals package.json
  *       `engines.node`'s floor.
+ *   (d) every operator-facing environment variable the package READS
+ *       (`process.env.<NAME>` in non-test source) is documented in the README.
  *
  * If a future edit reintroduces a wrong example (a renamed command, a dropped
- * required flag, a `<wave-number>` placeholder, a stale Node floor), this test
- * fails at that edit instead of in an operator's terminal.
+ * required flag, a `<wave-number>` placeholder, a stale Node floor) — or adds /
+ * renames an env var without documenting it — this test fails at that edit
+ * instead of in an operator's terminal.
+ *
+ * td-p-005 (Wave-3 amend-C, tests-docs domain) added (d): the original td-006
+ * guard pinned the COMMAND surface only, so an undocumented env var (the exact
+ * gap found in this Stage-B/C pass — `DOGFOOD_LOG_HUMAN`, `SWARM_DB`) could
+ * silently rot the README. (d) closes that hole with the same read-the-real-
+ * source discipline as (a): it extracts the env-var literals from source rather
+ * than hardcoding them, so a new operator-facing var cannot drift undocumented.
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
+
+const PKG_DIR = dirname(fileURLToPath(import.meta.url));
 
 const README = readFileSync(new URL('./README.md', import.meta.url), 'utf-8');
 const CLI_SRC = readFileSync(new URL('./cli.js', import.meta.url), 'utf-8');
@@ -214,6 +227,27 @@ describe('README → CLI contract (td-006)', () => {
       `(floor ${floor}). The prose must follow the engines field.`
     );
   });
+
+  it('(d) every operator-facing env var the package reads is documented in the README', () => {
+    const vars = envVarsReadInSource();
+    // Spot-check so a broken extractor (empty Set) can't make this vacuously
+    // pass: these three are read in non-test source today and are the surface
+    // td-p-002 documented.
+    for (const expected of ['SWARM_DB', 'DOGFOOD_FINDINGS_FORMAT', 'DOGFOOD_LOG_HUMAN']) {
+      assert.ok(vars.has(expected),
+        `extractor missed \`process.env.${expected}\` — the env-var extraction is wrong`);
+    }
+
+    for (const name of vars) {
+      assert.ok(
+        README.includes(name),
+        `the package reads \`process.env.${name}\` but README.md never documents it. ` +
+        `Add it to the "Environment variables" section (or remove the read). ` +
+        `Documented-or-removed is the contract — an operator scripting against ` +
+        `\`${name}\` must be able to learn it from the README.`
+      );
+    }
+  });
 });
 
 // ── helpers that read the real sources (no duplicated literals) ──
@@ -273,6 +307,55 @@ function phasesFromDispatchSource() {
     'dispatch.js must define AUDIT_PHASES and AMEND_PHASES');
   const parse = (s) => s.split(',').map((x) => x.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
   return new Set([...parse(auditMatch[1]), ...parse(amendMatch[1])]);
+}
+
+/**
+ * Walk the package's NON-TEST `.js` source and return the set of environment
+ * variables it READS — i.e. every `process.env.<NAME>` property access. This
+ * is the operator-facing env-var contract: a var the code reads is one an
+ * operator can set to change behavior, so it must be documented.
+ *
+ * Read-the-real-source discipline (mirrors extractCliCommands / phasesFrom-
+ * DispatchSource): the list is extracted from source, never hardcoded, so a
+ * future contributor who adds `process.env.NEW_VAR` cannot leave the README
+ * behind without this test catching it.
+ *
+ * Scope decisions:
+ *  - Test files (`*.test.js` / `*.test.mjs`) are excluded — they set/read env
+ *    vars for fixture setup, which is not the production read surface.
+ *  - `node_modules`, `dist`, and dotfiles/dotdirs are skipped.
+ *  - Only the `process.env.UPPER_SNAKE` access form is matched (the config
+ *    surface). `process.env` spreads (e.g. `{ ...process.env, FORCE_COLOR }`
+ *    in runner.js, which SETS rather than reads a config var) are correctly
+ *    not captured by the property-access regex.
+ */
+function envVarsReadInSource() {
+  const names = new Set();
+  const re = /process\.env\.([A-Z][A-Z0-9_]+)/g;
+
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.name.startsWith('.')) continue;
+      const full = join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+        walk(full);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      if (!entry.name.endsWith('.js')) continue;
+      if (entry.name.endsWith('.test.js') || entry.name.endsWith('.test.mjs')) continue;
+
+      const src = readFileSync(full, 'utf-8');
+      let m;
+      while ((m = re.exec(src)) !== null) names.add(m[1]);
+    }
+  };
+
+  walk(PKG_DIR);
+  assert.ok(names.size >= 3,
+    `expected to extract the operator-facing env vars from source; got ${names.size}: ${[...names].join(', ')}`);
+  return names;
 }
 
 // Touch fileURLToPath so an unused-import lint never trips; harmless no-op that

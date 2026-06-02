@@ -294,7 +294,7 @@ When parallel agents each run `npm test` / `npm run verify` against a worktree c
 The serial-final-verify discipline closes the gap:
 
 1. **Coordinator dispatches with `--skip-verify`** when running an amend wave with parallel agents: `swarm dispatch <run-id> health-amend-a --skip-verify` (see `packages/dogfood-swarm/commands/dispatch.js` SKIP_VERIFY_DIRECTIVE).
-2. **Agents make edits, write their output JSON, and stop.** No per-agent `npm test`. Agents emit `verification_skipped: true` at the top level of their output JSON to make the contract explicit (`scripts/agent-output.schema.json` `verification_skipped`).
+2. **Agents make edits, write their output JSON, and stop.** No per-agent `npm test`. Agents emit `verification_skipped: true` at the top level of their output JSON to make the contract explicit (`packages/schemas/src/json/agent-output.schema.json` `verification_skipped`).
 3. **`swarm collect` propagates the flag.** When any agent marks `verification_skipped: true`, the collect report sets `serial_verify_required: true` and the CLI surfaces a Next-step hint (`packages/dogfood-swarm/commands/collect.js` `serial_verify_required`).
 4. **Coordinator runs ONE `npm run verify` against the cumulative tree** before promoting the wave. This is the only authoritative verification for the wave.
 

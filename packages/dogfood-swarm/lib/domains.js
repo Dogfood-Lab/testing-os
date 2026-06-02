@@ -255,9 +255,27 @@ export function removeDomain(db, runId, domainName) {
  * need to enumerate every match, just to produce one path the glob owns.
  *
  * `src/**\/*.tsx` → `src/x/x.tsx`; `src/**` → `src/x`; `*.md` → `x.md`.
+ *
+ * sm-p-001: brace alternations `{a,b}` and char classes `[abc]` are collapsed
+ * to one representative literal FIRST, so an operator-authored owned glob like
+ * `src/{ui,frontend}/**` yields a probe path (`src/ui/x`) that minimatch still
+ * matches against the source glob. Without this, the sampled path kept the
+ * literal brace/bracket syntax, minimatch returned false against its own glob,
+ * and findOwnedGlobOverlaps was BLIND to brace/class owned domains — two
+ * identical `src/{a,b}/**` owners would freeze silently. Defense-in-depth only:
+ * runtime checkOwnership matches real file paths where minimatch handles braces
+ * natively; this only restores the freeze-time overlap probe.
  */
 function sampleGlobPath(glob) {
   return glob
+    // `{a,b,c}` → first alternative (`a`); `{a}` and empty `{}` collapse too.
+    .replace(/\{([^},]*)(?:,[^}]*)*\}/g, '$1')
+    // `[abc]` / `[a-z]` char class → a concrete char the class ACTUALLY matches
+    // (the range start `a` for `[a-z]`, the first literal for `[abc]`). A fixed
+    // token like `x` would not be a member of `[ab]`, so minimatch would still
+    // miss the sample against its own glob and the overlap probe would stay
+    // blind. Negated classes `[^…]` fall back to `x` (a safe non-member).
+    .replace(/\[(\^?)([^\]])[^\]]*\]/g, (_, neg, first) => (neg ? 'x' : first))
     .replace(/\*\*\//g, 'x/')   // `**/` directory wildcard → one segment
     .replace(/\*\*/g, 'x')      // bare `**` → one segment
     .replace(/\*/g, 'x')        // `*` → token (keeps the extension on `*.tsx`)

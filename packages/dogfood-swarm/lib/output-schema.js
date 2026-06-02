@@ -21,9 +21,9 @@ const SEVERITY_ENUM = ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'];
 //                           (which covers test-correctness drift).
 // Underscore_form is preserved as-is — historical record (CLAUDE.md
 // "Working with the legacy" doctrine: don't normalize for aesthetics).
-// scripts/agent-output.schema.json is a sibling cross-fix-dep — ci-tooling
-// owns that file in wave 28; this enum and the schema's `category` $def
-// must stay in lockstep.
+// packages/schemas/src/json/agent-output.schema.json (shipped via
+// @dogfood-lab/schemas) is a sibling cross-fix-dep; this enum and the
+// schema's `category` $def must stay in lockstep.
 const AUDIT_CATEGORIES = [
   'bug', 'security', 'quality', 'types', 'tests', 'docs',
   'defensive', 'observability', 'degradation', 'future-proofing',

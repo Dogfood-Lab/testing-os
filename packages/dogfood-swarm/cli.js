@@ -681,6 +681,27 @@ function cmdVerify(args) {
   });
 
   console.log(formatVerify(result));
+
+  // cli-p-002: `swarm verify` is billed as a wave gate, yet it used to exit
+  // 0 on every verdict — a CI step (or a `swarm verify <run> && swarm
+  // advance <run>` chain) saw a green light on a hard FAIL. Exit 0 ONLY on a
+  // clean pass; every other verdict (fail / no_tests / skip / tool_missing)
+  // is "not a verified pass" and MUST surface as a non-zero exit so the
+  // machine signal matches the human-readable one. This aligns `verify` with
+  // its four verify-* sibling verbs, which already propagate exit codes.
+  if (result.verdict !== 'pass') {
+    // A `fail` verdict has no top-level `reason` (the runner only attaches
+    // one for skip/no_tests), so derive a why-line from the first failing
+    // required step. The operator always gets an explanation alongside the
+    // non-zero exit, never a bare verdict.
+    const failedStep = result.steps?.find(s => !s.passed && !s.optional);
+    const why = result.reason
+      || (failedStep
+        ? `required step '${failedStep.name}' failed (exit ${failedStep.exit_code})`
+        : 'not a verified pass');
+    console.error(`swarm verify: ${result.verdict.toUpperCase()} — ${why}`);
+    process.exit(1);
+  }
 }
 
 /**
@@ -1035,6 +1056,24 @@ function cmdPersist(args) {
   });
 
   console.log(formatPersist(result));
+
+  // cli-p-001 / fp-p-002: when --ingest was requested (and not a dry run), the
+  // ingest is an irreversible write to the dogfood corpus. persist() catches a
+  // failed ingest into report.dogfood.reason and returns a success-shaped
+  // report, so cmdPersist used to exit 0 even when nothing was ingested — a CI
+  // step gating on $? saw a failed corpus write as green. The sibling
+  // persist-results.js exits 1 on the identical failure; align the two corpus-
+  // write surfaces on one exit-code contract. Surface the reason + a copy-
+  // pasteable reproduce line (mirroring persist-results.js) so the operator
+  // can replay the ingest with full output.
+  if (ingestDogfood && !dryRun && result.dogfood && result.dogfood.ingested !== true) {
+    console.error(`ERROR [INGEST_FAILED]: dogfood ingest did not complete — ${result.dogfood.reason}`);
+    if (result.artifacts?.dogfoodSubmission) {
+      console.error(`  Submission: ${result.artifacts.dogfoodSubmission}`);
+      console.error(`  Reproduce:  node "<repo>/packages/ingest/run.js" --provenance=stub --file "${result.artifacts.dogfoodSubmission}"`);
+    }
+    process.exit(1);
+  }
 }
 
 function cmdFindings(args) {
@@ -1144,12 +1183,22 @@ function isDirectExecution() {
   }
 }
 
-if (isDirectExecution()) {
+/**
+ * cli-r-002: the argv dispatch body lives in main() rather than inline under
+ * `if (isDirectExecution())`. The previous inline form left the help-text
+ * console.log + trailing process.exit indented one level shallower than their
+ * enclosing `if (!command || !commands[command])` body. Hoisting the body into
+ * a named function lets every statement sit at one consistent indentation
+ * level without a deep-nesting re-indent, and reads as a normal entry point.
+ * Behavior is identical: main() is invoked only when cli.js is the process
+ * entry point (the subprocess smoke tests still spawn `node cli.js`).
+ */
+function main() {
   const command = process.argv[2];
   const commandArgs = process.argv.slice(3);
 
   if (!command || !commands[command]) {
-  console.log(`swarm — Truthful swarm control plane for repo work
+    console.log(`swarm — Truthful swarm control plane for repo work
 
 Commands:
   init <repo-path>           Create run, detect domains
@@ -1266,8 +1315,8 @@ Phases:
   health-audit-c   health-amend-c
   stage-d-audit    stage-d-amend
   feature-audit    feature-execute`);
-  process.exit(command ? 1 : 0);
-}
+    process.exit(command ? 1 : 0);
+  }
 
   try {
     commands[command](commandArgs);
@@ -1276,3 +1325,5 @@ Phases:
     process.exit(1);
   }
 }
+
+if (isDirectExecution()) main();

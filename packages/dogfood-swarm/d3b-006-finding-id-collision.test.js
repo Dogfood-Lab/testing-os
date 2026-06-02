@@ -96,6 +96,37 @@ describe('D3B-006: content-addressed finding_id + UNIQUE constraint', () => {
       'finding_id should be the first 8 hex chars of the fingerprint');
   });
 
+  it('content-addresses the finding_id from a CONTEXT-FOLDED fingerprint (fp-p-005 composition)', () => {
+    // fp-p-005 changes WHAT the fingerprint is (it folds in an edit-stable hash
+    // of the surrounding source), not the F-<first 8 hex> derivation. A finding
+    // fingerprinted WITH source still mints a content-addressed id, and two
+    // same-bucket findings the context hash separates get two DISTINCT ids
+    // without leaning on the prefix-collision UNIQUE net.
+    const src = Array.from({ length: 30 }, (_, i) => `const v${i + 1} = ${i + 1};`).join('\n');
+    const f1 = { category: 'docs', file: 'README.md', line: 21, description: 'one', severity: 'LOW' };
+    const f2 = { category: 'docs', file: 'README.md', line: 27, description: 'two', severity: 'LOW' };
+    // Lines 21 & 27 share the 20-bucket → identical fingerprint WITHOUT source.
+    assert.equal(computeFingerprint(f1), computeFingerprint(f2),
+      'precondition: the two share a no-source base fingerprint');
+    const fp1 = computeFingerprint(f1, { sourceText: src });
+    const fp2 = computeFingerprint(f2, { sourceText: src });
+    assert.notEqual(fp1, fp2, 'precondition: the context hash separates them');
+
+    upsertFindings(db, RUN_ID, 1, {
+      new: [{ ...f1, fingerprint: fp1 }, { ...f2, fingerprint: fp2 }],
+      recurring: [], fixed: [], unverified: [],
+    });
+
+    const rows = db.prepare('SELECT finding_id, fingerprint FROM findings WHERE run_id = ? ORDER BY id').all(RUN_ID);
+    assert.equal(rows.length, 2, 'both context-separated findings persisted');
+    for (const r of rows) {
+      assert.equal(r.finding_id, `F-${r.fingerprint.slice(0, 8)}`,
+        'finding_id is the first 8 hex of the (context-folded) fingerprint');
+    }
+    assert.equal(new Set(rows.map((r) => r.finding_id)).size, 2,
+      'distinct content-addressed finding_ids from the distinct context fingerprints');
+  });
+
   it('produces the SAME finding_id for the SAME fingerprint across invocations', () => {
     // Two findings whose description differs but whose fingerprint is identical
     // (the spec contract from Wave 8 B-BACK-002: description is NOT in the fingerprint).

@@ -240,9 +240,9 @@
     {
       "id": "agent-output-schema",
       "kind": "schema-conformance",
-      "title": "Agent JSON outputs (audit / feature / amend) conform to scripts/agent-output.schema.json",
+      "title": "Agent JSON outputs (audit / feature / amend) conform to packages/schemas/src/json/agent-output.schema.json",
       "description": "The canonical envelope is { domain, summary, [findings|features|fixes], ... }. Phase-7-wave-1 productization (F-252713-017): replaces silent normalization in collect.js with a structured AgentOutputValidationError pointing the agent at the canonical shape. The schema is permissive at top level (only `domain` + `summary` required) so it can govern audit, feature, AND amend outputs, with phase-specific $defs for the inner shapes. Stage C Wave A2 D4-004 closed the vacuous-gate root cause: previously this check carried `allowEmpty: true` and both target globs matched ZERO committed files — the gate was structurally green forever. Now `swarms/__schema-fixtures__/` ships 3 hand-curated positive fixtures (basic, audit-with-findings, amend-with-fixes) plus 1 negative fixture (invalid-missing-domain.json). The handler reads `negativeFilenamePattern` (default `^invalid-`): basenames matching that regex MUST fail Ajv validation. If a negative fixture passes, the gate emits `NEGATIVE_FIXTURE_PASSED` — proof that the schema loosened or the fixture went stale.",
-      "schema": "scripts/agent-output.schema.json",
+      "schema": "packages/schemas/src/json/agent-output.schema.json",
       "targets": [
         "swarms/__schema-fixtures__/*.json",
         "swarms/swarm-*/wave-*/outputs/*.json"
@@ -250,7 +250,7 @@
       "allowlist": [],
       "errorClass": "AgentOutputValidationError",
       "negativeFilenamePattern": "^invalid-",
-      "hint": "Match scripts/agent-output.schema.json. Required at top level: domain, summary. Audit outputs add `findings[]` (with severity ∈ CRITICAL/HIGH/MEDIUM/LOW and category ∈ AUDIT_CATEGORIES); feature outputs add `features[]`; amend outputs add `fixes[]` + `files_changed[]`. Live-run target glob expanded 2026-05-14 (study-swarm Prevention-A): wave-2 amend's coordinator-brief drift (fixes_applied vs fixes) was caught at collect-time after agents had already run — moving the schema-conformance check to CI fires the gate at push time so brief-vs-schema drift surfaces before agents are dispatched. Stage C Wave A2 follow-up: a positive fixture that no longer validates means the schema tightened without updating the fixture (fix one side); a negative fixture that validates means the schema loosened without updating the negative test (fix the schema or the fixture)."
+      "hint": "Match packages/schemas/src/json/agent-output.schema.json. Required at top level: domain, summary. Audit outputs add `findings[]` (with severity ∈ CRITICAL/HIGH/MEDIUM/LOW and category ∈ AUDIT_CATEGORIES); feature outputs add `features[]`; amend outputs add `fixes[]` + `files_changed[]`. Live-run target glob expanded 2026-05-14 (study-swarm Prevention-A): wave-2 amend's coordinator-brief drift (fixes_applied vs fixes) was caught at collect-time after agents had already run — moving the schema-conformance check to CI fires the gate at push time so brief-vs-schema drift surfaces before agents are dispatched. Stage C Wave A2 follow-up: a positive fixture that no longer validates means the schema tightened without updating the fixture (fix one side); a negative fixture that validates means the schema loosened without updating the negative test (fix the schema or the fixture)."
     },
 
     {

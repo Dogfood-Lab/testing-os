@@ -66,11 +66,11 @@ const ALLOWLIST = [
   // non-existent code are noise that hide future genuine adds. Removed.
   {
     file: 'lib/templates.js',
-    reason: 'Loads scripts/agent-output.schema.json — a swarm-internal, repo-owned, fixed-path JSON Schema document. Same trust class as lib/validate-agent-output.js; this is the prompt-builder side that renders the contract block from the canonical schema.',
+    reason: 'Loads agent-output.schema.json via createRequire from @dogfood-lab/schemas — a swarm-internal, repo-owned JSON Schema document. Same trust class as lib/validate-agent-output.js; this is the prompt-builder side that renders the contract block from the canonical schema.',
   },
   {
     file: 'lib/validate-agent-output.js',
-    reason: 'Loads scripts/agent-output.schema.json — a swarm-internal, repo-owned, fixed-path JSON Schema document used to compile the Ajv validator on first use. Not operator-supplied input.',
+    reason: 'Loads agent-output.schema.json via createRequire from @dogfood-lab/schemas — a swarm-internal, repo-owned JSON Schema document used to compile the Ajv validator on first use. Not operator-supplied input.',
   },
 ];
 

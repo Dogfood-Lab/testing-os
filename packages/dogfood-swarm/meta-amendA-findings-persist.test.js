@@ -34,14 +34,19 @@
 import { describe, it, beforeEach, afterEach, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { openMemoryDb } from './db/connection.js';
+import { openMemoryDb, openDb, closeDb } from './db/connection.js';
+import { saveDomainDraft, freezeDomains } from './lib/domains.js';
+import { dispatch } from './commands/dispatch.js';
+import { collect } from './commands/collect.js';
 import {
   computeFingerprint,
+  extractContextSnippet,
+  CONTEXT_RADIUS_LINES,
   disambiguateFingerprints,
   classifyFindings,
   buildPriorMap,
@@ -153,6 +158,98 @@ describe('fp-002: within-wave fingerprint collisions never abort collect', () =>
     assert.equal(stats.inserted, 3, 'all three distinct findings persist');
     const rows = db.prepare('SELECT fingerprint FROM findings WHERE run_id = ?').all(RUN_ID);
     assert.equal(new Set(rows.map(r => r.fingerprint)).size, 3, 'three distinct fingerprints');
+  });
+
+  it('(b3) fp-p-001: a coarse-key group where two NON-keepers share an EQUAL (or empty) description → all persist, both input orders', () => {
+    // fp-p-001 (MED): saltByContent used the description as the SOLE
+    // discriminator, so two NON-keeper members of the same coarse-key group with
+    // a byte-identical (or both-empty) description salted to the IDENTICAL
+    // fingerprint → identical derived finding_id → upsertFindings' INSERT OR
+    // IGNORE silently DROPPED the second genuinely-distinct finding. The fix
+    // folds file + line + a deterministic within-group ordinal into the salt, so
+    // tying descriptions still diverge. The (b2) triple above only ever uses
+    // distinct descriptions ('a'/'b'/'c'), so this edge was untested.
+    //
+    // Three members at one coarse key (category=docs, no symbol, same file, all
+    // lines bucket to 10). One member with a UNIQUE description becomes the
+    // deterministic bare-fp keeper (it sorts last); the OTHER TWO share an
+    // identical description and are BOTH non-keepers — exactly the collision the
+    // pre-fix salt could not tell apart. Run twice in BOTH input orders on fresh
+    // DBs: the result must be order-independent and lose nothing either way.
+    const mk = (description) => ({
+      category: 'docs', file: 'docs/guide.md', symbol: null, severity: 'LOW', description,
+    });
+    // Two non-keepers tie on description; lines differ so they are genuinely
+    // distinct findings (different file:line) the corpus must keep separate.
+    const dupA = { ...mk('see above'), line: 12 };
+    const dupB = { ...mk('see above'), line: 16 };
+    const keeperUniqueDesc = { ...mk('z unique trailer'), line: 14 };
+
+    assert.equal(
+      new Set([dupA, dupB, keeperUniqueDesc].map(computeFingerprint)).size, 1,
+      'precondition: all three share one base fingerprint (lines 12/14/16 → bucket 10)',
+    );
+
+    for (const order of [[dupA, dupB, keeperUniqueDesc], [dupB, dupA, keeperUniqueDesc], [keeperUniqueDesc, dupB, dupA]]) {
+      const label = `order=[${order.map((f) => `${f.description.split(' ')[0]}@${f.line}`).join(',')}]`;
+      const sdb = openMemoryDb();
+      try {
+        sdb.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+          .run(RUN_ID, 'dogfood-lab/testing-os', '/tmp/repo', 'c'.repeat(40));
+        sdb.prepare('INSERT INTO waves (run_id, phase, wave_number) VALUES (?, ?, ?)')
+          .run(RUN_ID, 'health-audit-a', 1);
+
+        const stamped = order.map((f) => ({ ...f, fingerprint: computeFingerprint(f) }));
+        const classified = classifyFindings(stamped, buildPriorMap(sdb, RUN_ID));
+        let stats;
+        assert.doesNotThrow(() => { stats = upsertFindings(sdb, RUN_ID, 1, classified); },
+          `${label}: tying-description non-keepers must not abort the wave`);
+
+        assert.equal(stats.inserted, 3, `${label}: all three distinct findings persist (none dropped)`);
+        const rows = sdb.prepare('SELECT finding_id, fingerprint, description, line_number FROM findings WHERE run_id = ? ORDER BY id')
+          .all(RUN_ID);
+        assert.equal(rows.length, 3, `${label}: exactly three rows — the duplicate-description non-keeper was NOT swallowed`);
+        assert.equal(new Set(rows.map((r) => r.fingerprint)).size, 3, `${label}: three distinct fingerprints`);
+        assert.equal(new Set(rows.map((r) => r.finding_id)).size, 3, `${label}: three distinct finding_ids`);
+        // Both tying-description findings survive as their own rows (by line).
+        assert.deepEqual(
+          rows.map((r) => r.line_number).sort((a, b) => a - b), [12, 14, 16],
+          `${label}: all three (file,line) findings are present`,
+        );
+      } finally {
+        try { sdb.close(); } catch { /* */ }
+      }
+    }
+  });
+
+  it('(b4) fp-p-001: two NON-keepers with BOTH-EMPTY descriptions → all persist as distinct rows (direct fingerprint path)', () => {
+    // The empty-description variant. In the LIVE collect path the Ajv schema's
+    // `description: minLength 1` gate rejects an empty description before
+    // upsertFindings, but the fingerprint module's own JSDoc supports direct
+    // callers/tests passing no description, and its header asserts "two distinct
+    // members get distinct salts" — which was FALSE for the both-empty case
+    // pre-fix (normalizeDescription('') === normalizeDescription(null) === '').
+    // This drives disambiguateFingerprints directly to lock that invariant.
+    const base = { category: 'docs', file: 'docs/empty.md', symbol: null, severity: 'LOW' };
+    // keeper has a non-empty description (sorts after ''); two non-keepers are
+    // both empty/null-described — the exact tie the description-only salt missed.
+    const k = { ...base, line: 4, description: 'keeper' };
+    const e1 = { ...base, line: 2, description: '' };
+    const e2 = { ...base, line: 8, description: null };
+
+    const bare = computeFingerprint(k);
+    assert.equal(new Set([k, e1, e2].map(computeFingerprint)).size, 1,
+      'precondition: all three share one base fingerprint');
+
+    for (const order of [[k, e1, e2], [e1, e2, k], [e2, e1, k]]) {
+      const stamped = order.map((f) => ({ ...f, fingerprint: bare }));
+      const out = disambiguateFingerprints(stamped);
+      const fps = out.map((f) => f.fingerprint);
+      assert.equal(new Set(fps).size, 3,
+        `both-empty-description non-keepers must get DISTINCT salts (got ${JSON.stringify(fps)})`);
+      // The keeper still owns the bare fingerprint, byte-for-byte.
+      assert.ok(fps.includes(bare), 'the bare-fp keeper is preserved unchanged');
+    }
   });
 
   it('(c) a singleton finding’s fingerprint is BYTE-IDENTICAL after disambiguation (backward-compat)', () => {
@@ -349,6 +446,229 @@ describe('fp-002: within-wave fingerprint collisions never abort collect', () =>
     const rows = db.prepare('SELECT finding_id FROM findings WHERE run_id = ?').all(RUN_ID);
     assert.equal(rows.length, 1, 'exactly one row — collect did not abort, first finding survived');
     assert.equal(rows[0].finding_id, 'F-abcdef01');
+  });
+});
+
+// ════════════════════════════════════════════════════════════════════
+// fp-p-005 — context-snippet hash makes the BASE fingerprint injective
+// (the deeper fix deferred when fp-002's occurrence-salting net landed).
+// These lock the NEW source-available path; the fp-002 blocks above stay
+// GREEN because they exercise the no-source fallback, which is byte-for-byte
+// the historical scheme and still needs the occurrence-salting net.
+// ════════════════════════════════════════════════════════════════════
+
+// A 30-line source where every line is distinct, so two findings on different
+// lines always see different surrounding windows. Lines 21 & 27 both fall in the
+// 20-bucket, so WITHOUT source they collide (the fp-002 shape); WITH source they
+// do not. `const vN = N;` per line keeps each line — and each window — distinct.
+const FP_P_005_SRC = Array.from({ length: 30 }, (_, i) => `const v${i + 1} = ${i + 1};`).join('\n');
+
+describe('fp-p-005: extractContextSnippet — edit-stable surrounding-source window', () => {
+  it('returns null when there is no usable anchor (no source / bad line / past EOF / blank window)', () => {
+    assert.equal(extractContextSnippet(undefined, 10), null, 'no source → null');
+    assert.equal(extractContextSnippet('', 10), null, 'empty source → null');
+    assert.equal(extractContextSnippet(FP_P_005_SRC, 0), null, 'line 0 is not 1-based-valid → null');
+    assert.equal(extractContextSnippet(FP_P_005_SRC, -3), null, 'negative line → null');
+    assert.equal(extractContextSnippet(FP_P_005_SRC, 9999), null, 'line past EOF → null');
+    assert.equal(extractContextSnippet('   \n\t\n  ', 2), null, 'all-whitespace window → null');
+  });
+
+  it('is line-ending and indentation agnostic (survives reflow)', () => {
+    const lf = 'a();\n  b();\n    c();\n d();\n e();';
+    const crlf = lf.replace(/\n/g, '\r\n');
+    const reindented = 'a();\nb();\nc();\nd();\ne();';
+    assert.equal(extractContextSnippet(crlf, 3), extractContextSnippet(lf, 3), 'CRLF window == LF window');
+    assert.equal(extractContextSnippet(reindented, 3), extractContextSnippet(lf, 3),
+      'pure re-indentation collapses away — same non-whitespace content → same snippet');
+  });
+
+  it('yields distinct windows for findings more than CONTEXT_RADIUS_LINES apart', () => {
+    assert.ok(CONTEXT_RADIUS_LINES >= 1, 'radius is a positive window');
+    assert.notEqual(extractContextSnippet(FP_P_005_SRC, 21), extractContextSnippet(FP_P_005_SRC, 27),
+      'lines 21 and 27 see different surrounding source');
+  });
+});
+
+describe('fp-p-005: computeFingerprint folds the context snippet into the BASE fp', () => {
+  const at = (line, description) => ({
+    category: 'docs', file: 'README.md', symbol: null, severity: 'LOW', line, description,
+  });
+
+  it('(1) two distinct findings in the same file+bucket get DISTINCT base fps with source', () => {
+    const a = at(21, 'stale badge');
+    const b = at(27, 'broken anchor');
+    // Without source they collide on the 20-bucket — the exact fp-002 bug shape.
+    assert.equal(computeFingerprint(a), computeFingerprint(b),
+      'precondition: no-source fps collide on the shared bucket');
+    // With source the surrounding lines differ → distinct base fps, no salting.
+    assert.notEqual(
+      computeFingerprint(a, { sourceText: FP_P_005_SRC }),
+      computeFingerprint(b, { sourceText: FP_P_005_SRC }),
+      'context hash makes the base fp injective for distinct locations',
+    );
+  });
+
+  it('(2) rewording the SAME finding at the SAME location does not change the fp (B-BACK-002 via source, not prose)', () => {
+    assert.equal(
+      computeFingerprint(at(21, 'handleX dereferences without a guard'), { sourceText: FP_P_005_SRC }),
+      computeFingerprint(at(21, 'Guard handleX before dereferencing.'), { sourceText: FP_P_005_SRC }),
+      'same location + same surrounding source → same fp regardless of description prose',
+    );
+  });
+
+  it('(3) reflow: a finding shifted down by edits ABOVE it keeps its fp (CodeQL primaryLocationLineHash property)', () => {
+    const before = computeFingerprint(at(21, 'x'), { sourceText: FP_P_005_SRC });
+    // Insert 5 lines at the top; the finding's surrounding code moves to line 26.
+    const shifted = ['// new', '// header', '// lines', '// added', '// above'].join('\n') + '\n' + FP_P_005_SRC;
+    const after = computeFingerprint(at(26, 'x'), { sourceText: shifted });
+    assert.equal(after, before, 'same surrounding source at the new line → same fp (no new+fixed churn)');
+  });
+
+  it('(4) CRLF and LF source produce the same fp', () => {
+    assert.equal(
+      computeFingerprint(at(21, 'x'), { sourceText: FP_P_005_SRC.replace(/\n/g, '\r\n') }),
+      computeFingerprint(at(21, 'x'), { sourceText: FP_P_005_SRC }),
+      'line-ending normalization makes CRLF and LF fingerprints identical',
+    );
+  });
+
+  it('(5) the no-source path is byte-identical to the historical bucket fingerprint', () => {
+    const a = at(21, 'x');
+    const historical = computeFingerprint(a); // one-arg legacy call
+    assert.equal(computeFingerprint(a, {}), historical, 'empty options == legacy');
+    assert.equal(computeFingerprint(a, { sourceText: undefined }), historical, 'undefined source == legacy');
+    assert.equal(computeFingerprint(a, { sourceText: '' }), historical, 'empty source == legacy');
+    // And a no-source same-bucket sibling still collides — the occurrence-salting
+    // net is still load-bearing (and still tested) for the no-source path.
+    assert.equal(historical, computeFingerprint(at(27, 'y')),
+      'no-source siblings still share the bucket fp (the net still earns its keep)');
+  });
+});
+
+describe('fp-p-005: cross-wave injective — collision-free in EITHER input order (with source)', () => {
+  // The fp-r-001 scenario re-run with source available. Because A and B now
+  // carry DISTINCT base fps, NO collision group forms, disambiguateFingerprints
+  // never salts, and the outcome is identical regardless of wave-2 array order:
+  // A stays recurring on its original finding_id, B inserts as new. This is the
+  // hazard fp-002/fp-r-001's net guarded against, now dissolved at the source.
+  const A = { category: 'docs', file: 'README.md', line: 21, symbol: null, severity: 'LOW', description: 'stale badge' };
+  const B = { category: 'docs', file: 'README.md', line: 27, symbol: null, severity: 'LOW', description: 'broken anchor a few lines down' };
+
+  it('A keeps its id (recurring) and B inserts as new, identically for [A,B] and [B,A]', () => {
+    assert.equal(computeFingerprint(A), computeFingerprint(B),
+      'precondition: without source A and B collide (the fp-002 shape)');
+    assert.notEqual(
+      computeFingerprint(A, { sourceText: FP_P_005_SRC }),
+      computeFingerprint(B, { sourceText: FP_P_005_SRC }),
+      'precondition: with source A and B are injective',
+    );
+
+    for (const wave2Order of [[A, B], [B, A]]) {
+      const label = `wave2=[${wave2Order.map((f) => f.description.split(' ')[0]).join(',')}]`;
+      const sdb = openMemoryDb();
+      try {
+        sdb.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+          .run(RUN_ID, 'dogfood-lab/testing-os', '/tmp/repo', 'c'.repeat(40));
+        sdb.prepare('INSERT INTO waves (run_id, phase, wave_number) VALUES (?, ?, ?)')
+          .run(RUN_ID, 'health-audit-a', 1);
+
+        // Stamp with source, exactly as collect.js does post-fp-p-005.
+        const runWave = (waveId, findings) => {
+          const stamped = findings.map((f) => ({ ...f, fingerprint: computeFingerprint(f, { sourceText: FP_P_005_SRC }) }));
+          const priorMap = buildPriorMap(sdb, RUN_ID);
+          const classified = classifyFindings(stamped, priorMap);
+          return upsertFindings(sdb, RUN_ID, waveId, classified);
+        };
+
+        const s1 = runWave(1, [A]);
+        assert.equal(s1.inserted, 1, `${label}: wave-1 A inserted`);
+        const aRow = sdb.prepare('SELECT id, finding_id, fingerprint FROM findings WHERE run_id = ?').get(RUN_ID);
+        const aIdOriginal = aRow.finding_id;
+        const aRowId = aRow.id;
+        assert.equal(aRow.fingerprint, computeFingerprint(A, { sourceText: FP_P_005_SRC }),
+          `${label}: A's stored fp is the BARE context hash — proof nothing was salted`);
+
+        sdb.prepare('INSERT INTO waves (run_id, phase, wave_number) VALUES (?, ?, ?)')
+          .run(RUN_ID, 'health-audit-a', 2);
+        const s2 = runWave(2, wave2Order);
+
+        const aAfter = sdb.prepare('SELECT finding_id, status FROM findings WHERE id = ?').get(aRowId);
+        assert.equal(aAfter.finding_id, aIdOriginal, `${label}: A keeps its original finding_id`);
+        assert.equal(aAfter.status, 'recurring', `${label}: A is recurring`);
+        assert.equal(s2.updated, 1, `${label}: exactly one recurring update (A)`);
+        assert.equal(s2.inserted, 1, `${label}: B inserted as a new row`);
+
+        const rows = sdb.prepare('SELECT id, finding_id, fingerprint, description FROM findings WHERE run_id = ? ORDER BY id').all(RUN_ID);
+        assert.equal(rows.length, 2, `${label}: exactly two rows`);
+        assert.equal(new Set(rows.map((r) => r.fingerprint)).size, 2, `${label}: distinct fingerprints`);
+        const bRow = rows.find((r) => r.id !== aRowId);
+        assert.equal(bRow.description, B.description, `${label}: the new row carries B's content`);
+        assert.equal(bRow.fingerprint, computeFingerprint(B, { sourceText: FP_P_005_SRC }),
+          `${label}: B's stored fp is the BARE context hash (not salted)`);
+      } finally {
+        try { sdb.close(); } catch { /* */ }
+      }
+    }
+  });
+});
+
+describe('fp-p-005: collect() reads real worktree source and persists same-bucket findings distinctly', () => {
+  let tmp, dbPath;
+  const RID = 'r-fp-p-005-collect';
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'fp-p-005-collect-'));
+    dbPath = join(tmp, 'control-plane.db');
+    mkdirSync(join(tmp, 'packages', 'backend'), { recursive: true });
+    writeFileSync(join(tmp, 'packages', 'backend', 'x.js'), `${FP_P_005_SRC}\n`, 'utf-8');
+
+    const db = openDb(dbPath);
+    db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, branch, status)
+      VALUES (?, 'org/repo', ?, ?, 'main', 'pending')`).run(RID, tmp, 'a'.repeat(40));
+    saveDomainDraft(db, RID, [{ name: 'backend', globs: ['packages/backend/**'], ownership_class: 'owned' }]);
+    freezeDomains(db, RID);
+    closeDb(dbPath);
+  });
+
+  afterEach(() => {
+    try { closeDb(dbPath); } catch { /* */ }
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  it('two symbol-less findings on lines 21 & 27 of one file persist as two distinct rows', () => {
+    dispatch({ runId: RID, phase: 'health-audit-a', dbPath, outputDir: tmp });
+
+    // symbol is OMITTED (the symbol-less bug shape). The canonical agent-output
+    // schema accepts an absent symbol but rejects an explicit null, and an absent
+    // symbol fingerprints the same as the empty-symbol case ((undefined||'')==='').
+    const f1 = { id: 'F-1', severity: 'LOW', category: 'docs', file: 'packages/backend/x.js', line: 21, description: 'first issue' };
+    const f2 = { id: 'F-2', severity: 'LOW', category: 'docs', file: 'packages/backend/x.js', line: 27, description: 'second, different issue' };
+
+    // Precondition: without source these two collide on the base fp (fp-002 shape).
+    assert.equal(computeFingerprint(f1), computeFingerprint(f2),
+      'precondition: the two findings share a no-source base fp');
+
+    const outPath = join(tmp, 'backend.json');
+    writeFileSync(outPath, JSON.stringify({
+      domain: 'backend', stage: 'A', summary: 'two same-bucket findings',
+      findings: [f1, f2],
+    }), 'utf-8');
+
+    const report = collect({ runId: RID, dbPath, outputs: { backend: outPath } });
+    assert.equal(report.findings.new, 2, 'both findings persisted as new (no collision, no abort)');
+
+    const db = openDb(dbPath);
+    const rows = db.prepare('SELECT finding_id, fingerprint FROM findings WHERE run_id = ? ORDER BY id').all(RID);
+    closeDb(dbPath);
+
+    assert.equal(rows.length, 2, 'exactly two rows');
+    assert.equal(new Set(rows.map((r) => r.fingerprint)).size, 2, 'distinct fingerprints (context hash distinguished them)');
+    assert.equal(new Set(rows.map((r) => r.finding_id)).size, 2, 'distinct finding_ids');
+    // Proof collect() actually read the worktree source: the persisted fps are
+    // the context-hash fps, NOT the no-source bucket fp the precondition shares.
+    const bucketFp = computeFingerprint(f1);
+    assert.ok(!rows.some((r) => r.fingerprint === bucketFp),
+      'neither persisted fp is the no-source bucket fp — collect() folded the real surrounding source in');
   });
 });
 

@@ -2,7 +2,7 @@
  * validate-agent-output.js — Ajv-backed live validator for agent outputs.
  *
  * F-252713-017 (Phase 7 wave 1 → wave 2 wiring): the wave-1 ci-tooling agent
- * built scripts/agent-output.schema.json + the schema-conformance handler.
+ * built the agent-output schema + the schema-conformance handler.
  * That handler validates fixture JSONs at CI time. This module closes Class
  * #11 (multi-occurrence fix completeness) by running the SAME schema inside
  * collect.js BEFORE upsertFindings — live agent outputs are now rejected at
@@ -17,7 +17,7 @@
  * Why a typed error: the renderTopLevelError seam in lib/error-render.js
  * pattern-matches on `.code`. AGENT_OUTPUT_SCHEMA_INVALID gets the same
  * actionable-hint treatment that RECORD_SCHEMA_INVALID does — operator sees
- * "Next: inspect the failing output against scripts/agent-output.schema.json".
+ * "Next: inspect the failing output against packages/schemas/src/json/agent-output.schema.json".
  *
  * Phase routing: the canonical envelope only requires { domain, summary }.
  * The phase-specific inner shape is governed by oneOf-style $defs in the
@@ -31,31 +31,24 @@
 
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 
-// The agent-output schema lives at scripts/agent-output.schema.json (repo
-// root). It is NOT yet packaged through @dogfood-lab/schemas — backend wave 2
-// keeps it where the wave-1 ci-tooling agent put it, and resolves the path
-// relative to this module. If the schema graduates to the schemas package
-// later, this resolution becomes a createRequire('@dogfood-lab/schemas/...')
-// call mirroring validate-record.js.
+// fp-p-006 (deferred from the self-audit, now landed): the agent-output schema
+// is the single source of truth, shipped via @dogfood-lab/schemas and resolved
+// the same way the eight contract schemas are — createRequire on the `./json/*`
+// subpath export (CLAUDE.md rule #5; mirrors packages/ingest/validate-record.js).
+// This replaced the prior package-local copy (packages/dogfood-swarm/schema/)
+// plus its byte-equality drift guard (meta-amendA-schema-packaging.test.js):
+// one file, shipped through the dependency, with no copy to keep in sync.
+//
+// The schema is NOT one of the eight payload schemas registered in the schemas
+// package's `validatePayload` map, so it is compiled here with a local Ajv2020
+// instance rather than the canonical compileSchema seam — it is a swarm output
+// envelope, not a contract-spine schema. That local `new Ajv` is allowlisted
+// in scripts/check-validator-cache-singleton.test.mjs for exactly this reason.
 const require = createRequire(import.meta.url);
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
-// fp-001: the schema is shipped INSIDE the package (packages/dogfood-swarm/
-// schema/) so a published `npm install -g @dogfood-lab/dogfood-swarm` actually
-// has it at runtime. The repo-root scripts/ copy is NOT in package.json `files`
-// and is therefore ABSENT from the published tarball — resolving it from an
-// installed package climbs out of node_modules to a path that does not exist,
-// crashing `swarm dispatch`/`collect`/`revalidate` with ENOENT. Package-local
-// is primary; the scripts/ path is the monorepo dev-tree fallback. The
-// byte-equality drift guard lives in meta-amendA-schema-packaging.test.js.
-const PKG_LOCAL_SCHEMA = join(__dirname, '..', 'schema', 'agent-output.schema.json');
-const REPO_ROOT_SCHEMA = join(__dirname, '..', '..', '..', 'scripts', 'agent-output.schema.json');
-const SCHEMA_PATH = existsSync(PKG_LOCAL_SCHEMA) ? PKG_LOCAL_SCHEMA : REPO_ROOT_SCHEMA;
+const SCHEMA_PATH = require.resolve('@dogfood-lab/schemas/json/agent-output.schema.json');
 
 let _validator = null;
 let _loadError = null;
@@ -104,7 +97,7 @@ export class AgentOutputValidationError extends Error {
 }
 
 /**
- * Validate an agent JSON output against scripts/agent-output.schema.json.
+ * Validate an agent JSON output against packages/schemas/src/json/agent-output.schema.json.
  *
  * @param {object} output — parsed JSON agent output
  * @param {object} [opts]

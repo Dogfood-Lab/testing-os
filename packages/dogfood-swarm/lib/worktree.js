@@ -18,6 +18,7 @@
 import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { logStage } from './log-stage.js';
 
 /**
  * Validate that a domain name is safe to interpolate into both a filesystem
@@ -78,8 +79,25 @@ export function createWorktree(repoPath, opts) {
 
   // Remove stale worktree if it exists. Argv-array form bypasses the shell
   // so wtDir cannot trigger metacharacter interpretation.
+  //
+  // sm-p-003: this runs ONLY when wtDir is present and the `--force` remove
+  // FAILED, yet the `worktree add` below will then fail too. Bare-swallowing
+  // the precursor failure left the operator with only the downstream `add`
+  // error and no breadcrumb that cleanup failed first. Log to the NDJSON
+  // stream (no control-flow change — still best-effort) so the precursor is
+  // greppable when the subsequent add blows up. Same forensic channel D3B-012
+  // gave applyTimeoutPolicy's NULL started_at skip.
   if (existsSync(wtDir)) {
-    try { gitArgs(repoPath, ['worktree', 'remove', wtDir, '--force']); } catch { /* */ }
+    try {
+      gitArgs(repoPath, ['worktree', 'remove', wtDir, '--force']);
+    } catch (e) {
+      logStage('worktree_stale_remove_failed', {
+        component: 'dogfood-swarm',
+        wtDir,
+        branch,
+        err: e.message,
+      });
+    }
   }
 
   // Delete stale branch if it exists.
@@ -169,8 +187,18 @@ export function cleanupAllWorktrees(repoPath) {
   for (const wt of worktrees) {
     removeWorktree(repoPath, wt.path, wt.branch);
   }
-  // Prune stale worktree references
-  try { git(repoPath, 'worktree prune'); } catch { /* */ }
+  // Prune stale worktree references. sm-p-003: best-effort, but a swallowed
+  // prune failure left no breadcrumb at all; log it so a stuck prune is
+  // greppable. Control flow is unchanged — cleanup is advisory.
+  try {
+    git(repoPath, 'worktree prune');
+  } catch (e) {
+    logStage('worktree_prune_failed', {
+      component: 'dogfood-swarm',
+      repoPath,
+      err: e.message,
+    });
+  }
   return worktrees.length;
 }
 
