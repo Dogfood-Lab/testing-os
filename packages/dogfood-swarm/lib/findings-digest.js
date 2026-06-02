@@ -265,8 +265,14 @@ export function buildDigest({ runId, waveNumber, swarmsDir = SWARMS_DIR, format,
 }
 
 // Only run as a CLI when invoked directly (not when imported by cli.js).
-const isMain = import.meta.url === `file://${process.argv[1].replace(/\\/g, '/')}` ||
-               process.argv[1]?.endsWith('findings-digest.js');
+// fp-005: guard process.argv[1] before .replace. When the module is loaded in
+// a context where argv[1] is undefined (e.g. `node --eval` importing it), the
+// unconditional `.replace` on the left operand threw a TypeError at module-load
+// time — before the safer right-hand optional-chain guard could run. Compute
+// the entry path once and short-circuit on it.
+const entry = process.argv[1];
+const isMain = (entry && import.meta.url === `file://${entry.replace(/\\/g, '/')}`) ||
+               entry?.endsWith('findings-digest.js');
 
 if (isMain) {
   const [runId, waveArg] = process.argv.slice(2);

@@ -111,16 +111,26 @@ function resolveFilePath(repoRoot, filePath) {
  * Build a regex that matches the anchor we expect to find at a given symbol
  * or in a description. Preference: explicit symbol, then first identifier
  * token of length ≥4 in description.
+ *
+ * Returns `{ regex, fromSymbol }` (or null if no anchor is derivable).
+ * `fromSymbol` distinguishes a reliable code-identifier anchor (the agent
+ * captured a real `symbol`) from an unreliable prose-derived anchor (the
+ * lead identifier-like word of the prose description). The distinction is
+ * load-bearing: a MISS on a code-identifier anchor genuinely means the
+ * symbol is gone (fix landed), but a MISS on a prose token means nothing —
+ * a description like "Race condition in writer" has no reason for its lead
+ * word "Race" to appear in source, so a miss must NOT resolve to `verified`.
+ * The caller routes a prose-anchor miss to `unverifiable` instead.
  */
 function buildAnchorRegex({ symbol, description }) {
   const sym = (symbol || '').trim();
   if (sym && /^[A-Za-z_][\w$]*$/.test(sym)) {
-    return new RegExp(`\\b${escapeRegex(sym)}\\b`);
+    return { regex: new RegExp(`\\b${escapeRegex(sym)}\\b`), fromSymbol: true };
   }
   const desc = String(description || '');
   const match = desc.match(/\b([A-Za-z_][\w$]{3,})\b/);
   if (match) {
-    return new RegExp(`\\b${escapeRegex(match[1])}\\b`);
+    return { regex: new RegExp(`\\b${escapeRegex(match[1])}\\b`), fromSymbol: false };
   }
   return null;
 }
@@ -144,13 +154,24 @@ function defaultReadLines(absolutePath) {
 /**
  * Compute the bucket [start, end] inclusive that contains `recordedLine`.
  * If no line was recorded (0 / null), scan the entire file.
+ *
+ * The window is SYMMETRIC: it spans the finding's own 10-line bucket plus
+ * one full adjacent bucket in EACH direction. An asymmetric (upward-only)
+ * window let a still-present symbol that drifted into the adjacent LOWER
+ * bucket escape the search and misclassify as `verified` (ve-003). Example:
+ * a finding recorded at line 42 (bucket [40,50]) whose symbol drifted to
+ * line 38 must still be found — line 38 is below the recorded bucket, so the
+ * window must reach down a full bucket, not just by one line.
  */
 function bucketForLine(recordedLine, totalLines) {
   if (!recordedLine || recordedLine <= 0) {
     return { start: 1, end: totalLines };
   }
   const bucket = Math.floor(recordedLine / FINGERPRINT_BUCKET) * FINGERPRINT_BUCKET;
-  return { start: Math.max(1, bucket), end: bucket + FINGERPRINT_BUCKET };
+  return {
+    start: Math.max(1, bucket - FINGERPRINT_BUCKET),
+    end: bucket + FINGERPRINT_BUCKET,
+  };
 }
 
 /**
@@ -200,25 +221,37 @@ function classifyByAnchor(finding, repoRoot, readLinesFn) {
   }
   const recordedLine = Number(finding.line_number) || 0;
   const { start, end } = bucketForLine(recordedLine, lines.length);
-  const matchedLine = findAnchorInBucket(lines, anchor, start, end);
+  const matchedLine = findAnchorInBucket(lines, anchor.regex, start, end);
 
   if (matchedLine === null) {
+    // ve-001: a MISS only supports `verified` when the anchor is a reliable
+    // code identifier (real `symbol`). A prose-derived anchor's lead token
+    // is not expected to appear in source, so its absence proves nothing —
+    // route to `unverifiable` rather than declaring the fix landed.
+    if (!anchor.fromSymbol) {
+      return {
+        classification: 'unverifiable',
+        evidence: `no code-grade anchor; description token /${anchor.regex.source}/ is prose and absent at ${finding.file_path}:${start}-${end}, cannot prove the fix landed`,
+        reason: 'prose_anchor_miss',
+        matchedLine: null,
+      };
+    }
     return {
       classification: 'verified',
-      evidence: `anchor /${anchor.source}/ no longer present at ${finding.file_path}:${start}-${end}`,
+      evidence: `anchor /${anchor.regex.source}/ no longer present at ${finding.file_path}:${start}-${end}`,
       matchedLine: null,
     };
   }
   if (recordedLine > 0 && Math.abs(matchedLine - recordedLine) <= EXACT_LINE_TOLERANCE) {
     return {
       classification: 'claimed-but-still-present',
-      evidence: `anchor /${anchor.source}/ still at ${finding.file_path}:${matchedLine} (recorded line ${recordedLine}); fix never landed`,
+      evidence: `anchor /${anchor.regex.source}/ still at ${finding.file_path}:${matchedLine} (recorded line ${recordedLine}); fix never landed`,
       matchedLine,
     };
   }
   return {
     classification: 'regressed',
-    evidence: `anchor /${anchor.source}/ reappeared at ${finding.file_path}:${matchedLine} (recorded line ${recordedLine || 'unspecified'}); looks reverted within the same bucket`,
+    evidence: `anchor /${anchor.regex.source}/ reappeared at ${finding.file_path}:${matchedLine} (recorded line ${recordedLine || 'unspecified'}); looks reverted within the same bucket`,
     matchedLine,
   };
 }
@@ -265,20 +298,20 @@ function classifyByCrossRef(crossRef, repoRoot, readLinesFn) {
   }
   const recordedLine = Number(crossRef.line) || 0;
   const { start, end } = bucketForLine(recordedLine, lines.length);
-  const matchedLine = findAnchorInBucket(lines, anchor, start, end);
+  const matchedLine = findAnchorInBucket(lines, anchor.regex, start, end);
 
   if (matchedLine !== null) {
     return {
       applicable: true,
       classification: 'verified',
-      evidence: `cross_ref anchor /${anchor.source}/ landed at ${crossRef.file}:${matchedLine}; consumer-side fix verified`,
+      evidence: `cross_ref anchor /${anchor.regex.source}/ landed at ${crossRef.file}:${matchedLine}; consumer-side fix verified`,
       matchedLine,
     };
   }
   return {
     applicable: true,
     classification: 'verified-no-cross-ref-anchor',
-    evidence: `cross_ref anchor /${anchor.source}/ not present at ${crossRef.file}:${start}-${end}; falling through to primary anchor`,
+    evidence: `cross_ref anchor /${anchor.regex.source}/ not present at ${crossRef.file}:${start}-${end}; falling through to primary anchor`,
   };
 }
 

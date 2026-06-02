@@ -92,34 +92,6 @@ export function createWorktree(repoPath, opts) {
 }
 
 /**
- * Get the diff (changed files) from a worktree relative to its branch point.
- *
- * @param {string} repoPath — main repo path
- * @param {string} worktreePath
- * @returns {string[]} — list of changed file paths (relative to repo root)
- */
-export function getWorktreeDiff(repoPath, worktreePath) {
-  try {
-    const output = git(worktreePath, 'diff --name-only HEAD~1..HEAD');
-    return output.trim().split('\n').filter(Boolean);
-  } catch {
-    // No commits yet — check for uncommitted changes
-    const output = git(worktreePath, 'diff --name-only HEAD');
-    return output.trim().split('\n').filter(Boolean);
-  }
-}
-
-/**
- * Get all uncommitted changes in a worktree.
- */
-export function getWorktreeChanges(worktreePath) {
-  const staged = git(worktreePath, 'diff --name-only --cached').trim().split('\n').filter(Boolean);
-  const unstaged = git(worktreePath, 'diff --name-only').trim().split('\n').filter(Boolean);
-  const untracked = git(worktreePath, 'ls-files --others --exclude-standard').trim().split('\n').filter(Boolean);
-  return { staged, unstaged, untracked, all: [...new Set([...staged, ...unstaged, ...untracked])] };
-}
-
-/**
  * Merge a worktree branch back into the main branch.
  *
  * @param {string} repoPath — main repo path

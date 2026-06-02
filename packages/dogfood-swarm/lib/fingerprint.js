@@ -28,6 +28,8 @@
 
 import { createHash } from 'node:crypto';
 
+import { logStage } from './log-stage.js';
+
 /**
  * Normalize a file path for fingerprinting.
  * Strips leading ./ and normalizes separators.
@@ -78,6 +80,73 @@ export function computeFingerprint(finding) {
 }
 
 /**
+ * Disambiguate within-wave fingerprint collisions by occurrence index.
+ *
+ * fp-002 (the marquee fix). The base fingerprint deliberately excludes the
+ * description (B-BACK-002 contract), so two genuinely-distinct findings that
+ * share a coarse key — same (category, rule_id, path, symbol, 10-line bucket)
+ * but different prose — collapse to the SAME base fingerprint. That is correct
+ * for cross-wave dedup, but WITHIN a single wave both land in `result.new` and
+ * upsertFindings then tries to INSERT two rows under one fingerprint AND one
+ * derived finding_id, violating UNIQUE(run_id, fingerprint) /
+ * UNIQUE(run_id, finding_id) and aborting the whole collect (0 rows persisted).
+ * Reproduced live: two README findings 6 lines apart, no symbol, same bucket.
+ *
+ * Design (grounded in CodeQL primaryLocationLineHash, Semgrep match_based_id's
+ * occurrence index, and the WER/Sentry "default-expand, fold-never-drop"
+ * principle): for each group of findings sharing an identical base fingerprint,
+ * assign a deterministic occurrence index by stable input order. The FIRST
+ * member (index 0) and every singleton keep their base fingerprint UNCHANGED —
+ * this preserves byte-for-byte backward-compat for the common case and the
+ * cross-wave dedup invariant (a re-reported singleton next wave is still a
+ * singleton, so it keeps the bare fingerprint and classifies `recurring`, not
+ * `new`). The 2nd..Nth members are salted as sha256(baseFp + '|occ' + index)
+ * (index ≥ 1, sliced to the same 24-hex width). Genuinely-distinct findings
+ * that share a coarse key thus get distinct fingerprints + finding_ids without
+ * folding in the volatile description.
+ *
+ * @param {Array} findings — current-wave findings; each may already carry a
+ *   `fingerprint` (set by collect.js via computeFingerprint). When absent it is
+ *   computed here. Input order is the occurrence-index authority.
+ * @returns {Array} new array of findings with a disambiguated `fingerprint`.
+ *   Inputs are not mutated.
+ */
+export function disambiguateFingerprints(findings) {
+  const counts = new Map();
+  for (const finding of findings) {
+    const base = finding.fingerprint || computeFingerprint(finding);
+    counts.set(base, (counts.get(base) || 0) + 1);
+  }
+
+  const seen = new Map();
+  return findings.map((finding) => {
+    const base = finding.fingerprint || computeFingerprint(finding);
+    const index = seen.get(base) || 0;
+    seen.set(base, index + 1);
+
+    // First occurrence (and every singleton) keeps the bare fingerprint.
+    if (index === 0) {
+      return finding.fingerprint === base ? finding : { ...finding, fingerprint: base };
+    }
+
+    const salted = createHash('sha256')
+      .update(`${base}|occ${index}`)
+      .digest('hex')
+      .slice(0, 24);
+    logStage('fingerprint_disambiguated', {
+      component: 'dogfood-swarm',
+      base_fingerprint: base,
+      occurrence_index: index,
+      total_occurrences: counts.get(base),
+      salted_fingerprint: salted,
+      file: finding.file || finding.file_path || null,
+      category: finding.category || null,
+    });
+    return { ...finding, fingerprint: salted };
+  });
+}
+
+/**
  * Classify findings against prior wave state.
  *
  * "Fixed" requires positive evidence — the current wave must have actually
@@ -101,7 +170,15 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
   const currentSet = new Set();
   const result = { new: [], recurring: [], fixed: [], unverified: [] };
 
-  for (const finding of currentFindings) {
+  // fp-002 Part 1: salt the 2nd..Nth members of any within-wave base-fingerprint
+  // collision so two genuinely-distinct findings sharing a coarse key get
+  // distinct fingerprints (and distinct derived finding_ids in upsertFindings)
+  // instead of colliding on UNIQUE(run_id, fingerprint). Singletons + the first
+  // member of each group keep the bare fingerprint, so cross-wave dedup and
+  // backward-compat are untouched. See disambiguateFingerprints for the contract.
+  const disambiguated = disambiguateFingerprints(currentFindings);
+
+  for (const finding of disambiguated) {
     const fp = finding.fingerprint || computeFingerprint(finding);
     currentSet.add(fp);
 
@@ -186,8 +263,21 @@ export function buildPriorMap(db, runId) {
  * @returns {{ inserted: number, updated: number, fixed: number, unverified: number }}
  */
 export function upsertFindings(db, runId, waveId, classified) {
+  // fp-002 Part 2 (safety net): INSERT OR IGNORE so a residual within-wave
+  // collision on EITHER unique index — UNIQUE(run_id, finding_id) or
+  // UNIQUE(run_id, fingerprint) — skips the offending row instead of throwing
+  // and aborting the whole collect transaction (which rolled back ALL findings
+  // for the wave, 0 rows persisted). Part 1 (disambiguateFingerprints) already
+  // splits coarse-key collisions into distinct fingerprints/ids, so in practice
+  // a skip here only fires for a TRUE distinct-fingerprint / same-8-hex-prefix
+  // collision (astronomically rare, the D3B-006 case). We choose log+skip over
+  // abort: a never-abort collect is the invariant (an operator can re-report a
+  // dropped finding next wave; a fully-rolled-back wave loses everything). The
+  // skip is emitted as a structured logStage event below so it is observable,
+  // not silent — preserving the loud-not-silent spirit of D3B-006 without its
+  // collect-aborting blast radius.
   const insertFinding = db.prepare(`
-    INSERT INTO findings (run_id, finding_id, fingerprint, severity, category,
+    INSERT OR IGNORE INTO findings (run_id, finding_id, fingerprint, severity, category,
       file_path, line_number, symbol, description, recommendation,
       status, first_seen_wave, last_seen_wave)
     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
@@ -237,6 +327,23 @@ export function upsertFindings(db, runId, waveId, classified) {
         f.file || null, f.line || null, f.symbol || null,
         f.description, f.recommendation || null, waveId, waveId
       );
+      if (result.changes === 0) {
+        // INSERT OR IGNORE skipped this row on a unique-index conflict. With
+        // Part 1's disambiguation this should be unreachable for coarse-key
+        // collisions; a skip here is the rare true (run_id, finding_id) /
+        // (run_id, fingerprint) collision. Log it loud (operator can re-report
+        // next wave) rather than aborting the wave.
+        logStage('finding_insert_skipped', {
+          component: 'dogfood-swarm',
+          run_id: runId,
+          wave_id: waveId,
+          finding_id: fid,
+          fingerprint: f.fingerprint,
+          file: f.file || null,
+          reason: 'unique_conflict_on_insert_or_ignore',
+        });
+        continue;
+      }
       insertEvent.run(result.lastInsertRowid, 'reported', waveId, null);
       inserted++;
     }

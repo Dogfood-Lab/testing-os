@@ -96,7 +96,29 @@ function commands(overrides = {}) {
 
 function run(repoPath, overrides) {
   const steps = commands(overrides);
-  return runSteps(repoPath, steps, { continueOnError: true });
+  const result = runSteps(repoPath, steps, { continueOnError: true });
+
+  // ve-004: `npm test --if-present` exits 0 and runs nothing when the repo
+  // has no `test` script, which is indistinguishable from a real pass at the
+  // wave gate. Detect the no-test case and refuse to report it as a verified
+  // pass: the test step exists but exercised nothing, so there is no positive
+  // evidence the fix works. Only downgrade when the operator did NOT supply
+  // an explicit test override (an override means they deliberately chose the
+  // test command, and `tests_ran` already tracks whether it produced output).
+  const usingDefaultTest = !(overrides && overrides.test);
+  if (usingDefaultTest && result.verdict === 'pass' && !result.tests_ran) {
+    const { evidence } = probe(repoPath);
+    if (evidence && evidence.hasTest === false) {
+      return {
+        ...result,
+        verdict: 'no_tests',
+        no_tests: true,
+        reason: 'no `test` script — `npm test --if-present` ran zero tests; not a verified pass',
+      };
+    }
+  }
+
+  return result;
 }
 
 export const nodeAdapter = { probe, commands, run };

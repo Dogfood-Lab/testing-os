@@ -105,15 +105,37 @@ export function readBoundedJson(filePath, opts = {}) {
     );
   }
 
-  let raw;
+  // fp-004: the statSync gate above is advisory because of the
+  // statSync→readFileSync TOCTOU window — a file actively being written
+  // (the "logging loop" this helper guards against) can grow past maxBytes
+  // between the two calls, and a plain readFileSync would then pull the whole
+  // grown file into memory, OOM-ing the loop the gate is meant to defend.
+  // Close the window by enforcing the limit on the bytes ACTUALLY read: read
+  // as a Buffer (no encoding) and reject if the buffer itself exceeds the cap
+  // before we decode + parse. The size we check is now the size we read.
+  let buf;
   try {
-    raw = readFileSync(filePath, 'utf-8');
+    buf = readFileSync(filePath);
   } catch (e) {
     throw new BoundedJsonError(
       `bounded-json: cannot read ${filePath}: ${e.message}`,
       { kind: 'READ_FAILED', path: filePath, cause: e }
     );
   }
+
+  if (buf.length > maxBytes) {
+    const sizeMb = (buf.length / 1024 / 1024).toFixed(1);
+    const limitMb = (maxBytes / 1024 / 1024).toFixed(1);
+    throw new BoundedJsonError(
+      `bounded-json: file exceeds size limit on read: ${sizeMb} MB (limit: ${limitMb} MB). ` +
+      `Path: ${filePath}. The file grew past the limit between stat and read ` +
+      `(the producer is likely still writing — a logging loop or raw-stdout dump). ` +
+      `Inspect the file before raising the limit.`,
+      { kind: 'SIZE_LIMIT', path: filePath, size: buf.length, maxBytes }
+    );
+  }
+
+  const raw = buf.toString('utf-8');
 
   try {
     return JSON.parse(raw);
