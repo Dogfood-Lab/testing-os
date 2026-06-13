@@ -18,6 +18,9 @@ import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 
+import { computeTrends } from './lib/compute-trends.js';
+import { generateBadges } from './lib/generate-badges.js';
+
 // d3-ingest-B002 (Stage C humanization) — PORTFOLIO_REPO_ROOT lets a test
 // harness redirect every read/write (INDEX_PATH, POLICIES_ROOT, the output
 // report) into a sandbox instead of the REAL working tree, so the corrupt-index
@@ -37,6 +40,11 @@ const INDEX_PATH = join(ROOT, 'indexes', 'latest-by-repo.json');
 // dropped dogfood-lab/* repos from the portfolio.
 const POLICIES_ROOT = join(ROOT, 'policies', 'repos');
 const DEFAULT_OUTPUT = join(ROOT, 'reports', 'dogfood-portfolio.json');
+// F3-001 / F5-04 — runtime artifacts emitted alongside the portfolio report.
+// Both are git-ignored (root .gitignore) so a local `generate` never dirties
+// the working tree; the committed deliverable is the GENERATOR, not a snapshot.
+const TRENDS_OUTPUT = join(ROOT, 'indexes', 'trends.json');
+const BADGES_DIR = join(ROOT, 'indexes', 'badges');
 
 // d3-ingest-B003 (Stage C humanization) — ALL_SURFACES is DERIVED from the
 // authoritative product_surface enum in dogfood-record-submission.schema.json,
@@ -295,9 +303,35 @@ export function generatePortfolio(index, policies, { logger = console } = {}) {
 function main() {
   const args = process.argv.slice(2);
   let outputPath = DEFAULT_OUTPUT;
+  let emitTrends = true;
+  let emitBadges = true;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--output' && args[i + 1]) outputPath = args[++i];
+    // F3-001 / F5-04 — opt out of the side artifacts. The `trends` key is
+    // always merged into the report; these flags only gate the separate
+    // indexes/trends.json + indexes/badges/ writes (both git-ignored).
+    else if (args[i] === '--no-trends') emitTrends = false;
+    else if (args[i] === '--no-badges') emitBadges = false;
+    else if (args[i] === '--help' || args[i] === '-h') {
+      console.log(
+        [
+          'Usage: portfolio [--output <path>] [--no-trends] [--no-badges]',
+          '',
+          'Generate the cross-repo dogfood portfolio report from indexes/latest-by-repo.json',
+          'and policies/repos/. Also emits two git-ignored runtime artifacts:',
+          '',
+          '  --output <path>   Portfolio report path (default reports/dogfood-portfolio.json)',
+          '  --no-trends       Skip writing indexes/trends.json (the per-repo+surface run',
+          '                    history, regression/recovery flags, and windowed pass-rate',
+          '                    are still merged into the report under the "trends" key)',
+          '  --no-badges       Skip writing indexes/badges/<org>--<repo>--<surface>.json',
+          '                    shields.io endpoint files',
+          '  -h, --help        Show this help',
+        ].join('\n')
+      );
+      process.exit(0);
+    }
   }
 
   if (!existsSync(INDEX_PATH)) {
@@ -330,10 +364,41 @@ function main() {
   const policies = loadPolicies(POLICIES_ROOT);
   const portfolio = generatePortfolio(index, policies);
 
+  // F3-001 — compute the trend surface from the FULL dated records/ history
+  // (generatePortfolio only sees the collapsed latest-by-repo index, so it
+  // cannot express a trend). Merge it into the report under `trends` and,
+  // unless opted out, emit indexes/trends.json (git-ignored runtime artifact).
+  const trends = computeTrends(ROOT);
+  portfolio.trends = trends;
+
   const outputDir = join(outputPath, '..');
   if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
 
   writeFileSync(outputPath, JSON.stringify(portfolio, null, 2) + '\n');
+
+  if (emitTrends) {
+    const trendsDir = join(TRENDS_OUTPUT, '..');
+    if (!existsSync(trendsDir)) mkdirSync(trendsDir, { recursive: true });
+    writeFileSync(TRENDS_OUTPUT, JSON.stringify(trends, null, 2) + '\n');
+  }
+
+  // F5-04 — emit one shields.io endpoint JSON per repo+surface so any repo
+  // README can render a live dogfood pass/fail/stale pill. Written after the
+  // portfolio so a failed portfolio write surfaces before we fan out files.
+  let badgeCount = 0;
+  if (emitBadges) {
+    const badges = generateBadges(index);
+    if (!existsSync(BADGES_DIR)) mkdirSync(BADGES_DIR, { recursive: true });
+    for (const [filename, endpoint] of Object.entries(badges)) {
+      writeFileSync(join(BADGES_DIR, filename), JSON.stringify(endpoint, null, 2) + '\n');
+      badgeCount++;
+    }
+  }
+
+  // Count repos/surfaces with a regression flagged in the trend surface.
+  const regressedCount = Object.values(trends)
+    .flatMap((surfaces) => Object.values(surfaces))
+    .filter((t) => t.regressed).length;
 
   console.log(`Portfolio generated: ${outputPath}`);
   console.log(`  Repos: ${portfolio.coverage.total_repos}`);
@@ -341,6 +406,9 @@ function main() {
   console.log(`  Stale: ${portfolio.stale.length}`);
   console.log(`  Missing: ${portfolio.missing.length}`);
   console.log(`  Unknown freshness: ${portfolio.unknown_freshness.length}`);
+  console.log(`  Regressed (pass→fail): ${regressedCount}`);
+  if (emitTrends) console.log(`  Trends written: ${TRENDS_OUTPUT}`);
+  if (emitBadges) console.log(`  Badges written: ${badgeCount} → ${BADGES_DIR}`);
 }
 
 // F-002109-016 — only run main() when invoked directly as a CLI, not on import.

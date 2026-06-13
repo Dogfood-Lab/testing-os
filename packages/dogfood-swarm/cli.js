@@ -52,6 +52,11 @@ import { setTimeoutPolicy, getTimeoutPolicy } from './lib/state-machine.js';
 import { buildDigest } from './lib/findings-digest.js';
 import { renderTopLevelError } from './lib/error-render.js';
 import { CliInvalidGlobsError } from './lib/errors.js';
+import {
+  queryRecurringFindings,
+  queryPerRepoRunHistory,
+  queryFindingRecurrenceRate,
+} from './lib/queries/cross-run-analytics.js';
 
 /**
  * D3B-004 (Wave A2 Stage C): parse + shape-validate a `--globs <JSON>`
@@ -612,14 +617,44 @@ function cmdRevalidate(args) {
   }
 }
 
+/**
+ * F4-CP-02: project the rich object `status()` already returns into a stable
+ * JSON payload for `swarm status --format=json`. status() RETURNS the
+ * structured object (run/domains/waves/agents/findings/assessment) but
+ * cmdStatus only ever printed the text formatter — a machine consumer had no
+ * structured surface. The object is already JSON-serializable, so this is the
+ * identity projection; the helper exists as the named seam (mirroring the
+ * buildRunsJSON sibling) and pins the contract that the JSON path emits the
+ * SAME object the text formatter consumes — no divergent shape.
+ *
+ * @param {object} s — the object from status()
+ * @returns {object}
+ */
+function buildStatusJSON(s) {
+  return s;
+}
+
 function cmdStatus(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm status <run-id>');
+    console.error('Usage: swarm status <run-id> [--format=text|json]');
     process.exit(1);
   }
 
+  // F4-CP-02: --format=json emits the structured object status() returns
+  // instead of the text frame. parseFormatFlag enum-validates (throw
+  // CLI_INVALID_FORMAT on a bad value) + carries the `--`-swallow guard, same
+  // as the verify-* / findings sites. Default (undefined) stays text. Note:
+  // status carries no 'markdown' renderer, so 'markdown' falls through to the
+  // text formatter — the shared enum allows it, the verb just has no distinct
+  // markdown shape. Exit code is unchanged (status is informational, exit 0).
+  const format = parseFormatFlag(args);
+
   const s = status({ runId, dbPath: getDbPath() });
+  if (format === 'json') {
+    console.log(JSON.stringify(buildStatusJSON(s), null, 2));
+    return;
+  }
   console.log(formatStatus(s));
 }
 
@@ -1294,8 +1329,47 @@ function cmdFindings(args) {
   process.exit(exitCode);
 }
 
-function cmdRuns() {
+/**
+ * F4-CP-02: build the per-run rollup array `swarm runs` displays, as a stable
+ * JSON-serializable shape. cmdRuns previously only printed the text listing;
+ * this is the named seam the JSON path emits so the listing has a machine
+ * surface. Field names mirror the structured camelCase convention used by
+ * status() (`waveCount` / `findingCount`) rather than the SQL snake_case, so a
+ * consumer reading `swarm status --format=json` and `swarm runs --format=json`
+ * sees one naming convention.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @returns {Array<{ id, repo, status, branch, waveCount, findingCount, created }>}
+ */
+function buildRunsJSON(db) {
+  const runs = db.prepare('SELECT * FROM runs ORDER BY created_at DESC').all();
+  const waveStmt = db.prepare('SELECT COUNT(*) as cnt FROM waves WHERE run_id = ?');
+  const findStmt = db.prepare('SELECT COUNT(*) as cnt FROM findings WHERE run_id = ?');
+  return runs.map(r => ({
+    id: r.id,
+    repo: r.repo,
+    status: r.status,
+    branch: r.branch,
+    waveCount: waveStmt.get(r.id).cnt,
+    findingCount: findStmt.get(r.id).cnt,
+    created: r.created_at,
+  }));
+}
+
+function cmdRuns(args = []) {
   const db = openDb(getDbPath());
+
+  // F4-CP-02: --format=json emits the per-run rollup as a JSON array (always
+  // an array, even when empty — `[]` rather than the human "No runs found."
+  // text, so a scraper gets a parseable empty list). parseFormatFlag enum-
+  // validates + carries the `--`-swallow guard. Default stays text. status is
+  // informational so the exit code is unchanged.
+  const format = parseFormatFlag(args);
+  if (format === 'json') {
+    console.log(JSON.stringify(buildRunsJSON(db), null, 2));
+    return;
+  }
+
   const runs = db.prepare('SELECT * FROM runs ORDER BY created_at DESC').all();
 
   if (runs.length === 0) {
@@ -1312,6 +1386,123 @@ function cmdRuns() {
     console.log(`    Created: ${r.created_at}`);
     console.log('');
   }
+}
+
+/**
+ * F4-CP-01: the valid `--query` modes for `swarm trends`.
+ */
+const TRENDS_QUERIES = ['recurring', 'history', 'recurrence'];
+
+/**
+ * F4-CP-01 — `swarm trends --query <recurring|history|recurrence>`.
+ *
+ * The first cross-run-scoped verb. Every other verb is single-runId scoped,
+ * but the DB persists cross-run signal (content-addressed fingerprints under
+ * UNIQUE(run_id, fingerprint); per-run wave/finding rollups). This verb routes
+ * to the pure read fns in lib/queries/cross-run-analytics.js and renders text
+ * (default) or JSON (--format json, via the shared parseFormatFlag enum
+ * guard).
+ *
+ *   recurring   — fingerprints seen in > 1 run
+ *   history     — per-run rollup, newest first (optional --repo LIKE filter)
+ *   recurrence  — recurrence-rate stats (optional --window-days trailing window)
+ *
+ * Informational verb → exit 0 on success; an unknown --query / out-of-enum
+ * --format fail loud with exit 1 (the same fail-loud-on-bad-flag posture as
+ * the verify-* family).
+ */
+function cmdTrends(args) {
+  const query = parseValueFlag(args, '--query');
+  if (!query) {
+    console.error('Usage: swarm trends --query <recurring|history|recurrence> [--format=text|json]');
+    console.error('                    [--repo <substring>]    (history only)');
+    console.error('                    [--window-days N]       (recurrence only)');
+    process.exit(1);
+  }
+  if (!TRENDS_QUERIES.includes(query)) {
+    console.error(`swarm trends: --query expects one of ${TRENDS_QUERIES.join('|')}; got '${query}'`);
+    process.exit(1);
+  }
+
+  // Shared --format enum guard (throws CLI_INVALID_FORMAT on a bad value,
+  // rejects a swallowed following flag). Default undefined → text.
+  const format = parseFormatFlag(args);
+
+  const db = openDb(getDbPath());
+
+  let payload;
+  if (query === 'recurring') {
+    payload = queryRecurringFindings(db);
+  } else if (query === 'history') {
+    const repoPattern = parseValueFlag(args, '--repo');
+    payload = queryPerRepoRunHistory(db, repoPattern);
+  } else {
+    // recurrence
+    const windowRaw = parseValueFlag(args, '--window-days');
+    let windowDays;
+    if (windowRaw !== undefined) {
+      const n = parseInt(windowRaw, 10);
+      if (!/^\d+$/.test(String(windowRaw).trim()) || !Number.isFinite(n) || n < 0) {
+        console.error(`swarm trends: --window-days expects a non-negative integer; got '${windowRaw}'`);
+        process.exit(1);
+      }
+      windowDays = n;
+    }
+    payload = queryFindingRecurrenceRate(db, windowDays);
+  }
+
+  if (format === 'json') {
+    console.log(JSON.stringify(payload, null, 2));
+    return;
+  }
+
+  console.log(formatTrends(query, payload));
+}
+
+/**
+ * F4-CP-01: human-readable text rendering for the three trends queries.
+ * Mirrors the scan-first plain-ASCII posture of formatStatus / the runs
+ * listing — no color, renders identically under CI plaintext logs.
+ */
+function formatTrends(query, payload) {
+  const lines = [];
+  if (query === 'recurring') {
+    lines.push('Recurring findings (seen in more than one run):');
+    lines.push('');
+    if (payload.length === 0) {
+      lines.push('  (none — no fingerprint has recurred across runs)');
+    } else {
+      for (const r of payload) {
+        lines.push(`  [${r.severity}] ${r.fingerprint} — ${r.run_count} runs`);
+        lines.push(`    ${r.description}`);
+        lines.push(`    first seen ${r.first_seen} · last seen ${r.last_seen}`);
+        lines.push('');
+      }
+    }
+  } else if (query === 'history') {
+    lines.push('Per-run history (newest first):');
+    lines.push('');
+    if (payload.length === 0) {
+      lines.push('  (no runs match)');
+    } else {
+      for (const r of payload) {
+        lines.push(`  ${r.run_id}  [${r.status}]`);
+        lines.push(`    ${r.repo} — ${r.wave_count} waves, ${r.finding_count} findings`);
+        lines.push(`    created ${r.created_at}`);
+        lines.push('');
+      }
+    }
+  } else {
+    // recurrence
+    const pct = (payload.recurrence_rate * 100).toFixed(1);
+    lines.push('Finding recurrence rate:');
+    lines.push('');
+    lines.push(`  Runs considered:        ${payload.total_runs}${payload.window_days != null ? ` (last ${payload.window_days} days)` : ''}`);
+    lines.push(`  Distinct fingerprints:  ${payload.distinct_fingerprints}`);
+    lines.push(`  Recurring (> 1 run):    ${payload.recurring_fingerprints}`);
+    lines.push(`  Recurrence rate:        ${pct}%`);
+  }
+  return lines.join('\n');
 }
 
 // ── Dispatch ──
@@ -1338,6 +1529,7 @@ const commands = {
   persist: cmdPersist,
   findings: cmdFindings,
   runs: cmdRuns,
+  trends: cmdTrends,
 };
 
 /**
@@ -1461,7 +1653,11 @@ Commands:
   receipt <run-id> [wave]    Export durable wave receipt (JSON + markdown)
   advance <run-id> [opts]    Check gates and advance to next phase
   persist <run-id> [opts]    Export canonical truth to downstream systems
-  status <run-id>            Control plane status
+  status <run-id> [--format=text|json]
+                             Control plane status. --format=json emits the
+                             structured status object (run/waves/agents/
+                             findings/assessment) for machine consumers;
+                             default is the text frame.
   resume <run-id>            Redispatch incomplete agents
   history <wave-id>          Render the wave_state_events transition chain for
                              a wave. Deep audit verb for the override-and-reason
@@ -1475,7 +1671,16 @@ Commands:
                              Format auto-detects: text on TTY, markdown when
                              piped/redirected. DOGFOOD_FINDINGS_FORMAT env var
                              (raw|human|json) overrides both.
-  runs                       List all runs
+  runs [--format=text|json]  List all runs. --format=json emits a JSON array
+                             of per-run rollups (id/repo/status/waveCount/
+                             findingCount/created); default is text.
+  trends --query <q> [opts]  Cross-run analytics (the only cross-run verb).
+                             --query recurring   fingerprints seen in >1 run
+                             --query history     per-run rollup, newest first
+                                                 (optional --repo <substring>)
+                             --query recurrence  recurrence-rate stats
+                                                 (optional --window-days N)
+                             --format=text|json  (default text)
 
 Domain commands:
   domains <run-id>                          Show current map

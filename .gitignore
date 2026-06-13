@@ -15,6 +15,12 @@ swarms/*/snapshots/
 swarms/*/output/
 records/incoming/
 indexes/*.tmp.json
+# F3-001 / F5-04 — portfolio generator runtime artifacts. The committed
+# deliverable is the generator (packages/portfolio), not a snapshot, so a local
+# `node packages/portfolio/generate.js` must not dirty the tree. Serving fresh
+# snapshots via CI is a deferred follow-up that parallels reports/.
+indexes/trends.json
+indexes/badges/
 
 # Translation cache (regenerated)
 .polyglot-cache.json

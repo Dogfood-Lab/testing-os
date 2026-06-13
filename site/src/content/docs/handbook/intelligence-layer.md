@@ -170,6 +170,24 @@ Advice bundles include:
 
 Results are ranked (stronger and more specific first) and capped (max 5 recommendations, 5 doctrine, 3 failure classes).
 
+## Trends & status badges
+
+The advice surface answers "what should a new repo inherit?" — trends answer "is the portfolio getting healthier, and what keeps coming back?" by exploiting the **full dated history** the evidence store retains (`records/<org>/<repo>/YYYY/MM/DD/run-*.json`), not just the latest record per surface.
+
+**Portfolio trend surface (per repo + product surface).** `node packages/portfolio/generate.js` computes, for each repo + surface, an ordered verdict history, the current-vs-previous verdict, **regressed** (pass→fail) / **recovered** (fail→pass) flags, and a windowed pass-rate (default 30 days). It is merged into `reports/dogfood-portfolio.json` under a `trends` key and also emitted to `indexes/trends.json`. (`indexes/trends.json` + the badge files below are git-ignored runtime artifacts — regenerate them; do not hand-edit. Serving a fresh snapshot at a stable raw URL is a CI follow-up, parallel to how the portfolio report is published.)
+
+**Per-repo status badge.** The same run emits a [shields.io endpoint](https://shields.io/endpoint) JSON per repo + surface to `indexes/badges/<org>--<repo>--<surface>.json` — `{ schemaVersion: 1, label: "dogfood", message: "pass" | "fail" | "stale", color }` — so a governed repo can show its dogfood verdict the way it shows CI status. A `fail` always reports `fail` (staleness never masks a real failure). Opt out per-run with `--no-trends` / `--no-badges`.
+
+**Cross-run analytics (`swarm trends`).** Every other `swarm` verb is single-run; `swarm trends` is the cross-run lens over the control-plane corpus (content-addressed finding fingerprints, per-run rollups):
+
+```bash
+swarm trends --query recurring                       # findings whose fingerprint recurred across >1 run
+swarm trends --query history --repo my-repo          # per-run history, newest first
+swarm trends --query recurrence --window-days 30 --format=json
+```
+
+`swarm status` and `swarm runs` also accept `--format=json` for machine consumers.
+
 ## CLI Reference
 
 ### Finding management

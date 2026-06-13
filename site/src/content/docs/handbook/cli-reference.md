@@ -181,11 +181,15 @@ Example:
 
 Render the full control-plane status for a run — phase, waves, agent states, findings counts, recovery breadcrumbs. The scan-first surface: read this when you want to know "what is this run, where is it in the lifecycle, what's blocking it, and what do I run next." The trailing `Next:` line is the canonical pointer to the next action.
 
+`--format=json` emits the full structured status object (`run`, `domains`, `waves`, `agents`, `findings`, `assessment`) instead of the text frame — the same object the text formatter consumes, so a script never sees a divergent shape. The default is text. Exit code is unchanged (status is informational).
+
 ```text
-Usage: swarm status <run-id>
+Usage: swarm status <run-id> [--format=text|json]
 
 Example:
   $ swarm status r-2026-05-20-001
+  $ swarm status r-2026-05-20-001 --format=json \
+      | jq '.assessment.state'
 ```
 
 When a wave has interesting history (override transitions, multiple state changes), a breadcrumb points at `swarm history <wave-id>` — see [swarm history](../swarm-history/).
@@ -248,12 +252,37 @@ Exit codes are 3-way: `0` clean, `1` findings present, `2` audit pipeline broken
 
 List every run in the control-plane DB, with wave + findings counts and the created-at timestamp. The orientation verb: run this first when you've forgotten what runs exist or which run id is the latest one.
 
+`--format=json` emits a JSON array of per-run rollups (`id`, `repo`, `status`, `branch`, `waveCount`, `findingCount`, `created`) — always an array, so an empty DB yields `[]` rather than the human "No runs found." text. The default is text.
+
 ```text
-Usage: swarm runs
+Usage: swarm runs [--format=text|json]
 
 Example:
   $ swarm runs
+  $ swarm runs --format=json | jq '.[].id'
 ```
+
+## swarm trends
+
+Cross-run analytics — the **only** cross-run verb. Every other verb is scoped to a single `<run-id>`, but the control plane accumulates data that is only meaningful across runs: finding fingerprints are content-addressed and stored `UNIQUE(run_id, fingerprint)`, so the same fingerprint observed in two runs produces two rows. `swarm trends` reads that cross-run signal. Pick a query with `--query`; render text (default) or JSON with `--format`.
+
+- `--query recurring` — fingerprints seen in **more than one run** (a fix that regressed, or a defect class the swarm keeps re-discovering), with `{fingerprint, description, run_count, severity, first_seen, last_seen}`.
+- `--query history` — per-run rollup (`{run_id, repo, wave_count, finding_count, status, created_at}`), newest first. Optional `--repo <substring>` filters runs by a repo LIKE match.
+- `--query recurrence` — recurrence-rate stats (`total_runs`, `distinct_fingerprints`, `recurring_fingerprints`, `recurrence_rate`). Optional `--window-days N` restricts to a trailing window anchored at the newest run.
+
+```text
+Usage: swarm trends --query <recurring|history|recurrence>
+                    [--format=text|json]
+                    [--repo <substring>]    (history only)
+                    [--window-days N]       (recurrence only)
+
+Example:
+  $ swarm trends --query recurring
+  $ swarm trends --query history --repo my-repo --format=json
+  $ swarm trends --query recurrence --window-days 30
+```
+
+A missing or out-of-enum `--query` exits `1` with a Usage error (fail-loud, never a silent no-op); an out-of-enum `--format` is rejected by the shared `CLI_INVALID_FORMAT` guard.
 
 ## See also
 

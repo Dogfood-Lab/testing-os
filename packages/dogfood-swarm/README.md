@@ -44,6 +44,13 @@ swarm collect <run-id> \
 # Inspect current wave + agent state
 swarm status <run-id>
 
+# Same status as a structured object for machine consumers / scripts
+swarm status <run-id> --format=json
+
+# List all runs (text), or as a JSON array of per-run rollups
+swarm runs
+swarm runs --format=json
+
 # Inspect wave transition history (full audit chain)
 swarm history <wave-id>
 
@@ -52,6 +59,23 @@ swarm receipt <run-id>
 
 # Advance to the next phase once gates pass
 swarm advance <run-id>
+```
+
+Every other verb is scoped to a single run. `swarm trends` is the one
+**cross-run** verb — it reads the data the control plane accumulates across
+runs (content-addressed finding fingerprints, per-run rollups) and answers
+"what keeps coming back?" Pick a query with `--query`, optionally `--format=json`:
+
+```bash
+# Findings whose fingerprint was seen in more than one run (a fix that
+# regressed, or a defect class the swarm keeps re-discovering)
+swarm trends --query recurring
+
+# Per-run history, newest first — optionally filtered by repo substring
+swarm trends --query history --repo my-repo
+
+# Recurrence-rate stats over the run population (optional trailing window)
+swarm trends --query recurrence --window-days 30 --format=json
 ```
 
 `<phase>` is a named phase, not a wave number. The valid values are:
