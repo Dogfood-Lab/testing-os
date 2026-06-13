@@ -20,7 +20,7 @@
 *用于人工智能辅助软件的协议、证据存储和学习循环。*
 
 <!-- version:start -->
-**v1.3.2** — 当前版本。请参阅 [CHANGELOG.md](CHANGELOG.md)，了解本次更新的内容。
+**v1.4.0** — 当前版本。请参阅 [CHANGELOG.md](CHANGELOG.md)，了解本次更新的内容。
 <!-- version:end -->
 
 📖 **[阅读手册 →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -104,7 +104,7 @@ npm run verify      # build + test (canonical pre-commit check)
 
 ## 版本控制
 
-所有以 `@dogfood-lab/*` 开头的软件包的版本号同步更新——整个代码仓库的版本号都统一更新。六个软件包以 v1.3.2 的版本号同步发布到 npm，这些软件包分别是：`schemas`、`verify`、`report`、`ingest`、`findings` 和 `dogfood-swarm`；第七个软件包 `@dogfood-lab/portfolio` 仍然是内部使用的。本 README 文件顶部的版本号行，会在每次执行 `npm run build` 时，通过 [`scripts/sync-version.mjs`](scripts/sync-version.mjs) 从 `package.json` 文件中自动提取并更新。
+所有以 `@dogfood-lab/*` 开头的软件包的版本号同步更新——整个代码仓库的版本号都统一加一。六个软件包以 v1.4.0 的版本发布到 npm，它们分别是：`schemas`、`verify`、`report`、`ingest`、`findings` 和 `dogfood-swarm`；第七个软件包 `@dogfood-lab/portfolio` 仍然是内部使用的。本 README 文件顶部的版本号行是通过在每次执行 `npm run build` 时，从 `package.json` 中自动提取并更新的，具体脚本为 [`scripts/sync-version.mjs`](scripts/sync-version.mjs)。
 
 ## 许可证
 

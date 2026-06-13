@@ -2,6 +2,24 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] — 2026-06-13
+
+**Dogfood swarm: a full health pass + a four-wave feature pass.** testing-os ran its own 10-phase dogfood-swarm protocol on itself — a health pass (bug/security → proactive → humanization → visual) that closed ~55 verified findings at 0 critical / 0 high, then a feature pass that closed the intelligence layer's learning loop and added migration, trend, and ergonomics capabilities. Lockstep minor bump across all seven `@dogfood-lab/*` packages. No breaking changes.
+
+### New capabilities (feature pass)
+
+- **The intelligence loop closes.** Derived patterns, recommendations, and doctrine can now be *promoted* to the advice surface: `findings <patterns|recommendations|doctrine> accept|reject|invalidate <id>` (+ `queue`) reviews a synthesis artifact, and the `advise` query surface now returns what you accept (previously nothing the layer derived could reach it). Re-derivation preserves an operator-set status instead of clobbering it. `findings recommendations apply <id> --dry-run|--write` applies an accepted recommendation's structured action back into a repo policy (honest refusal for free-text-only intent).
+- **Schema-version safety.** Submissions declaring an incompatible contract `schema_version` are refused with typed `CONTRACT_SCHEMA_TOO_NEW` / `CONTRACT_SCHEMA_TOO_OLD` reasons (`SUPPORTED_SCHEMA_VERSIONS` is the single source). The control-plane schema-too-new refusal is the typed `CONTROL_PLANE_SCHEMA_TOO_NEW`, and the flat migration list is now an ordered, ledger-backed migration runner with a retroactive bootstrap for existing DBs.
+- **Trends + visibility.** `swarm trends --query recurring|history|recurrence` is a cross-run lens over the control-plane corpus. The portfolio now computes a per-repo+surface trend/regression surface over the full records history, emits a shields.io status badge per repo+surface, and `swarm status` / `swarm runs` accept `--format=json`.
+- **Operator ergonomics.** `swarm collect --all` auto-discovers a dispatched wave's agent outputs (no more one `--domain=` per agent); `swarm doctor` runs a read-only preflight (node version, hardlink-capable control-plane dir, schema version). The contract enums (`PRODUCT_SURFACES` / `EXECUTION_MODES` / `EVIDENCE_KINDS`) and a `parseRejectionReason` taxonomy parser are now importable from `@dogfood-lab/schemas` / `@dogfood-lab/verify`.
+
+### Health pass
+
+- **Stage A (bug/security).** A contract-valid `partial` step status is no longer falsely rejected by the central validator; the swarm's release-gate severity rollup is fixed (it compared lowercase against the canonical UPPERCASE, reporting "healthy" over open criticals); `swarm dispatch` validates the phase before mutating the control plane (a typo no longer commits a corrupt, un-resumable wave); persisted record/index paths are posixified (portable across OSes); and `npm run verify` is now idempotent on the working tree (a test no longer leaks into the real records tree).
+- **Stages B/C/D (proactive · humanization · visual).** Per-agent worktrees are cleaned up after a run; unguarded IO is handled with operator-legible errors; the cross-contract enum drift seal became single-source enforcement; CI treats a rejected submission as a designed outcome rather than a job failure; handbook + docs accuracy throughout.
+
+This entry is the user-facing summary; full per-wave detail lives in the swarm record.
+
 ## [1.3.2] — 2026-06-02
 
 **`@dogfood-lab/dogfood-swarm` self-audit health pass.** The swarm runner audited itself with its own 10-phase protocol. Stage A (bug/security) landed 28 fixes; Stage C (hardening / operator-UX) followed with exit-code-contract and documentation closure; two deferred follow-ups then landed — fp-p-005 made the finding fingerprint a pure, injective function of the finding's own stable content (an edit-stable context-snippet hash), and fp-p-006 consolidated the agent-output schema into `@dogfood-lab/schemas`. The only package-shape change is one new internal workspace dependency (`@dogfood-lab/dogfood-swarm` → `@dogfood-lab/schemas`, see below); no breaking changes (fp-p-005's behavior change is backward-compatible — see below). Findings recorded under the run in [`swarms/swarm-1780390764-7dab/`](swarms/swarm-1780390764-7dab/).

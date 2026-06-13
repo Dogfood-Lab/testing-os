@@ -3,7 +3,7 @@
 > Score a repo before remediation. Fill this out first, then use SHIP_GATE.md to fix.
 
 **Repo:** `dogfood-lab/testing-os`
-**Date:** 2026-06-02 (re-affirmed at v1.3.2; first scored 2026-04-25 at v1.0.0; re-affirmed 2026-05-14 at v1.2.0; re-affirmed 2026-05-31 at v1.2.3; re-affirmed 2026-06-01 at v1.3.0; re-affirmed 2026-06-01 at v1.3.1)
+**Date:** 2026-06-02 (re-affirmed at v1.4.0 2026-06-13; re-affirmed at v1.3.2 2026-06-02; first scored 2026-04-25 at v1.0.0; re-affirmed 2026-05-14 at v1.2.0; re-affirmed 2026-05-31 at v1.2.3; re-affirmed 2026-06-01 at v1.3.0; re-affirmed 2026-06-01 at v1.3.1)
 **Type tags:** `[monorepo]` `[npm-workspaces]` `[cli]` `[mcp-adjacent]` — see [`CLAUDE.md`](CLAUDE.md) for the seven workspace packages.
 
 ## Pre-Remediation Assessment
@@ -37,7 +37,7 @@ Baseline at the pre-v1.0.0 migration handoff (sourced from [`HANDOFF.md`](HANDOF
 
 ## Post-Remediation
 
-Sourced primarily from [`SHIP_GATE.md`](SHIP_GATE.md): at v1.3.2 (re-affirmed 2026-06-02), every applicable hard-gate A–D row carries either an `[x]` evidence stamp or a `SKIP:` with explicit justification — `shipcheck audit`, last run at the v1.3.1 release tree, exited 0 (21 checked / 16 SKIP-with-justification / 0 unchecked) and is re-affirmed unchanged at v1.3.2. Soft gate E is fully met. The "100% pass on hard gates A–D" headline phrasing reflects the audit-tool verdict, not a hand-curated estimate; the per-row evidence dates below are the auditable substrate.
+Sourced primarily from [`SHIP_GATE.md`](SHIP_GATE.md): at v1.4.0 (re-affirmed 2026-06-13), every applicable hard-gate A–D row carries either an `[x]` evidence stamp or a `SKIP:` with explicit justification — `shipcheck audit`, last run at the v1.3.1 release tree, exited 0 (21 checked / 16 SKIP-with-justification / 0 unchecked) and is re-affirmed unchanged at v1.4.0. Soft gate E is fully met. The "100% pass on hard gates A–D" headline phrasing reflects the audit-tool verdict, not a hand-curated estimate; the per-row evidence dates below are the auditable substrate.
 
 | Category | Before | After |
 |----------|--------|-------|
@@ -55,4 +55,4 @@ The remaining 6 points to a perfect 50 are explicitly tracked rather than papere
 - **Shipping hygiene (1 point)** — Dependabot config in `.github/dependabot.yml` + `npm audit` in `ci.yml` matrix. Tracked as SHIP_GATE D-48/D-49 SKIPs.
 - **Identity (2 points)** — repo metadata polish (GitHub topics, social preview image, About-text refinement); minor but unfinished.
 
-Honest deltas: every SKIP that remains in SHIP_GATE.md (the MCP / desktop / VSCode items that don't apply, plus the real follow-ups above) is the reason individual category scores stay below 10. The repo is shippable at v1.3.2 by every applicable contract — six of seven `@dogfood-lab/*` packages are live on npm since v1.2.0; the gap is between "shippable" and "perfect."
+Honest deltas: every SKIP that remains in SHIP_GATE.md (the MCP / desktop / VSCode items that don't apply, plus the real follow-ups above) is the reason individual category scores stay below 10. The repo is shippable at v1.4.0 by every applicable contract — six of seven `@dogfood-lab/*` packages are live on npm since v1.2.0; the gap is between "shippable" and "perfect."

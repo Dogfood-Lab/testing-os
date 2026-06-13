@@ -20,7 +20,7 @@
 *Protocolos, almacenes de evidencia y ciclos de aprendizaje para software asistido por IA.*
 
 <!-- version:start -->
-**v1.3.2** — versión actual. Consulte [CHANGELOG.md](CHANGELOG.md) para ver qué se incluyó en esta versión.
+**v1.4.0** — versión actual. Consulte [CHANGELOG.md](CHANGELOG.md) para ver qué se incluyó en esta versión.
 <!-- version:end -->
 
 📖 **[Lea el manual →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -104,7 +104,7 @@ Requiere Node ≥ 22. La matriz de CI ejecuta Node 22 y 24 en `ubuntu-latest`; s
 
 ## Control de versiones
 
-Todos los paquetes `@dogfood-lab/*` se actualizan juntos, con un único número de versión para todo el repositorio. Se publican seis paquetes en npm bajo `@dogfood-lab` en la versión v1.3.2, de forma sincronizada (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); el séptimo, `@dogfood-lab/portfolio`, permanece interno. La línea de versión que aparece en la parte superior de este archivo README se actualiza automáticamente desde `package.json` mediante [`scripts/sync-version.mjs`](scripts/sync-version.mjs) cada vez que se ejecuta `npm run build`.
+Todos los paquetes que comienzan con `@dogfood-lab/*` se actualizan juntos, es decir, todos comparten el mismo número de versión dentro del monorepositorio. Se publican seis paquetes en npm bajo el nombre `@dogfood-lab` en la versión v1.4.0 y de forma sincronizada (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); el séptimo, `@dogfood-lab/portfolio`, permanece como un paquete interno. La línea de versión que aparece cerca de la parte superior de este archivo README se actualiza automáticamente a partir del archivo `package.json` mediante [`scripts/sync-version.mjs`](scripts/sync-version.mjs) cada vez que se ejecuta el comando `npm run build`.
 
 ## Licencia
 

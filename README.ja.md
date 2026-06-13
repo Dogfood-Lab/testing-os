@@ -20,7 +20,7 @@
 *AIによる支援を受けたソフトウェアのためのプロトコル、証拠ストア、および学習ループ。*
 
 <!-- version:start -->
-**v1.3.2** — 現在のリリース版。変更点は[CHANGELOG.md](CHANGELOG.md)を参照してください。
+**v1.4.0** — 現在のリリース版。変更点は[CHANGELOG.md](CHANGELOG.md)を参照してください。
 <!-- version:end -->
 
 📖 **[ハンドブックを読む →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -104,7 +104,7 @@ Node 22以上が必要です。CIマトリックスでは、`ubuntu-latest`上�
 
 ## バージョン管理
 
-すべての`@dogfood-lab/*`パッケージはまとめてバージョンアップされます。モノリポ全体でバージョン番号が統一されます。6つのパッケージ（`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`）が、v1.3.2として`@dogfood-lab`のもとでnpmに公開されます。7番目のパッケージである`@dogfood-lab/portfolio`は、引き続き社内利用のみとなります。このREADMEの上部付近にあるバージョン番号は、`npm run build`を実行するたびに、`package.json`から[`scripts/sync-version.mjs`](scripts/sync-version.mjs)を通じて自動的に更新されます。
+すべての`@dogfood-lab/*`パッケージはまとめて更新されます。つまり、モノリポジトリ全体でバージョン番号が1つだけ上がります。6つのパッケージ（`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`）がv1.4.0としてnpmに公開され、7番目のパッケージである`@dogfood-lab/portfolio`は内部利用のみとなります。このREADMEファイルの先頭付近にあるバージョン番号は、`package.json`から[`scripts/sync-version.mjs`](scripts/sync-version.mjs)を通じて自動的に更新されます。これは、`npm run build`を実行するたびに実行されます。
 
 ## ライセンス
 
