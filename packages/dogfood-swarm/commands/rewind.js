@@ -68,13 +68,14 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { realpathSync } from 'node:fs';
+import { realpathSync, existsSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 
 import { openDb } from '../db/connection.js';
 import { transitionAgent, TERMINAL_STATUSES as AGENT_TERMINAL_STATUSES } from '../lib/state-machine.js';
 import { transitionWave, TERMINAL_STATUSES as WAVE_TERMINAL_STATUSES } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
+import { removeWorktree } from '../lib/worktree.js';
 
 const REWIND_TARGET_STATUS = 'aborted_for_rewind';
 
@@ -210,8 +211,12 @@ export function rewind(opts) {
   ).all(...targetRunIds, ...WAVE_TERMINAL_STATUSES) : [];
 
   // agent_runs has no run_id column — scope through waves.run_id via the join.
+  // d4-swarm-core-B002: also select worktree_path/worktree_branch so the
+  // --apply path can tear down the per-agent worktrees these aborted runs
+  // created under --isolate (they survive `git reset --hard`, which only moves
+  // the main worktree at cwd, not the sibling .swarm/worktrees/ entries).
   const agentRuns = runScope ? db.prepare(`
-    SELECT ar.id, ar.wave_id, ar.status, d.name AS domain_name
+    SELECT ar.id, ar.wave_id, ar.status, ar.worktree_path, ar.worktree_branch, d.name AS domain_name
     FROM agent_runs ar
     JOIN domains d ON ar.domain_id = d.id
     JOIN waves w ON ar.wave_id = w.id
@@ -255,6 +260,10 @@ export function rewind(opts) {
     domain: a.domain_name,
     from_status: a.status,
     to_status: REWIND_TARGET_STATUS,
+    // B002: carry the worktree identity so the --apply path can tear it down
+    // after the DB abort commits. null for non-isolated runs (no worktree).
+    worktree_path: a.worktree_path || null,
+    worktree_branch: a.worktree_branch || null,
     applied: false,
   }));
 
@@ -441,6 +450,71 @@ export function rewind(opts) {
     // for report-shape consistency.
     report.db_transaction_done = true;
   }
+
+  // ── Apply: tear down the aborted agents' worktrees ──
+  // d4-swarm-core-B002: the aborted agent_runs still carry worktree_path /
+  // worktree_branch set at dispatch. `git reset --hard` above only moved the
+  // MAIN worktree at cwd; the sibling .swarm/worktrees/ entries are separate
+  // git worktrees pointing at branches whose base commit was just rewound
+  // away — strand them and `git worktree list` / `git branch` show stale
+  // entries while disk is never reclaimed.
+  //
+  // This runs AFTER the DB transaction commits, on purpose: the abort (the
+  // load-bearing, atomic state change) is durable first; the filesystem
+  // teardown is an advisory side-effect. It is best-effort — removeWorktree
+  // is itself internally swallowing ("already removed" / "already deleted") —
+  // and wrapped so a cleanup outcome cannot sink the rewind. After each
+  // attempt we re-check the path: if a worktree dir SURVIVES (e.g. a plain
+  // directory occupies the recorded path, so `git worktree remove` errored),
+  // we emit rewind_worktree_cleanup_failed naming the surviving path so the
+  // operator can `git worktree prune` + remove it manually. Mirrors B001's
+  // terminal-path cleanup and cleanupAllWorktrees' worktree_prune_failed
+  // breadcrumb pattern.
+  const worktreeTargets = planned_agent_runs.filter(a => a.applied && a.worktree_path);
+  let worktreesRemoved = 0;
+  let worktreesStranded = 0;
+  for (const a of worktreeTargets) {
+    try {
+      removeWorktree(cwd, a.worktree_path, a.worktree_branch);
+    } catch (e) {
+      // removeWorktree is internally best-effort and should not throw; this
+      // guard is the final isolation so even an unexpected throw cannot sink
+      // the rewind.
+      logStage('rewind_worktree_cleanup_failed', {
+        component: 'dogfood-swarm',
+        savePointTag,
+        cwd,
+        agentRunId: a.agent_run_id,
+        domain: a.domain,
+        worktreePath: a.worktree_path,
+        worktreeBranch: a.worktree_branch,
+        reason: 'removeWorktree threw',
+        err: e?.message,
+      });
+      worktreesStranded++;
+      continue;
+    }
+    // Best-effort verification: if the dir is still present, removal did not
+    // take (occupied / not-a-worktree / locked). Surface it as a breadcrumb
+    // rather than silently leaving an orphan the operator never learns about.
+    if (existsSync(a.worktree_path)) {
+      logStage('rewind_worktree_cleanup_failed', {
+        component: 'dogfood-swarm',
+        savePointTag,
+        cwd,
+        agentRunId: a.agent_run_id,
+        domain: a.domain,
+        worktreePath: a.worktree_path,
+        worktreeBranch: a.worktree_branch,
+        reason: 'worktree path still present after removeWorktree',
+      });
+      worktreesStranded++;
+    } else {
+      worktreesRemoved++;
+    }
+  }
+  report.worktrees_removed = worktreesRemoved;
+  report.worktrees_stranded = worktreesStranded;
 
   report.summary = formatPlanSummary(report);
   return report;

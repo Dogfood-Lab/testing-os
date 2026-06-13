@@ -12,9 +12,20 @@ import { loadFindings } from '../reader.js';
 /**
  * Derive candidate patterns from accepted findings.
  *
+ * D2B-001 — return shape carries a `skipped: [{ path, error }]` field so the
+ * silent-loader signal that the recommendation/doctrine derive stages already
+ * surface now also propagates through pattern derivation. `loadFindings`
+ * (reader.js) returns a torn / unparseable finding YAML as
+ * `{ valid: false, errors: [{ message }] }`; a torn file that on disk WAS an
+ * accepted finding would otherwise be filtered out of clustering with zero
+ * operator signal, quietly shrinking the evidence base behind a pattern's
+ * strength or threshold. The `skipped` list documents that partial-completion
+ * honestly. Legacy callers reading only `patterns` / `stats` are unaffected —
+ * the field is additive.
+ *
  * @param {string} rootDir - dogfood-labs repo root
  * @param {{ includeFixtures?: boolean }} opts
- * @returns {{ patterns: Array, stats: { findingsConsidered: number, clustersFound: number, belowThreshold: number } }}
+ * @returns {{ patterns: Array, skipped: Array<{path: string, error: string}>, stats: { findingsConsidered: number, clustersFound: number, belowThreshold: number, findingsSkipped: number } }}
  */
 export function derivePatterns(rootDir, opts = {}) {
   // Load only accepted, non-invalidated findings
@@ -22,6 +33,15 @@ export function derivePatterns(rootDir, opts = {}) {
   if (opts.includeFixtures) {
     allFindings.push(...loadFindings(rootDir, { fixtures: true, fixtureKind: 'valid' }));
   }
+
+  // D2B-001 — partition torn / unreadable findings into a structured skip list
+  // BEFORE the accepted filter drops them. A `valid:false` record is a finding
+  // YAML that failed parse (reader.js sets errors[0].message to the parse error)
+  // or schema validation; its on-disk status is unknowable, so a torn file that
+  // WAS an accepted finding must not vanish silently from clustering.
+  const skipped = allFindings
+    .filter(f => f.valid === false)
+    .map(f => ({ path: f.path, error: f.errors?.[0]?.message || 'unknown read/parse error' }));
 
   const accepted = allFindings.filter(f =>
     f.valid &&
@@ -68,10 +88,12 @@ export function derivePatterns(rootDir, opts = {}) {
 
   return {
     patterns,
+    skipped, // D2B-001: structured skip list for operator legibility
     stats: {
       findingsConsidered: accepted.length,
       clustersFound: clusters.size,
-      belowThreshold
+      belowThreshold,
+      findingsSkipped: skipped.length
     }
   };
 }

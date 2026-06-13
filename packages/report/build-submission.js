@@ -199,7 +199,23 @@ if (isMain) {
     process.exit(1);
   }
 
-  const scenarioResults = JSON.parse(readFileSync(resolve(scenarioFile), 'utf-8'));
+  // F-id d3-ingest-B004 (Stage C humanization) — read+parse the scenario file
+  // through a structured guard. Pre-fix a missing file (ENOENT), unreadable
+  // file (EACCES/EISDIR), or malformed JSON threw a raw stack and exited 1 with
+  // no hint — inconsistent with this file's own precheckSubmission, which
+  // returns a clean {valid, errors} shape (F-721047-001), and with run.js's
+  // emitCliErrorEvent discipline for --file read failures (cli_read_file
+  // stage). The operator now sees WHICH file and WHAT went wrong, not a raw
+  // ENOENT/SyntaxError stack.
+  const scenarioPath = resolve(scenarioFile);
+  let scenarioResults;
+  try {
+    scenarioResults = JSON.parse(readFileSync(scenarioPath, 'utf-8'));
+  } catch (err) {
+    const reason = err && err.message ? err.message : String(err);
+    console.error(`Could not read/parse --scenario-file ${scenarioPath}: ${reason}`);
+    process.exit(1);
+  }
 
   const submission = buildSubmission({
     repo: get('--repo') || process.env.GITHUB_REPOSITORY,

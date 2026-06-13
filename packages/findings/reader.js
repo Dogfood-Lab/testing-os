@@ -25,7 +25,18 @@ export function discoverFindings(rootDir) {
     const orgDir = join(findingsDir, org);
     for (const repo of listDirs(orgDir)) {
       const repoDir = join(orgDir, repo);
-      for (const file of readdirSync(repoDir)) {
+      // Leaf-IO guard (B002): the two OUTER levels go through `listDirs`, whose
+      // statSync is wrapped in try/catch so one unreadable dir is skipped. The
+      // innermost leaf read was bare — a single repo dir going unreadable
+      // (EACCES on a locked/permission-restricted dir, an ENOTDIR, a transient
+      // FS error) would throw an unstructured Node stack out of discoverFindings
+      // and hence out of every consumer (validate / list / derivePatterns /
+      // advise / review queue), so one bad directory sank discovery for EVERY
+      // other repo. Mirror the package standard (load-records.js
+      // walkRecordsWithSkips, lib/safe-yaml-load.js walkDir): skip the bad
+      // repoDir instead of throwing, and name it on stderr so the operator sees
+      // WHICH directory was unreadable in CI logs rather than a raw stack.
+      for (const file of listLeafFiles(repoDir)) {
         if (extname(file) === '.yaml') {
           paths.push(resolve(repoDir, file));
         }
@@ -34,6 +45,40 @@ export function discoverFindings(rootDir) {
   }
 
   return paths.sort();
+}
+
+/**
+ * List the immediate entries of a leaf repo directory, guarding the bare
+ * `readdirSync` against EACCES/ENOTDIR/transient FS errors.
+ *
+ * On error the directory is SKIPPED (returns `[]`) rather than throwing, and a
+ * structured line naming the offending path is written to stderr so the failure
+ * is operator-visible in CI logs. `discoverFindings` returns a `string[]` of
+ * paths (no structured-skip channel rides the return shape), so this mirrors
+ * the `findRecordFile` precedent (derive/load-records.js) of surfacing the skip
+ * via stderr rather than silently swallowing it — a bad directory must not sink
+ * discovery for every other repo, but it must also not vanish without a trace.
+ *
+ * Exported (package-internal) so the B002 leaf-IO guard can be exercised
+ * directly with a real, portable readdir error (readdir on a non-directory
+ * throws ENOTDIR on every platform), since the listDirs+leaf walk couples
+ * statSync and readdirSync such that the failure cannot be staged through the
+ * full walk cross-platform.
+ *
+ * @param {string} repoDir - Absolute path to a findings/<org>/<repo> directory.
+ * @returns {string[]} Entry names, or `[]` if the directory could not be read.
+ */
+export function listLeafFiles(repoDir) {
+  try {
+    return readdirSync(repoDir);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `discoverFindings: skipping unreadable findings directory ${repoDir}: ${err.message}. ` +
+      `Fix the directory's permissions/state and re-run; other repos were still discovered.`
+    );
+    return [];
+  }
 }
 
 /**

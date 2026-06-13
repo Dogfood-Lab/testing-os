@@ -643,7 +643,19 @@ Filters (for list):
     const sub = positional[0];
     if (sub === 'derive') {
       const write = flags.write;
-      const { patterns, stats } = derivePatterns(ROOT, { includeFixtures: flags['include-fixtures'] });
+      const { patterns, skipped, stats } = derivePatterns(ROOT, { includeFixtures: flags['include-fixtures'] });
+
+      // D2B-001 — surface structured skip signal to operators. A torn accepted
+      // finding silently shrinks the evidence base behind a pattern's strength
+      // or threshold; print which file was unreadable so it appears in CI logs.
+      // Mirrors the recommendations/doctrine derive branches. Exit stays 0 —
+      // partial derivation still completes honestly against the clean findings.
+      if (skipped && skipped.length > 0) {
+        console.error(`${skipped.length} finding(s) skipped (torn/unreadable):`);
+        for (const s of skipped) {
+          console.error(`  ${relative(ROOT, s.path)} — ${s.error}`);
+        }
+      }
 
       // Validate all
       const invalid = patterns.filter(p => !validatePattern(p).valid);
@@ -732,6 +744,14 @@ Filters (for list):
       // D2B-001 — surface structured skip signal to operators. The derive
       // engine still emits clean recommendations from the patterns it could
       // read; the skipped list documents the partial-completion honestly.
+      //
+      // B003 (conscious decision): skips are NON-FATAL by design — this branch
+      // prints them to stderr but keeps exit 0, unlike the `derive` branch
+      // which exits 1 on ruleErrors (cli.js:376-382). That asymmetry is
+      // intentional: a torn input here degrades the synthesis corpus rather
+      // than corrupting it, and `findings validate` is the gate that fails the
+      // run on torn inputs. Do not convert this to exit 1 without a `--strict`
+      // opt-in; CI that must block on torn inputs should run `validate`.
       if (skipped && skipped.length > 0) {
         console.error(`${skipped.length} pattern(s) skipped (torn/unreadable):`);
         for (const s of skipped) {
@@ -807,6 +827,11 @@ Filters (for list):
       const { doctrines, skipped, stats } = deriveDoctrine(ROOT);
 
       // D2B-001 — surface structured skip signal to operators.
+      //
+      // B003 (conscious decision): skips are NON-FATAL by design — printed to
+      // stderr but exit stays 0 (see the matching note on the recommendations
+      // derive branch). `findings validate` is the gate that fails on torn
+      // inputs; do not convert this to exit 1 without a `--strict` opt-in.
       if (skipped && skipped.length > 0) {
         console.error(`${skipped.length} pattern(s) skipped (torn/unreadable):`);
         for (const s of skipped) {

@@ -123,12 +123,19 @@ export function mergeWorktree(repoPath, branch) {
     gitArgs(repoPath, ['merge', branch, '--no-ff', '-m', `swarm: merge ${branch}`]);
     return { merged: true, conflicts: [] };
   } catch (e) {
-    // Check for merge conflicts
-    const status = git(repoPath, 'diff --name-only --diff-filter=U').trim();
+    // Check for merge conflicts. d4-swarm-core-B003: route both recovery calls
+    // through the argv-array gitArgs() helper so EVERY git invocation in this
+    // module stays on the shell-free path. These two calls use fixed argument
+    // strings today (no live injection vector), but the shell-form git() helper
+    // was an inconsistency with the module's stated argv-array discipline — a
+    // future edit that interpolates a branch-derived argument into one of them
+    // would otherwise silently reintroduce a shell-injection sink. No behavior
+    // change; pure defense-in-depth parity.
+    const status = gitArgs(repoPath, ['diff', '--name-only', '--diff-filter=U']).trim();
     const conflicts = status.split('\n').filter(Boolean);
     if (conflicts.length > 0) {
       // Abort the merge — coordinator must resolve
-      git(repoPath, 'merge --abort');
+      gitArgs(repoPath, ['merge', '--abort']);
       return { merged: false, conflicts };
     }
     throw e;

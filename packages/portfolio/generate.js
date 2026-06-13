@@ -15,9 +15,19 @@
 import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import yaml from 'js-yaml';
 
-const ROOT = resolve(import.meta.dirname, '..', '..');
+// d3-ingest-B002 (Stage C humanization) — PORTFOLIO_REPO_ROOT lets a test
+// harness redirect every read/write (INDEX_PATH, POLICIES_ROOT, the output
+// report) into a sandbox instead of the REAL working tree, so the corrupt-index
+// branch can be exercised without touching real indexes/. A production caller
+// leaves it unset and gets the historical `../..` walk. resolve() makes a
+// relative override absolute so the downstream join()s stay anchored. Mirrors
+// the INGEST_REPO_ROOT override in packages/ingest/run.js.
+const ROOT = process.env.PORTFOLIO_REPO_ROOT
+  ? resolve(process.env.PORTFOLIO_REPO_ROOT)
+  : resolve(import.meta.dirname, '..', '..');
 const INDEX_PATH = join(ROOT, 'indexes', 'latest-by-repo.json');
 // F-721047-004 — POLICIES_ROOT is the parent of all per-org dirs.
 // loadPolicies() enumerates every subdir at runtime so newly-onboarded orgs
@@ -28,7 +38,36 @@ const INDEX_PATH = join(ROOT, 'indexes', 'latest-by-repo.json');
 const POLICIES_ROOT = join(ROOT, 'policies', 'repos');
 const DEFAULT_OUTPUT = join(ROOT, 'reports', 'dogfood-portfolio.json');
 
-const ALL_SURFACES = ['cli', 'desktop', 'web', 'api', 'mcp-server', 'npm-package', 'plugin', 'library'];
+// d3-ingest-B003 (Stage C humanization) — ALL_SURFACES is DERIVED from the
+// authoritative product_surface enum in dogfood-record-submission.schema.json,
+// not a hand-maintained duplicate. It is load-bearing twice (parsePolicy drops
+// any surface not in this list; coverage.surfaces_total reports its length), so
+// a hand list would silently shrink the portfolio the moment a future schema
+// bump adds a surface (e.g. 'mobile') — the same "unknown surface names
+// silently dropped" brittleness F-246817-003 set out to kill, reintroduced one
+// layer up. We read the canonical JSON via createRequire on the schemas
+// package's `./json/*` subpath export — the exact single-source-of-truth seam
+// dogfood-swarm/lib/templates.js + validate-agent-output.js already use, so the
+// list cannot drift from the wire contract the verifier enforces.
+const require = createRequire(import.meta.url);
+const SUBMISSION_SCHEMA_PATH = require.resolve(
+  '@dogfood-lab/schemas/json/dogfood-record-submission.schema.json'
+);
+const ALL_SURFACES = (() => {
+  const schema = JSON.parse(readFileSync(SUBMISSION_SCHEMA_PATH, 'utf-8'));
+  const surfaces =
+    schema?.properties?.scenario_results?.items?.properties?.product_surface?.enum;
+  if (!Array.isArray(surfaces) || surfaces.length === 0) {
+    // Fail LOUD with a coded, actionable message rather than silently degrading
+    // to an empty surface list (which would zero the coverage denominator).
+    throw new Error(
+      `portfolio: could not derive product_surface enum from ${SUBMISSION_SCHEMA_PATH} ` +
+      `— expected properties.scenario_results.items.properties.product_surface.enum to be a ` +
+      `non-empty array. The @dogfood-lab/schemas contract may have moved; update the derivation path.`
+    );
+  }
+  return surfaces;
+})();
 const DEFAULT_MAX_AGE = 30;
 const DEFAULT_WARN_AGE = 14;
 
@@ -127,7 +166,28 @@ function loadPoliciesFromOrgDir(orgDir) {
 
   for (const file of readdirSync(orgDir)) {
     if (!file.endsWith('.yaml')) continue;
-    const text = readFileSync(join(orgDir, file), 'utf-8');
+    const filePath = join(orgDir, file);
+    // d3-ingest-B001 (Stage C humanization) — the READ joins the parse-failure
+    // path. Pre-fix only yaml.load() was wrapped; a read-time IO error (EACCES
+    // on a permission-restricted file, EBUSY/EISDIR/transient lock from a
+    // Windows AV/Search-Indexer/editor handle — the very class renameWithRetry
+    // defends against) on a SINGLE policy YAML propagated up through
+    // loadPolicies → main and dropped ALL repos from the portfolio. Now one bad
+    // file degrades to a skip + a console.warn naming the file, matching
+    // loadRecord's one-bad-file tolerance in rebuild-indexes.js, so the
+    // operator knows which policy went missing and why instead of getting a raw
+    // EACCES/EBUSY stack and no portfolio at all.
+    let text;
+    try {
+      text = readFileSync(filePath, 'utf-8');
+    } catch (err) {
+      const reason = err && err.message ? err.message : String(err);
+      console.warn(
+        `portfolio: skipping unreadable policy file ${filePath}: ${reason} ` +
+        `(other repos still included; re-run once the file is readable)`
+      );
+      continue;
+    }
     let doc;
     try {
       doc = yaml.load(text);
@@ -245,7 +305,28 @@ function main() {
     process.exit(1);
   }
 
-  const index = JSON.parse(readFileSync(INDEX_PATH, 'utf-8'));
+  // d3-ingest-B002 (Stage C humanization) — guard a CORRUPT/truncated index the
+  // same way the existsSync branch above guards a MISSING one. rebuild-indexes.js
+  // is engineered to keep emitting indexes/latest-by-repo.json under
+  // crash/partial-failure pressure, so a half-written file is a realistic state.
+  // Pre-fix this threw a raw `SyntaxError: Unexpected end of JSON input` and the
+  // operator had to reverse-engineer that the INDEX (not their command) was the
+  // problem. Now they get a structured message naming the file + the idempotent
+  // recovery action — mirroring the recovery hint run.js prints when
+  // rebuildIndexes throws.
+  let index;
+  try {
+    index = JSON.parse(readFileSync(INDEX_PATH, 'utf-8'));
+  } catch (err) {
+    const reason = err && err.message ? err.message : String(err);
+    console.error(
+      `Index is corrupt or truncated: ${INDEX_PATH}: ${reason}`
+    );
+    console.error(
+      'Recovery: re-run any ingest to trigger a full rebuild of indexes/ (the rebuild is idempotent — it scans records/ end-to-end).'
+    );
+    process.exit(1);
+  }
   const policies = loadPolicies(POLICIES_ROOT);
   const portfolio = generatePortfolio(index, policies);
 

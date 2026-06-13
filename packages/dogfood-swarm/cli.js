@@ -219,6 +219,45 @@ function getOutputDir(runId) {
   return join(DEFAULT_SWARM_DIR, runId);
 }
 
+/**
+ * d5-swarm-cli-B001 (Stage C): the `--domain=name:path` parse loop in
+ * cmdCollect / cmdRevalidate accepts only tokens matching
+ * /^--domain=([^:]+):(.+)$/ and SILENTLY discarded the rest. A token that
+ * starts with `--domain=` but fails the regex (missing colon, empty name/path)
+ * — or a misspelled `--doman=...` flag the loop never even inspects — vanished
+ * with no diagnostic; the unprovided domain's agent was then marked `failed`
+ * downstream and the whole wave flipped to `failed`, leaving the operator
+ * diagnosing a wave-failure that was really a CLI typo.
+ *
+ * This helper surfaces those dropped tokens as a non-fatal structured stderr
+ * warning naming each unparseable token + the expected shape, mirroring the
+ * fail-loud-on-malformed-flag posture of parseValueFlag / parseFormatFlag. It
+ * deliberately does NOT throw or change the exit code — the operator keeps the
+ * partial collect but is no longer left guessing.
+ *
+ * Scope of detection: any token whose `--domain=` prefix the operator clearly
+ * intended but that the strict regex rejected. We intentionally do NOT guess at
+ * arbitrary misspellings of the flag NAME (e.g. `--doman=`) — those are
+ * indistinguishable from unrelated positional args — but an EMPTY name or path
+ * (`--domain=:x`, `--domain=x:`) and a missing colon (`--domain=x`) are caught.
+ *
+ * @param {string[]} args — the post-run-id arg slice
+ */
+function warnUnparseableDomainTokens(args) {
+  const bad = [];
+  for (const arg of args) {
+    if (typeof arg !== 'string' || !arg.startsWith('--domain=')) continue;
+    if (!/^--domain=([^:]+):(.+)$/.test(arg)) bad.push(arg);
+  }
+  if (bad.length === 0) return;
+  console.error(
+    `WARNING: ${bad.length} --domain= argument(s) could not be parsed and were IGNORED:`
+  );
+  for (const t of bad) console.error(`  ${t}`);
+  console.error('  Expected shape: --domain=name:path (e.g. --domain=backend:outputs/backend.json).');
+  console.error('  The ignored domain(s) will be reported as `failed` (Output file not found); re-run with the corrected --domain= arg.');
+}
+
 // ── Command handlers ──
 
 function cmdInit(args) {
@@ -441,6 +480,18 @@ function cmdCollect(args) {
     }
   }
 
+  // d5-swarm-cli-B001 (Stage C): warn loudly on any `--domain=` token that
+  // failed the parse regex (missing colon, misspelled flag). The pre-fix loop
+  // SILENTLY discarded these, and the sole `Object.keys(outputs).length === 0`
+  // guard below fires only on a ZERO-parse — a PARTIAL drop (N args, one
+  // malformed) passed through, the unprovided domain's agent was later marked
+  // `failed` ('Output file not found' in collect.js), the wave flipped to
+  // `failed`, and the operator had no error pointing at the fat-fingered arg.
+  // This is the same fail-loud-on-malformed-flag discipline the parseValueFlag
+  // `--`-swallow guard and parseFormatFlag enum check already enforce. It is a
+  // non-fatal observability warning — it does NOT change the exit code or gate.
+  warnUnparseableDomainTokens(args.slice(1));
+
   if (Object.keys(outputs).length === 0) {
     console.error('No outputs provided. Use --domain=name:path for each agent output.');
     console.error('Example: swarm collect <run-id> --domain=backend:outputs/backend.json --domain=tests:outputs/tests.json');
@@ -511,6 +562,12 @@ function cmdRevalidate(args) {
     if (m) outputs[m[1]] = resolve(m[2]);
   }
 
+  // d5-swarm-cli-B001 (Stage C): cmdRevalidate shares cmdCollect's silent-drop
+  // loop and the same zero-match-only guard below. Same fix: name every
+  // unparseable `--domain=` token on stderr so a fat-fingered recovery arg
+  // does not vanish. Non-fatal; the exit code / gate behaviour is unchanged.
+  warnUnparseableDomainTokens(args.slice(1));
+
   let reason = '';
   const reasonIdx = args.indexOf('--reason');
   // cli-003: a following token that starts with `--` is the NEXT flag, not the
@@ -579,6 +636,20 @@ function cmdResume(args) {
     outputDir: getOutputDir(runId),
   });
   console.log(formatResume(r));
+
+  // d5-swarm-cli-B002 (Stage C): `swarm resume` sits in the same scripted
+  // operator chain as the verify/persist/findings gate verbs (`swarm resume &&
+  // swarm collect`), yet it used to exit 0 on EVERY action — including
+  // `blocked` (agents in invalid_output / ownership_violation that need manual
+  // fix or `swarm revalidate`) and `unknown` (an unexpected state-combination).
+  // A CI step gating on $? then advanced past a wave that cannot proceed.
+  // formatResume already prints BLOCKED + the revalidate recovery hint to a
+  // human, so this aligns the MACHINE signal with the human-readable one — the
+  // same 'CI must see the gate fail' contract pinned for `swarm verify` by
+  // cli-p-002. redispatched / waiting / all_complete / none stay at exit 0.
+  if (r.action === 'blocked' || r.action === 'unknown') {
+    process.exit(1);
+  }
 }
 
 function cmdRewind(args) {

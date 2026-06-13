@@ -31,6 +31,8 @@ import { openDb } from '../db/connection.js';
 import { isBlocked, isInFlight } from './state-machine.js';
 import { transitionWave } from './wave-state-machine.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from './queries/latest-agent-runs.js';
+import { cleanupAllWorktrees } from './worktree.js';
+import { logStage } from './log-stage.js';
 
 /**
  * Phase progression map.
@@ -233,7 +235,47 @@ export function recordPromotion(db, runId, waveId, fromPhase, toPhase, opts) {
     return promotionId;
   });
 
-  return promote();
+  const promotionId = promote();
+
+  // d4-swarm-core-B001: wire the cleanup half of the documented worktree
+  // lifecycle (lib/worktree.js header: dispatch creates → collect merges →
+  // cleanup removes). dispatch.js creates per-agent worktrees under --isolate
+  // and persists worktree_path/worktree_branch, collect.js reads them, but
+  // NOTHING tore them down — so every --isolate wave stranded its
+  // .swarm/worktrees/w<N>-<domain>/ dir + swarm/* branch on disk forever.
+  // The run's LAWFUL terminal transition (toPhase === 'complete') is the
+  // right place to reclaim them: by then no further wave will read from any
+  // worktree of this run.
+  //
+  // This runs AFTER the promotion transaction has COMMITTED, on purpose: the
+  // gate decision (promotion row + wave transition + runs.status) is the
+  // load-bearing, atomic write; the filesystem teardown is an advisory
+  // side-effect that must never roll the gate decision back. It is also
+  // best-effort — cleanupAllWorktrees is itself internally hardened (each
+  // removeWorktree swallows "already gone"; the `worktree prune` step emits
+  // its own worktree_prune_failed breadcrumb) — and the extra try/catch here
+  // guarantees that even a wholly-unexpected throw cannot sink the wave. A
+  // failure leaves a worktree_cleanup_failed row naming the run + path so the
+  // operator can `git worktree prune` manually. Mirrors the B002 rewind-path
+  // cleanup and dispatch.js's documented FS-orphan trade-off.
+  if (toPhase === 'complete') {
+    const run = db.prepare('SELECT local_path FROM runs WHERE id = ?').get(runId);
+    if (run && run.local_path) {
+      try {
+        cleanupAllWorktrees(run.local_path);
+      } catch (e) {
+        logStage('worktree_cleanup_failed', {
+          component: 'dogfood-swarm',
+          runId,
+          repoPath: run.local_path,
+          promotionId,
+          err: e?.message,
+        });
+      }
+    }
+  }
+
+  return promotionId;
 }
 
 /**

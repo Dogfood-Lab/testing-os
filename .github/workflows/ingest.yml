@@ -57,7 +57,26 @@ jobs:
             echo "::error::repository_dispatch received with missing/null client_payload.submission. Consumer dispatcher is misconfigured — check the dispatching workflow's dogfood.yml step."
             exit 1
           fi
+          # d6-infra-B001: decouple run.js's exit code from the step's success.
+          # run.js exits 1 for a REJECTED submission (verification.status !==
+          # 'accepted') — a NORMAL, designed outcome: the rejection record is
+          # written to records/_rejected/ and MUST be committed. Only exit >=2
+          # is a genuine pipeline fault. The default shell is
+          # `bash -eo pipefail`, so without this `set +e` the `node ... | tee`
+          # pipeline propagates exit 1 and `set -e` halts the job at this step,
+          # skipping 'Read result' + 'Commit' and silently dropping the
+          # _rejected evidence the system exists to accumulate. `tee`'s own exit
+          # is masked by PIPESTATUS so a write hiccup can't hide node's code.
+          set +e
           echo "$SUBMISSION_PAYLOAD" | node packages/ingest/run.js --provenance=github | tee /tmp/ingest-result.json
+          rc=${PIPESTATUS[1]}
+          set -e
+          if [ "$rc" -ge 2 ]; then
+            echo "::error::ingest pipeline faulted (exit $rc) on a repository_dispatch submission — this is a genuine error, NOT a rejection (rejections exit 1 and still commit). Inspect the run log above and the structured \"stage\":\"error\" NDJSON event from packages/ingest/run.js."
+            exit "$rc"
+          fi
+          # exit 0 (accepted) or 1 (rejected) both proceed: the accepted or
+          # _rejected record is on the runner working tree and must be committed.
 
       - name: Run ingestion (workflow_dispatch)
         if: github.event_name == 'workflow_dispatch'
@@ -71,15 +90,41 @@ jobs:
           SUBMISSION_FILE: ${{ inputs.submission_file }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          # d6-infra-B001: same rejected-exit decouple as the repository_dispatch
+          # leg. run.js exits 1 on a rejected submission (the _rejected record is
+          # written and must still be committed); only exit >=2 is a real fault.
+          set +e
           node packages/ingest/run.js --provenance=github --file "$SUBMISSION_FILE" | tee /tmp/ingest-result.json
+          rc=${PIPESTATUS[0]}
+          set -e
+          if [ "$rc" -ge 2 ]; then
+            echo "::error::ingest pipeline faulted (exit $rc) on workflow_dispatch file $SUBMISSION_FILE — genuine error, NOT a rejection (rejections exit 1 and still commit). Inspect the run log above and the structured \"stage\":\"error\" NDJSON event from packages/ingest/run.js."
+            exit "$rc"
+          fi
 
       - name: Read result
         id: result
         run: |
           if [ -f /tmp/ingest-result.json ]; then
-            STATUS=$(jq -r '.status' /tmp/ingest-result.json)
-            RUN_ID=$(jq -r '.run_id' /tmp/ingest-result.json)
-            WRITTEN=$(jq -r '.written' /tmp/ingest-result.json)
+            # d6-infra-B003: parse-guard before extracting fields. The `[ -f ]`
+            # check above covers an ABSENT file but not a MALFORMED one — if a
+            # future change emits a non-JSON warning to stdout, or a tee is torn
+            # by a crash mid-write, `jq -r '.status'` exits non-zero and `set -e`
+            # fails the step with jq's terse parse error instead of an
+            # operator-legible annotation naming the run. Validate parseability
+            # first and emit a structured ::error:: (matching the
+            # SUBMISSION_PAYLOAD null-guard and the rebase ::error:: discipline
+            # elsewhere in this file).
+            if ! jq -e . /tmp/ingest-result.json >/dev/null 2>&1; then
+              echo "::error::ingest-result.json is not valid JSON — packages/ingest/run.js emitted unparseable stdout (a non-JSON warning, or a torn write). Raw contents follow; fix run.js's stdout contract so it always emits a single JSON object on the result line."
+              cat /tmp/ingest-result.json
+              exit 1
+            fi
+            # `// empty` so an absent field yields '' rather than the literal
+            # string 'null' leaking into the step outputs.
+            STATUS=$(jq -r '.status // empty' /tmp/ingest-result.json)
+            RUN_ID=$(jq -r '.run_id // empty' /tmp/ingest-result.json)
+            WRITTEN=$(jq -r '.written // empty' /tmp/ingest-result.json)
             echo "status=$STATUS" >> "$GITHUB_OUTPUT"
             echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
             echo "written=$WRITTEN" >> "$GITHUB_OUTPUT"

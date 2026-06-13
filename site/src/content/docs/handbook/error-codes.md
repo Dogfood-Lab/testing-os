@@ -98,6 +98,23 @@ A wave is now in a half-written state: artifact rows + file_claims + agent state
   2. Diagnose the underlying SQLite issue from `Caused by:`. `busy_timeout` usually means another process holds the DB; check for stuck `swarm` processes. UNIQUE collision usually means the fingerprint algorithm matched an existing row — check `swarms/control-plane.db` for the colliding finding.
   3. Re-run `swarm collect` for the same wave once resolved. The outer wrapper is idempotent at the upsert level.
 
+### `CONTROL_PLANE_SCHEMA_TOO_NEW`
+
+:::caution[Severity: HIGH]
+The on-disk `control-plane.db` was written by a **newer** `@dogfood-lab/dogfood-swarm` build than the one you are running. `openDb` refuses to operate on it **fail-closed** — it closes the handle and throws rather than risk silent corruption (a newer schema may have renamed/repurposed a column or added a `NOT NULL` column this older writer can't populate). No write happens; the DB is left untouched.
+:::
+
+- **Class:** plain `Error` (no `.code` field yet) thrown by `openDb` — `packages/dogfood-swarm/db/connection.js`. Surfaces through the same top-level seam as the typed errors, but as the **untyped** `ERROR: <message>` single-line shape (it has no `code`/`hint`), not the `ERROR [<CODE>]:` shape. `CONTROL_PLANE_SCHEMA_TOO_NEW` is the **documentation identifier** for this failure mode, not a value carried on the error object today. See "Follow-ups" below.
+- **Trigger:** `openDb()` read `schema_version` from the DB's `kv` table and found it **greater than** the `SCHEMA_VERSION` this build understands. The shared `swarms/control-plane.db` is committed back to `main` by `ingest.yml`; an operator on an older checkout (or a stale CI cache) can open a DB that a newer `main` already migrated. Neither the create branch (`version < 1`) nor the upgrade branch (`version < SCHEMA_VERSION`) fires, so without this refusal `openDb` would silently proceed against an unknown-newer shape.
+- **Message shape:** `control-plane.db at <dbPath> is schema v<version> but this @dogfood-lab/dogfood-swarm build only understands v<SCHEMA_VERSION>. Pull the latest @dogfood-lab/dogfood-swarm before opening this DB.`
+- **Recovery (the message says it too):** this is **not** DB corruption and needs **no** manual DB surgery — the remedy is to upgrade the tool to match the DB:
+  1. Pull the latest `main` / re-install `@dogfood-lab/dogfood-swarm` so your build's `SCHEMA_VERSION` is `>=` the on-disk version.
+  2. Re-run the command. `openDb` will then take the normal create/upgrade path.
+  3. Do **not** hand-edit `swarms/control-plane.db` or delete it to "fix" the version — that discards the newer migrated state the newer build wrote.
+- **Follow-ups (out of scope for the doc-only fix that added this entry):**
+  - Promote the plain `throw new Error(...)` in `connection.js` to a typed error carrying `code: 'CONTROL_PLANE_SCHEMA_TOO_NEW'` + a `hint` so it renders through `renderTopLevelError` as `ERROR [CONTROL_PLANE_SCHEMA_TOO_NEW]:` like the other codes here.
+  - Add `packages/dogfood-swarm/db/connection.js` to the `error-codes` drift gate's `sources` in `scripts/doc-drift-patterns.json` once the typed `.code` lands, so this entry is enforced by the same coverage gate as the rest of the family.
+
 ### `DISPATCH_RUN_NOT_FOUND`
 
 :::caution[Severity: HIGH]

@@ -24,6 +24,43 @@ import { resolve, dirname, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 /**
+ * True when `path` is a stat-able directory. The stat is the one IO boundary in
+ * this builder that can throw on an abnormal-but-not-impossible filesystem
+ * state: a broken symlink (ENOENT/ELOOP), a permission-denied entry (EACCES),
+ * or a TOCTOU race where the entry vanishes between readdirSync and statSync
+ * (ENOENT). Pre-fix (d6-infra-B002) both `hasRealPackage` and
+ * `findTsconfigReferenceDrift` called statSync(entry) unconditionally, so a
+ * single stray broken symlink under packages/ — e.g. from a partially-cloned or
+ * interrupted scaffold — aborted `npm run build` with a raw Node fs stack trace
+ * instead of the structured `[testing-os build]` guidance the rest of the
+ * script emits.
+ *
+ * The humanization fix: on a stat failure, emit ONE structured, operator-legible
+ * warning naming the offending path AND the fs error code, then return false so
+ * the entry is skipped (it cannot be a real package or a TS package — both
+ * predicates require a readable directory). This degrades a stray bad entry to
+ * "ignored that entry" rather than crashing the wave-tolerant builder. Skip-
+ * with-a-logged-reason, not a silent swallow: the operator still sees exactly
+ * which entry was unreadable and why.
+ *
+ * @param {string} path — absolute path to a packages/<entry>
+ * @returns {boolean} true iff `path` stats as a directory; false (with a logged
+ *   reason) if it is not a directory or could not be stat-ed.
+ */
+function isReadableDirectory(path) {
+  try {
+    return statSync(path).isDirectory();
+  } catch (err) {
+    console.error(
+      `[testing-os build] skipped unreadable entry under packages/: ${path} — ${err.code ?? err.message}. ` +
+        `A broken symlink, a permission-denied entry, or an entry removed mid-scan can cause this; ` +
+        `remove or repair the entry, then re-run \`npm run build\`.`
+    );
+    return false;
+  }
+}
+
+/**
  * True when `packages/` holds at least one real package (a directory, not
  * dot-prefixed, with a package.json). Mirrors the `hasRealPackage` guard so an
  * empty/fresh workspace skips `tsc --build` rather than tripping TS18002.
@@ -37,7 +74,7 @@ export function hasRealPackage(packagesDir) {
     readdirSync(packagesDir).some((entry) => {
       if (entry.startsWith('.')) return false;
       const p = resolve(packagesDir, entry);
-      if (!statSync(p).isDirectory()) return false;
+      if (!isReadableDirectory(p)) return false;
       return existsSync(resolve(p, 'package.json'));
     })
   );
@@ -67,7 +104,7 @@ export function findTsconfigReferenceDrift({ packagesDir, rootTsconfigPath }) {
     .filter((entry) => {
       if (entry.startsWith('.')) return false;
       const p = resolve(packagesDir, entry);
-      return statSync(p).isDirectory() && existsSync(resolve(p, 'tsconfig.json'));
+      return isReadableDirectory(p) && existsSync(resolve(p, 'tsconfig.json'));
     })
     .map((entry) => normalizeRef(`packages/${entry}`));
 

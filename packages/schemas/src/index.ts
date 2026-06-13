@@ -20,9 +20,43 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const jsonDir = resolve(here, '../src/json');
 
-function load(filename: string): JsonSchema {
-  const raw = readFileSync(resolve(jsonDir, filename), 'utf8');
-  return JSON.parse(raw) as JsonSchema;
+/**
+ * Load and parse a bundled JSON schema.
+ *
+ * d1-schemas-B002 — readFileSync + JSON.parse are wrapped so a corrupt or
+ * truncated package-bundled `src/json/*.schema.json` (a packaging defect that
+ * can ship in a tarball) throws a SELF-IDENTIFYING error at module-init instead
+ * of a bare `SyntaxError: Unexpected end of JSON input` that names no file. The
+ * rethrown message names the package and the offending filename so the consumer
+ * knows exactly which of the eight schemas to inspect/re-install — they do not
+ * have to bisect by hand. This is the only structured channel available at
+ * module-init (no CLI renderer / no logStage pipeline exists this early), so the
+ * helpful contract is "a thrown Error whose message carries the recovery handle."
+ *
+ * `dirOverride` exists only for the test seam (`_loadSchemaForTests`); production
+ * callers always read from the real bundled `jsonDir`.
+ */
+function load(filename: string, dirOverride?: string): JsonSchema {
+  const path = resolve(dirOverride ?? jsonDir, filename);
+  let raw: string;
+  try {
+    raw = readFileSync(path, 'utf8');
+  } catch (e) {
+    throw new Error(
+      `@dogfood-lab/schemas: failed to read bundled schema ${filename} (at ${path}): ${
+        (e as Error).message
+      }`,
+    );
+  }
+  try {
+    return JSON.parse(raw) as JsonSchema;
+  } catch (e) {
+    throw new Error(
+      `@dogfood-lab/schemas: failed to parse bundled schema ${filename} (at ${path}) as JSON — the package artifact may be corrupt or truncated: ${
+        (e as Error).message
+      }`,
+    );
+  }
 }
 
 export interface JsonSchema {
@@ -58,6 +92,21 @@ export const allSchemas = {
 } as const;
 
 export type SchemaName = keyof typeof allSchemas;
+
+/**
+ * Test-only seam for d1-schemas-B002. Exposes the module-private {@link load}
+ * so the parse-error-context guard can be exercised against a corrupt fixture
+ * without touching the real bundled `src/json` tree. Mirrors the existing
+ * `_resetValidatorCacheForTests` / `_schemasModuleInstanceCount` test exports —
+ * underscore-prefixed, not part of the public API.
+ *
+ * @param filename    schema basename, e.g. `dogfood-record.schema.json`
+ * @param dirOverride optional directory to read from instead of the bundled
+ *                    `jsonDir` (tests point this at a TEST_ROOT temp dir)
+ */
+export function _loadSchemaForTests(filename: string, dirOverride?: string): JsonSchema {
+  return load(filename, dirOverride);
+}
 
 export {
   compileSchema,

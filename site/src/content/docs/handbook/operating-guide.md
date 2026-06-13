@@ -94,9 +94,28 @@ Recovery procedure:
 
 The same `rebuild-indexes` call also returns `skipped[]` for records that loaded but lacked a `run_id` — same recovery shape (re-dispatch with a complete submission), different root cause.
 
+## Recovering from a locked control-plane DB
+
+The swarm control plane is a single SQLite file at `swarms/control-plane.db`. Every file-backed connection opens in **WAL** journal mode with a **5-second `busy_timeout`** (`BUSY_TIMEOUT_MS` in `packages/dogfood-swarm/db/connection.js`). That combination is the design for parallel `swarm` invocations:
+
+- Multiple readers (`swarm status`, `swarm runs`) + one writer: safe under WAL, no waiting.
+- Two concurrent **writers** (e.g. `swarm collect` while another process runs `swarm advance`): each writer briefly waits up to 5s for the other to release its transaction, then proceeds. Swarm transactions are small (most under 50ms), so writer-vs-writer contention normally self-resolves well inside the window and you never see an error.
+
+**When a lock does surface**, it appears as a `SQLITE_BUSY` / "database is locked" error (and, from `swarm collect`, as the `COLLECT_UPSERT_FAILED` code — see the [Error Code Reference](../error-codes/)). This means a writer held the DB for longer than 5s. The cause is almost always **another process still holding a write transaction**, not file corruption — so the fix is to release that process, **not** to touch the DB file.
+
+Recovery procedure:
+
+1. **Find the stuck process.** List running `swarm` processes and look for one that is hung mid-command (a crashed agent that never released its transaction, an orphaned `swarm collect`/`swarm advance`, or an editor/`sqlite3` shell you left open on the file):
+   - macOS/Linux: `ps aux | grep -i swarm` (and `lsof swarms/control-plane.db` to see every process holding the file open).
+   - Windows (PowerShell): `Get-Process | Where-Object { $_.Path -like '*node*' }`, or use Resource Monitor's "Associated Handles" search for `control-plane.db`.
+2. **Stop it.** Terminate the stuck process so it releases its lock (`kill <pid>` / `Stop-Process -Id <pid>`). A clean `swarm` process will release on its own once its transaction commits; only kill one that is genuinely hung.
+3. **Re-run the command that hit the lock.** With the holder gone, the retry acquires the write lock immediately. `swarm collect` in particular is idempotent at the upsert level (per `COLLECT_UPSERT_FAILED`), so re-running it after clearing the lock is safe.
+
+**Do NOT** delete `swarms/control-plane.db`, run `PRAGMA`-level surgery, or hand-edit the WAL/SHM sidecar files to "unstick" a lock — the lock is held by a live process, and removing the file discards committed swarm state. If a lock persists after every `swarm` process is confirmed dead, the WAL sidecar (`control-plane.db-wal`) may simply need a clean checkpoint, which the next normal `openDb` performs automatically; re-running any `swarm` verb is the recovery, not file deletion. If contention is chronic (you regularly wait >5s), raise `BUSY_TIMEOUT_MS` rather than serialising externally.
+
 ## Error Codes
 
-For the structured error codes that surface from ingest and dogfood-swarm CLIs (`RECORD_SCHEMA_INVALID`, `DUPLICATE_RUN_ID`, `ISOLATION_FAILED`, `COLLECT_UPSERT_FAILED`, `STATE_MACHINE_*`), see the [Error Code Reference](../error-codes/).
+For the structured error codes that surface from ingest and dogfood-swarm CLIs (`RECORD_SCHEMA_INVALID`, `DUPLICATE_RUN_ID`, `ISOLATION_FAILED`, `COLLECT_UPSERT_FAILED`, `CONTROL_PLANE_SCHEMA_TOO_NEW`, `STATE_MACHINE_*`), see the [Error Code Reference](../error-codes/).
 
 ## Rollout Doctrine
 

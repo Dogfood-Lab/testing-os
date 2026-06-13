@@ -49,14 +49,44 @@ function logStage(stage, fields = {}) {
 /**
  * Recursively find all .json files under a directory.
  *
+ * d3-ingest-B005 (Stage C humanization): the `readdirSync` is wrapped so an
+ * unreadable subtree (EACCES, ENOTDIR, a Windows lock — the same class
+ * renameWithRetry defends against) degrades to "that subtree's records are
+ * missing from this rebuild" instead of throwing and aborting the WHOLE scan.
+ * This restores parity with the per-FILE tolerance of `loadRecord` just below
+ * (module header: "does NOT crash on a single bad file") and mirrors the
+ * in-repo precedent in `packages/portfolio/lib/parse-regression-pins.js`'s
+ * `walkSourceFiles`. The skip is NOT silent: a structured
+ * `logStage('warn', { kind: 'dir_unreadable', path })` NDJSON line makes it
+ * greppable alongside the rest of the pipeline (`"kind":"dir_unreadable"`), so
+ * the operator can see which subtree was dropped and why the index is partial.
+ * Exported so the guard is unit-testable in isolation (the single wrapped
+ * `readdirSync` serves both the top-level call and every recursive descent).
+ *
  * @param {string} dir
  * @returns {string[]}
  */
-function findJsonFiles(dir) {
+export function findJsonFiles(dir) {
   const results = [];
   if (!existsSync(dir)) return results;
 
-  const entries = readdirSync(dir, { withFileTypes: true });
+  let entries;
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    // Unreadable directory (locked / permission-restricted / not a dir).
+    // Skip this subtree rather than sinking the whole rebuild, but emit a
+    // structured, greppable warn naming the path so the partial index is
+    // explained — not a silent swallow.
+    logStage('warn', {
+      kind: 'dir_unreadable',
+      reason: err && err.code ? err.code : 'readdir_failed',
+      path: dir,
+      error: err && err.message ? err.message : String(err),
+    });
+    return results;
+  }
+
   for (const entry of entries) {
     const fullPath = join(dir, entry.name);
     if (entry.isDirectory()) {

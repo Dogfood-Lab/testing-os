@@ -27,8 +27,23 @@ import {
 } from '../lib/state-machine.js';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { randomBytes } from 'node:crypto';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
+import { logStage } from '../lib/log-stage.js';
+
+/**
+ * Mint a synthetic correlation_id for a coordination stage (FT-PIPELINE-004
+ * pattern; mirrors the local helper in dispatch.js / collect.js / verify.js /
+ * rewind.js / redrive.js / revalidate.js — mintCorrelationId is a per-file
+ * LOCAL function, not a shared export). A single grep of `coord-<ts>-<rand>`
+ * across coordination-command stderr ties the event back to its origin.
+ */
+function mintCorrelationId() {
+  const ts = Date.now().toString(36);
+  const rand = randomBytes(2).toString('hex');
+  return `coord-${ts}-${rand}`;
+}
 
 /**
  * @param {object} opts
@@ -215,6 +230,34 @@ export function resume(opts) {
   } else {
     report.action = 'unknown';
     report.reason = 'Unexpected state — inspect manually';
+
+    // d5-swarm-cli-B003 (Stage C): this is the ONE genuinely "I don't know what
+    // state this wave is in" terminal case — reached only by a state-combination
+    // the classifier did not anticipate (e.g. an agent_run carrying a
+    // non-canonical status outside the 9-status set). Unlike every sibling
+    // failure path (dispatch.js emitPreconditionFailed → logStage, collect.js
+    // transition_skipped / upsert_findings_failed), it previously emitted NO
+    // structured event — an operator grepping the NDJSON stream (the package's
+    // own observability surface) got nothing for the case that most warrants a
+    // forensic breadcrumb. Emit one greppable, correlated event before
+    // returning so the 'inspect manually' dead-end ties to any follow-up the
+    // operator runs. Purely additive: the report shape + return are unchanged.
+    logStage('resume_unknown_state', {
+      component: 'dogfood-swarm',
+      correlation_id: mintCorrelationId(),
+      runId: opts.runId,
+      waveId: wave.id,
+      waveNumber: wave.wave_number,
+      phase: wave.phase,
+      reason: report.reason,
+      // The exact status set that fell through every classifier branch — the
+      // payload an operator needs to see WHY this hit the unknown dead-end.
+      agentStatuses: agentRuns.map(ar => ({
+        domain: ar.domain_name,
+        agentRunId: ar.id,
+        status: ar.status,
+      })),
+    });
   }
 
   return report;
