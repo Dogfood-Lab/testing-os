@@ -24,7 +24,7 @@
   },
   "dependencies": {
     "@dogfood-lab/schemas": "^1.2.0",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.2.0"
   },
   "engines": {
     "node": ">=22"
