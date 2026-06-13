@@ -84,6 +84,17 @@
             "type": "string",
             "description": "What a passing result looks like. Required if verifiable is true."
           }
+        },
+        "$comment": "d1-schemas-NEW — third instance of the d1-schemas-003 family. The `expected` description has always said 'Required if verifiable is true', but until stage A nothing enforced it, so a step could claim verifiable:true with no pass condition and validate clean. A keyed if/then (NOT a dependentRequired, which fires on key presence and would wrongly trip on verifiable:false) requires `expected` only when verifiable === true. Mirrors the H4 precedent in dogfood-finding.schema.json.",
+        "if": {
+          "properties": { "verifiable": { "const": true } },
+          "required": ["verifiable"]
+        },
+        "then": {
+          "required": ["expected"],
+          "properties": {
+            "expected": { "type": "string", "minLength": 1 }
+          }
         }
       }
     },

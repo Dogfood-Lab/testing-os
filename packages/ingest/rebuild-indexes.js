@@ -25,7 +25,7 @@
  */
 
 import { readdirSync, readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync } from 'node:fs';
-import { join, relative } from 'node:path';
+import { join, relative, sep } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-stage.js';
@@ -115,7 +115,17 @@ export function rebuildIndexes(repoRoot, options = {}) {
   const skipped = [];
 
   for (const f of [...acceptedFiles, ...rejectedFiles]) {
-    const relPath = relative(repoRoot, f);
+    // SEED-1 (d3-ingest-001) — posixify at the serialization boundary.
+    // `relative()` returns OS-native separators (backslashes on win32). This
+    // value becomes `record._path` and is serialized verbatim into all three
+    // committed index `path` fields (latest-by-repo / failing / stale), which
+    // downstream consumers read as raw.githubusercontent.com URL fragments
+    // (docs/policy-contract.md Gate F) — a backslash there is a broken URL.
+    // Normalize ONCE here, at the single source the whole family flows through,
+    // so every serialized path is forward-slash regardless of host OS. Mirrors
+    // the canonical transform proven in
+    // packages/portfolio/lib/parse-regression-pins.js:75. NEVER a win32-skip.
+    const relPath = relative(repoRoot, f).split(sep).join('/');
     const { record, error } = loadRecord(f);
     if (error) {
       corrupted.push({ path: relPath, error });

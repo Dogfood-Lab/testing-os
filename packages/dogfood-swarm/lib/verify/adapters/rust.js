@@ -5,9 +5,26 @@
  * Commands: cargo check, cargo clippy, cargo test, cargo build.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { runSteps } from '../runner.js';
+import { MAX_AGENT_OUTPUT_BYTES } from '../../bounded-json-read.js';
+
+// d4-swarm-core-004 (Stage A): the target-repo manifest is UNTRUSTED — we probe
+// arbitrary external repos. A hostile or accidentally-bloated multi-GB
+// Cargo.toml would otherwise be read entirely into the coordinator's memory by
+// a bare readFileSync during an otherwise cheap probe. The node sibling already
+// bounds its package.json read (node.js routes through readBoundedJson with the
+// same 50 MB cap); this lifts the TOML sibling into lockstep. A statSync size
+// check is sufficient here because the manifest is consumed with .match() /
+// .includes() string scans, not a JSON.parse — so an oversized file is simply
+// skipped (size-dependent evidence stays unset), never buffered.
+function readBoundedManifest(filePath) {
+  if (statSync(filePath).size > MAX_AGENT_OUTPUT_BYTES) {
+    return null; // oversized untrusted manifest — skip the read, do not buffer
+  }
+  return readFileSync(filePath, 'utf-8');
+}
 
 function probe(repoPath) {
   const evidence = {};
@@ -18,10 +35,12 @@ function probe(repoPath) {
     score += 60;
     evidence.cargoToml = true;
     try {
-      const content = readFileSync(cargoPath, 'utf-8');
-      const nameMatch = content.match(/^name\s*=\s*"([^"]+)"/m);
-      if (nameMatch) evidence.name = nameMatch[1];
-      evidence.isWorkspace = content.includes('[workspace]');
+      const content = readBoundedManifest(cargoPath);
+      if (content !== null) {
+        const nameMatch = content.match(/^name\s*=\s*"([^"]+)"/m);
+        if (nameMatch) evidence.name = nameMatch[1];
+        evidence.isWorkspace = content.includes('[workspace]');
+      }
     } catch { /* */ }
   }
 

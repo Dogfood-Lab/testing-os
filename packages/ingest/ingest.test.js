@@ -102,6 +102,13 @@ describe('persist layer', () => {
       verification: { status: 'accepted' }
     };
     const path = computeRecordPath(record, '/repo');
+    // d3-ingest-004: the `[/\\]` tolerance here is DELIBERATE and correct.
+    // computeRecordPath returns an ABSOLUTE OS-native filesystem path (it is
+    // consumed by openSync/mkdirSync/renameSync), so it is backslash-separated
+    // on win32 by design. Do NOT tighten this to forward-slash-only — the
+    // forward-slash invariant belongs to the SERIALIZED index output, which is
+    // pinned by the 'serializes forward-slash-only paths …' test in the
+    // 'index generator' block below and by stageA-seed1-index-path-posix.test.js.
     assert.match(path, /records[/\\]mcp-tool-shop-org[/\\]dogfood-labs[/\\]2026[/\\]03[/\\]19[/\\]run-test-run-001\.json/);
     assert.ok(!path.includes('_rejected'));
   });
@@ -489,6 +496,69 @@ describe('index generator', () => {
     assert.deepEqual(latestByRepo, {});
     assert.deepEqual(failing, []);
     assert.deepEqual(stale, []);
+  });
+
+  // ── SEED-1 serialized-path invariant (d3-ingest-004) ──────────────
+  //
+  // The committed index `path` fields are read by downstream consumers as
+  // raw.githubusercontent.com URL fragments (docs/policy-contract.md Gate F),
+  // so a backslash separator is a broken URL. rebuildIndexes() builds
+  // `record._path` from `relative(repoRoot, f)`, which returns OS-native
+  // separators (backslashes on win32) — without the posixify-at-boundary fix
+  // (rebuild-indexes.js, right after the `relative()` call) this assertion
+  // goes RED on Windows and the corrupt path ships into the committed index.
+  //
+  // NOTE on scope: this hardens the SERIALIZED index output, NOT
+  // computeRecordPath's return — that function legitimately returns an
+  // ABSOLUTE OS-native fs path used for real filesystem ops, so the
+  // `[/\\]`-tolerant assertions on it above (lines ~105/117) are correct and
+  // must stay tolerant. The dedicated cross-OS proof lives in
+  // stageA-seed1-index-path-posix.test.js; this co-located guard keeps the
+  // invariant visible to anyone editing the ingest suite.
+  it('serializes forward-slash-only paths in latest-by-repo, failing, and stale (d3-ingest-004)', () => {
+    setupTestRoot();
+    // Plant accepted records directly (same pattern as the mixed-precision
+    // block below) so the index buckets are deterministic: a fail-verdict
+    // accepted record lands in latestByRepo AND failing, and any 2026-dated
+    // record is past the 30-day cutoff so it also lands in stale. Going through
+    // ingest() would route a fail submission through the verifier, which may
+    // reject it (rejected records never enter latestByRepo) — so we plant.
+    const plant = (repo, runId, verified) => {
+      const [org, name] = repo.split('/');
+      const p = resolve(TEST_ROOT, 'records', org, name, '2026/03/19', `run-${runId}.json`);
+      mkdirSync(dirname(p), { recursive: true });
+      writeFileSync(p, JSON.stringify({
+        schema_version: '1.0.0',
+        run_id: runId,
+        repo,
+        timing: { finished_at: '2026-03-19T15:45:12Z' },
+        verification: { status: 'accepted' },
+        overall_verdict: { proposed: verified, verified },
+        scenario_results: [{ scenario_id: 's', product_surface: 'cli', verdict: verified }],
+      }));
+    };
+    plant('mcp-tool-shop-org/seed1-pass-surface', 'seed1-pass-run', 'pass');
+    plant('mcp-tool-shop-org/seed1-fail-surface', 'seed1-failing-run', 'fail');
+
+    const { latestByRepo, failing: failingIdx, stale } = rebuildIndexes(TEST_ROOT);
+
+    // Non-vacuous: every surfaced entry must actually carry a string `path`.
+    for (const surfaces of Object.values(latestByRepo)) {
+      for (const entry of Object.values(surfaces)) {
+        assert.equal(typeof entry.path, 'string');
+      }
+    }
+    assert.ok(failingIdx.length >= 1, 'failing.json must carry an entry');
+    assert.ok(stale.length >= 1, 'stale.json must carry an entry');
+
+    for (const blob of [
+      JSON.stringify(latestByRepo),
+      JSON.stringify(failingIdx),
+      JSON.stringify(stale),
+    ]) {
+      assert.ok(!blob.includes('\\'),
+        `serialized index output must be forward-slash only, got: ${blob}`);
+    }
   });
 });
 

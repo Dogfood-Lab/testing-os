@@ -37,7 +37,7 @@ Baseline at the pre-v1.0.0 migration handoff (sourced from [`HANDOFF.md`](HANDOF
 
 ## Post-Remediation
 
-Sourced primarily from [`SHIP_GATE.md`](SHIP_GATE.md): at v1.3.2 (re-affirmed 2026-06-02), every applicable hard-gate A–D row carries either an `[x]` evidence stamp or a `SKIP:` with explicit justification — `shipcheck audit` at the v1.3.1 release tree exits 0 (21 checked / 16 SKIP-with-justification / 0 unchecked). Soft gate E is fully met. The "100% pass on hard gates A–D" headline phrasing reflects the audit-tool verdict, not a hand-curated estimate; the per-row evidence dates below are the auditable substrate.
+Sourced primarily from [`SHIP_GATE.md`](SHIP_GATE.md): at v1.3.2 (re-affirmed 2026-06-02), every applicable hard-gate A–D row carries either an `[x]` evidence stamp or a `SKIP:` with explicit justification — `shipcheck audit`, last run at the v1.3.1 release tree, exited 0 (21 checked / 16 SKIP-with-justification / 0 unchecked) and is re-affirmed unchanged at v1.3.2. Soft gate E is fully met. The "100% pass on hard gates A–D" headline phrasing reflects the audit-tool verdict, not a hand-curated estimate; the per-row evidence dates below are the auditable substrate.
 
 | Category | Before | After |
 |----------|--------|-------|

@@ -125,6 +125,38 @@ Set \`verification_skipped: true\` at the top level of your output JSON to make 
 export function dispatch(opts) {
   const db = openDb(opts.dbPath);
 
+  // 0. Validate phase BEFORE anything touches the control plane.
+  //
+  // d5-swarm-cli-001 (HIGH): a phase typo (e.g. `helth-audit-a`) used to slip
+  // past every guard here — AUDIT_PHASES / AMEND_PHASES were only consulted
+  // later to set isAudit/isAmend (both false on a bad phase) — so buildWave()
+  // INSERTed the waves row, flipped runs.status to the typo string, INSERTed
+  // agent_runs, and COMMITTED. Only the prompt-render loop (lib/templates.js)
+  // then threw a plain untyped `Unknown audit phase` Error, AFTER the commit.
+  // That left the exact "DB row that promises agents which never got their
+  // prompts" state this function's header (below) promises NEVER to create,
+  // and surfaced as the flat `ERROR:` form instead of the structured
+  // DISPATCH_* envelope its sibling preconditions get. Gate it here as a
+  // pre-commit precondition: no DB mutation, structured error + actionable
+  // hint listing the valid phases. This is the same emitPreconditionFailed +
+  // typed-throw shape as the run-not-found / domains-not-frozen / no-domains
+  // guards below.
+  if (!AUDIT_PHASES.includes(opts.phase) && !AMEND_PHASES.includes(opts.phase)) {
+    const validPhases = [...AUDIT_PHASES, ...AMEND_PHASES].join(', ');
+    emitPreconditionFailed({
+      runId: opts.runId,
+      phase: opts.phase,
+      code: 'DISPATCH_INVALID_PHASE',
+      message: `Unknown phase: ${opts.phase}`,
+    });
+    throw new DispatchPreconditionError(`Unknown phase: ${opts.phase}`, {
+      code: 'DISPATCH_INVALID_PHASE',
+      runId: opts.runId,
+      phase: opts.phase,
+      hint: `valid phases: ${validPhases}`,
+    });
+  }
+
   // 1. Validate run
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(opts.runId);
   if (!run) {

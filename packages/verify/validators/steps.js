@@ -25,7 +25,11 @@ export function validateStepResults(scenarioResult) {
     return errors;
   }
 
-  const VALID_STATUSES = new Set(['pass', 'fail', 'blocked', 'skip']);
+  // Must match the step_results[].status enum in BOTH dogfood-record-submission.schema.json
+  // and dogfood-record.schema.json (["pass","fail","blocked","skip","partial"]). `partial`
+  // is a first-class, contract-blessed step status (verdict.js ranks it 2/3); omitting it
+  // here falsely rejected schema-valid submissions as "unknown status".
+  const VALID_STATUSES = new Set(['pass', 'fail', 'blocked', 'skip', 'partial']);
 
   for (let i = 0; i < step_results.length; i++) {
     const step = step_results[i];

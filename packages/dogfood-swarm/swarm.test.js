@@ -48,31 +48,35 @@ describe('deriveVerdict', () => {
     assert.equal(deriveVerdict([]), 'pass');
   });
 
+  // d4-swarm-core-002 (Stage A): fixtures use UPPERCASE severity — the case the
+  // agent-output contract (and every real audit JSON) actually carries. The
+  // lowercase fixtures these replaced pinned the d4-swarm-core-001 bug and gave
+  // the release gate zero effective coverage.
   it('returns fail when critical findings exist', () => {
-    const findings = [{ severity: 'critical', status: 'open' }];
+    const findings = [{ severity: 'CRITICAL', status: 'open' }];
     assert.equal(deriveVerdict(findings), 'fail');
   });
 
   it('returns partial when high findings exist', () => {
-    const findings = [{ severity: 'high', status: 'open' }];
+    const findings = [{ severity: 'HIGH', status: 'open' }];
     assert.equal(deriveVerdict(findings), 'partial');
   });
 
   it('returns pass when only medium findings', () => {
     const findings = [
-      { severity: 'medium', status: 'open' },
-      { severity: 'low', status: 'open' },
+      { severity: 'MEDIUM', status: 'open' },
+      { severity: 'LOW', status: 'open' },
     ];
     assert.equal(deriveVerdict(findings), 'pass');
   });
 
   it('ignores fixed critical findings', () => {
-    const findings = [{ severity: 'critical', status: 'fixed' }];
+    const findings = [{ severity: 'CRITICAL', status: 'fixed' }];
     assert.equal(deriveVerdict(findings), 'pass');
   });
 
   it('ignores fixed high findings', () => {
-    const findings = [{ severity: 'high', status: 'fixed' }];
+    const findings = [{ severity: 'HIGH', status: 'fixed' }];
     assert.equal(deriveVerdict(findings), 'pass');
   });
 });
@@ -84,8 +88,8 @@ describe('buildScenarioResults', () => {
     component_id: 'core',
     component_type: 'backend',
     findings: [
-      { id: 'f1', severity: 'medium', status: 'open' },
-      { id: 'f2', severity: 'low', status: 'open' },
+      { id: 'f1', severity: 'MEDIUM', status: 'open' },
+      { id: 'f2', severity: 'LOW', status: 'open' },
     ],
     controls: [{ id: 'c1', status: 'pass' }],
   };
@@ -94,7 +98,7 @@ describe('buildScenarioResults', () => {
     component_id: 'ui',
     component_type: 'frontend',
     findings: [
-      { id: 'f3', severity: 'high', status: 'open' },
+      { id: 'f3', severity: 'HIGH', status: 'open' },
     ],
     controls: [{ id: 'c2', status: 'fail' }],
   };
@@ -177,8 +181,8 @@ describe('buildAuditPayload', () => {
         { id: 'c2', domain: 'docs', status: 'fail' },
       ],
       findings: [
-        { id: 'f1', severity: 'critical', domain: 'security', status: 'open' },
-        { id: 'f2', severity: 'medium', domain: 'docs', status: 'open' },
+        { id: 'f1', severity: 'CRITICAL', domain: 'security', status: 'open' },
+        { id: 'f2', severity: 'MEDIUM', domain: 'docs', status: 'open' },
       ],
     },
     {
@@ -187,7 +191,7 @@ describe('buildAuditPayload', () => {
         { id: 'c3', domain: 'hygiene', status: 'pass' },
       ],
       findings: [
-        { id: 'f3', severity: 'low', domain: 'hygiene', status: 'open' },
+        { id: 'f3', severity: 'LOW', domain: 'hygiene', status: 'open' },
       ],
     },
   ];

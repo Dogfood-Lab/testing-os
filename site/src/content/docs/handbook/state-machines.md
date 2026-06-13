@@ -155,7 +155,7 @@ When a digest shows `new: 0, recurring: 0, fixed: 0, unverified: 3`, that says n
 
 This is the fourth vocabulary. It governs the per-agent rows in the swarm's SQLite control plane — every dispatched Claude-Code instance gets one `agent_runs` row, and that row moves through a strict state machine defined in `packages/dogfood-swarm/lib/state-machine.js`. The vocabulary is internal control-plane plumbing (operators interact with it indirectly through `swarm dispatch` / `swarm collect` / `swarm revalidate`), but the BLOCKED override path means it occasionally surfaces in audit logs and recovery sessions — operators need it named.
 
-### The 8 canonical statuses
+### The 9 canonical statuses
 
 The header comment of `state-machine.js` documents the full set:
 
@@ -167,31 +167,37 @@ The header comment of `state-machine.js` documents the full set:
 - **`timed_out`** — exceeded timeout policy (deterministic, not guessed; redispatchable).
 - **`invalid_output`** — output failed schema validation (BLOCKED — manual fix only, no auto-retry).
 - **`ownership_violation`** — agent touched files outside its domain (BLOCKED — manual fix only, no auto-retry).
+- **`aborted_for_rewind`** — the agent_run was orphaned by a `swarm rewind` against a save-point tag whose tree predates this run (terminal — the row + its prior audit chain survive the tree reset). Written by `swarm rewind --apply` via the override path so the operator's `--reason` text becomes the audit row in `agent_state_events`.
 
 ### The transition table
 
-The legal transitions are an explicit map in `state-machine.js` (the `TRANSITIONS` object, lines 35–44). Any transition not in this map throws a `StateMachineRejectionError`:
+The legal transitions are an explicit map in `state-machine.js` (the `TRANSITIONS` object). Any transition not in this map throws a `StateMachineRejectionError`:
 
 ```text
-pending             → dispatched
+pending             → dispatched | aborted_for_rewind
 dispatched          → running | complete | failed
                     | timed_out | invalid_output
                     | ownership_violation
+                    | aborted_for_rewind
 running             → complete | failed | timed_out
                     | invalid_output
                     | ownership_violation
+                    | aborted_for_rewind
 complete            → (terminal — no outbound)
 failed              → dispatched (redispatch)
+                    | aborted_for_rewind
 timed_out           → dispatched (redispatch)
+                    | aborted_for_rewind
 invalid_output      → (blocked — override only)
 ownership_violation → (blocked — override only)
+aborted_for_rewind  → (terminal — no outbound)
 ```
 
 The error type carries a `kind` field — `TERMINAL`, `BLOCKED`, or `INVALID` — so calling code (and CLI top-level handlers) can render a status-class-specific actionable hint. Callers must not attempt to short-circuit transitions; `transitionAgent` is the single audit-logged seam.
 
 ### The two BLOCKED statuses
 
-Two statuses are members of `BLOCKED_STATUSES` (a `Set` declared at `state-machine.js:50`):
+Two statuses are members of `BLOCKED_STATUSES` (the `Set` of that name declared in `state-machine.js`):
 
 - `invalid_output` — produced output that failed the envelope schema or a legacy validator. The output is on disk; the gate refused it.
 - `ownership_violation` — produced output whose `files_changed[]` lies outside the agent's frozen domain map.
@@ -212,7 +218,7 @@ transitionAgent(
 The override:
 
 - Is **gated by the `BLOCKED_STATUSES` check** — passing `override=true` on a terminal status (`complete`) or any non-blocked transition does not bypass the normal `canTransition` law.
-- **Requires `reason`** — `state-machine.js:106` throws `Error('Override requires a reason …')` on empty/missing reason.
+- **Requires `reason`** — `transitionAgent` in `state-machine.js` throws `Error('Override requires a reason …')` on an empty/missing reason in the override branch.
 - Records the transition through `executeTransition`, which writes the `agent_state_events` row with the operator's reason captured verbatim — preserves the audit trail (Stripe Ledger correction-event pattern).
 
 ### The CLI surface: `swarm revalidate`
@@ -227,7 +233,7 @@ Usage: swarm revalidate <run-id>
   [--apply]
 ```
 
-Behavior is dry-run by default; `--apply` is required to mutate; `--reason "<text>"` is mandatory. On full repair, the wave's `failed` status flips back to `collected` in the same SQLite transaction — partial repair (some agents repaired, others still BLOCKED) keeps the wave in `failed` deliberately. The recovery operating procedure is documented in [`swarms/PROTOCOL.md`](../../../../../swarms/PROTOCOL.md) under "Recovery from blocked agent_runs."
+Behavior is dry-run by default; `--apply` is required to mutate; `--reason "<text>"` is mandatory. On full repair, the wave's `failed` status flips back to `collected` in the same SQLite transaction — partial repair (some agents repaired, others still BLOCKED) keeps the wave in `failed` deliberately. The recovery operating procedure is documented in [`swarms/PROTOCOL.md`](https://github.com/dogfood-lab/testing-os/blob/main/swarms/PROTOCOL.md#recovery-from-blocked-agent_runs-swarm-revalidate) under "Recovery from blocked agent_runs."
 
 ### The collision with other vocabularies
 
@@ -237,9 +243,9 @@ Behavior is dry-run by default; `--apply` is required to mutate; `--reason "<tex
 
 - Record classification operations: [Architecture](../architecture/), [Operating Guide](../operating-guide/)
 - Finding review operations: [Intelligence Layer](../intelligence-layer/)
-- Agent-run recovery operations: [swarms/PROTOCOL.md `Recovery from blocked agent_runs`](../../../../../swarms/PROTOCOL.md)
+- Agent-run recovery operations: [swarms/PROTOCOL.md `Recovery from blocked agent_runs`](https://github.com/dogfood-lab/testing-os/blob/main/swarms/PROTOCOL.md#recovery-from-blocked-agent_runs-swarm-revalidate)
 - Error codes that surface from any of these layers (including `STATE_MACHINE_BLOCKED` / `_TERMINAL` / `_INVALID`): [Error Code Reference](../error-codes/)
 
 ### When validation fails (operator runbook)
 
-If `swarm collect` reports blocked agents, see `swarm revalidate` (documented in [swarms/PROTOCOL.md](../../../../../swarms/PROTOCOL.md) under "Recovery from blocked agent_runs"). The verb is the canonical, audited path back from `invalid_output` / `ownership_violation` to `complete`; direct DB intervention is universally last-resort and leaves no audit trail.
+If `swarm collect` reports blocked agents, see `swarm revalidate` (documented in [swarms/PROTOCOL.md](https://github.com/dogfood-lab/testing-os/blob/main/swarms/PROTOCOL.md#recovery-from-blocked-agent_runs-swarm-revalidate) under "Recovery from blocked agent_runs"). The verb is the canonical, audited path back from `invalid_output` / `ownership_violation` to `complete`; direct DB intervention is universally last-resort and leaves no audit trail.

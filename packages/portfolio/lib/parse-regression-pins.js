@@ -62,17 +62,37 @@ const DEFAULT_SKIP_DIRS = new Set([
 ]);
 
 /**
+ * Posixify a filesystem path at a serialization/classification boundary.
+ *
+ * Normalizes BOTH separators: split() on the local `sep` handles host paths,
+ * but Windows paths (`C:\repo\...`) seen on Linux still contain backslashes
+ * verbatim, so the trailing `replace(/\\/g, '/')` catches those too. On Linux
+ * `sep === '/'` makes the split-join a no-op and the replace does the work; on
+ * Windows the split-join does the work. Idempotent on already-posix paths.
+ *
+ * SEED-1 (d3-ingest-005): used by walkSourceFiles before storing a path so the
+ * Maps / toJSON output (and thus the committed regression-pin index) are
+ * forward-slash regardless of host OS. Previously this transform lived inline
+ * only in classifyFile and the STORED paths never reused it — that gap was the
+ * leak. Hoisted to a named helper so the one transform has one home.
+ *
+ * @param {string} filePath
+ * @returns {string}
+ */
+export function posixifyPath(filePath) {
+  return filePath.split(sep).join(posix.sep).replace(/\\/g, '/');
+}
+
+/**
  * Classify a path as "test" or "source" by convention. Mirrors how
  * `node --test` and `vitest` discover tests in this repo.
  */
 export function classifyFile(filePath) {
-  // Normalize BOTH separators: split() on the local sep handles host paths,
-  // but Windows paths (`C:\repo\...`) seen on Linux still contain backslashes
-  // verbatim. Replace `\\` globally so the regex/includes checks below work
-  // cross-platform. (See feedback_audit_path_sep_blind_spot — Linux runners
-  // were missing windows-classified test paths because sep === '/' on Linux
-  // collapses to a no-op split-join.)
-  const normalised = filePath.split(sep).join(posix.sep).replace(/\\/g, '/');
+  // Normalize BOTH separators (see posixifyPath) so the regex/includes checks
+  // below work cross-platform. (feedback_audit_path_sep_blind_spot — Linux
+  // runners were missing windows-classified test paths because sep === '/' on
+  // Linux collapses to a no-op split-join, which is why the replace exists.)
+  const normalised = posixifyPath(filePath);
   if (/\.test\.[mc]?[jt]sx?$/.test(normalised)) return 'test';
   if (/\.spec\.[mc]?[jt]sx?$/.test(normalised)) return 'test';
   if (normalised.includes('/test/') || normalised.includes('/tests/')) return 'test';
@@ -133,7 +153,18 @@ export function walkSourceFiles(rootDir, { extensions = DEFAULT_SOURCE_EXTENSION
       if (dotIdx === -1) continue;
       const ext = entry.name.slice(dotIdx);
       if (!extensions.has(ext)) continue;
-      out.push(fullPath);
+      // SEED-1 (d3-ingest-005) — posixify at the serialization boundary.
+      // These paths become the KEYS/VALUES of parseRegressionPins()'s
+      // source_pins/test_pins Maps and are copied verbatim by toJSON() into
+      // the committed docs/regression-pin-index.json when
+      // check-finding-regression-pins.mjs runs with --write-index. On win32,
+      // `join()` yields backslashes, so without this a Windows regeneration
+      // commits backslash paths that a Linux-run delta-join silently
+      // mismatches. Normalize ONCE here, reusing the exact transform
+      // classifyFile() applies one function above (line ~75). NEVER a
+      // win32-skip. (The `stack` keeps OS-native paths — readdirSync handles
+      // those fine; only the STORED output crosses into serialized state.)
+      out.push(posixifyPath(fullPath));
     }
   }
 

@@ -82,6 +82,12 @@ export function persist(opts) {
         execSync(`node "${ingestScript}" --provenance=stub --file "${submissionPath}"`, {
           stdio: ['ignore', 'pipe', 'pipe'],
           encoding: 'utf-8',
+          // SEED-2: forward the ingest DATA root so it stays overridable. run.js
+          // honors INGEST_REPO_ROOT for the records/ + indexes/ it writes;
+          // defaults to REPO_ROOT (the real corpus) in production, but a test
+          // can redirect it to a temp dir so the ingest never touches the real
+          // repo tree.
+          env: { ...process.env, INGEST_REPO_ROOT: process.env.INGEST_REPO_ROOT || REPO_ROOT },
         });
         report.dogfood = { ingested: true, path: submissionPath };
       } else {

@@ -532,10 +532,27 @@ function mintCorrelationId() {
  * a trailing separator, or (on Windows) drive-letter / separator casing. We
  * compare on realpath when the path exists (collapses symlinks + casing on
  * case-insensitive filesystems), falling back to `resolve()` for paths that
- * no longer exist on disk. Returns a lowercased string so Windows
- * case-insensitive trees still match.
+ * no longer exist on disk.
+ *
+ * d5-swarm-cli-006 (Stage A): the case-fold is now PLATFORM-GATED. The prior
+ * unconditional `.toLowerCase()` was a platform-blind normalization — correct
+ * on win32 (case-insensitive FS) but WRONG on Linux/POSIX (the CI environment,
+ * case-sensitive FS), where two runs whose `local_path` differ only by case
+ * (e.g. /work/MyRepo vs /work/myrepo are genuinely distinct directories) would
+ * fold to the same key. A rewind of one would then match BOTH and lawfully
+ * abort the OTHER run's in-flight waves/agent_runs to the terminal
+ * `aborted_for_rewind` status — the exact cross-run corruption cli-001 exists
+ * to prevent. We fold case ONLY on win32; on POSIX we preserve case so the
+ * comparator matches the filesystem's own equality semantics.
+ *
+ * The `platform` argument (default `process.platform`) is injectable so tests
+ * pin BOTH branches deterministically regardless of the host OS.
+ *
+ * @param {string} p
+ * @param {NodeJS.Platform} [platform] — defaults to process.platform
+ * @returns {string}
  */
-function normalizePathForMatch(p) {
+export function normalizePathForMatch(p, platform = process.platform) {
   if (!p || typeof p !== 'string') return '';
   let out;
   try {
@@ -543,5 +560,8 @@ function normalizePathForMatch(p) {
   } catch {
     out = resolvePath(p);
   }
-  return out.replace(/[\\/]+$/, '').toLowerCase();
+  out = out.replace(/[\\/]+$/, '');
+  // Fold case ONLY on case-insensitive filesystems (win32). On POSIX, casing
+  // is significant — folding would collide genuinely-distinct run paths.
+  return platform === 'win32' ? out.toLowerCase() : out;
 }

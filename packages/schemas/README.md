@@ -70,7 +70,7 @@ import recordSchema from '@dogfood-lab/schemas/json/dogfood-record.schema.json' 
 | | Constraint |
 |---|---|
 | JSON Schema dialect | 2020-12 |
-| Node | ≥ 20 |
+| Node | ≥ 22 |
 | `$id` form | `https://github.com/dogfood-lab/testing-os/packages/schemas/src/json/<name>.schema.json` |
 
 `$id` is a contract field. Changes that consumers should treat as contract changes bump the monorepo's lockstep version.

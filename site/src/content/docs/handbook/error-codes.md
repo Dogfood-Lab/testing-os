@@ -143,6 +143,22 @@ A wave is now in a half-written state: artifact rows + file_claims + agent state
   1. `swarm domains <run-id> --add <name> --globs '["packages/foo/**"]'` to define at least one domain.
   2. `swarm domains <run-id> --freeze`.
 
+### `DISPATCH_INVALID_PHASE`
+
+:::caution[Severity: HIGH]
+`swarm dispatch <run-id> <phase>` was invoked with a phase outside `AUDIT_PHASES ∪ AMEND_PHASES`. The dispatch is refused as a **pre-commit precondition** — no wave row, no `agent_runs` rows, and `runs.status` is left unchanged. Pre-fix, a phase typo slipped past every guard and `buildWave()` committed a DB state promising agents that never got prompts before a flat untyped `Unknown audit phase` error threw after the commit.
+:::
+
+- **Class:** `DispatchPreconditionError` (`packages/dogfood-swarm/lib/errors.js`) — same class as the other `DISPATCH_*` preconditions; `code` is part of the JSDoc union contract.
+- **Trigger:** `dispatch()` checked `opts.phase` against `AUDIT_PHASES` and `AMEND_PHASES` (in `packages/dogfood-swarm/commands/dispatch.js`) before any DB mutation and found neither matched — i.e. a mistyped phase such as `helth-audit-a`.
+- **Message shape:** `Unknown phase: <phase>`
+- **Hint:** `valid phases: <AUDIT_PHASES ∪ AMEND_PHASES>` — currently `health-audit-a, health-audit-b, health-audit-c, stage-d-audit, feature-audit, health-amend-a, health-amend-b, health-amend-c, stage-d-amend, feature-execute`. When the thrown error carries no `.hint`, `renderTopLevelError` derives the same enumeration.
+- **NDJSON event emitted before throw:** `dispatch_precondition_failed` with `code=DISPATCH_INVALID_PHASE`, `runId`, `phase`.
+- **Carries:** `runId`, `phase`.
+- **Operator action:**
+  1. Re-invoke with a phase from the list above, e.g. `swarm dispatch <run-id> health-audit-a`.
+  2. The control plane is untouched — no cleanup is needed before retrying.
+
 ### `CLI_INVALID_GLOBS_JSON`
 
 :::note[Severity: MEDIUM]
@@ -162,6 +178,21 @@ The operator-supplied `--globs <JSON>` could not be parsed or has the wrong shap
 - **Operator action:**
   1. Re-invoke with shell-safe quoting: `--globs '["packages/foo/**", "packages/bar/**"]'`.
   2. On Windows PowerShell, escape inner double quotes or use the single-quote outer form per shell rules.
+
+### `CLI_INVALID_THRESHOLD`
+
+:::note[Severity: MEDIUM]
+The operator-supplied `--threshold <value>` is not a non-negative integer. System state is unchanged; the command refused before running the gate rather than silently coercing the bad value to a number (which would disable or mis-set the gate).
+:::
+
+- **Class:** plain `Error` with `e.code = 'CLI_INVALID_THRESHOLD'` set in `parseVerifyFlags` — `packages/dogfood-swarm/cli.js`. Surfaced through the same top-level seam (`renderTopLevelError`) as `CLI_INVALID_GLOBS_JSON`.
+- **Trigger:** `swarm verify --threshold <raw>` (space-form `--threshold N` or equals-form `--threshold=N`) invoked with a `raw` value that is not a non-negative integer — e.g. `foo`, `-1`, or a partially-numeric `3abc`. Both flag forms route through the same validator, so a typo like `--threshold=1O` (letter O) is rejected rather than silently becoming the strictest gate (`0`).
+- **Message shape:** `--threshold expects a non-negative integer; got '<raw>'`
+- **Hint:** `pass an integer >= 0, e.g. \`--threshold 0\` or \`--threshold=3\``
+- **Carries:** `received` (the raw input).
+- **Operator action:**
+  1. Re-invoke with an integer `>= 0`: `swarm verify <run-id> --threshold 0`.
+  2. A typo'd threshold exits non-zero by design — a CI gate keyed on `$?` will not mistake a malformed threshold for a passing run.
 
 ### `FINDING_ID_COLLISION`
 
@@ -323,6 +354,23 @@ The state machine refused an illegal transition; persistent state is consistent.
   - **BLOCKED:** look at the `Next:` hint — usually points at an override flag or a missing prerequisite.
   - **TERMINAL:** the agent is done; the bug is upstream. Inspect the caller for a re-advance loop.
   - **INVALID:** check `allowedTransitions[]` for what the state machine *will* accept from this `from`. Either reroute the call or, if the transition should be legal, file a finding to add the edge to `TRANSITIONS`.
+
+### `INGEST_FAILED`
+
+:::caution[Severity: HIGH]
+A `swarm verify --ingest` run (or `persist-results.js`) reached the dogfood-ingest seam but the corpus write did not complete — the verifier rejected the swarm-emitted submission, or `packages/ingest/run.js` exited non-zero. The command exits **1** (never 0) so a CI gate keyed on `$?` cannot mistake a failed corpus write for success.
+:::
+
+- **Class:** structured stderr envelope (not a thrown typed error) — `console.error('ERROR [INGEST_FAILED]: …')` emitted at the swarm CLI ingest seam (`packages/dogfood-swarm/cli.js`) and from `packages/dogfood-swarm/persist-results.js`. Mirrors the documented `ERROR [<CODE>]:` shape even though it is printed rather than rendered through `renderTopLevelError`.
+- **Trigger:** the `--ingest` path attempted to record the run's own dogfood submission and the downstream ingest either returned `ingested !== true` (CLI seam, with the verifier's `reason`) or exited non-zero (`persist-results.js` seam). Common underlying cause: the swarm-emitted submission failed schema validation in `packages/ingest/run.js`.
+- **Message shape:**
+  - CLI seam: `ERROR [INGEST_FAILED]: dogfood ingest did not complete — <reason>`
+  - persist-results seam: `ERROR [INGEST_FAILED]: dogfood ingest exited non-zero`
+  - Both follow the failure line with `  Submission: <path>` and a copy-pasteable `  Reproduce:  node "<repo>/packages/ingest/run.js" --provenance=stub --file "<submission>"` line; the persist-results seam also prints `  Exit code:  <n>` when available.
+- **Operator action:**
+  1. Run the printed `Reproduce:` command to replay the ingest in isolation with full output.
+  2. The most common cause is a schema-invalid submission — inspect the AJV failure against `packages/schemas/src/json/dogfood-record.schema.json` and fix the swarm's submission emitter, not the schema.
+  3. Re-run `swarm verify --ingest` once the emitter is corrected. The human-readable summary still prints `Ingested: NO` to stdout so the failure is visible in both streams.
 
 ## Cross-references
 

@@ -216,12 +216,26 @@ export function addDomain(db, runId, domain) {
     );
   }
 
+  // d5-swarm-cli-004 (Stage A): editDomain validates ownership_class against the
+  // {owned,shared,bridge} enum but addDomain did not — a literal bad value (e.g.
+  // `swarm domains --add x --ownership garbage`) persisted unvalidated and only
+  // surfaced as a downstream ownership-accounting surprise. Reject at the same
+  // boundary editDomain uses. (Mirrors editDomain's inline guard above.)
+  if (domain.ownership_class != null
+      && !['owned', 'shared', 'bridge'].includes(domain.ownership_class)) {
+    throw new Error(`Invalid ownership class: ${JSON.stringify(domain.ownership_class)}`);
+  }
+
   const frozen = aredomainsFrozen(db, runId);
   if (frozen) throw new Error('Domains are frozen. Unfreeze first.');
 
   const result = db.prepare(
     'INSERT INTO domains (run_id, name, globs, ownership_class, description, frozen) VALUES (?, ?, ?, ?, ?, 0)'
-  ).run(runId, domain.name, JSON.stringify(domain.globs), domain.ownership_class, domain.description || '');
+    // ownership_class is NOT NULL DEFAULT 'owned' in the schema; bind the
+    // documented default when the caller omits it rather than binding NULL
+    // (which the explicit column list would otherwise force into a constraint
+    // violation, bypassing the schema's own default).
+  ).run(runId, domain.name, JSON.stringify(domain.globs), domain.ownership_class ?? 'owned', domain.description || '');
 
   db.prepare(
     'INSERT INTO domain_events (domain_id, event_type, new_value, reason) VALUES (?, ?, ?, ?)'

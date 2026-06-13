@@ -17,7 +17,7 @@
  * - regenerate indexes
  */
 
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 
@@ -29,6 +29,27 @@ import { isDuplicate, writeRecord, computeRecordPath } from './persist.js';
 import { rebuildIndexes } from './rebuild-indexes.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * SEED-1 (d3-ingest-003) — posixify a path-shaped value at the operator/log
+ * SERIALIZATION boundary. `computeRecordPath`/`writeRecord` return OS-native
+ * paths (backslash-separated, absolute, on win32) because those values are
+ * also used for real filesystem operations. But the moment a path crosses into
+ * CLI JSON output, NDJSON log lines, or a downstream report
+ * (dogfood-swarm persist.js records `report.dogfood.path`), it must be
+ * forward-slash so operators and log pivots see one canonical shape across
+ * OSes — and so a copy-paste into a raw.githubusercontent URL is not a broken
+ * link. We posixify ONLY here, at the emit sites, leaving the returned fs paths
+ * OS-native for the filesystem layer. Mirrors the boundary-normalize doctrine
+ * already used in rebuild-indexes.js and parse-regression-pins.js. NEVER a
+ * win32-skip.
+ *
+ * @param {string|null} p
+ * @returns {string|null}
+ */
+function posixifyPath(p) {
+  return typeof p === 'string' ? p.split(sep).join('/') : p;
+}
 
 /**
  * Emit a single structured stage-transition log line via the shared helper.
@@ -238,7 +259,10 @@ export async function ingest(submission, options) {
   logStage('persist_complete', {
     submission_id: submissionId,
     correlation_id,
-    path,
+    // d3-ingest-003: posixify at the log boundary — `path` is OS-native from
+    // writeRecord (used for the fs write); the NDJSON log surface gets forward
+    // slashes so log pivots are byte-identical across OSes.
+    path: posixifyPath(path),
     written,
     duplicate: !written,
     duration_ms: Date.now() - persistStart
@@ -281,11 +305,12 @@ export async function ingest(submission, options) {
         failed_stage: 'rebuild_indexes',
         message: err.message,
         stack: truncatedStack,
-        record_persisted_at: path,
+        // d3-ingest-003: operator-facing path → posixify at the log boundary.
+        record_persisted_at: posixifyPath(path),
         recovery: 'next ingest will trigger a full rebuild of indexes/'
       });
       console.error(
-        `WARNING: record persisted at ${path}, but index rebuild failed: ${err.message}\n` +
+        `WARNING: record persisted at ${posixifyPath(path)}, but index rebuild failed: ${err.message}\n` +
         `         indexes/ may be stale until next ingest. To force rebuild now, re-run any test ingest.\n` +
         `         stack: ${stackPreview}`
       );
@@ -429,7 +454,10 @@ export async function verifyOnly(submission, options) {
     submission_id: submissionId,
     correlation_id,
     status: record.verification?.status ?? null,
-    would_persist_to
+    // d3-ingest-003: posixify at the log boundary. The returned
+    // `would_persist_to` below stays OS-native so callers that resolve it
+    // against the filesystem keep a real fs path.
+    would_persist_to: posixifyPath(would_persist_to)
   });
 
   return { record, would_persist_to, verify_only: true };
@@ -467,7 +495,19 @@ const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(__dirname
 
 if (isMain) {
   const args = process.argv.slice(2);
-  const repoRoot = resolve(__dirname, '../..');
+  // SEED-2 (d3-ingest-002) — make the CLI's repoRoot overridable so callers
+  // (notably dogfood-swarm's commands/persist.js execSync, and any test
+  // harness) can redirect every record write + index rebuild into a sandbox
+  // instead of the REAL working tree. Without this the only way to sandbox was
+  // a brittle source-copy of this file (the setupTempRunJs run.js-copy in
+  // d1b-001-cli-toplevel-error-event.test.js) that rewrote __dirname's `../..`
+  // walk. A production caller passes the real root explicitly; a test passes a
+  // temp dir; the default preserves the historical behavior when the env var
+  // is unset. resolve() makes a relative override absolute so the downstream
+  // join()s stay anchored.
+  const repoRoot = process.env.INGEST_REPO_ROOT
+    ? resolve(process.env.INGEST_REPO_ROOT)
+    : resolve(__dirname, '../..');
 
   // Parse CLI flags
   let submissionJson;
@@ -644,7 +684,10 @@ if (isMain) {
         status: result.record.verification.status,
         run_id: result.record.run_id ?? null,
         verdict: result.record.overall_verdict?.verified ?? null,
-        would_persist_to: result.would_persist_to,
+        // d3-ingest-003: posixify path-shaped CLI output so the operator
+        // contract is identical across OSes (a Windows backslash here breaks
+        // any downstream URL-build/string-match).
+        would_persist_to: posixifyPath(result.would_persist_to),
         verify_only: true,
         rejection_reasons: result.record.verification.rejection_reasons ?? []
       }));
@@ -667,7 +710,9 @@ if (isMain) {
       status: result.record.verification.status,
       run_id: result.record.run_id ?? null,
       verdict: result.record.overall_verdict?.verified ?? null,
-      path: result.path,
+      // d3-ingest-003: posixify path-shaped CLI output (same family as
+      // would_persist_to above). dogfood-swarm's persist.js pivots on this.
+      path: posixifyPath(result.path),
       written: result.written,
       rejection_reasons: result.record.verification.rejection_reasons ?? []
     }));

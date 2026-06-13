@@ -23,6 +23,7 @@
 
 import { readdirSync, statSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { renderDigest, renderMarkdown } from './findings-render.js';
 import { readBoundedJson } from './bounded-json-read.js';
@@ -264,17 +265,38 @@ export function buildDigest({ runId, waveNumber, swarmsDir = SWARMS_DIR, format,
   };
 }
 
-// Only run as a CLI when invoked directly (not when imported by cli.js).
-// fp-005: guard process.argv[1] before .replace. When the module is loaded in
-// a context where argv[1] is undefined (e.g. `node --eval` importing it), the
-// unconditional `.replace` on the left operand threw a TypeError at module-load
-// time — before the safer right-hand optional-chain guard could run. Compute
-// the entry path once and short-circuit on it.
-const entry = process.argv[1];
-const isMain = (entry && import.meta.url === `file://${entry.replace(/\\/g, '/')}`) ||
-               entry?.endsWith('findings-digest.js');
+/**
+ * Platform-correct direct-execution check.
+ *
+ * d4-swarm-core-003 (Stage A): the previous form string-concatenated a
+ * `file://${argv1}` URL and compared it to import.meta.url. On Windows
+ * import.meta.url is `file:///E:/...` (three slashes + drive letter) while the
+ * concat yields `file://E:/...` (two slashes), so the primary equality was
+ * always false on win32 — saved only by a brittle endsWith fallback that also
+ * misfires for any same-basename path from another directory. The portable
+ * form (used by the sibling persist-results.js) decodes the module URL back to
+ * a filesystem path with fileURLToPath and compares resolved paths, which is
+ * correct on every platform and needs no endsWith fallback.
+ *
+ * Exported so the platform-correctness invariant is directly testable without
+ * spawning a subprocess.
+ *
+ * @param {string} metaUrl  — import.meta.url of the module
+ * @param {string|undefined} argv1 — process.argv[1] (undefined under `node --eval`)
+ * @returns {boolean}
+ */
+export function isMainEntry(metaUrl, argv1) {
+  if (!argv1) return false;
+  try {
+    return fileURLToPath(metaUrl) === resolve(argv1);
+  } catch {
+    // metaUrl was not a file:// URL (e.g. a data: import) — never main.
+    return false;
+  }
+}
 
-if (isMain) {
+// Only run as a CLI when invoked directly (not when imported by cli.js).
+if (isMainEntry(import.meta.url, process.argv[1])) {
   const [runId, waveArg] = process.argv.slice(2);
   if (!runId) {
     console.error('Usage: node findings-digest.js <run-id> [wave-number]');

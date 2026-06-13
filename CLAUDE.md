@@ -97,17 +97,18 @@ This repo mirrors `world-forge` deliberately (npm workspaces, `tsc --build` comp
 `tsconfig.base.json` is the only place to set compiler options. Per-package `tsconfig.json` extends it and adds `outDir`/`rootDir`/`include`. `composite: true` everywhere. Never set `baseUrl` (deprecated; bit repo-knowledge in CI).
 
 ### CI + workflows
-Three workflows, each with a distinct purpose — exceeds the org-wide soft cap of 2 from `.claude/rules/github-actions.md`, but each is genuinely needed and bundling would be worse:
+Four workflows, each with a distinct purpose — exceeds the org-wide soft cap of 2 from `.claude/rules/github-actions.md`, but each is genuinely needed and bundling would be worse:
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `ci.yml` | `push` / `pull_request` on `packages/**`, `package*.json`, `tsconfig*.json`, `.github/workflows/**` | Build + test on Node 22 + 24 |
+| `ci.yml` | `push` / `pull_request` on `packages/**`, `package*.json`, `tsconfig*.json`, `.github/workflows/**`, `docs/**`, `site/**`, `swarms/PROTOCOL.md`, `scripts/**`, and the root honesty surfaces (`README.md`, `SHIP_GATE.md`, `SCORECARD.md`, `CLAUDE.md`, `HANDOFF.md`) + `swarms/__schema-fixtures__/**` | Build + test on Node 22 + 24 |
 | `ingest.yml` | `repository_dispatch` (`dogfood_submission`) + `workflow_dispatch` | Receives consumer dogfood submissions, runs `packages/ingest/run.js --provenance=github`, commits new records + indexes back to `main`. Concurrency-serialized at workflow level; push conflicts handled by git pull --rebase retry loop (3 attempts). |
 | `pages.yml` | `push` to `main` on `site/**` or `.github/workflows/pages.yml` | Builds the Astro Starlight handbook, deploys to `dogfood-lab.github.io/testing-os/`, curls the URL with retry to verify deploy. |
+| `release.yml` | `push` of a `v*.*.*` tag + `workflow_dispatch` (tag input) | Publishes the 6 public `@dogfood-lab/*` packages to npm via OIDC trusted publishing (`--provenance`) and creates the GitHub Release from the matching `CHANGELOG.md` section, in one workflow. Verifies the tag matches `package.json` and runs the full `npm run verify` gate before publishing. |
 
 All action SHAs pinned (no floating `@v4`). The $130 GitHub Actions incident memory (`memory/github-actions-incident.md`) is why.
 
-Adding a fourth workflow needs explicit justification.
+Adding a fifth workflow needs explicit justification.
 
 ### Commit messages
 Subject line = imperative, ≤72 chars. Body explains *why* the change is being made — what changed is in the diff. Co-author trailer included. Wave-style commit messages (used during the migration) are good for orientation but not required forever.

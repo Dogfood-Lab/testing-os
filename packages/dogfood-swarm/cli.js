@@ -124,6 +124,88 @@ function parseGlobsArgOrThrow(raw) {
   return parsed;
 }
 
+/**
+ * Shared value-flag parser for `--flag value` / `--flag=value`.
+ *
+ * d5-swarm-cli-004 (Stage A): the v1.3.2 / cli-003 hardening was applied
+ * per-NAMED-flag (only the four `--reason` sites carried the
+ * `!next.startsWith('--')` swallow guard, and only `--threshold`/`--globs`
+ * had equals-form support). Every other value-flag — `--repo`, `--ids`,
+ * `--ownership`, `--desc`, `--adapter`, `--format` — was a one-off positional
+ * scan with inconsistent equals-form support and no swallow guard. This
+ * single helper closes the whole family:
+ *
+ *   - Accepts BOTH forms: `--flag value` and `--flag=value`.
+ *   - The equals-form wins if present (an explicit `=` is unambiguous).
+ *   - A following token that starts with `--` is the NEXT flag, not the
+ *     value — treated as a MISSING value (returns undefined), so the
+ *     caller's "X is required" guard fires instead of silently swallowing
+ *     a sibling flag as the value (the cli-003 swallow class).
+ *   - A bare trailing `--flag` with no following token returns undefined.
+ *
+ * Returns undefined when the flag is absent or its value is missing/swallowed,
+ * so callers keep their existing `?? default` / "required" branching.
+ *
+ * @param {string[]} args
+ * @param {string} flag — e.g. '--format'
+ * @returns {string | undefined}
+ */
+export function parseValueFlag(args, flag) {
+  const eqPrefix = `${flag}=`;
+  // equals-form: --flag=value (value may be empty string; the caller validates)
+  for (const a of args) {
+    if (typeof a === 'string' && a.startsWith(eqPrefix)) {
+      return a.slice(eqPrefix.length);
+    }
+  }
+  // space-form: --flag value, but a `--`-prefixed next token is the NEXT flag.
+  const idx = args.indexOf(flag);
+  if (idx >= 0 && args[idx + 1] !== undefined && !args[idx + 1].startsWith('--')) {
+    return args[idx + 1];
+  }
+  return undefined;
+}
+
+/**
+ * The valid `--format` enum shared by the verify-* verbs and `swarm findings`.
+ */
+const VERIFY_FORMATS = ['text', 'markdown', 'json'];
+
+/**
+ * d5-swarm-cli-003 (Stage A): fail-loud error for an out-of-enum `--format`
+ * value. Same plain-Error-with-`.code` shape as thresholdError so the
+ * top-level renderTopLevelError seam prints the structured envelope and exits
+ * 1 — without coupling the shared parser to a new error class.
+ *
+ * @param {string} raw — the value the operator passed after --format
+ */
+function formatError(raw) {
+  const e = new Error(
+    `--format expects one of ${VERIFY_FORMATS.join('|')}; got '${raw}'`
+  );
+  e.code = 'CLI_INVALID_FORMAT';
+  e.received = raw;
+  e.hint = `pass one of: ${VERIFY_FORMATS.join(', ')} — e.g. \`--format json\` or \`--format=markdown\``;
+  return e;
+}
+
+/**
+ * Parse + enum-validate a `--format` flag (both space- and equals-form).
+ * Returns undefined when the flag is absent (caller falls back to auto-detect).
+ * Throws CLI_INVALID_FORMAT on an out-of-enum value or a swallowed following
+ * flag. d5-swarm-cli-003: closes the space-form's missing enum check + the
+ * `--`-swallow gap that the sibling `--reason` already had.
+ *
+ * @param {string[]} args
+ * @returns {string | undefined}
+ */
+export function parseFormatFlag(args) {
+  const raw = parseValueFlag(args, '--format');
+  if (raw === undefined) return undefined;
+  if (!VERIFY_FORMATS.includes(raw)) throw formatError(raw);
+  return raw;
+}
+
 // ── Resolve DB path ──
 // Default: F:\AI\dogfood-labs\swarms\control-plane.db
 const DEFAULT_SWARM_DIR = resolve(import.meta.dirname, '../../swarms');
@@ -146,7 +228,11 @@ function cmdInit(args) {
     process.exit(1);
   }
 
-  const repo = args.find((a, i) => args[i - 1] === '--repo') || undefined;
+  // d5-swarm-cli-004 (Stage A): route through the shared value-flag parser so
+  // `--repo=org/name` (equals-form) is supported like every sibling flag, and
+  // a swallowed `--repo --next-flag` is treated as missing (→ auto-detect)
+  // rather than capturing the following flag as the repo slug.
+  const repo = parseValueFlag(args, '--repo') ?? undefined;
 
   const result = init({
     repoPath: resolve(repoPath),
@@ -192,9 +278,16 @@ function cmdDomains(args) {
 
   // --unfreeze --reason "..."
   if (args.includes('--unfreeze')) {
-    const reasonIdx = args.indexOf('--reason');
-    const reason = reasonIdx >= 0 ? args[reasonIdx + 1] : null;
-    if (!reason) {
+    // d5-swarm-cli-NEW (Stage A): this is the FIFTH `--reason` value-flag site
+    // and it lacked the cli-003 `--`-swallow guard applied to revalidate /
+    // rewind / redrive / advance. Without it, `--unfreeze --reason --freeze`
+    // captured '--freeze' as the audit reason and unfroze with a junk reason
+    // recorded into domain_events (the reason is a mandatory non-empty audit
+    // field). parseValueFlag rejects a `--`-prefixed following token (→
+    // undefined → the "requires --reason" guard fires) and adds equals-form
+    // (`--reason=...`) support to match the sibling sites.
+    const reason = parseValueFlag(args, '--reason');
+    if (!reason || !reason.trim()) {
       console.error('--unfreeze requires --reason "explanation"');
       process.exit(1);
     }
@@ -213,10 +306,15 @@ function cmdDomains(args) {
     const globsIdx = args.indexOf('--globs');
     // D3B-004 (Wave A2 Stage C): structured guard around operator JSON input.
     if (globsIdx >= 0) changes.globs = parseGlobsArgOrThrow(args[globsIdx + 1]);
-    const ownerIdx = args.indexOf('--ownership');
-    if (ownerIdx >= 0) changes.ownership_class = args[ownerIdx + 1];
-    const descIdx = args.indexOf('--desc');
-    if (descIdx >= 0) changes.description = args[descIdx + 1];
+    // d5-swarm-cli-004 (Stage A): the edit-path `--ownership`/`--desc` took the
+    // next token raw with no `--`-swallow guard, so e.g.
+    // `--edit x --ownership --globs '[...]'` captured '--globs' as the
+    // ownership_class. parseValueFlag rejects a `--`-prefixed following token
+    // (and adds equals-form support) so a swallowed value is treated as absent.
+    const ownership = parseValueFlag(args, '--ownership');
+    if (ownership !== undefined) changes.ownership_class = ownership;
+    const desc = parseValueFlag(args, '--desc');
+    if (desc !== undefined) changes.description = desc;
 
     editDomain(db, runId, domainName, changes);
     console.log(`Domain "${domainName}" updated.`);
@@ -234,8 +332,12 @@ function cmdDomains(args) {
     }
     // D3B-004 (Wave A2 Stage C): structured guard around operator JSON input.
     const globs = parseGlobsArgOrThrow(args[globsIdx + 1]);
-    const ownerIdx = args.indexOf('--ownership');
-    const ownership = ownerIdx >= 0 ? args[ownerIdx + 1] : 'owned';
+    // d5-swarm-cli-004 (Stage A): the add-path `--ownership` took the next
+    // token raw, so a swallowed `--globs` would persist as a garbage
+    // ownership_class (addDomain does not validate it). parseValueFlag rejects
+    // a `--`-prefixed value (→ undefined → default 'owned') and adds
+    // equals-form support.
+    const ownership = parseValueFlag(args, '--ownership') ?? 'owned';
     addDomain(db, runId, { name: domainName, globs, ownership_class: ownership });
     console.log(`Domain "${domainName}" added.`);
     return;
@@ -671,8 +773,11 @@ function cmdVerify(args) {
     return;
   }
 
-  const adapterIdx = args.indexOf('--adapter');
-  const override = adapterIdx >= 0 ? args[adapterIdx + 1] : undefined;
+  // d5-swarm-cli-004 (Stage A): `--adapter` took the next token raw, so
+  // `--adapter --probe-only` would capture '--probe-only' as the adapter
+  // override. parseValueFlag rejects a `--`-prefixed following token (→
+  // undefined → adapter auto-detect) and adds equals-form support.
+  const override = parseValueFlag(args, '--adapter') ?? undefined;
 
   const result = runVerify({
     runId,
@@ -741,29 +846,27 @@ function thresholdError(raw) {
  */
 export function parseVerifyFlags(args) {
   let threshold = 0;
-  for (const a of args.slice(1)) {
-    const m = a.match(/^--threshold=(\d+)$/);
-    if (m) { threshold = parseInt(m[1], 10); break; }
-  }
-  const tIdx = args.indexOf('--threshold');
-  if (tIdx >= 0 && args[tIdx + 1] !== undefined) {
-    const raw = args[tIdx + 1];
-    const n = parseInt(raw, 10);
-    if (!Number.isFinite(n) || n < 0 || !/^\d+$/.test(String(raw).trim())) {
-      throw thresholdError(raw);
+
+  // d5-swarm-cli-002 (Stage A): the equals-form previously matched only
+  // `^--threshold=(\d+)$` and SILENTLY left threshold at the default 0 on a
+  // malformed value (`--threshold=abc` → 0, no throw) while the space-form
+  // threw CLI_INVALID_THRESHOLD. A typo like `--threshold=1O` (letter O)
+  // silently became the strictest gate (0), failing on findings the operator
+  // meant to allow. Route the equals-form through the SAME validation as the
+  // space-form so both reject malformed input identically.
+  const thresholdRaw = parseValueFlag(args.slice(1), '--threshold');
+  if (thresholdRaw !== undefined) {
+    const n = parseInt(thresholdRaw, 10);
+    if (!Number.isFinite(n) || n < 0 || !/^\d+$/.test(String(thresholdRaw).trim())) {
+      throw thresholdError(thresholdRaw);
     }
     threshold = n;
   }
 
-  let format;
-  for (const a of args.slice(1)) {
-    const m = a.match(/^--format=(text|markdown|json)$/);
-    if (m) { format = m[1]; break; }
-  }
-  const fIdx = args.indexOf('--format');
-  if (fIdx >= 0 && args[fIdx + 1]) {
-    format = args[fIdx + 1];
-  }
+  // d5-swarm-cli-003 (Stage A): the space-form `--format` took the next token
+  // raw with no enum check and no `--`-swallow guard. parseFormatFlag closes
+  // both: enum-validate (throw CLI_INVALID_FORMAT) + reject a swallowed flag.
+  const format = parseFormatFlag(args.slice(1));
 
   const legacyV1 = args.includes('--legacy-v1');
 
@@ -981,8 +1084,13 @@ function cmdApprove(args) {
 
   const db = openDb(getDbPath());
   const approveAll = args.includes('--all');
-  const idsArg = args.find((a, i) => args[i - 1] === '--ids');
-  const ids = idsArg ? idsArg.split(',').map(s => s.trim()) : [];
+  // d5-swarm-cli-004 (Stage A): route `--ids` through the shared value-flag
+  // parser so `--ids=F-001,F-002` (equals-form) works like every sibling flag,
+  // and a swallowed `--ids --reason` is treated as missing (→ the "Specify
+  // --all or --ids" guard fires) rather than capturing the following flag as a
+  // finding id.
+  const idsArg = parseValueFlag(args, '--ids');
+  const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
 
   if (!approveAll && ids.length === 0) {
     console.error('Specify --all or --ids F-001,F-002');
@@ -1093,15 +1201,11 @@ function cmdFindings(args) {
   //   symmetric to wave-17's DOGFOOD_LOG_HUMAN).
   // Default: text on TTY, markdown when piped/redirected (back-compat for
   // `swarm findings <run> > digest.md` and CI scrapers).
-  let format;
-  for (const a of args.slice(1)) {
-    const m = a.match(/^--format=(text|markdown|json)$/);
-    if (m) { format = m[1]; break; }
-  }
-  const formatIdx = args.indexOf('--format');
-  if (formatIdx >= 0 && args[formatIdx + 1]) {
-    format = args[formatIdx + 1];
-  }
+  // d5-swarm-cli-003 (Stage A): same enum-validate + `--`-swallow guard as
+  // parseVerifyFlags — the space-form `--format` here previously took the next
+  // token raw, silently emitting a DIFFERENT format than requested (or
+  // swallowing a following flag). parseFormatFlag closes both gaps.
+  const format = parseFormatFlag(args.slice(1));
 
   const { output, exitCode } = buildDigest({
     runId,

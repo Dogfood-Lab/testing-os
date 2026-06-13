@@ -156,7 +156,15 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
 
     if (ciReqs.coverage_min != null) {
       const coverageCheck = submission.ci_checks?.find(c => c.kind === 'coverage');
-      if (!coverageCheck) {
+      // ci_checks[].value is OPTIONAL in the submission schema (only id/kind/status
+      // are required). A value-less coverage check must be treated the SAME as a
+      // missing one: at the trust boundary the verifier rejects incomplete proof.
+      // Without this guard, `undefined < coverage_min` is false (and a coerced
+      // null/NaN is likewise not a real measurement), so the gate silently passed
+      // with no measured coverage.
+      const measured = coverageCheck && typeof coverageCheck.value === 'number'
+        && Number.isFinite(coverageCheck.value);
+      if (!coverageCheck || !measured) {
         errors.push(
           `surface[${surface}]: coverage_min is ${ciReqs.coverage_min}% but no coverage data provided`
         );

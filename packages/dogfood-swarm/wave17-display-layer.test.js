@@ -35,7 +35,7 @@
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -314,10 +314,26 @@ describe('F-091578-012 — persist-results renders submission path + reproduce c
 
     const script = resolve(__dirname, 'persist-results.js');
 
+    // SEED-2: sandbox the ingest DATA root to tmp. persist-results.js forwards
+    // INGEST_REPO_ROOT to the run.js subprocess, so the rejected record lands
+    // under tmp/records/_rejected — never the real repo tree.
     const result = spawnSync(process.execPath, [script, tmp], {
       encoding: 'utf-8',
       timeout: 30_000,
+      env: { ...process.env, INGEST_REPO_ROOT: tmp },
     });
+
+    // SEED-2 regression pin: the ingest must NOT have written into the real
+    // repo's records/ tree. Pre-fix, persist-results.js ran run.js with no
+    // INGEST_REPO_ROOT, so this exact submission (repo org/repo, finished
+    // 2026-04-26) leaked a rejected record into records/_rejected/org/repo and
+    // re-stamped indexes/, dirtying the working tree on every test run. If the
+    // env forward regresses, this assertion fires (and the leak returns).
+    const realRejectedOrgRepo = resolve(__dirname, '..', '..', 'records', '_rejected', 'org', 'repo');
+    assert.ok(
+      !existsSync(realRejectedOrgRepo),
+      'persist-results --ingest must not write a record into the real repo records/ tree (SEED-2)',
+    );
 
     // F-W1-TEST-002: the previous shape silently passed via an
     // empty `else` branch when the ingest seam wasn't reached. The

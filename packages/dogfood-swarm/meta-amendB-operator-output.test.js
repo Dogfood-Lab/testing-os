@@ -216,7 +216,9 @@ describe('cli-p-002: `swarm verify` exits non-zero unless the verdict is a clean
     const r = spawnSync(process.execPath, [CLI_PATH, 'verify', 'r1'], {
       encoding: 'utf-8',
       cwd: __dirname,
-      env: { ...process.env, SWARM_DB: dbPath },
+      // SEED-2: sandbox the ingest DATA root so persist --ingest never writes
+      // a record into the real repo tree (persist.js forwards INGEST_REPO_ROOT).
+      env: { ...process.env, SWARM_DB: dbPath, INGEST_REPO_ROOT: tempDir },
     });
     assert.doesNotMatch(r.stderr || '', /SyntaxError/, `cli.js failed to parse:\n${r.stderr}`);
     assert.notEqual(r.status, 0,
@@ -269,7 +271,9 @@ describe('cli-p-001: `swarm persist --ingest` exits non-zero when ingest hard-fa
     const r = spawnSync(process.execPath, [CLI_PATH, 'persist', RUN_ID, '--ingest'], {
       encoding: 'utf-8',
       cwd: __dirname,
-      env: { ...process.env, SWARM_DB: dbPath },
+      // SEED-2: sandbox the ingest DATA root so persist --ingest never writes
+      // a record into the real repo tree (persist.js forwards INGEST_REPO_ROOT).
+      env: { ...process.env, SWARM_DB: dbPath, INGEST_REPO_ROOT: tempDir },
     });
     assert.doesNotMatch(r.stderr || '', /SyntaxError/, `cli.js failed to parse:\n${r.stderr}`);
     assert.notEqual(r.status, 0,
@@ -286,7 +290,9 @@ describe('cli-p-001: `swarm persist --ingest` exits non-zero when ingest hard-fa
     const r = spawnSync(process.execPath, [CLI_PATH, 'persist', RUN_ID], {
       encoding: 'utf-8',
       cwd: __dirname,
-      env: { ...process.env, SWARM_DB: dbPath },
+      // SEED-2: sandbox the ingest DATA root so persist --ingest never writes
+      // a record into the real repo tree (persist.js forwards INGEST_REPO_ROOT).
+      env: { ...process.env, SWARM_DB: dbPath, INGEST_REPO_ROOT: tempDir },
     });
     assert.equal(r.status, 0,
       `persist without --ingest must exit 0; got ${r.status}\nstderr:\n${r.stderr}`);

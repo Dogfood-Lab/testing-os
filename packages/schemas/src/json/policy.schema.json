@@ -103,6 +103,59 @@
     }
   },
 
+  "allOf": [
+    {
+      "$comment": "d1-schemas-003 — additive conditional constraint mirroring the H4 precedent in dogfood-finding.schema.json. enforcement.reason and enforcement.review_after have always carried 'Required if ...' descriptions, but until stage A this was honor-system prose the schema dropped silently — a repo could mark itself `exempt` (opting out of Gate F per policy.schema.json:30) with reason:null/review_after:null and validate clean. The schema now enforces it: a warn-only/exempt mode requires a non-null `reason`; an exempt mode additionally requires a `review_after` date. Note the `not const null` guard — the property type is [string,null], and a literal null would satisfy bare `required`, so the value must be constrained to a real justification.",
+      "if": {
+        "properties": {
+          "enforcement": {
+            "type": "object",
+            "properties": {
+              "mode": { "enum": ["warn-only", "exempt"] }
+            },
+            "required": ["mode"]
+          }
+        },
+        "required": ["enforcement"]
+      },
+      "then": {
+        "properties": {
+          "enforcement": {
+            "required": ["reason"],
+            "properties": {
+              "reason": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    {
+      "$comment": "d1-schemas-003 (exempt half) — an exempt repo is fully opted out of Gate F, so it additionally requires a scheduled review date. Same null-guard reasoning as the reason half.",
+      "if": {
+        "properties": {
+          "enforcement": {
+            "type": "object",
+            "properties": {
+              "mode": { "const": "exempt" }
+            },
+            "required": ["mode"]
+          }
+        },
+        "required": ["enforcement"]
+      },
+      "then": {
+        "properties": {
+          "enforcement": {
+            "required": ["review_after"],
+            "properties": {
+              "review_after": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    }
+  ],
+
   "$defs": {
     "surface_policy": {
       "type": "object",

@@ -446,7 +446,7 @@ describe('persist-results — F-246817-007 error-path coverage', () => {
       component_id: 'core',
       controls: [{ id: 'c1', status: 'pass' }],
       findings: [
-        { id: 'f1', severity: 'high', status: 'open' /* no domain */ },
+        { id: 'f1', severity: 'HIGH', status: 'open' /* no domain */ },
       ],
     }];
     const payload = buildAuditPayload(manifest, audits, []);
@@ -461,7 +461,7 @@ describe('persist-results — F-246817-007 error-path coverage', () => {
     const audits = [{
       component_id: 'core',
       controls: [],
-      findings: [{ id: 'f1', severity: 'critical', domain: 'sec', status: 'open' }],
+      findings: [{ id: 'f1', severity: 'CRITICAL', domain: 'sec', status: 'open' }],
     }];
     const remediate = [{ component_id: 'core' /* no fixes field */ }];
     const payload = buildAuditPayload(manifest, audits, remediate);
@@ -476,7 +476,7 @@ describe('persist-results — F-246817-007 error-path coverage', () => {
     const audits = [{
       component_id: 'core',
       controls: [],
-      findings: [{ id: 'f1', severity: 'high', domain: 'q', status: 'open' }],
+      findings: [{ id: 'f1', severity: 'HIGH', domain: 'q', status: 'open' }],
     }];
     const remediate = [{
       component_id: 'core',
@@ -497,8 +497,8 @@ describe('persist-results — F-246817-007 error-path coverage', () => {
       component_id: 'x',
       component_type: 'backend',
       findings: [
-        { id: 'f1', severity: 'critical', status: 'fixed' },
-        { id: 'f2', severity: 'high', status: 'fixed' },
+        { id: 'f1', severity: 'CRITICAL', status: 'fixed' },
+        { id: 'f2', severity: 'HIGH', status: 'fixed' },
       ],
     }];
     const results = buildScenarioResults(audits, []);

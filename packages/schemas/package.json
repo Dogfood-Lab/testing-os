@@ -33,6 +33,7 @@
     "ajv-formats": "^3.0.1"
   },
   "devDependencies": {
+    "@dogfood-lab/dogfood-swarm": "*",
     "@types/node": "^25.3.5",
     "vitest": "^4.1.6"
   },

@@ -6,6 +6,14 @@ export const config: SiteConfig = {
   logoBadge: 'TO',
   brandName: 'testing-os',
   repoUrl: 'https://github.com/dogfood-lab/testing-os',
+  // d7-site-004: index.astro / 404.astro pass `npmUrl={config.npmUrl}` to
+  // BaseLayout, which renders the npm link in nav + mobile + footer only when
+  // truthy. The key was missing here, so `config.npmUrl` was `undefined` and
+  // all three conditional npm links silently no-op'd — no npm button anywhere.
+  // Point at the flagship published package (`@dogfood-lab/dogfood-swarm`, the
+  // one the hero `Install` preview advertises); six of seven `@dogfood-lab/*`
+  // packages are live on npm since v1.2.0.
+  npmUrl: 'https://www.npmjs.com/package/@dogfood-lab/dogfood-swarm',
   footerText: 'MIT Licensed — built by <a href="https://github.com/dogfood-lab" style="color:var(--color-muted);text-decoration:underline">dogfood-lab</a>',
 
   hero: {

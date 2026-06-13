@@ -70,9 +70,24 @@ function deriveHintForCode(e) {
       return `run \`swarm domains ${e.runId ?? '<run-id>'} --freeze\` after reviewing the domain map, or re-run dispatch with --auto-freeze`;
     case 'DISPATCH_NO_DOMAINS':
       return `run \`swarm domains ${e.runId ?? '<run-id>'} --add <name> --globs "[...]"\` then --freeze`;
+    // d5-swarm-cli-001 (Stage A): phase typo caught as a pre-commit precondition.
+    // The thrown DispatchPreconditionError usually carries its own `.hint`
+    // enumerating the valid phases (e.runId/e.phase too); this derived fallback
+    // covers any DISPATCH_INVALID_PHASE error that surfaces without a `.hint`.
+    case 'DISPATCH_INVALID_PHASE':
+      return `\`${e.phase ?? '<phase>'}\` is not a known phase — valid phases: health-audit-a, health-audit-b, health-audit-c, stage-d-audit, feature-audit, health-amend-a, health-amend-b, health-amend-c, stage-d-amend, feature-execute`;
     // D3B-004 (Wave A2 Stage C): CLI globs JSON parse / shape failure.
     case 'CLI_INVALID_GLOBS_JSON':
       return 'pass --globs \'["packages/foo/**"]\' — wrap the JSON in single quotes so the shell preserves it, and use double quotes for each glob string';
+    // d5-swarm-cli-002 (Stage A): malformed --threshold (now symmetric across
+    // the space- AND equals-form). The thrown Error usually carries its own
+    // `.hint`; this is the fallback for a `.hint`-less CLI_INVALID_THRESHOLD.
+    case 'CLI_INVALID_THRESHOLD':
+      return 'pass an integer >= 0, e.g. `--threshold 0` or `--threshold=3`';
+    // d5-swarm-cli-003 (Stage A): out-of-enum --format value (or a swallowed
+    // following flag). Fallback hint for a `.hint`-less CLI_INVALID_FORMAT.
+    case 'CLI_INVALID_FORMAT':
+      return 'pass one of: text, markdown, json — e.g. `--format json` or `--format=markdown`';
     default:
       return null;
   }

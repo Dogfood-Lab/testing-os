@@ -49,9 +49,24 @@ function surfaceFromType(componentType) {
   return map[(componentType || '').toLowerCase()] || 'cli';
 }
 
+// d4-swarm-core-001 (Stage A): the canonical in-flight severity is UPPERCASE.
+// The agent-output schema enum is ['CRITICAL','HIGH','MEDIUM','LOW'], the DB
+// STATUS.severity enum is uppercase, lib/templates.js instructs agents to emit
+// "CRITICAL|HIGH|MEDIUM|LOW", and every in-package sibling
+// (lib/persist/dogfood-bridge.js, lib/persist/repoknowledge-bridge.js,
+// lib/advance.js, commands/receipt.js, lib/findings-digest.js) keys on
+// UPPERCASE. persist-results.js reads audit/* via readJsonDir -> readBoundedJson
+// (raw JSON.parse, no case transform) so those findings carry the uppercase
+// agent severity. Normalize at the comparison boundary so a stray case never
+// silently zeroes the release gate — every severity comparison in this file
+// goes through sevUpper(), the package-wide uppercase convention.
+function sevUpper(f) {
+  return String(f && f.severity || '').toUpperCase();
+}
+
 function deriveVerdict(findings) {
-  const criticals = findings.filter(f => f.severity === 'critical' && f.status !== 'fixed');
-  const highs = findings.filter(f => f.severity === 'high' && f.status !== 'fixed');
+  const criticals = findings.filter(f => sevUpper(f) === 'CRITICAL' && f.status !== 'fixed');
+  const highs = findings.filter(f => sevUpper(f) === 'HIGH' && f.status !== 'fixed');
   if (criticals.length > 0) return 'fail';
   if (highs.length > 0) return 'partial';
   return 'pass';
@@ -98,10 +113,10 @@ function buildScenarioResults(auditResults, remediateResults) {
     const openCount = openFindings.length;
     const fixedCount = totalFindings - openCount;
     const sev = {
-      critical: findings.filter(f => f.severity === 'critical').length,
-      high: findings.filter(f => f.severity === 'high').length,
-      medium: findings.filter(f => f.severity === 'medium').length,
-      low: findings.filter(f => f.severity === 'low').length,
+      critical: findings.filter(f => sevUpper(f) === 'CRITICAL').length,
+      high: findings.filter(f => sevUpper(f) === 'HIGH').length,
+      medium: findings.filter(f => sevUpper(f) === 'MEDIUM').length,
+      low: findings.filter(f => sevUpper(f) === 'LOW').length,
     };
     const evidenceDescription =
       `${totalFindings} finding(s): ${openCount} open, ${fixedCount} fixed; ` +
@@ -152,10 +167,10 @@ function buildAuditPayload(manifest, auditResults, remediateResults) {
   }
 
   const openFindings = allFindings.filter(f => f.status !== 'fixed');
-  const critical = openFindings.filter(f => f.severity === 'critical').length;
-  const high = openFindings.filter(f => f.severity === 'high').length;
-  const medium = openFindings.filter(f => f.severity === 'medium').length;
-  const low = openFindings.filter(f => f.severity === 'low').length;
+  const critical = openFindings.filter(f => sevUpper(f) === 'CRITICAL').length;
+  const high = openFindings.filter(f => sevUpper(f) === 'HIGH').length;
+  const medium = openFindings.filter(f => sevUpper(f) === 'MEDIUM').length;
+  const low = openFindings.filter(f => sevUpper(f) === 'LOW').length;
   const controlsPassed = allControls.filter(c => c.status === 'pass').length;
 
   const domains = new Set();
@@ -259,6 +274,11 @@ const ingestScript = resolve(REPO_ROOT, 'packages/ingest/run.js');
 try {
   execSync(`node "${ingestScript}" --provenance=stub --file "${submissionPath}"`, {
     stdio: ['ignore', 'inherit', 'inherit'],
+    // SEED-2: forward the ingest DATA root so it stays overridable. run.js
+    // honors INGEST_REPO_ROOT for the records/ + indexes/ it writes; in
+    // production this resolves to REPO_ROOT (the real corpus), but a test can
+    // point it at a temp dir so the ingest never touches the real repo tree.
+    env: { ...process.env, INGEST_REPO_ROOT: process.env.INGEST_REPO_ROOT || REPO_ROOT },
   });
 } catch (e) {
   // F-091578-012 (wave-17): bare 'ERROR: dogfood ingest failed' scrolled past

@@ -104,12 +104,17 @@ export class CollectUpsertError extends Error {
  *   DISPATCH_RUN_NOT_FOUND       — `runs.id` does not exist
  *   DISPATCH_DOMAINS_NOT_FROZEN  — domains still draft, no --auto-freeze
  *   DISPATCH_NO_DOMAINS          — frozen but the domain set is empty
+ *   DISPATCH_INVALID_PHASE       — phase not in AUDIT_PHASES ∪ AMEND_PHASES
+ *                                  (d5-swarm-cli-001: caught BEFORE buildWave
+ *                                  mutates the control plane, replacing the
+ *                                  post-commit untyped `Unknown audit phase`
+ *                                  throw from lib/templates.js)
  */
 export class DispatchPreconditionError extends Error {
   /**
    * @param {string} message
    * @param {object} opts
-   * @param {'DISPATCH_RUN_NOT_FOUND' | 'DISPATCH_DOMAINS_NOT_FROZEN' | 'DISPATCH_NO_DOMAINS'} opts.code
+   * @param {'DISPATCH_RUN_NOT_FOUND' | 'DISPATCH_DOMAINS_NOT_FROZEN' | 'DISPATCH_NO_DOMAINS' | 'DISPATCH_INVALID_PHASE'} opts.code
    * @param {string} [opts.runId]
    * @param {string} [opts.phase]
    * @param {string} [opts.hint]

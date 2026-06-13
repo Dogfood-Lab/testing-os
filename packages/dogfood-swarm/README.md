@@ -174,13 +174,14 @@ Read via `swarm status`, `swarm history`, `swarm receipt`. Never via raw SQL in 
 
 ## Environment variables
 
-Three environment variables are part of the scriptable surface — they are honored on every invocation:
+Four environment variables are part of the scriptable surface:
 
 | Variable | Accepted values | Effect |
 |---|---|---|
 | `SWARM_DB` | a filesystem path | Overrides the control-plane DB path. Unset → the default `swarms/<run-id>/control-plane.db`. Point this at a non-default DB to run against an alternate control plane. |
 | `DOGFOOD_FINDINGS_FORMAT` | `raw` \| `human` \| `json` | Forces the `swarm findings` output format, overriding both the `--format` flag and TTY auto-detection. `raw` → markdown, `human` → text, `json` → JSON. |
 | `DOGFOOD_LOG_HUMAN` | `0` \| `1` | Controls the human-readable companion banner printed alongside the NDJSON stage stream on **stderr**. `0` → never emit the banner (deterministic machine-readable stderr for CI), `1` → always emit it. Unset → emit only when stderr is a TTY. |
+| `INGEST_REPO_ROOT` | a filesystem path | Overrides the **data root** the dogfood ingest writes to when `swarm persist --ingest` (or `persist-results.js`) shells out to `packages/ingest/run.js`. Unset → the real repo root (the live `records/` + `indexes/` corpus). Point it at a scratch dir to ingest without touching the real tree — the test suite sets it so ingest stays side-effect-free. |
 
 Stage transitions are emitted as **NDJSON on stderr** — one JSON object per line, greppable — while stdout carries the command's parse target. Set `DOGFOOD_LOG_HUMAN=0` when you want a clean, machine-parseable stderr stream (e.g. `swarm collect ... 2>collect.ndjson`).
 

@@ -17,6 +17,22 @@ on:
       - 'site/**'
       - 'swarms/PROTOCOL.md'
       - 'scripts/**'
+      # d6-infra-001: the honesty surfaces the doc-drift gates exist to
+      # protect. sync-version:check reads README.md; the R9
+      # source-of-truth-cross-ref handler cross-checks SHIP_GATE.md /
+      # SCORECARD.md / CLAUDE.md / README.md version+state claims; and the
+      # schema-conformance check validates swarms/__schema-fixtures__/*.json.
+      # Without these, a commit editing ONLY a root honesty surface or ONLY a
+      # fixture (a common operation — re-affirming a date, fixing a status
+      # line, editing a negative fixture) triggered no CI run, so the gate
+      # built to catch drift was bypassed at the trigger level for the exact
+      # files it guards. These steps already run; this closes the trigger gap.
+      - 'README.md'
+      - 'SHIP_GATE.md'
+      - 'SCORECARD.md'
+      - 'CLAUDE.md'
+      - 'HANDOFF.md'
+      - 'swarms/__schema-fixtures__/**'
   pull_request:
     paths:
       - 'packages/**'
@@ -29,6 +45,13 @@ on:
       - 'site/**'
       - 'swarms/PROTOCOL.md'
       - 'scripts/**'
+      # d6-infra-001: honesty surfaces + schema fixtures (see push block above).
+      - 'README.md'
+      - 'SHIP_GATE.md'
+      - 'SCORECARD.md'
+      - 'CLAUDE.md'
+      - 'HANDOFF.md'
+      - 'swarms/__schema-fixtures__/**'
   workflow_dispatch:
 
 concurrency:
