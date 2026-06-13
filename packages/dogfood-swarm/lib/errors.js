@@ -162,6 +162,45 @@ export class CliInvalidGlobsError extends Error {
   }
 }
 
+/**
+ * Thrown by openDb when the on-disk control-plane.db was written by a NEWER
+ * @dogfood-lab/dogfood-swarm build than the one running.
+ *
+ * Pre-fix history (F4-CP-03 / F5-07): connection.js's `version >
+ * SCHEMA_VERSION` branch threw a BARE `new Error(...)` with no `.code`/`.hint`,
+ * so error-render.js flattened it to the untyped `ERROR: <msg>` single-line
+ * shape instead of the `ERROR [<CODE>]:` structured envelope every sibling
+ * code gets. error-codes.md already DOCUMENTED `CONTROL_PLANE_SCHEMA_TOO_NEW`
+ * but had to caveat it as "plain Error (no .code field yet)" with a Follow-ups
+ * note. This typed class closes that gap: the refusal is fail-closed (openDb
+ * closes the handle + drops it from the pool before throwing — no write
+ * happens against the unknown-newer shape), mirroring the IsolationError /
+ * StateMachineRejectionError structured-shape discipline.
+ *
+ * Recovery is to UPGRADE THE TOOL, not the DB — the on-disk state is the
+ * newer build's correct migrated state, not corruption. The `hint` says so.
+ */
+export class ControlPlaneSchemaTooNewError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} opts
+   * @param {number} opts.onDiskVersion — schema_version read from the DB's kv table
+   * @param {number} opts.buildVersion  — SCHEMA_VERSION this build understands
+   * @param {string} [opts.dbPath]      — the refused DB path (log correlation)
+   * @param {string} [opts.hint]        — override the default build-upgrade hint
+   */
+  constructor(message, opts) {
+    super(message);
+    this.name = 'ControlPlaneSchemaTooNewError';
+    this.code = 'CONTROL_PLANE_SCHEMA_TOO_NEW';
+    this.onDiskVersion = opts.onDiskVersion;
+    this.buildVersion = opts.buildVersion;
+    if (opts.dbPath != null) this.dbPath = opts.dbPath;
+    this.hint = opts.hint
+      || 'Pull the latest @dogfood-lab/dogfood-swarm so your build SCHEMA_VERSION >= the on-disk control-plane version. Do NOT hand-edit or delete the DB — its state is the newer build\'s correctly migrated state, not corruption.';
+  }
+}
+
 export class StateMachineRejectionError extends Error {
   /**
    * @param {string} message

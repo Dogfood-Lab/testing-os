@@ -100,23 +100,36 @@ test('d7-docs-B001: error-codes.md documents CONTROL_PLANE_SCHEMA_TOO_NEW with t
   );
 });
 
-test('d7-docs-B001: the entry is honest that the throw is currently UNTYPED (plain Error, no .code)', () => {
-  // The doc must NOT claim a `code` field exists on the error object — the
-  // throw is `throw new Error(...)` today. The entry calls this out so an
-  // operator greps for the right shape (`ERROR:` not `ERROR [CODE]:`).
+test('d7-docs-B001: the entry + throw are now a TYPED error carrying code CONTROL_PLANE_SCHEMA_TOO_NEW', () => {
+  // Wave-2 (F4-CP-03 / F5-07) fulfilled the prior "should be typed" follow-up:
+  // openDb now throws the typed ControlPlaneSchemaTooNewError (.code =
+  // 'CONTROL_PLANE_SCHEMA_TOO_NEW'), so renderTopLevelError prints the
+  // structured `ERROR [CONTROL_PLANE_SCHEMA_TOO_NEW]:` envelope. This seal is
+  // the INVERSE of the pre-wave-2 untyped-disclosure seal it replaces: it now
+  // guards that the error STAYS typed and that the doc reflects the typed shape
+  // (rather than guarding the old plain-Error disclosure).
   const section = sliceSection(errorCodes, '### `CONTROL_PLANE_SCHEMA_TOO_NEW`');
   assert.match(
     section,
-    /plain `Error`|untyped/i,
-    'the entry must disclose that this is a plain/untyped Error today (no .code on the object)'
+    /ControlPlaneSchemaTooNewError/,
+    'the entry must document the typed error class'
   );
-  // And connection.js must indeed throw a plain Error here (a `new Error(` in
-  // the refusal branch), not a typed class — guards against the doc going stale
-  // if someone later types it without updating the disclosure.
+  assert.match(
+    section,
+    /code:?\s*[`'"]CONTROL_PLANE_SCHEMA_TOO_NEW/,
+    'the entry must document the .code the typed error carries'
+  );
+  // connection.js must throw the TYPED class in the refusal branch, not a plain
+  // `new Error(` — guards against a regression back to the untyped shape.
   assert.match(
     connectionSrc,
+    /throw new ControlPlaneSchemaTooNewError\(/,
+    'connection.js must throw the typed ControlPlaneSchemaTooNewError in the refusal branch'
+  );
+  assert.doesNotMatch(
+    connectionSrc,
     /throw new Error\(\s*[\s\S]*?only understands v\$\{SCHEMA_VERSION\}/,
-    'connection.js must still throw a plain Error in the refusal branch (matches the doc disclosure)'
+    'connection.js must no longer throw a plain Error in the refusal branch (it is now typed)'
   );
 });
 

@@ -57,6 +57,13 @@ function deriveHintForCode(e) {
       return 'run `git worktree list` to inspect existing worktrees, or re-dispatch without --isolate';
     case 'COLLECT_UPSERT_FAILED':
       return `wave ${e.waveId ?? '?'} has artifacts persisted but findings missing — inspect with \`swarm status\`, then re-run \`swarm collect\` once the underlying SQLite issue is resolved (busy_timeout or fingerprint UNIQUE collision)`;
+    // F4-CP-03 / F5-07: control-plane.db written by a newer build than this
+    // one. The remedy is to upgrade the tool, NOT touch the DB. The thrown
+    // ControlPlaneSchemaTooNewError usually carries its own `.hint`; this
+    // derived fallback covers a CONTROL_PLANE_SCHEMA_TOO_NEW that surfaces
+    // without one.
+    case 'CONTROL_PLANE_SCHEMA_TOO_NEW':
+      return `the on-disk control-plane.db is schema v${e.onDiskVersion ?? '?'} but this build understands v${e.buildVersion ?? '?'} — pull the latest @dogfood-lab/dogfood-swarm so your build SCHEMA_VERSION >= the on-disk version, then re-run. Do NOT hand-edit or delete the DB; its state is the newer build's correctly migrated state, not corruption.`;
     case 'RECORD_SCHEMA_INVALID':
       return 'inspect the failing record against packages/schemas/src/json/dogfood-record.schema.json and fix the invalid fields before re-ingesting';
     case 'AGENT_OUTPUT_SCHEMA_INVALID':

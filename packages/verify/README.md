@@ -48,7 +48,8 @@ if (!result.ok) {
 
 | Validator | Purpose |
 |---|---|
-| `validators/schema.js` | JSON Schema check against `@dogfood-lab/schemas` |
+| `validators/schema.js` | JSON Schema check against `@dogfood-lab/schemas` (SHAPE gate) |
+| `validators/schema-version.js` | `schema_version` VALUE gate — refuses an incompatible MAJOR against `SUPPORTED_SCHEMA_VERSIONS` |
 | `validators/policy.js` | Per-repo policy compliance (prototype-pollution-safe deep merge) |
 | `validators/provenance.js` | GitHub Actions run-ID confirmation via API (with timeout guard) |
 | `validators/steps.js` | Step-by-step contract checks (gate accumulation, ordering) |
@@ -89,7 +90,9 @@ The verifier emits two prefix classes:
 | Prefix | Source | Meaning |
 |---|---|---|
 | `schema:` | `validators/schema.js` | JSON Schema check on the submission/record envelope failed. The rest of the string carries the AJV path + message. |
-| `policy:` | `validators/policy.js` | Per-repo policy gate failed (forbidden tags, missing required fields, version-floor violation, etc.). |
+| `policy:` | `validators/policy.js` | Per-repo policy gate failed (forbidden tags, missing required fields, surface evidence/CI requirements, etc.). |
+| `CONTRACT_SCHEMA_TOO_NEW:` | `validators/schema-version.js` | The submission's `schema_version` declares a MAJOR **above** what this build supports (see `SUPPORTED_SCHEMA_VERSIONS` in `@dogfood-lab/schemas`). This build cannot understand a future contract — **the operator must upgrade testing-os**. |
+| `CONTRACT_SCHEMA_TOO_OLD:` | `validators/schema-version.js` | The submission's `schema_version` declares a MAJOR **below** the supported floor. **The submitter must re-emit** against the current contract. A patch/minor delta inside the supported major range is NOT rejected. |
 | `steps[<id>]:` | `validators/steps.js` | Step-level contract check failed on a specific step id (gate accumulation, ordering, evidence shape). |
 | `provenance:` | `validators/provenance.js` | The GitHub run-id confirmation could not match the submitted commit/repo at the GitHub API. |
 | `scenario-load:` | `packages/ingest/load-context.js` | A scenario referenced by `scenario_results` could not be loaded from the source repo (typed-reason: `timeout` / `not_found` / `parse_error` / `invalid_id`). |
@@ -113,6 +116,13 @@ for (const r of result.rejection_reasons) {
     notifyOps(r);
   } else if (r.startsWith('schema:') || r.startsWith('policy:') || r.startsWith('steps[')) {
     // Submission-bad — surface to the submitter.
+    surfaceToSubmitter(r);
+  } else if (r.startsWith('CONTRACT_SCHEMA_TOO_NEW:')) {
+    // The build is behind the submitted contract — operator action, NOT a
+    // submitter fix. Upgrade testing-os, then re-run.
+    notifyOps(r);
+  } else if (r.startsWith('CONTRACT_SCHEMA_TOO_OLD:')) {
+    // Submission-bad — the payload targets a retired major. Submitter re-emits.
     surfaceToSubmitter(r);
   } else if (r.startsWith('provenance:')) {
     // May be either class — GitHub API timeouts are operational; a real

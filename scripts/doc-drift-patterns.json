@@ -9,6 +9,7 @@
       "description": "Every error.code value emitted from packages/**/lib/errors.js (including STATE_MACHINE_<KIND> expansions, the D2/D1 batch + singleton collision/schema-invalid families, the DISPATCH_* union on DispatchPreconditionError, and the VALIDATOR_FAULT_* template-literal family on verify/index.js's runValidator helper) must appear in the error-codes handbook page. Stage C Wave A2.1 FX2 closed the vacuous-extractor root cause: the prior `reasons.push(`VALIDATOR_FAULT_` regex matched ZERO lines because verify/index.js pushes a *variable* (`reasons.push(faultReason)`) where the template literal lives in the runValidator helper a few lines up; the prior DISPATCH_* coverage was zero because no extractor existed at all (DispatchPreconditionError sets `this.code = opts.code` from a JSDoc-typed union, so the general `this.code = 'X'` literal extractor missed it). Fixed extractors target the MINT site (template-literal definition + JSDoc type union) rather than the assignment site, asserted non-vacuous by scripts/check-doc-drift.test.mjs's `error-codes META` test which strips each enforced code from the handbook and asserts drift fires.",
       "sources": [
         "packages/dogfood-swarm/lib/errors.js",
+        "packages/dogfood-swarm/db/connection.js",
         "packages/ingest/validate-record.js",
         "packages/ingest/persist.js",
         "packages/findings/derive/write-findings.js",

@@ -117,3 +117,9 @@ export {
   type ValidationError,
   type ValidationResult,
 } from './validate.js';
+
+export {
+  SUPPORTED_SCHEMA_VERSIONS,
+  type SupportedSchemaVersion,
+  type SupportedSchemaContract,
+} from './schema-versions.js';

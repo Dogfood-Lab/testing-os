@@ -274,6 +274,24 @@ CREATE TABLE IF NOT EXISTS promotions (
 
 CREATE INDEX IF NOT EXISTS idx_promotions_run  ON promotions(run_id);
 CREATE INDEX IF NOT EXISTS idx_promotions_wave ON promotions(wave_id);
+
+-- ───────────────────────────────────────────
+-- F4-CP-04: ordered/versioned migration ledger.
+-- Records WHICH migrations have run, one row per migration_id, so the
+-- control plane has a per-migration audit trail instead of only the aggregate
+-- KV schema_version number. db/migrate.js#migrateDb writes one row per
+-- migration it applies (status:'applied') OR retroactively seeds for a
+-- pre-existing DB whose columns already exist (the bootstrap path). Created
+-- here in SCHEMA_SQL so a FRESH DB has the table before migrateDb runs; an
+-- EXISTING DB that predates the ledger gets it created on the bootstrap path
+-- (migrateDb is defensive: CREATE IF NOT EXISTS before it reads/writes).
+-- ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS migrations_ledger (
+  migration_id   TEXT    PRIMARY KEY,
+  target_version INTEGER NOT NULL,
+  applied_at     TEXT    NOT NULL,
+  status         TEXT    NOT NULL
+);
 `;
 
 /**
@@ -327,6 +345,52 @@ export const MIGRATIONS_SQL = [
   // control-plane.db audited at swarm-v131-pre held zero findings, so the
   // ungated rollout is safe in practice.
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_run_finding_id ON findings(run_id, finding_id)",
+];
+
+/**
+ * F4-CP-04: ordered/versioned migration manifest.
+ *
+ * The same statements as MIGRATIONS_SQL above, but each one promoted to an
+ * ordered, identified, version-tagged record: `{ id, target_version, sql }`.
+ *
+ *   - `id`             — stable, unique migration id (used as the
+ *                        migrations_ledger primary key). Never renamed once
+ *                        shipped; the ledger keys on it.
+ *   - `target_version` — the SCHEMA_VERSION this migration belongs to (the
+ *                        version a DB reaches once it is applied). Entries are
+ *                        ordered by ascending target_version; the runner
+ *                        iterates in array order.
+ *   - `sql`            — the EXACT SQL from MIGRATIONS_SQL[i] (back-compat:
+ *                        zero behavioural change to what gets executed, only
+ *                        how it is tracked). The 1:1 index correspondence is
+ *                        asserted by the migration-runner test.
+ *
+ * Adding a new migration is a two-line append here (and the matching
+ * MIGRATIONS_SQL entry stays for the legacy duplicate-tolerant safety net in
+ * connection.js). The runner records each in the ledger; an existing DB whose
+ * column/index already exists is detected and seeded WITHOUT re-running (see
+ * db/migrate.js retroactive-bootstrap path).
+ */
+export const MIGRATIONS_MANIFEST = [
+  // v2 (target_version 2)
+  { id: 'v2-runs-timeout-policy-ms',        target_version: 2, sql: MIGRATIONS_SQL[0] },
+  { id: 'v2-waves-domain-snapshot-id',      target_version: 2, sql: MIGRATIONS_SQL[1] },
+  { id: 'v2-domains-description',           target_version: 2, sql: MIGRATIONS_SQL[2] },
+  // v3 (target_version 3)
+  { id: 'v3-agent-runs-worktree-path',      target_version: 3, sql: MIGRATIONS_SQL[3] },
+  { id: 'v3-agent-runs-worktree-branch',    target_version: 3, sql: MIGRATIONS_SQL[4] },
+  // v4 (target_version 4)
+  { id: 'v4-findings-cross-ref',            target_version: 4, sql: MIGRATIONS_SQL[5] },
+  { id: 'v4-findings-coordinator-resolved', target_version: 4, sql: MIGRATIONS_SQL[6] },
+  { id: 'v4-findings-verified-via-evidence',target_version: 4, sql: MIGRATIONS_SQL[7] },
+  // TRUTH-001 / TRUTH-003 serial-verify discipline signals (target_version 5)
+  { id: 'v5-waves-serial-verify-required',  target_version: 5, sql: MIGRATIONS_SQL[8] },
+  { id: 'v5-agent-runs-verification-skipped', target_version: 5, sql: MIGRATIONS_SQL[9] },
+  // Phase 5A wave_state_events table + index (target_version 5)
+  { id: 'v5-wave-state-events-table',       target_version: 5, sql: MIGRATIONS_SQL[10] },
+  { id: 'v5-wave-state-events-index',       target_version: 5, sql: MIGRATIONS_SQL[11] },
+  // D3B-006 finding-id uniqueness index (target_version 6)
+  { id: 'v6-findings-run-finding-id-unique',target_version: 6, sql: MIGRATIONS_SQL[12] },
 ];
 
 /**

@@ -9,7 +9,14 @@
 import { validateSubmissionSchema as _defaultValidateSubmissionSchema } from './validators/schema.js';
 import { validatePolicy as _defaultValidatePolicy } from './validators/policy.js';
 import { validateStepResults as _defaultValidateStepResults } from './validators/steps.js';
+import { validateSchemaVersion as _defaultValidateSchemaVersion } from './validators/schema-version.js';
 import { computeVerdict } from './validators/verdict.js';
+import { SUPPORTED_SCHEMA_VERSIONS } from '@dogfood-lab/schemas';
+
+// F1-CONTRACTS-001: the persisted record's `schema_version` is the SINGLE
+// source of truth from the contract package — not a hardcoded literal that
+// can drift from `SUPPORTED_SCHEMA_VERSIONS.record.current`.
+const RECORD_SCHEMA_VERSION = SUPPORTED_SCHEMA_VERSIONS.record.current;
 
 /**
  * D1B-003 (Stage C humanization): the SOLE catch wrapper for synchronous
@@ -75,7 +82,7 @@ export async function verify(submission, options) {
     // timing.finished_at). Mark _skipPersist so the ingest layer surfaces the
     // rejection without crashing the persist layer with `invalid repo format: undefined`.
     return {
-      schema_version: '1.0.0',
+      schema_version: RECORD_SCHEMA_VERSION,
       _skipPersist: true,
       verification: {
         status: 'rejected',
@@ -95,6 +102,7 @@ export async function verify(submission, options) {
   const validateSubmissionSchema = validatorOverrides.validateSubmissionSchema || _defaultValidateSubmissionSchema;
   const validateStepResults = validatorOverrides.validateStepResults || _defaultValidateStepResults;
   const validatePolicy = validatorOverrides.validatePolicy || _defaultValidatePolicy;
+  const validateSchemaVersion = validatorOverrides.validateSchemaVersion || _defaultValidateSchemaVersion;
   const now = new Date().toISOString();
   const reasons = [];
 
@@ -132,6 +140,26 @@ export async function verify(submission, options) {
     }
   } else {
     reasons.push(schemaRun.faultReason);
+  }
+
+  // 1b. schema_version VALUE gate (F1-CONTRACTS-001)
+  // The schema check above gates `schema_version` by PATTERN only. This gate
+  // compares the declared MAJOR against `SUPPORTED_SCHEMA_VERSIONS` (the
+  // single source of truth in @dogfood-lab/schemas) and refuses an
+  // incompatible major instead of silently mis-validating a future contract
+  // against the live 1.x schema. It runs INDEPENDENT of `schemaResult.valid`:
+  // a future-major payload may also fail shape, but the version refusal is the
+  // operator-actionable signal and must land regardless. The validator emits a
+  // fully-prefixed `CONTRACT_SCHEMA_TOO_NEW:` / `CONTRACT_SCHEMA_TOO_OLD:`
+  // reason; an unknown-contract throw surfaces as
+  // `VALIDATOR_FAULT_CONTRACT_SCHEMA_VERSION` via the same runValidator seam.
+  const versionRun = runValidator('contract_schema_version', () => validateSchemaVersion(submission, 'recordSubmission'));
+  if (versionRun.ok) {
+    if (!versionRun.result.valid) {
+      reasons.push(...versionRun.result.errors);
+    }
+  } else {
+    reasons.push(versionRun.faultReason);
   }
 
   // 2. Reject if submission includes verifier-owned fields
@@ -219,7 +247,7 @@ export async function verify(submission, options) {
 
   // 7. Assemble persisted record
   const persisted = {
-    schema_version: '1.0.0',
+    schema_version: RECORD_SCHEMA_VERSION,
     policy_version: policyVersion,
     run_id: submission.run_id,
     repo: submission.repo,

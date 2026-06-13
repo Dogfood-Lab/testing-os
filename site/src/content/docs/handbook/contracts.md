@@ -99,3 +99,41 @@ Key fields: `recommendation_id`, `recommendation_kind`, `applies_to` (surfaces/m
 Hardened portfolio rules earned from strong patterns (`dogfood-doctrine.schema.json`).
 
 Key fields: `doctrine_id`, `doctrine_kind`, `statement`, `rationale`, `based_on_pattern_ids`, `transfer_scope` (surface_archetype or broader), `strength`.
+
+## Schema versioning & compatibility matrix
+
+testing-os has **two independent `schema_version` axes**, and it pays to keep them straight. One governs the SQLite control plane (how the swarm coordinates itself); the other governs the JSON record/intelligence contracts above (what crosses the wire between repos and the verifier). They version separately, fail differently, and have different migration stories.
+
+| Axis | Where it lives | Versioned by | Too-new failure | Migration today |
+|------|----------------|--------------|-----------------|-----------------|
+| **Control-plane schema** | `kv.schema_version` in `control-plane.db` | `SCHEMA_VERSION` in `packages/dogfood-swarm/db/schema.js` (integer) | `CONTROL_PLANE_SCHEMA_TOO_NEW` — `openDb` refuses fail-closed | Ordered, ledger-recorded runner (additive only so far) |
+| **JSON contract schema** | `schema_version` field on each record / finding / pattern / … | semver in each `*.schema.json` (currently `1.0.0`) | `CONTRACT_SCHEMA_TOO_NEW` / `CONTRACT_SCHEMA_TOO_OLD` — verify refuses an incompatible **major** | Deferred — no non-additive bump exists yet |
+
+### Control-plane schema version + migration ledger
+
+The swarm control plane is a SQLite DB (`swarms/control-plane.db`). Its shape is versioned by the integer `SCHEMA_VERSION` in `packages/dogfood-swarm/db/schema.js`, stored in the DB's `kv` table under `schema_version`.
+
+Migrations are **ordered and recorded**. `db/schema.js` exports a `MIGRATIONS_MANIFEST` — an array of `{ id, target_version, sql }` entries, one per historical schema change, in ascending `target_version` order. On `openDb`, `db/migrate.js#migrateDb` reconciles the DB against the manifest:
+
+- **Fresh DB:** every manifest migration runs in order (each inside its own transaction) and is recorded in the `migrations_ledger` table (`migration_id` PK, `target_version`, `applied_at`, `status`).
+- **Existing DB that predates the ledger:** each migration whose column/index/table **already exists** (detected via `PRAGMA table_info` / `sqlite_master`) is **retroactively seeded** into the ledger as `applied` **without re-running** — so opening a current DB is a no-op, never a duplicate-column error.
+- **Partially upgraded DB:** missing migrations are applied; already-present ones are bootstrapped. Either way the ledger ends complete and `kv.schema_version` is bumped to `SCHEMA_VERSION`.
+
+A `--check`-style dry run (`migrateDb(db, version, { check: true })`) reports the plan — which migrations *would* be applied vs bootstrapped — while mutating nothing.
+
+If the on-disk DB reports a `schema_version` **higher** than the running build's `SCHEMA_VERSION`, `openDb` refuses fail-closed with [`CONTROL_PLANE_SCHEMA_TOO_NEW`](../error-codes/#control_plane_schema_too_new) — the remedy is to upgrade the tool, never to hand-edit the DB.
+
+### JSON-contract schema version
+
+The record and intelligence contracts each carry a semver `schema_version` (currently `1.0.0`). The verifier compares a submission's contract `schema_version` against the band of versions the build supports. A submission whose **major** is newer than the build understands is refused (`CONTRACT_SCHEMA_TOO_NEW`); one whose major is older than the supported floor is refused (`CONTRACT_SCHEMA_TOO_OLD`). Minor/patch bumps that are purely additive stay compatible. This is the JSON-contract analogue of the control plane's `CONTROL_PLANE_SCHEMA_TOO_NEW` refusal — same fail-closed-on-incompatible-major discipline, different axis.
+
+### Data migration is deferred (on purpose)
+
+There is **no** general record/-evidence + JSON-contract **data** migration runner today, and that is deliberate: every schema change so far has been **additive** (new optional fields, new columns, new indexes), so a missing field reads as absent and an old reader keeps working. A data-migration runner only earns its keep when a real **non-additive** bump lands — a renamed field, a tightened type, a required field with no default — and none exists yet. Building one before then would be speculative machinery with no fixture to prove it against.
+
+When that bump arrives, two shipped pieces are the framework to generalize from:
+
+- **`scripts/apply-finding-migration.mjs`** — the proven JSON/record-side pattern: manifest-schema validation, transaction-wrapped, `--check` dry-run, atomic, idempotent (it overwrites the same fields with the same values, so a second run is a no-op).
+- **`packages/dogfood-swarm/db/migrate.js`** — this control-plane runner: ordered manifest, ledger-recorded, retroactive-bootstrap-aware.
+
+Generalizing means lifting their shared shape (ordered manifest + ledger + dry-run + atomic per-unit transaction) over the record/evidence tree, gated by the JSON-contract `schema_version`. Until a non-additive bump forces it, this section is the contract: additive-only, version-refused at the incompatible major, data migration framework-ready but unbuilt.

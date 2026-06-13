@@ -9,6 +9,8 @@ import Database from 'better-sqlite3';
 import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { SCHEMA_SQL, SCHEMA_VERSION, MIGRATIONS_SQL } from './schema.js';
+import { migrateDb } from './migrate.js';
+import { ControlPlaneSchemaTooNewError } from '../lib/errors.js';
 
 /** @type {Map<string, Database.Database>} */
 const pool = new Map();
@@ -67,34 +69,43 @@ export function openDb(dbPath) {
 
   // Apply schema idempotently
   const version = getSchemaVersion(db);
-  if (version < 1) {
-    db.exec(SCHEMA_SQL);
-    applyMigrations(db); // safe: catches duplicate columns
-    setSchemaVersion(db, SCHEMA_VERSION);
-  } else if (version < SCHEMA_VERSION) {
-    // Apply new tables from SCHEMA_SQL (CREATE IF NOT EXISTS is safe)
-    db.exec(SCHEMA_SQL);
-    // Apply ALTER TABLE migrations (catch duplicates)
-    applyMigrations(db);
-    setSchemaVersion(db, SCHEMA_VERSION);
-  } else if (version > SCHEMA_VERSION) {
+  if (version > SCHEMA_VERSION) {
     // sm-p-002: the on-disk DB was written by a NEWER build than this one.
-    // Neither create (version < 1) nor upgrade (version < SCHEMA_VERSION)
-    // fires, so without this branch openDb would silently proceed against an
+    // Neither the create (version < 1) nor the upgrade/bootstrap path below
+    // is safe, so without this refusal openDb would proceed against an
     // unknown-newer shape. The shared swarms/control-plane.db is committed
     // back to main by ingest.yml; an operator on an older checkout (or a stale
     // CI cache) can hit a DB a newer main already migrated. A newer schema may
     // rename/repurpose a column or add a NOT NULL column this writer won't
-    // populate — silent data corruption. Refuse loudly, same fail-loud-not-
-    // silent discipline as the dead-handle sentinel and busy_timeout above.
+    // populate — silent data corruption. Refuse loudly (F4-CP-03: typed,
+    // fail-closed), same fail-loud-not-silent discipline as the dead-handle
+    // sentinel and busy_timeout above.
     db.close();
     pool.delete(dbPath);
-    throw new Error(
+    throw new ControlPlaneSchemaTooNewError(
       `control-plane.db at ${dbPath} is schema v${version} but this ` +
       `@dogfood-lab/dogfood-swarm build only understands v${SCHEMA_VERSION}. ` +
-      `Pull the latest @dogfood-lab/dogfood-swarm before opening this DB.`
+      `Pull the latest @dogfood-lab/dogfood-swarm before opening this DB.`,
+      { onDiskVersion: version, buildVersion: SCHEMA_VERSION, dbPath }
     );
   }
+
+  // version < 1 (fresh): SCHEMA_SQL creates all tables.
+  // 1 <= version < SCHEMA_VERSION (upgrade): SCHEMA_SQL adds any new tables
+  //   (CREATE IF NOT EXISTS is safe).
+  // version === SCHEMA_VERSION (current, possibly pre-ledger): SCHEMA_SQL is a
+  //   structural no-op; we still run migrateDb so a DB that predates the
+  //   migrations_ledger gets its ledger retroactively bootstrapped.
+  if (version < SCHEMA_VERSION) {
+    db.exec(SCHEMA_SQL);
+  }
+  // F4-CP-04: ordered, ledger-recorded runner replaces the flat
+  // applyMigrations sweep. Fresh DB → runs every manifest migration in order;
+  // pre-existing DB (current or partially upgraded, ledger empty/absent) →
+  // retroactively seeds the ledger for migrations whose column/index already
+  // exists WITHOUT re-running, and applies only the genuinely missing ones.
+  // schema_version bump is folded into migrateDb. Idempotent on a current DB.
+  migrateDb(db, version);
 
   pool.set(dbPath, db);
   return db;
@@ -150,14 +161,23 @@ export function openMemoryDb() {
   const db = new Database(':memory:');
   applyConnectionPragmas(db, { inMemory: true });
   db.exec(SCHEMA_SQL);
-  applyMigrations(db);
-  setSchemaVersion(db, SCHEMA_VERSION);
+  // F4-CP-04: route the in-memory factory through the same ordered,
+  // ledger-recorded runner as openDb so test DBs match production shape
+  // (full migrations_ledger). migrateDb also folds in the schema_version bump.
+  migrateDb(db, 0);
   return db;
 }
 
 /**
  * Apply ALTER TABLE migrations. Catches "duplicate column" errors.
+ *
+ * F4-CP-04 retained as a belt-and-braces safety net: the ledger-aware
+ * migrateDb runner is now the live path (openDb / openMemoryDb), but the flat
+ * duplicate-column-tolerant sweep stays available for any legacy caller and as
+ * documentation of the pre-ledger behaviour. New code should NOT call this —
+ * use migrateDb (db/migrate.js), which records what it did.
  */
+// eslint-disable-next-line no-unused-vars
 function applyMigrations(db) {
   for (const sql of MIGRATIONS_SQL) {
     try { db.exec(sql); } catch (e) {
@@ -177,6 +197,11 @@ function getSchemaVersion(db) {
   }
 }
 
+// F4-CP-04: the schema_version KV bump is now folded into migrateDb (db/
+// migrate.js). Retained as the legacy companion to applyMigrations above for
+// any out-of-band caller; the live openDb / openMemoryDb paths no longer call
+// it directly.
+// eslint-disable-next-line no-unused-vars
 function setSchemaVersion(db, version) {
   db.prepare("INSERT OR REPLACE INTO kv (key, value) VALUES ('schema_version', ?)").run(String(version));
 }
