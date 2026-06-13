@@ -22,13 +22,14 @@
  */
 
 import { parseArgs } from 'node:util';
-import { resolve, join } from 'node:path';
+import { resolve, join, dirname } from 'node:path';
 import { existsSync, realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 import { init } from './commands/init.js';
 import { dispatch } from './commands/dispatch.js';
-import { collect } from './commands/collect.js';
+import { collect, resolveAllDomainOutputs } from './commands/collect.js';
+import { runDoctor, formatDoctor } from './commands/doctor.js';
 import { revalidate, formatRevalidate } from './commands/revalidate.js';
 import { status, formatStatus } from './commands/status.js';
 import { resume, formatResume } from './commands/resume.js';
@@ -263,6 +264,27 @@ function warnUnparseableDomainTokens(args) {
   console.error('  The ignored domain(s) will be reported as `failed` (Output file not found); re-run with the corrected --domain= arg.');
 }
 
+/**
+ * F4-CP-05: surface the `--all`-discovered domains whose deterministic output
+ * file is MISSING on disk as a non-fatal structured stderr warning. Mirrors
+ * warnUnparseableDomainTokens' fail-loud-but-non-fatal posture: it does NOT
+ * change the exit code or gate — collect proceeds with the present domains and
+ * the absent agent is reported `failed` (Output file not found) downstream,
+ * exactly as the manual --domain path would report it. The operator is no
+ * longer left guessing which agent never wrote its output.
+ *
+ * @param {Array<{ domain: string, path: string }>} missing
+ */
+function warnMissingAllOutputs(missing) {
+  if (!missing || missing.length === 0) return;
+  console.error(
+    `WARNING: ${missing.length} dispatched domain(s) have no output file at the expected path and were SKIPPED by --all:`
+  );
+  for (const m of missing) console.error(`  ${m.domain} → ${m.path}`);
+  console.error('  Each skipped domain will be reported as `failed` (Output file not found).');
+  console.error('  Re-run the agent for that domain, or supply its output with --domain=name:path.');
+}
+
 // ── Command handlers ──
 
 function cmdInit(args) {
@@ -472,7 +494,7 @@ function cmdDispatch(args) {
 function cmdCollect(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm collect <run-id> --domain=name:path [--domain=name:path ...]');
+    console.error('Usage: swarm collect <run-id> (--all | --domain=name:path [--domain=name:path ...])');
     process.exit(1);
   }
 
@@ -483,6 +505,32 @@ function cmdCollect(args) {
     if (match) {
       outputs[match[1]] = resolve(match[2]);
     }
+  }
+
+  const hasExplicitDomain = Object.keys(outputs).length > 0;
+  const wantsAll = args.includes('--all');
+
+  // F4-CP-05: `--all` and explicit `--domain` are mutually exclusive — an
+  // explicit `--domain` OVERRIDES `--all` so the manual path stays byte-for-
+  // byte unchanged. Only when NO `--domain` was parsed does `--all` resolve the
+  // map from the control plane (latest dispatched wave's domains → the
+  // deterministic swarms/<run>/wave-N/<domain>/output.json layout). A domain
+  // whose output file is absent is a non-fatal structured warning (reuses the
+  // cli-B001 warn discipline) — collect proceeds with the present ones.
+  if (wantsAll && !hasExplicitDomain) {
+    let resolved;
+    try {
+      resolved = resolveAllDomainOutputs({
+        runId,
+        dbPath: getDbPath(),
+        swarmDir: dirname(getDbPath()),
+      });
+    } catch (e) {
+      console.error(`collect --all: ${e.message}`);
+      process.exit(1);
+    }
+    warnMissingAllOutputs(resolved.missing);
+    Object.assign(outputs, resolved.outputs);
   }
 
   // d5-swarm-cli-B001 (Stage C): warn loudly on any `--domain=` token that
@@ -498,8 +546,9 @@ function cmdCollect(args) {
   warnUnparseableDomainTokens(args.slice(1));
 
   if (Object.keys(outputs).length === 0) {
-    console.error('No outputs provided. Use --domain=name:path for each agent output.');
-    console.error('Example: swarm collect <run-id> --domain=backend:outputs/backend.json --domain=tests:outputs/tests.json');
+    console.error('No outputs provided. Use --all to auto-discover, or --domain=name:path for each agent output.');
+    console.error('Example: swarm collect <run-id> --all');
+    console.error('     or: swarm collect <run-id> --domain=backend:outputs/backend.json --domain=tests:outputs/tests.json');
     process.exit(1);
   }
 
@@ -552,6 +601,21 @@ function cmdCollect(args) {
   } else {
     console.log(`Next: swarm status ${runId}`);
   }
+}
+
+/**
+ * F5-09: `swarm doctor` preflight. Runs the read-only environment checks in
+ * commands/doctor.js (Node floor, control-plane dir writable + hardlink-capable,
+ * on-disk schema not newer than this build) and prints a structured pass/warn/
+ * fail report. Exits non-zero ONLY on a hard FAIL — a WARN does not gate (the
+ * environment is usable, just sub-ideal), so warns exit 0. No run-id required:
+ * doctor probes the environment + the control-plane DB path (getDbPath()),
+ * which exist independent of any specific run.
+ */
+function cmdDoctor(_args) {
+  const report = runDoctor({ dbPath: getDbPath() });
+  console.log(formatDoctor(report));
+  if (report.exitCode !== 0) process.exit(report.exitCode);
 }
 
 function cmdRevalidate(args) {
@@ -1512,6 +1576,7 @@ const commands = {
   domains: cmdDomains,
   dispatch: cmdDispatch,
   collect: cmdCollect,
+  doctor: cmdDoctor,
   revalidate: cmdRevalidate,
   rewind: cmdRewind,
   redrive: cmdRedrive,
@@ -1582,6 +1647,21 @@ Commands:
                              agents run verify concurrently. PROTOCOL.md
                              §Serial final verification.
   collect <run-id> [opts]    Validate, enforce ownership, merge
+                             --all: auto-discover the latest dispatched wave's
+                             agent outputs from the deterministic layout
+                             (swarms/<run>/wave-N/<domain>/output.json) instead
+                             of hand-typing one --domain=name:path per agent. A
+                             domain whose output file is missing is a non-fatal
+                             warning; collect proceeds with the present ones.
+                             --all and --domain are mutually exclusive (an
+                             explicit --domain overrides --all).
+  doctor                     Preflight environment checks (read-only). Verifies
+                             Node >= 22, the control-plane dir is writable +
+                             hardlink-capable (the file-lock CAS needs link(2);
+                             exFAT/FAT32 fail), and the on-disk control-plane.db
+                             schema is not newer than this build. Structured
+                             pass/warn/fail report; exits non-zero only on a
+                             hard FAIL (warns exit 0). No run-id required.
   revalidate <run-id> [opts] Lawful recovery for blocked agent_runs
                              (invalid_output / ownership_violation).
                              Usage: swarm revalidate <run-id> [flags]

@@ -44,6 +44,9 @@ swarm collect <run-id> \
 # Inspect current wave + agent state
 swarm status <run-id>
 
+# Preflight the environment before dispatching (read-only checks)
+swarm doctor
+
 # Same status as a structured object for machine consumers / scripts
 swarm status <run-id> --format=json
 
@@ -60,6 +63,44 @@ swarm receipt <run-id>
 # Advance to the next phase once gates pass
 swarm advance <run-id>
 ```
+
+### Collecting outputs — `--all` vs explicit `--domain`
+
+`swarm collect` needs one agent-output path per dispatched domain. You can
+hand-type them, or let `--all` auto-discover them from the deterministic
+dispatch layout (`swarms/<run-id>/wave-N/<domain>/output.json`):
+
+```text
+# Auto-discover the latest dispatched wave's agent outputs
+swarm collect <run-id> --all
+
+# Equivalent explicit form (--all expands to this)
+swarm collect <run-id> \
+  --domain=backend:swarms/<run-id>/wave-N/backend/output.json \
+  --domain=tests:swarms/<run-id>/wave-N/tests/output.json
+```
+
+`--all` reads the latest dispatched wave from the control plane and resolves
+each dispatched domain's expected output path. A domain whose output file is
+**missing** is a non-fatal warning — collect proceeds with the present ones,
+and the absent agent is reported `failed` (re-run it, or supply its path with
+`--domain`). `--all` and explicit `--domain` are **mutually exclusive**: pass
+a `--domain` and it overrides `--all` (the manual path stays unchanged).
+
+### Preflight — `swarm doctor`
+
+Before a real dispatch, `swarm doctor` runs cheap **read-only** environment
+checks and prints a structured pass/warn/fail report:
+
+```bash
+swarm doctor
+```
+
+It verifies Node ≥ 22 (the `engines.node` floor), that the control-plane
+directory is writable **and** hardlink-capable (the cross-process file lock
+uses `link(2)`, which exFAT/FAT32 do not support — the documented FS trap),
+and that the on-disk `control-plane.db` schema is not newer than this build.
+It exits non-zero **only** on a hard FAIL; warnings exit `0`.
 
 Every other verb is scoped to a single run. `swarm trends` is the one
 **cross-run** verb — it reads the data the control plane accumulates across

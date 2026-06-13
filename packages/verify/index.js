@@ -13,6 +13,11 @@ import { validateSchemaVersion as _defaultValidateSchemaVersion } from './valida
 import { computeVerdict } from './validators/verdict.js';
 import { SUPPORTED_SCHEMA_VERSIONS } from '@dogfood-lab/schemas';
 
+// F1-CONTRACTS-003: re-export the rejection-reason classifier from the package
+// root so consumers `import { parseRejectionReason } from '@dogfood-lab/verify'`
+// instead of hand-rolling .startsWith() chains over the prefix taxonomy.
+export { parseRejectionReason } from './parse-rejection.js';
+
 // F1-CONTRACTS-001: the persisted record's `schema_version` is the SINGLE
 // source of truth from the contract package — not a hardcoded literal that
 // can drift from `SUPPORTED_SCHEMA_VERSIONS.record.current`.

@@ -51,6 +51,20 @@ Key fields:
 
 Scenarios must exercise the real product interface -- not a test harness or mock.
 
+### Importing the contract enums
+
+The three full-set enums hand-maintained across the contract schema JSONs -- `product_surface` (8 values: `cli`, `desktop`, `web`, `api`, `mcp-server`, `npm-package`, `plugin`, `library`), `execution_mode` (`bot`, `human`, `mixed`), and the evidence kinds (`log`, `screenshot`, `recording`, `transcript`, `artifact`, `other`) -- are exported as importable constants from `@dogfood-lab/schemas` so consumers stop hand-copying the lists:
+
+```js
+import {
+  PRODUCT_SURFACES,
+  EXECUTION_MODES,
+  EVIDENCE_KINDS,
+} from '@dogfood-lab/schemas';
+```
+
+These constants are the single source of truth. `stageC-cross-contract-enum-seal.test.ts` asserts every JSON-schema copy equals the exported constant, so a schema enum that drifts from the constant (or vice-versa) goes red. `doctrine.transfer_scope` is a deliberate 3-value subset and is intentionally NOT swept into this seal.
+
 ## Policy Contract
 
 Defines what rules the verifier enforces for each repo.

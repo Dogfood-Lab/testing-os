@@ -352,6 +352,35 @@ The steps validator itself threw an internal exception. Same operational-fault c
 - **Hint:** as above — verifier-side incident.
 - **Operator action:** triage as a system incident, patch the steps validator.
 
+### Consuming `rejection_reasons[]` — `parseRejectionReason`
+
+:::note[Severity: MEDIUM]
+The `verification.rejection_reasons[]` entries above are stable **prefixed strings**, not typed errors. Rather than hand-roll `.startsWith()` chains at every call site, import the classifier exported by `@dogfood-lab/verify`.
+:::
+
+- **Class:** `parseRejectionReason(reason)` — `packages/verify/parse-rejection.js` (re-exported from the package root `index.js`).
+- **Returns:** `{ class, prefix, detail }` where `class` is one of:
+  - **`submission-bad`** — the submitter fixes the payload (`schema:`, `policy:`, `steps[<id>]:`, `provenance:`, `repo:`, `submission-contains-verifier-field:`, `CONTRACT_SCHEMA_TOO_NEW:`, `CONTRACT_SCHEMA_TOO_OLD:`).
+  - **`operational`** — the verifier/tooling faulted; page ops, do NOT bounce to the submitter (the `VALIDATOR_FAULT_*` family above, matched by prefix family so a future fault class needs no parser edit).
+  - **`ingest`** — an ingest-side load fault (`scenario-load:`).
+  - **`unknown`** — unrecognized prefix (including the prefix-less null-submission reason); log + surface raw.
+- **Usage:**
+
+```js
+import { parseRejectionReason } from '@dogfood-lab/verify';
+
+for (const r of record.verification.rejection_reasons) {
+  const { class: cls, prefix, detail } =
+    parseRejectionReason(r);
+  if (cls === 'operational') notifyOps(prefix, detail);
+  else if (cls === 'submission-bad') reject(prefix, detail);
+  else if (cls === 'ingest') triageLoad(detail);
+  else log.warn('unknown rejection_reason', r);
+}
+```
+
+- **Source of truth:** the full prefix taxonomy table lives in `packages/verify/README.md` → "Prefix taxonomy"; the parser enumerates the same set from the actual emitters (`verify/index.js`, `validators/schema-version.js`, `packages/ingest/run.js`).
+
 ### `STATE_MACHINE_<KIND>` — `BLOCKED`, `TERMINAL`, `INVALID`
 
 :::tip[Severity: LOW]

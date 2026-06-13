@@ -5,7 +5,7 @@ sidebar:
   order: 6.7
 ---
 
-`swarm` is the control-plane CLI shipped by `@dogfood-lab/dogfood-swarm`. The full source of truth is `packages/dogfood-swarm/cli.js`; this page is a per-verb quick-reference so you can scan all 21 verbs without `swarm --help`-ing your way through them.
+`swarm` is the control-plane CLI shipped by `@dogfood-lab/dogfood-swarm`. The full source of truth is `packages/dogfood-swarm/cli.js`; this page is a per-verb quick-reference so you can scan all 23 verbs without `swarm --help`-ing your way through them.
 
 For verbs that already have a dedicated handbook page, this page lists the synopsis and a one-line summary, then links out. Those deep-dive pages are:
 
@@ -66,16 +66,37 @@ Validate every agent's output JSON against the canonical Ajv envelope and the ph
 
 ```text
 Usage: swarm collect <run-id>
-                     --domain=name:path
-                     [--domain=name:path ...]
+                     (--all
+                      | --domain=name:path
+                        [--domain=name:path ...])
 
 Example:
+  $ swarm collect <run-id> --all
   $ swarm collect <run-id> \
       --domain=backend:outputs/backend.json \
       --domain=tests:outputs/tests.json
 ```
 
+`--all` auto-discovers the dispatched agents' outputs from the deterministic dispatch layout (`swarms/<run-id>/wave-N/<domain>/output.json`) so you don't hand-type one `--domain=name:path` per agent. It reads the latest dispatched wave from the control plane and resolves each dispatched domain's expected output path. A domain whose output file is **missing** is a non-fatal warning — collect proceeds with the present ones, and the absent agent is reported `failed` (re-run it, or supply its path with `--domain`). `--all` and explicit `--domain` are **mutually exclusive**: an explicit `--domain` overrides `--all`, leaving the manual path unchanged.
+
 When `--skip-verify` was used on dispatch, the output ends with a `[!] SERIAL VERIFY REQUIRED [!]` banner; run `npm run verify` against the cumulative tree before `swarm status` to advance the wave.
+
+## swarm doctor
+
+Run cheap, **read-only** preflight checks before a real dispatch wastes your time on a misconfigured environment. Prints a structured pass/warn/fail report and exits non-zero **only** on a hard FAIL (warnings exit `0`). No `<run-id>` required — doctor probes the environment and the control-plane DB path.
+
+The three checks, each grounded in a real dependency of the running control plane (no fictional probes):
+
+- **node-version** — Node ≥ 22, the package `engines.node` floor.
+- **control-plane-writable** — the directory that will hold `control-plane.db` is writable **and** hardlink-capable. The cross-process file lock claims the lock via `link(2)`; exFAT/FAT32 do not support hardlinks (the documented FS trap), so a dispatch there fails opaquely. Doctor surfaces it up front.
+- **schema-version** — the on-disk `control-plane.db` is not a **newer** schema than this build understands. A too-new DB means "upgrade the tool," not "delete the DB" — doctor reads the version read-only and reports it as a hard FAIL.
+
+```text
+Usage: swarm doctor
+
+Example:
+  $ swarm doctor
+```
 
 ## swarm verify
 

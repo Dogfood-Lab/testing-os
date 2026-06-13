@@ -123,3 +123,12 @@ export {
   type SupportedSchemaVersion,
   type SupportedSchemaContract,
 } from './schema-versions.js';
+
+export {
+  PRODUCT_SURFACES,
+  EXECUTION_MODES,
+  EVIDENCE_KINDS,
+  type ProductSurface,
+  type ExecutionMode,
+  type EvidenceKind,
+} from './enums.js';

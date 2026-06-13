@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, existsSync, statSync } from 'node:fs';
-import { resolve as resolvePath, sep } from 'node:path';
+import { resolve as resolvePath, join as joinPath, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { openDb } from '../db/connection.js';
 import { getDomains, checkOwnership } from '../lib/domains.js';
@@ -30,6 +30,89 @@ import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { getActualTouchedFiles, diffReportedVsActual } from '../lib/git-touched-files.js';
 import { randomBytes } from 'node:crypto';
+
+/**
+ * The deterministic per-domain output filename the dispatch layout promises an
+ * agent writes. dispatch.js writes the PROMPT to swarms/<run>/wave-N/<domain>.md
+ * and the agent (per the README Quick start + the prompt's output contract) writes
+ * its OUTPUT JSON to swarms/<run>/wave-N/<domain>/output.json. `swarm collect
+ * --all` reconstructs that path so the operator no longer hand-types one
+ * --domain=name:path per agent.
+ */
+export const AGENT_OUTPUT_FILENAME = 'output.json';
+
+/**
+ * F4-CP-05: resolve the `{ domain: outputPath }` map for `swarm collect --all`
+ * straight from the control plane, instead of the operator hand-typing one
+ * `--domain=name:path` per dispatched agent.
+ *
+ * Enumerates the domains that have an agent_run in the LATEST dispatched wave —
+ * exactly the set collect() iterates (dispatch never creates an agent for a
+ * `shared` domain, so `shared` is naturally excluded; the latest-per-(wave,
+ * domain) filter mirrors collect()'s own read so a resumed wave maps the live
+ * row, not a stale one). Each domain's expected output path is built under the
+ * deterministic dispatch layout: <swarmDir>/<runId>/wave-N/<domain>/output.json.
+ *
+ * A domain whose output file is ABSENT on disk is reported in `missing` rather
+ * than mapped — the caller (cmdCollect) surfaces it as a NON-FATAL structured
+ * warning and lets collect() proceed with the present ones (the absent agent is
+ * reported `failed` downstream exactly as the manual path would report it).
+ *
+ * @param {object} opts
+ * @param {string} opts.runId
+ * @param {string} opts.dbPath
+ * @param {string} opts.swarmDir — root dir the per-run wave layout lives under
+ *   (the CLI passes dirname(SWARM_DB) — the same relationship DEFAULT_DB_PATH ↔
+ *   DEFAULT_SWARM_DIR carries by default).
+ * @returns {{ waveNumber: number, outputs: Object<string,string>,
+ *             missing: Array<{ domain: string, path: string }> }}
+ * @throws {Error} when the run is unknown or has no dispatched wave (same
+ *   diagnostics class as collect()'s own no-dispatched-wave guard).
+ */
+export function resolveAllDomainOutputs(opts) {
+  const db = openDb(opts.dbPath);
+
+  const run = db.prepare('SELECT id FROM runs WHERE id = ?').get(opts.runId);
+  if (!run) throw new Error(`Run not found: ${opts.runId}`);
+
+  const wave = db.prepare(`
+    SELECT * FROM waves WHERE run_id = ? AND status = 'dispatched'
+    ORDER BY wave_number DESC LIMIT 1
+  `).get(opts.runId);
+  if (!wave) {
+    throw new Error(
+      `No dispatched wave found for ${opts.runId}; --all has nothing to enumerate. ` +
+      `Run \`swarm dispatch ${opts.runId} <phase>\` first, or supply explicit --domain=name:path pairs.`
+    );
+  }
+
+  // Latest agent_run per domain in this wave (mirrors collect()'s iteration),
+  // joined to domains for the name. This is exactly the agent set collect()
+  // will process — no more, no less.
+  const rows = db.prepare(`
+    SELECT d.name AS domain_name
+    FROM agent_runs ar
+    JOIN domains d ON ar.domain_id = d.id
+    WHERE ar.wave_id = ?
+      ${LATEST_AGENT_RUN_PER_DOMAIN}
+    ORDER BY d.name
+  `).all(wave.id);
+
+  const outputs = {};
+  const missing = [];
+  for (const r of rows) {
+    const expected = joinPath(
+      opts.swarmDir, opts.runId, `wave-${wave.wave_number}`, r.domain_name, AGENT_OUTPUT_FILENAME
+    );
+    if (existsSync(expected)) {
+      outputs[r.domain_name] = expected;
+    } else {
+      missing.push({ domain: r.domain_name, path: expected });
+    }
+  }
+
+  return { waveNumber: wave.wave_number, outputs, missing };
+}
 
 /*
  * Upper bound on agent output JSON file size before we even attempt JSON.parse.
