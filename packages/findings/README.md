@@ -58,7 +58,61 @@ if (!result.ok) {
 | Derive | `derive/derive-findings.js` | New finding files under `findings/`; deduplication via `derive/dedupe.js` |
 | Review | `review/review-engine.js` | Status transitions + `event-log.jsonl` audit trail |
 | Synthesize | `synthesis/pattern-derivation.js`, `synthesis/recommendation-derivation.js`, `synthesis/doctrine-derivation.js` | Pattern, recommendation, doctrine artifacts |
+| Review (artifacts) | `review/review-artifacts.js` | Promotes a synthesis-artifact `candidate` → `accepted` so it reaches the advise surface |
 | Advise | `advise/advice-bundle.js`, `advise/query.js` | Advisory bundles for downstream consumers (e.g., `@dogfood-lab/dogfood-swarm`) |
+
+### Closing the intelligence loop
+
+Synthesis writes patterns, recommendations, and doctrine with `status: 'candidate'`,
+but the advise layer (`queryPatterns` / `queryRecommendations` / `queryDoctrine`)
+surfaces only `accepted` artifacts. The artifact review verbs are what promote a
+candidate so the intelligence layer actually reaches future projects:
+
+```bash
+# Promote a derived pattern into the advise surface (accept = the loop closes)
+npx @dogfood-lab/findings patterns accept dpat-xxxx --actor mike --reason "sound recurrence"
+
+# Same for recommendations and doctrine
+npx @dogfood-lab/findings recommendations accept drec-xxxx --actor mike
+npx @dogfood-lab/findings doctrine accept ddoc-xxxx --actor mike
+
+# Retire an accepted pattern when source truth changes (patterns only)
+npx @dogfood-lab/findings patterns invalidate dpat-xxxx --actor mike --reason "source changed"
+
+# See what is awaiting review
+npx @dogfood-lab/findings patterns queue
+```
+
+The artifact review law reuses the finding status law (`review/transitions.js`).
+Patterns carry a literal `invalidated` status; recommendations and doctrine do
+not, so `invalidate` is supported for patterns only. `review` / `reopen` target
+the intermediate `reviewed` state, which the artifact schemas do not allow — they
+are refused honestly rather than writing a schema-invalid artifact.
+
+**Re-derivation safety:** re-running `<type> derive --write` will not overwrite an
+artifact you have already promoted. A freshly-derived `candidate` that collides
+with an accepted / rejected / invalidated id is preserved, not clobbered
+(`synthesis/dedupe-artifacts.js`, mirroring `derive/dedupe.js`).
+
+### Applying a recommendation back into a policy
+
+An **accepted** recommendation whose action is a structured `add_scenario` /
+`add_check` can be applied directly into a named repo policy:
+
+```bash
+# Preview the change (default — writes nothing)
+npx @dogfood-lab/findings recommendations apply drec-xxxx --policy mcp-tool-shop-org/widget
+
+# Apply the structured intent: add the target scenario id to the policy's
+# required_scenarios for the recommendation's surface, recording provenance
+npx @dogfood-lab/findings recommendations apply drec-xxxx --write --policy mcp-tool-shop-org/widget --actor mike
+```
+
+This is honest partial automation. Only the structured `target` id is applied;
+the free-text `action.details` is recorded as provenance and **never** injected as
+policy logic. Free-text-only action types (`set_policy`, `set_evidence`, …) and
+ambiguous targets (no named policy, multiple surfaces) refuse `--write` with a
+structured `{ code, message, hint }` telling the operator to apply manually.
 
 ## Finding shape
 

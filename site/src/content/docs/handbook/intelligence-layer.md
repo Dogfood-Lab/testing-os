@@ -96,6 +96,56 @@ Two or more findings describing the same lesson can be merged into one canonical
 
 Accepted findings can be invalidated when source truth changes. Invalidated findings are excluded from advice queries but retained for historical reference.
 
+## Promoting Artifacts (closing the loop)
+
+Synthesis writes patterns, recommendations, and doctrine with `status: candidate`. The advice surface (`queryPatterns` / `queryRecommendations` / `queryDoctrine`) returns only **accepted** artifacts — so until a candidate is reviewed and accepted, nothing the intelligence layer derives reaches a future project. The **artifact review verbs** are what close that loop.
+
+```bash
+# Promote a derived pattern into the advise surface — accept = the loop closes
+node packages/findings/cli.js patterns accept <pattern_id> --actor <name> --reason "..."
+
+# Same for recommendations and doctrine
+node packages/findings/cli.js recommendations accept <recommendation_id> --actor <name>
+node packages/findings/cli.js doctrine accept <doctrine_id> --actor <name>
+
+# Reject (reason required) or, for patterns, invalidate an accepted one
+node packages/findings/cli.js patterns reject <pattern_id> --actor <name> --reason "not a real recurrence"
+node packages/findings/cli.js patterns invalidate <pattern_id> --actor <name> --reason "source changed"
+
+# What is awaiting review?
+node packages/findings/cli.js patterns queue
+```
+
+The artifact review law **reuses the finding status law** (`review/transitions.js`). It is intentionally narrower than the finding lifecycle because the artifact schemas are narrower:
+
+- **pattern** status ∈ candidate / accepted / rejected / **invalidated**
+- **recommendation** and **doctrine** status ∈ candidate / accepted / rejected
+
+Because no artifact schema permits the intermediate `reviewed` status, the `review` and `reopen` verbs (which target `reviewed`) are **refused** for artifacts rather than writing a schema-invalid file. `invalidate` is supported for **patterns only** — recommendations and doctrine have no `invalidated` status, so use `reject` to retire them. Every accepted/rejected/invalidated decision is written through the synthesis writers, which re-validate the artifact against its JSON Schema, and is logged in the same append-only event log (carrying `artifact_id` + `artifact_kind`).
+
+### Re-derivation never clobbers a decision
+
+Re-running `<type> derive --write` produces the same deterministic ids. A freshly-derived `candidate` that collides with an artifact you already promoted (accepted / rejected / invalidated) is **preserved, not overwritten** — the operator's decision is load-bearing. Collisions are reported as `Preserved (operator-promoted, not overwritten)`. This mirrors the findings dedupe (`derive/dedupe.js`) and lives in `synthesis/dedupe-artifacts.js`.
+
+## Applying Recommendations Back
+
+An **accepted** recommendation whose action is a structured `add_scenario` / `add_check` can be applied directly into a named repo policy:
+
+```bash
+# Preview (default) — renders the change, writes nothing
+node packages/findings/cli.js recommendations apply <recommendation_id> --policy <org/repo>
+
+# Apply the structured intent + record provenance
+node packages/findings/cli.js recommendations apply <recommendation_id> --write --policy <org/repo> --actor <name>
+```
+
+This is **honest partial automation**:
+
+- Only an **accepted** recommendation is applicable; others refuse with a structured `{ code, message, hint }` error.
+- `--write` applies only the structured `target` id — adding it to the policy's `surfaces.<surface>.required_scenarios` — and records `recommendation_id` + `details` as provenance.
+- The free-text `action.details` is **never** injected as policy logic.
+- Free-text-only action types (`set_policy`, `set_evidence`, `set_verification`, `add_review_step`) and ambiguous targets (no named policy, or a recommendation spanning multiple surfaces) **refuse** `--write` with a hint to apply manually. Never a fake auto-apply.
+
 ## Advice Surface
 
 The adoption layer answers future-project questions directly:
@@ -143,6 +193,17 @@ Results are ranked (stronger and more specific first) and capped (max 5 recommen
 - `patterns derive [--write]` -- derive patterns from accepted findings
 - `recommendations derive [--write]` -- derive from accepted patterns
 - `doctrine derive [--write]` -- derive from strong patterns
+
+### Artifact review (close the loop)
+- `patterns accept <id> --actor <name> [--reason "..."]` -- promote a candidate pattern into the advise surface
+- `patterns reject <id> --actor <name> --reason "..."` -- reject a pattern (reason required)
+- `patterns invalidate <id> --actor <name> --reason "..."` -- invalidate an accepted pattern (patterns only)
+- `patterns queue` -- patterns awaiting review
+- `recommendations accept|reject <id> --actor <name>` -- review a recommendation
+- `recommendations apply <id> [--dry-run | --write] [--policy <org/repo>] [--actor <name>]` -- apply an accepted recommendation into a policy
+- `recommendations queue`
+- `doctrine accept|reject <id> --actor <name>` -- review a doctrine
+- `doctrine queue`
 
 ### Adoption
 - `advise --surface <surface> [--execution-mode <mode>]` -- get advice bundle

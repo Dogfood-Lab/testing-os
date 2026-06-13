@@ -42,6 +42,12 @@ import {
   getEventsForFinding
 } from './review/index.js';
 import {
+  reviewArtifact,
+  findArtifactById,
+  getArtifactReviewQueue
+} from './review/review-artifacts.js';
+import { applyRecommendation } from './synthesis/apply-recommendation.js';
+import {
   derivePatterns,
   deriveRecommendations,
   deriveDoctrine,
@@ -56,7 +62,11 @@ import {
   writeDoctrines,
   loadPatterns,
   loadRecommendations,
-  loadDoctrines
+  loadDoctrines,
+  loadPatternsWithSkips,
+  loadRecommendationsWithSkips,
+  loadDoctrinesWithSkips,
+  dedupeArtifactsAgainstExisting
 } from './synthesis/index.js';
 import {
   generateAdviceBundle,
@@ -165,6 +175,64 @@ function formatFindingDetail(f, rootDir) {
   return lines.filter(l => l !== null).join('\n');
 }
 
+/**
+ * F2-INTEL-001 — dispatch a synthesis-artifact review subcommand.
+ *
+ * Mirrors the finding review dispatch (the `['accept','reject','review',
+ * 'reopen','invalidate']` block below) but routes to `reviewArtifact`. Returns
+ * `true` when it handled the subcommand (and has already exited), `false`
+ * when `sub` was not a review verb so the caller can fall through to
+ * derive/list/show/etc.
+ *
+ * `type` is the artifact family ('pattern'|'recommendation'|'doctrine').
+ */
+const ARTIFACT_REVIEW_VERBS = ['accept', 'reject', 'review', 'reopen', 'invalidate'];
+
+function handleArtifactReview(type, sub, positional, flags) {
+  if (sub === 'queue') {
+    const queue = getArtifactReviewQueue(ROOT, type);
+    if (queue.length === 0) {
+      console.log(`${type} review queue is empty.`);
+      process.exit(0);
+    }
+    console.log(`${type} review queue (${queue.length} item(s)):\n`);
+    for (const item of queue) {
+      const id = item.data.pattern_id || item.data.recommendation_id || item.data.doctrine_id;
+      console.log(`  [${item.data.status}] ${id}`);
+      console.log(`    ${item.queueReason}`);
+      console.log(`    ${item.data.title}`);
+      console.log();
+    }
+    process.exit(0);
+  }
+
+  if (!ARTIFACT_REVIEW_VERBS.includes(sub)) return false;
+
+  const id = positional[1];
+  if (!id) {
+    console.error(`Usage: dogfood findings ${type === 'doctrine' ? 'doctrine' : type + 's'} ${sub} <id> --actor <name> [--reason "..."]`);
+    process.exit(2);
+  }
+  const actor = flags.actor || 'operator';
+  const result = reviewArtifact(ROOT, {
+    type,
+    id,
+    action: sub,
+    actor,
+    reason: flags.reason,
+    notes: flags.notes
+  });
+  if (!result.success) {
+    console.error(`FAILED: ${result.error}`);
+    process.exit(1);
+  }
+  console.log(`${sub}: ${id} → ${result.artifact.status}`);
+  if (result.event) {
+    console.log(`Event: ${result.event.review_event_id} (${result.event.from_status} → ${result.event.to_status})`);
+  }
+  process.exit(0);
+}
+
 async function main() {
   const { command, positional, flags } = parseArgs(process.argv);
 
@@ -189,12 +257,44 @@ Commands:
   history <id>         Show review history for a finding
   queue                Show review queue
 
+Synthesis artifacts (patterns / recommendations / doctrine):
+  patterns derive [--write]            Derive patterns from accepted findings
+  patterns list|show <id>              List / inspect patterns
+  patterns <accept|reject|invalidate> <id> [--actor X] [--reason Y]
+                                       Review a pattern — accept PROMOTES a
+                                       candidate into the advise surface
+                                       (queryPatterns). Closes the loop.
+  patterns queue                       Patterns awaiting review (candidates)
+  recommendations derive [--write] | list | show <id>
+  recommendations <accept|reject> <id> [--actor X] [--reason Y]
+  recommendations apply <id> [--dry-run | --write] [--policy <org/repo>] [--actor X]
+                                       Apply an ACCEPTED recommendation back into
+                                       a repo policy. --dry-run (default) previews;
+                                       --write adds the structured target id to the
+                                       named policy's required_scenarios and records
+                                       provenance. Free-text-only / ambiguous intent
+                                       is refused with a structured hint.
+  recommendations queue
+  doctrine derive [--write] | list | show <id>
+  doctrine <accept|reject> <id> [--actor X] [--reason Y]
+  doctrine queue
+
+  Note: patterns carry a literal "invalidated" status; recommendations and
+  doctrine do not, so invalidate is supported for patterns only. The review /
+  reopen verbs target the intermediate "reviewed" state, which the artifact
+  schemas do not allow — they are refused honestly for artifacts.
+
 Derive options:
   --record <run_id>    Derive from a specific record
   --repo <org/repo>    Derive from all records for a repo
   --all                Derive from all records
   --dry-run            Show what would be emitted (default)
   --write              Write candidates to disk
+
+Re-derivation safety:
+  A re-run of "<type> derive --write" will NOT overwrite an artifact you have
+  already promoted (accepted / rejected / invalidated). Such ids are reported as
+  "Preserved (operator-promoted, not overwritten)".
 
 Filters (for list):
   --repo <org/repo>
@@ -641,6 +741,8 @@ Filters (for list):
 
   if (command === 'patterns') {
     const sub = positional[0];
+    // F2-INTEL-001 — review verbs (accept/reject/review/reopen/invalidate) + queue.
+    handleArtifactReview('pattern', sub, positional, flags);
     if (sub === 'derive') {
       const write = flags.write;
       const { patterns, skipped, stats } = derivePatterns(ROOT, { includeFixtures: flags['include-fixtures'] });
@@ -680,8 +782,20 @@ Filters (for list):
         console.log();
       }
 
-      if (write && patterns.length > 0) {
-        const { written, errors } = writePatterns(ROOT, patterns);
+      // F2-INTEL-002 — preserve operator status across re-derivation. A
+      // freshly-derived candidate must NOT clobber an existing promoted
+      // (reviewed/accepted/rejected/invalidated) pattern on disk.
+      const { entries: existingPatterns } = loadPatternsWithSkips(ROOT);
+      const { toWrite, collisions } = dedupeArtifactsAgainstExisting(patterns, existingPatterns, 'pattern_id');
+      if (collisions.length > 0) {
+        console.log(`Preserved (operator-promoted, not overwritten): ${collisions.length}`);
+        for (const c of collisions) {
+          console.log(`  ${c.id} (existing status: ${c.existingStatus})`);
+        }
+      }
+
+      if (write && toWrite.length > 0) {
+        const { written, errors } = writePatterns(ROOT, toWrite);
         for (const p of written) {
           console.log(`Written: ${relative(ROOT, p)}`);
         }
@@ -692,8 +806,8 @@ Filters (for list):
           }
           process.exit(1);
         }
-      } else if (!write && patterns.length > 0) {
-        console.log(`(dry-run) ${patterns.length} pattern(s) would be written. Use --write to materialize.`);
+      } else if (!write && toWrite.length > 0) {
+        console.log(`(dry-run) ${toWrite.length} pattern(s) would be written. Use --write to materialize.`);
       }
       process.exit(0);
     }
@@ -731,12 +845,56 @@ Filters (for list):
       process.exit(0);
     }
 
-    console.error('Usage: dogfood findings patterns <derive|list|show|explain> [options]');
+    console.error('Usage: dogfood findings patterns <derive|list|show|explain|accept|reject|invalidate|queue> [options]');
     process.exit(2);
   }
 
   if (command === 'recommendations') {
     const sub = positional[0];
+    // F2-INTEL-001 — review verbs (accept/reject/review/reopen/invalidate) + queue.
+    handleArtifactReview('recommendation', sub, positional, flags);
+
+    // F2-INTEL-003 — apply an accepted recommendation back into a policy.
+    if (sub === 'apply') {
+      const id = positional[1];
+      if (!id) {
+        console.error('Usage: dogfood findings recommendations apply <id> [--dry-run | --write] [--policy <org/repo>] [--actor <name>]');
+        process.exit(2);
+      }
+      const mode = flags.write ? 'write' : 'dry-run';
+      const res = applyRecommendation(ROOT, {
+        id,
+        mode,
+        actor: flags.actor || 'operator',
+        policyRepo: flags.policy
+      });
+      if (!res.success) {
+        // Structured { code, message, hint } error.
+        console.error(`FAILED [${res.error.code}]: ${res.error.message}`);
+        if (res.error.hint) console.error(`Hint: ${res.error.hint}`);
+        process.exit(1);
+      }
+      if (mode === 'write') {
+        if (res.alreadyPresent) {
+          console.log(`apply: ${id} — "${res.provenance.target}" already present in ${flags.policy} surface ${res.provenance.surface} (no change).`);
+        } else {
+          console.log(`apply: ${id} → added "${res.provenance.target}" to ${flags.policy} surface ${res.provenance.surface}.`);
+        }
+        console.log(`Provenance: recommendation_id=${res.provenance.recommendation_id} (details recorded, not injected as logic)`);
+      } else {
+        const p = res.preview;
+        console.log(`(dry-run) recommendation ${id}`);
+        console.log(`  Action:   ${p.actionType}  target=${p.target}`);
+        console.log(`  Surface:  ${p.surface || '(' + p.surfaces.join(', ') + ' — ambiguous)'}`);
+        if (p.policyPath) console.log(`  Policy:   ${relative(ROOT, p.policyPath)}`);
+        if (p.field) console.log(`  Field:    ${p.field}`);
+        console.log(`  ${p.note}`);
+        console.log(`  Details (free-text, provenance only): ${p.details}`);
+        console.log(`\n${p.autoApplicable ? 'Auto-applicable.' : 'Not auto-applicable.'} Use --write [--policy <org/repo>] to apply the structured intent.`);
+      }
+      process.exit(0);
+    }
+
     if (sub === 'derive') {
       const write = flags.write;
       const { recommendations, skipped, stats } = deriveRecommendations(ROOT);
@@ -768,8 +926,18 @@ Filters (for list):
         console.log();
       }
 
-      if (write && recommendations.length > 0) {
-        const { written, errors } = writeRecommendations(ROOT, recommendations);
+      // F2-INTEL-002 — preserve operator status across re-derivation.
+      const { entries: existingRecs } = loadRecommendationsWithSkips(ROOT);
+      const { toWrite, collisions } = dedupeArtifactsAgainstExisting(recommendations, existingRecs, 'recommendation_id');
+      if (collisions.length > 0) {
+        console.log(`Preserved (operator-promoted, not overwritten): ${collisions.length}`);
+        for (const c of collisions) {
+          console.log(`  ${c.id} (existing status: ${c.existingStatus})`);
+        }
+      }
+
+      if (write && toWrite.length > 0) {
+        const { written, errors } = writeRecommendations(ROOT, toWrite);
         for (const p of written) {
           console.log(`Written: ${relative(ROOT, p)}`);
         }
@@ -780,8 +948,8 @@ Filters (for list):
           }
           process.exit(1);
         }
-      } else if (!write && recommendations.length > 0) {
-        console.log(`(dry-run) ${recommendations.length} recommendation(s) would be written. Use --write to materialize.`);
+      } else if (!write && toWrite.length > 0) {
+        console.log(`(dry-run) ${toWrite.length} recommendation(s) would be written. Use --write to materialize.`);
       }
       process.exit(0);
     }
@@ -816,12 +984,14 @@ Filters (for list):
       process.exit(0);
     }
 
-    console.error('Usage: dogfood findings recommendations <derive|list|show> [options]');
+    console.error('Usage: dogfood findings recommendations <derive|list|show|apply|accept|reject|invalidate|queue> [options]');
     process.exit(2);
   }
 
   if (command === 'doctrine') {
     const sub = positional[0];
+    // F2-INTEL-001 — review verbs (accept/reject/review/reopen/invalidate) + queue.
+    handleArtifactReview('doctrine', sub, positional, flags);
     if (sub === 'derive') {
       const write = flags.write;
       const { doctrines, skipped, stats } = deriveDoctrine(ROOT);
@@ -849,8 +1019,18 @@ Filters (for list):
         console.log();
       }
 
-      if (write && doctrines.length > 0) {
-        const { written, errors } = writeDoctrines(ROOT, doctrines);
+      // F2-INTEL-002 — preserve operator status across re-derivation.
+      const { entries: existingDoctrines } = loadDoctrinesWithSkips(ROOT);
+      const { toWrite, collisions } = dedupeArtifactsAgainstExisting(doctrines, existingDoctrines, 'doctrine_id');
+      if (collisions.length > 0) {
+        console.log(`Preserved (operator-promoted, not overwritten): ${collisions.length}`);
+        for (const c of collisions) {
+          console.log(`  ${c.id} (existing status: ${c.existingStatus})`);
+        }
+      }
+
+      if (write && toWrite.length > 0) {
+        const { written, errors } = writeDoctrines(ROOT, toWrite);
         for (const p of written) {
           console.log(`Written: ${relative(ROOT, p)}`);
         }
@@ -861,8 +1041,8 @@ Filters (for list):
           }
           process.exit(1);
         }
-      } else if (!write && doctrines.length > 0) {
-        console.log(`(dry-run) ${doctrines.length} doctrine(s) would be written. Use --write to materialize.`);
+      } else if (!write && toWrite.length > 0) {
+        console.log(`(dry-run) ${toWrite.length} doctrine(s) would be written. Use --write to materialize.`);
       }
       process.exit(0);
     }
@@ -896,7 +1076,7 @@ Filters (for list):
       process.exit(0);
     }
 
-    console.error('Usage: dogfood findings doctrine <derive|list|show> [options]');
+    console.error('Usage: dogfood findings doctrine <derive|list|show|accept|reject|queue> [options]');
     process.exit(2);
   }
 

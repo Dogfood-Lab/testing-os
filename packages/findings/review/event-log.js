@@ -26,11 +26,22 @@ export function generateEventId() {
 
 /**
  * Create a review event object.
+ *
+ * F2-INTEL-001 — back-compat extension for synthesis-artifact review events.
+ * The original event shape is keyed by `finding_id`; the synthesis-artifact
+ * review engine (review/review-artifacts.js) operates on patterns /
+ * recommendations / doctrine, which have no `finding_id`. When `params.artifactId`
+ * is supplied the event carries `artifact_id` + `artifact_kind` INSTEAD of
+ * `finding_id`, so the same append-only log and `getAllEvents` reader serve both
+ * object families. Finding events are byte-for-byte unchanged — the artifact
+ * fields are additive and only appear when `artifactId` is set.
  */
 export function createEvent(params) {
   const event = {
     review_event_id: generateEventId(),
-    finding_id: params.findingId,
+    ...(params.artifactId
+      ? { artifact_id: params.artifactId, artifact_kind: params.artifactKind }
+      : { finding_id: params.findingId }),
     timestamp: new Date().toISOString(),
     actor: params.actor,
     action: params.action,

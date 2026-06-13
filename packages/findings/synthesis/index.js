@@ -8,5 +8,8 @@ export { validatePattern, validateRecommendation, validateDoctrine } from './val
 export {
   writePattern, writeRecommendation, writeDoctrine,
   writePatterns, writeRecommendations, writeDoctrines,
-  loadPatterns, loadRecommendations, loadDoctrines
+  loadPatterns, loadRecommendations, loadDoctrines,
+  loadPatternsWithSkips, loadRecommendationsWithSkips, loadDoctrinesWithSkips,
+  resetSeenArtifactWrites
 } from './write-artifacts.js';
+export { dedupeArtifactsAgainstExisting } from './dedupe-artifacts.js';
