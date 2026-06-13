@@ -834,15 +834,18 @@ function thresholdError(raw) {
  * --legacy-v1. Returned values are plain JS so each verb's wrapper can
  * spread directly into its impl call.
  *
- * ve-002: the space form `--threshold <value>` is validated with
- * Number.isFinite (and a non-negative check) so a typo like `--threshold foo`
- * fails loud instead of yielding NaN. A NaN threshold silently disabled the
- * gate: `offending > NaN` is always false, so the command exited 0 ("clean")
- * even with real regressions, on all four verify-* verbs. The `--threshold=N`
- * equals-form was already digit-guarded by its `^--threshold=(\d+)$` regex;
- * this closes the space-form hole and keeps both forms consistent.
+ * ve-002 + d5-swarm-cli-002: BOTH the space form (`--threshold <value>`) and the
+ * equals form (`--threshold=<value>`) route through parseValueFlag and the SAME
+ * non-negative-integer validation, so a typo like `--threshold foo` or
+ * `--threshold=1O` (letter O, not a digit) fails loud instead of silently
+ * disabling the gate. A NaN/0-coerced threshold silently disabled it: `offending
+ * > NaN` (or `> 0` from a 0-coercion) let the command exit 0 ("clean") even with
+ * real regressions, on all four verify-* verbs. NOTE: pre-fix the equals-form was
+ * NOT digit-guarded — `^--threshold=(\d+)$` simply failed to match a malformed
+ * value and left threshold at the strictest default 0; d5-swarm-cli-002 closed
+ * that hole by validating both forms identically (see the inline note below).
  *
- * @throws when the space-form value is not a finite non-negative integer.
+ * @throws when either form's value is not a finite non-negative integer.
  */
 export function parseVerifyFlags(args) {
   let threshold = 0;
@@ -1034,15 +1037,14 @@ function cmdAdvance(args) {
   }
 
   const override = args.includes('--override');
-  const reasonIdx = args.indexOf('--reason');
-  // cli-003: a following token that starts with `--` is the NEXT flag, not the
-  // reason text. `--override --reason <flag>` captured the flag as overrideReason
-  // (truthy), so the override proceeded with a junk audit reason — advance.js
-  // persists it into the promotion/override record as overrides:[{reason}]. No
-  // irreversible side effect here (why the amend agent declined to file it), but
-  // a polluted audit reason is still wrong. Treat a `--`-prefixed value as missing.
-  const reasonCandidate = reasonIdx >= 0 ? args[reasonIdx + 1] : undefined;
-  const overrideReason = (reasonCandidate && !reasonCandidate.startsWith('--')) ? reasonCandidate : undefined;
+  // d5-swarm-cli-004 sibling (Stage A re-audit): route --reason through the shared
+  // parseValueFlag so this site has the same equals-form (`--reason=text`) +
+  // space-form + `--`-swallow handling as the revalidate/rewind/redrive --reason
+  // sites. The pre-fix bare indexOf matched only the space-form token, so
+  // `--override --reason=text` was missed and the override wrongly refused despite
+  // a reason being supplied; a `--`-prefixed value was also (correctly) treated as
+  // the next flag — parseValueFlag preserves that guard.
+  const overrideReason = parseValueFlag(args, '--reason');
 
   if (override && !overrideReason) {
     console.error('--override requires --reason "explanation"');

@@ -157,12 +157,20 @@ export function buildDigestModel(runId, waveNumber, outputs) {
     }
   }
 
+  // d4-swarm-core-001 sibling (Stage A re-audit): buildDigestModel reads the same
+  // raw-agent-JSON severity the persist-results release gate does. Normalize to
+  // UPPERCASE (the canonical agent-output enum case) before keying so a stray-case
+  // severity counts in its real bucket instead of being mislabeled 'unknown' and
+  // sorted last. A genuinely missing/garbage value still falls through to
+  // unknownCount, so the loud operator warning below is preserved.
+  const sevKey = (f) => String(f && f.severity || '').toUpperCase();
   const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
   let unknownCount = 0;
   const unknownSamples = [];
   for (const f of allFindings) {
-    if (counts[f.severity] !== undefined) {
-      counts[f.severity] += 1;
+    const key = sevKey(f);
+    if (counts[key] !== undefined) {
+      counts[key] += 1;
     } else {
       unknownCount += 1;
       if (unknownSamples.length < 5) {
@@ -202,8 +210,8 @@ export function buildDigestModel(runId, waveNumber, outputs) {
   }
 
   allFindings.sort((a, b) => {
-    const sa = SEV_ORDER[a.severity] ?? 9;
-    const sb = SEV_ORDER[b.severity] ?? 9;
+    const sa = SEV_ORDER[sevKey(a)] ?? 9;
+    const sb = SEV_ORDER[sevKey(b)] ?? 9;
     if (sa !== sb) return sa - sb;
     if (a.domain !== b.domain) return a.domain.localeCompare(b.domain);
     return (a.id || '').localeCompare(b.id || '');
