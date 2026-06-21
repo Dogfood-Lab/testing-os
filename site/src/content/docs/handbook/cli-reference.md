@@ -60,6 +60,8 @@ Example:
 
 Phases: `health-audit-a/b/c`, `health-amend-a/b/c`, `stage-d-audit`, `stage-d-amend`, `feature-audit`, `feature-execute`.
 
+`--isolate` gives each dispatched agent its own git worktree instead of the shared run checkout. It is **required for sound cross-domain ownership enforcement on a multi-domain amend wave**: only with per-agent worktrees can `swarm collect` independently attribute an edit to the agent that made it. Without it, an agent that silently edits a file outside its domain *and* omits it from `files_changed` is not independently caught — the check falls back to the agent's self-report for cross-domain edits (see [swarm collect](#swarm-collect) and the Protocol's "Ownership attribution in non-isolated parallel amend waves" section). Audit waves write no files, so `--isolate` is for amend/execute waves where the ownership guarantee must hold against an unreported edit.
+
 ## swarm collect
 
 Validate every agent's output JSON against the canonical Ajv envelope and the phase-specific legacy validator, enforce file-ownership per the frozen domain map, and merge findings into the control plane. This is the gate that flips a wave from `dispatched` to `collected` (or to `failed` when any agent's output is BLOCKED).
@@ -80,6 +82,8 @@ Example:
 `--all` auto-discovers the dispatched agents' outputs from the deterministic dispatch layout (`swarms/<run-id>/wave-N/<domain>/output.json`) so you don't hand-type one `--domain=name:path` per agent. It reads the latest dispatched wave from the control plane and resolves each dispatched domain's expected output path. A domain whose output file is **missing** is a non-fatal warning — collect proceeds with the present ones, and the absent agent is reported `failed` (re-run it, or supply its path with `--domain`). `--all` and explicit `--domain` are **mutually exclusive**: an explicit `--domain` overrides `--all`, leaving the manual path unchanged.
 
 When `--skip-verify` was used on dispatch, the output ends with a `[!] SERIAL VERIFY REQUIRED [!]` banner; run `npm run verify` against the cumulative tree before `swarm status` to advance the wave.
+
+Ownership is enforced against the **union** of each agent's self-reported `files_changed` and an independently-probed git diff. That independent probe can only attribute edits per-agent when the wave was dispatched with `--isolate`. In a **non-isolated** amend wave every agent shares one worktree, so the probe is narrowed to each agent's own domain globs to avoid flagging siblings' legitimate edits — which means **cross-domain ownership is sound only for self-reported edits**: a silent, unreported out-of-domain edit is not independently caught. When two or more domains run this way, collect prints an `[!] OWNERSHIP PROBE DEGRADED [!]` banner recommending a re-dispatch with `--isolate`. The banner is advisory — it does not change the exit code or the wave gate; a self-reported violation still fails the wave in either mode. Re-dispatch with `--isolate` when the guarantee must hold against an unreported edit.
 
 ## swarm doctor
 

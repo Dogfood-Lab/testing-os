@@ -377,6 +377,46 @@ describe('d3b-collect-A-002 — non-isolated wave does not flag phantom cross-do
     assert.match(aReport.ownership_probe_degraded.reason, /--isolate/,
       'the note must point the operator at --isolate for full attribution');
   });
+
+  it('rolls the per-agent degraded notes into a multi_domain wave-level signal', () => {
+    // Both domains edit their own files in the shared (non-isolated) tree, so
+    // both agents' probes are narrowed. The wave-level aggregate must list both
+    // domains and flag multi_domain so the CLI can recommend --isolate once,
+    // rather than the operator having to read every agent record.
+    writeFileSync(join(repoPath, 'packages/a/src/foo.js'), 'fixed by A\n');
+    writeFileSync(join(repoPath, 'packages/b/src/baz.js'), 'fixed by B\n');
+
+    const outA = join(tmpDir, 'a.json');
+    const outB = join(tmpDir, 'b.json');
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-A-001', description: 'fixed it' }],
+      files_changed: ['packages/a/src/foo.js'],
+    }));
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-B-001', description: 'fixed it' }],
+      files_changed: ['packages/b/src/baz.js'],
+    }));
+
+    const report = collect({
+      runId: RUN_ID,
+      dbPath,
+      outputs: { 'domain-a': outA, 'domain-b': outB },
+    });
+
+    assert.ok(report.ownership_probe_degraded,
+      'a non-isolated amend wave must carry a wave-level degraded-probe signal');
+    assert.equal(report.ownership_probe_degraded.isolated, false);
+    assert.equal(report.ownership_probe_degraded.multi_domain, true,
+      'two degraded domains in one shared worktree is the multi_domain case');
+    assert.deepEqual(
+      [...report.ownership_probe_degraded.domains].sort(),
+      ['domain-a', 'domain-b'],
+      'the wave-level signal must list every domain whose probe was narrowed');
+  });
 });
 
 describe('VD-NEW-1 — diffReportedVsActual helper', () => {

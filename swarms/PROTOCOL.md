@@ -300,6 +300,25 @@ The serial-final-verify discipline closes the gap:
 
 Skip the directive when dispatching a single-agent wave or when agents are not running in parallel — the per-agent verify is then a legitimate independent check, not a vantage-point artifact.
 
+## Ownership attribution in non-isolated parallel amend waves
+
+`swarm collect` enforces exclusive file ownership (Key Principle #1) against the **union** of two sets: the agent's self-reported `files_changed`, and an **independently-computed** touched-file set probed straight from git (`git status --porcelain` + `git diff --name-only HEAD`, via `lib/git-touched-files.js`). The independent probe is the part that catches an agent which under-reports `files_changed` — it is the external check on a self-reported field (a Class #14 "verifier in the thing being verified" surface).
+
+That independent check has a **hard prerequisite: per-agent isolation.** When a wave runs WITHOUT `--isolate`, every agent shares one worktree (`run.local_path`), so the git probe returns the cumulative whole-tree diff of *all* agents' edits. git cannot attribute a given file to a given agent. Attributing that union to each agent would flag every *other* domain's legitimate edits as ownership violations and fail a clean wave on phantom cross-domain edits (the bug fixed in `d3b-collect-A-002`). To avoid that, in a non-isolated wave `collect` narrows each agent's independent contribution to the files matching **that agent's own domain globs**.
+
+The narrowing is correct for the phantom-violation problem, but it carries a **deliberate, documented soundness reduction**:
+
+> **In a non-isolated amend wave, ownership enforcement is sound only for an agent's SELF-REPORTED edits.** An agent that silently edits a file **outside** its domain **and** omits that file from its `files_changed` is no longer caught by the independent probe — the out-of-domain file is filtered out of the independent set because it does not match the agent's globs. The self-reported `files_changed` is still checked in full, so a self-confessed out-of-domain edit is still caught; only the *silent + unreported* case slips through.
+
+**`--isolate` is REQUIRED for full independent cross-domain attribution.** Under `--isolate` each agent gets its own git worktree (`dispatch.js` → `lib/worktree.js`), so the worktree diff holds only that agent's edits, the full diff is attributable, and the independent under-report catch is preserved across domains. Use `--isolate` whenever the wave's ownership guarantee must be sound against an unreported cross-domain edit — i.e. any multi-domain amend wave where you are not hand-reviewing every agent's diff yourself.
+
+How the weakened guarantee is surfaced (so it is never silent):
+
+- **Per agent:** the agent's collect record carries an `ownership_probe_degraded` note (`{ isolated: false, reason: … }`) pointing the operator at `--isolate` (`packages/dogfood-swarm/commands/collect.js`).
+- **Per wave:** when two or more domains were degraded in one shared worktree, the collect report sets `ownership_probe_degraded.multi_domain = true` and the CLI prints an `[!] OWNERSHIP PROBE DEGRADED [!]` banner recommending `--isolate`. This is observability only — like the `files_changed` divergence note, it never changes the exit code or the wave gate.
+
+The gate itself is unchanged: a real, self-reported out-of-domain edit still flips the agent to `ownership_violation` and the wave to `failed` in either mode. `--isolate` widens *what the independent probe can prove*, not what the gate does once a violation is known.
+
 ## Recovery from blocked agent_runs: `swarm revalidate`
 
 Sometimes an amend wave's `swarm collect` rejects every agent's output for a schema or ownership reason that is real but **recoverable**: the agent did the work, the work is correct on disk, the JSON envelope drifted from the canonical shape (`fixes_applied` vs `fixes`; `files_edited` vs `files_changed`), or the coordinator-frozen domain map omitted a glob the brief told the agent to edit. In those cases the four `agent_runs` move to a blocked status, the wave moves to `failed`, and nothing in the audit lane offers a path back. The lawful recovery verb for that exact shape is `swarm revalidate`.
@@ -374,7 +393,7 @@ The shape — "executed but produced invalid output is repairable in place, with
 ## Key Principles
 
 0. **Public surfaces are coordinator-authored (LAW)** — README + translations, docs/handbook, landing page, CHANGELOG, repo metadata, package descriptions, and any marketing copy are authored PERSONALLY by the coordinator. Never assign a public-surface file to a subagent or spawn a docs/readme/landing-page/marketing agent. The docs domain may be a frozen domain (so no other agent touches it) but the coordinator executes it by hand. In-code user-facing strings (CLI `--help`, error messages) a feature agent drafts get a personal coordinator review-and-rewrite pass. Earned 2026-06-20 (backpropagate v1.7).
-1. **Exclusive File Ownership** — No agent edits a file outside its assignment. Violations trigger revert.
+1. **Exclusive File Ownership** — No agent edits a file outside its assignment. Violations trigger revert. The *independent* (non-self-reported) ownership check is sound across domains only under `--isolate`; in a non-isolated parallel amend wave it covers each agent's self-reported edits plus its own domain's files — see §Ownership attribution in non-isolated parallel amend waves.
 2. **Wave Size** — Max 5 agents per wave (one per domain). Expand to max 10 for large repos by splitting domains.
 3. **Severity Triage** — All findings are triaged CRITICAL/HIGH/MEDIUM/LOW. Remediation follows severity order.
 4. **Build After Every Wave** — Build must pass after every amend/execution wave (lint + typecheck + tests).

@@ -326,10 +326,27 @@ export function collect(opts) {
     // single `npm run verify` against the cumulative tree before promoting
     // the wave to `collected`. The CLI surfaces this as a Next-step hint.
     serial_verify_required: false,
+    // d3b-collect-A-002 (Stage B follow-up): wave-level aggregate of the
+    // per-agent `ownership_probe_degraded` note. In a NON-isolated amend wave
+    // the independent git probe cannot attribute the shared-worktree diff to a
+    // single agent, so each agent's probe is narrowed to its own domain globs —
+    // a silent cross-domain edit that the agent also omits from `files_changed`
+    // is no longer independently caught. This field rolls the per-agent notes up
+    // so the weakened guarantee is visible at the wave level, not buried in each
+    // agent record. `null` when no agent's probe was degraded (isolated wave, or
+    // git probe unavailable). The CLI surfaces a multi-domain wave here as a
+    // banner recommending `--isolate`. Observability only — never a gate.
+    ownership_probe_degraded: null,
     summary: null,
   };
 
   const allFindings = [];
+
+  // d3b-collect-A-002 (Stage B follow-up): domains whose independent ownership
+  // probe was narrowed to their own globs because the wave ran without
+  // --isolate. Accumulated inside the per-agent loop, rolled into
+  // report.ownership_probe_degraded after the loop.
+  const ownershipDegradedDomains = [];
 
   // fp-p-005: source-text cache for the context-snippet fingerprint. Each
   // finding's file is read at most once per collect; computeFingerprint folds an
@@ -573,6 +590,7 @@ export function collect(opts) {
             'independent ownership probe restricted to this domain\'s globs. ' +
             'Re-dispatch with --isolate for full cross-domain attribution.',
         };
+        ownershipDegradedDomains.push(domain.name);
       }
 
       if (filesForOwnership.length > 0) {
@@ -646,6 +664,22 @@ export function collect(opts) {
     report.agents.push(agentReport);
   }
   })(); // L3-003 — invoke the db.transaction() wrap immediately
+
+  // d3b-collect-A-002 (Stage B follow-up): roll the per-agent degraded-probe
+  // notes into a single wave-level signal. Present (non-null) iff at least one
+  // amend agent's independent ownership probe was narrowed for lack of
+  // --isolate. `multi_domain` is the operator's action trigger: with two or
+  // more degraded domains in one shared worktree, a silent cross-domain edit
+  // that the editing agent also omits from `files_changed` would go
+  // independently undetected — exactly the case --isolate closes. The CLI
+  // promotes that case to a banner.
+  if (ownershipDegradedDomains.length > 0) {
+    report.ownership_probe_degraded = {
+      isolated: false,
+      domains: ownershipDegradedDomains,
+      multi_domain: ownershipDegradedDomains.length >= 2,
+    };
+  }
 
   // Fingerprint + dedup.
   //
