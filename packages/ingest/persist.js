@@ -7,11 +7,13 @@
  */
 
 import { existsSync, mkdirSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative, sep } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
 import { validateRecord } from './validate-record.js';
 import { isUnsafeSegment } from './lib/unsafe-segment.js';
+import { submissionDigest } from './lib/integrity.js';
+import { readChainHead, appendChainEntry } from './lib/chain-manifest.js';
 
 /**
  * Error thrown when writeRecord loses a TOCTOU race for the same canonical path.
@@ -125,6 +127,26 @@ export function writeRecord(record, repoRoot) {
     return { path, written: false };
   }
 
+  // Integrity chain v1 — stamp the tamper-evident integrity block BEFORE
+  // validating + writing, so the persisted record self-certifies.
+  //
+  // Serialized-ingest assumption (LOCKED CONTRACT step 4): ingest.yml is
+  // concurrency-serialized and writeRecord is synchronous, so reading the chain
+  // head and then appending after the write is race-free. A fork for
+  // truly-concurrent ingest (two writers assigning the same seq) is OUT OF SCOPE
+  // — see lib/chain-manifest.js. The order is: read head → compute digest over
+  // the record WITHOUT integrity (stable regardless of the block) → stamp
+  // integrity → write the record → append the manifest line. The append happens
+  // ONLY after the record write succeeds, and only on this real-write path
+  // (never on the duplicate short-circuit above).
+  const head = readChainHead(repoRoot);
+  const digest = submissionDigest(record);
+  record.integrity = {
+    submission_digest: digest,
+    prev_digest: head.submission_digest,
+    seq: head.seq + 1,
+  };
+
   // Enforce dogfood-record.schema.json BEFORE touching the filesystem.
   // Better to throw loudly than silently persist a malformed record — the
   // schema is the contract every downstream consumer relies on.
@@ -167,6 +189,24 @@ export function writeRecord(record, repoRoot) {
     try { unlinkSync(tmpPath); } catch { /* tmp may not exist */ }
     throw err;
   }
+
+  // Append the chain ledger line AFTER the record write succeeds. The manifest
+  // append is atomic (temp+rename rewrite — see lib/chain-manifest.js); a torn
+  // append cannot leave a half-line. `path` field is the record path RELATIVE to
+  // repoRoot, forward-slashed, so the ledger is portable across OSes and a line
+  // copy-pasted into a raw.githubusercontent URL is not a broken link (mirrors
+  // the posixify-at-the-boundary doctrine in run.js / rebuild-indexes.js).
+  const relPath = relative(repoRoot, path).split(sep).join('/');
+  appendChainEntry(repoRoot, {
+    seq: record.integrity.seq,
+    run_id: record.run_id,
+    repo: record.repo,
+    status: record.verification?.status ?? 'accepted',
+    path: relPath,
+    submission_digest: record.integrity.submission_digest,
+    prev_digest: record.integrity.prev_digest,
+    persisted_at: new Date().toISOString(),
+  });
 
   return { path, written: true };
 }

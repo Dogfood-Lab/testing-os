@@ -473,6 +473,7 @@ function setupTempRunJs({ withPolicies = false } = {}) {
   const loadContextJs = pathToFileURL(resolve(__dirname, 'load-context.js')).href;
   const persistJs = pathToFileURL(resolve(__dirname, 'persist.js')).href;
   const rebuildIndexesJs = pathToFileURL(resolve(__dirname, 'rebuild-indexes.js')).href;
+  const verifyChainJs = pathToFileURL(resolve(__dirname, 'verify-chain.js')).href;
 
   const rewritten = realRunJs
     .replace(/from\s+['"]@dogfood-lab\/verify['"]/, `from '${verifyIndex}'`)
@@ -482,7 +483,8 @@ function setupTempRunJs({ withPolicies = false } = {}) {
       `from '${logStageJs}'`)
     .replace(/from\s+['"]\.\/load-context\.js['"]/, `from '${loadContextJs}'`)
     .replace(/from\s+['"]\.\/persist\.js['"]/, `from '${persistJs}'`)
-    .replace(/from\s+['"]\.\/rebuild-indexes\.js['"]/, `from '${rebuildIndexesJs}'`);
+    .replace(/from\s+['"]\.\/rebuild-indexes\.js['"]/, `from '${rebuildIndexesJs}'`)
+    .replace(/from\s+['"]\.\/verify-chain\.js['"]/, `from '${verifyChainJs}'`);
 
   writeFileSync(join(TEST_ROOT, 'packages', 'ingest', 'run.js'), rewritten, 'utf-8');
 

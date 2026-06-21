@@ -299,6 +299,34 @@
     "notes": {
       "type": "string",
       "description": "Freeform summary from the source."
+    },
+
+    "integrity": {
+      "type": "object",
+      "title": "Integrity Chain Entry",
+      "description": "Tamper-evident hash-chain metadata stamped by the persist layer when this record is written. Optional and backward-compatible: records persisted before the integrity chain existed have no integrity block and remain valid. The digest is computed over the record WITH this block removed (you cannot hash the digest into itself), so it is stable regardless of the integrity block's contents.",
+      "additionalProperties": false,
+      "required": ["submission_digest", "prev_digest", "seq"],
+      "properties": {
+        "submission_digest": {
+          "type": "string",
+          "title": "Submission Digest",
+          "description": "Lowercase sha256 hex (64 chars) of the canonicalized record with the integrity block removed. Recomputed by the chain verifier to detect tampering.",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "prev_digest": {
+          "type": "string",
+          "title": "Previous Digest",
+          "description": "The submission_digest of the previous record in the append-only chain, or 64 zeros (the genesis digest) for the first entry. Links this record to its predecessor.",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "seq": {
+          "type": "integer",
+          "title": "Chain Sequence Number",
+          "description": "Monotonic position of this record in the append-only chain, starting at 0 for the genesis entry.",
+          "minimum": 0
+        }
+      }
     }
   }
 }

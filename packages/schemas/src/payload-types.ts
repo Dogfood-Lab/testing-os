@@ -232,6 +232,23 @@ export interface ProvenanceRemediation {
 }
 
 /**
+ * Tamper-evident hash-chain metadata stamped by the persist layer when a record
+ * is written. Mirrors the OPTIONAL `integrity` object in
+ * dogfood-record.schema.json — records persisted before the integrity chain
+ * existed have no integrity block, so the field is optional on {@link Record}.
+ * The digest is computed over the record with this block removed (you cannot
+ * hash the digest into itself).
+ */
+export interface RecordIntegrity {
+  /** Lowercase sha256 hex (64 chars) of the canonicalized record without the integrity block. Schema pattern: `^[0-9a-f]{64}$`. */
+  submission_digest: string;
+  /** The previous entry's submission_digest, or 64 zeros (genesis) for the first entry. Schema pattern: `^[0-9a-f]{64}$`. */
+  prev_digest: string;
+  /** Monotonic chain position, starting at 0. Schema minimum: 0. */
+  seq: number;
+}
+
+/**
  * Verifier-owned verification block. Mirrors `verification` in
  * dogfood-record.schema.json. Never authored by source repos.
  */
@@ -278,6 +295,8 @@ export interface Record {
   overall_verdict: RecordOverallVerdict;
   verification: Verification;
   notes?: string;
+  /** Tamper-evident hash-chain metadata stamped at persist. Optional — absent on pre-chain records. */
+  integrity?: RecordIntegrity;
 }
 
 // ---------------------------------------------------------------------------

@@ -27,6 +27,7 @@ import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-s
 import { loadGlobalPolicy, loadRepoPolicy, loadScenarios } from './load-context.js';
 import { isDuplicate, writeRecord, computeRecordPath } from './persist.js';
 import { rebuildIndexes } from './rebuild-indexes.js';
+import { verifyChain, formatChainResult } from './verify-chain.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -513,6 +514,7 @@ if (isMain) {
   let submissionJson;
   let provenanceMode = null;
   let verifyOnlyFlag = false;
+  let verifyChainFlag = false;
   const positionalArgs = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -563,9 +565,39 @@ if (isMain) {
       // F-252714-058: dry-run the pipeline without writing or rebuilding
       // indexes. CI / operators preview what WOULD have been persisted.
       verifyOnlyFlag = true;
+    } else if (arg === '--verify-chain') {
+      // Integrity chain v1: verify the append-only tamper-evident ledger at
+      // indexes/integrity/chain.jsonl, fully offline. No submission, no stdin,
+      // no provenance — a standalone audit command.
+      verifyChainFlag = true;
     } else {
       positionalArgs.push(args[i]);
     }
+  }
+
+  // --verify-chain is a standalone, side-effect-free audit: it reads only the
+  // ledger + the record files it references, takes no submission, reads no
+  // stdin, and needs no provenance adapter. Handle it BEFORE the stdin read and
+  // provenance resolution so `node run.js --verify-chain` does not block on
+  // stdin or demand a --provenance flag. Exit 0 when the chain verifies, 1 on
+  // the first break (operator-legible output, no raw stack traces).
+  if (verifyChainFlag) {
+    const result = verifyChain(repoRoot);
+    logStage(result.ok ? 'verify_chain_complete' : 'error', {
+      correlation_id: synthCorrelationId(),
+      ...(result.ok ? {} : { failed_stage: 'verify_chain' }),
+      verified: result.count,
+      head_digest: result.head_digest,
+      chain_ok: result.ok,
+      ...(result.break ? { break_seq: result.break.seq, break_reason: result.break.reason } : {})
+    });
+    const lines = formatChainResult(result);
+    if (result.ok) {
+      for (const line of lines) console.log(line);
+    } else {
+      for (const line of lines) console.error(line);
+    }
+    process.exit(result.ok ? 0 : 1);
   }
 
   if (!submissionJson) {
