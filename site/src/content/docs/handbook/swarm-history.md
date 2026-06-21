@@ -83,4 +83,4 @@ The verb does NOT consult `agent_state_events`. That table holds per-agent_run t
 
 - The recovery verbs whose `--reason` text shows up in this verb's REASON column: [Recovery — The Three R's](../recovery/)
 - Wave-level state machine and the `BLOCKED_STATUSES` enum: [State Machines](../state-machines/)
-- Per-verb quick reference for `swarm history` and all 20 sibling verbs: [swarm CLI reference](../cli-reference/)
+- Per-verb quick reference for `swarm history` and all 22 sibling verbs: [swarm CLI reference](../cli-reference/)
