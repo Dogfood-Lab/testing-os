@@ -28,6 +28,7 @@ import { loadGlobalPolicy, loadRepoPolicy, loadScenarios } from './load-context.
 import { isDuplicate, writeRecord, computeRecordPath } from './persist.js';
 import { rebuildIndexes } from './rebuild-indexes.js';
 import { verifyChain, formatChainResult } from './verify-chain.js';
+import { handleAnchorCompute, handleAnchorPost, handleAnchorVerify } from './anchor/cli.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -515,6 +516,17 @@ if (isMain) {
   let provenanceMode = null;
   let verifyOnlyFlag = false;
   let verifyChainFlag = false;
+  // Anchor verbs (optional, off-by-default, operator-run). --anchor-compute and
+  // --anchor-verify are fully offline (never import xrpl); --anchor-post lazily
+  // loads the optional xrpl package and needs XRPL_SEED.
+  let anchorComputeFlag = false;
+  let anchorPostFlag = false;
+  let anchorVerifyFlag = false;
+  let anchorMode = 'since-last';
+  let anchorAlgo = null;
+  let anchorNetwork = null;
+  let anchorTxFile = null;
+  let anchorTrustedAccounts = [];
   const positionalArgs = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -570,6 +582,32 @@ if (isMain) {
       // indexes/integrity/chain.jsonl, fully offline. No submission, no stdin,
       // no provenance — a standalone audit command.
       verifyChainFlag = true;
+    } else if (arg === '--anchor-compute') {
+      // Optional XRPL anchor: compute + write the next anchor manifest. Offline.
+      anchorComputeFlag = true;
+    } else if (arg === '--anchor-post') {
+      // Optional XRPL anchor: compute if needed + post to XRPL. Needs the
+      // optional xrpl package (lazily loaded) and XRPL_SEED.
+      anchorPostFlag = true;
+    } else if (arg === '--anchor-verify') {
+      // Optional XRPL anchor: verify local manifests + run the truncation check.
+      // Offline reports honest NOT-verified for the on-chain leg.
+      anchorVerifyFlag = true;
+    } else if (arg === '--anchor-all') {
+      // Genesis snapshot mode for compute/post (covers the whole chain).
+      anchorMode = 'all';
+    } else if (arg === '--anchor-algo' && hasValue) {
+      anchorAlgo = takeValue();
+    } else if (arg === '--anchor-network' && hasValue) {
+      anchorNetwork = takeValue();
+    } else if (arg === '--anchor-tx' && hasValue) {
+      // Path to a JSON file containing a fetched XRPL tx (with Memos) for the
+      // on-chain leg of --anchor-verify. Offline-honest: omit it to run the
+      // truncation check only.
+      anchorTxFile = takeValue();
+    } else if (arg === '--anchor-trusted' && hasValue) {
+      // Comma-separated trusted anchor accounts (UNIONed with the bundled list).
+      anchorTrustedAccounts = takeValue().split(',').map((s) => s.trim()).filter(Boolean);
     } else {
       positionalArgs.push(args[i]);
     }
@@ -598,6 +636,54 @@ if (isMain) {
       for (const line of lines) console.error(line);
     }
     process.exit(result.ok ? 0 : 1);
+  }
+
+  // Optional XRPL anchor verbs — operator-run, off by default, NOT in the normal
+  // ingest/CI path. Like --verify-chain these are standalone audit/operations:
+  // no submission, no stdin, no provenance adapter. --anchor-compute and
+  // --anchor-verify are fully offline (never import xrpl); --anchor-post lazily
+  // loads the optional xrpl package and needs XRPL_SEED. Each handler returns
+  // { ok, exitCode, lines, event } and run.js owns the console + logStage + exit.
+  if (anchorComputeFlag || anchorPostFlag || anchorVerifyFlag) {
+    const correlation_id = synthCorrelationId();
+    let result;
+    if (anchorComputeFlag) {
+      result = handleAnchorCompute(repoRoot, {
+        mode: anchorMode,
+        ...(anchorAlgo ? { algo: anchorAlgo } : {}),
+        ...(anchorNetwork ? { network: anchorNetwork } : {}),
+      });
+    } else if (anchorPostFlag) {
+      result = await handleAnchorPost(repoRoot, {
+        mode: anchorMode,
+        ...(anchorNetwork ? { network: anchorNetwork } : {}),
+      });
+    } else {
+      // --anchor-verify: optionally load a fetched tx JSON for the on-chain leg.
+      let tx;
+      if (anchorTxFile) {
+        const { readFileSync } = await import('node:fs');
+        try {
+          tx = JSON.parse(readFileSync(resolve(anchorTxFile), 'utf-8'));
+        } catch (err) {
+          emitCliErrorEvent({
+            failedStage: 'anchor_verify_read_tx',
+            correlationId: correlation_id,
+            err,
+            humanPrefix: 'could not read --anchor-tx file'
+          });
+          process.exit(2);
+        }
+      }
+      result = handleAnchorVerify(repoRoot, { tx, trustedAnchorAccounts: anchorTrustedAccounts });
+    }
+
+    // logStage strips any inner `stage:` field (the positional name wins), so
+    // spreading result.event — which carries its own `stage` — is safe.
+    logStage(result.event.stage, { correlation_id, ...result.event });
+    const sink = result.exitCode === 0 ? console.log : console.error;
+    for (const line of result.lines) sink(line);
+    process.exit(result.exitCode);
   }
 
   if (!submissionJson) {

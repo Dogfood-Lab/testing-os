@@ -7,6 +7,7 @@
   "exports": {
     ".": "./run.js",
     "./lib/*": "./lib/*",
+    "./anchor/*": "./anchor/*",
     "./validate-record.js": "./validate-record.js",
     "./verify-chain.js": "./verify-chain.js"
   },
@@ -22,6 +23,7 @@
     "verify-chain.js",
     "load-context.js",
     "lib/",
+    "anchor/",
     "README.md",
     "LICENSE"
   ],

@@ -474,6 +474,11 @@ function setupTempRunJs({ withPolicies = false } = {}) {
   const persistJs = pathToFileURL(resolve(__dirname, 'persist.js')).href;
   const rebuildIndexesJs = pathToFileURL(resolve(__dirname, 'rebuild-indexes.js')).href;
   const verifyChainJs = pathToFileURL(resolve(__dirname, 'verify-chain.js')).href;
+  // The anchor CLI handlers are imported by run.js too; rewrite that sibling
+  // import to the real source so the sandbox copy resolves it. cli.js's own
+  // relative imports (./compute-root.js etc.) resolve from the real anchor/
+  // directory because the rewritten URL points back at the real file.
+  const anchorCliJs = pathToFileURL(resolve(__dirname, 'anchor/cli.js')).href;
 
   const rewritten = realRunJs
     .replace(/from\s+['"]@dogfood-lab\/verify['"]/, `from '${verifyIndex}'`)
@@ -484,7 +489,8 @@ function setupTempRunJs({ withPolicies = false } = {}) {
     .replace(/from\s+['"]\.\/load-context\.js['"]/, `from '${loadContextJs}'`)
     .replace(/from\s+['"]\.\/persist\.js['"]/, `from '${persistJs}'`)
     .replace(/from\s+['"]\.\/rebuild-indexes\.js['"]/, `from '${rebuildIndexesJs}'`)
-    .replace(/from\s+['"]\.\/verify-chain\.js['"]/, `from '${verifyChainJs}'`);
+    .replace(/from\s+['"]\.\/verify-chain\.js['"]/, `from '${verifyChainJs}'`)
+    .replace(/from\s+['"]\.\/anchor\/cli\.js['"]/, `from '${anchorCliJs}'`);
 
   writeFileSync(join(TEST_ROOT, 'packages', 'ingest', 'run.js'), rewritten, 'utf-8');
 
