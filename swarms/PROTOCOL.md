@@ -373,6 +373,7 @@ The shape — "executed but produced invalid output is repairable in place, with
 
 ## Key Principles
 
+0. **Public surfaces are coordinator-authored (LAW)** — README + translations, docs/handbook, landing page, CHANGELOG, repo metadata, package descriptions, and any marketing copy are authored PERSONALLY by the coordinator. Never assign a public-surface file to a subagent or spawn a docs/readme/landing-page/marketing agent. The docs domain may be a frozen domain (so no other agent touches it) but the coordinator executes it by hand. In-code user-facing strings (CLI `--help`, error messages) a feature agent drafts get a personal coordinator review-and-rewrite pass. Earned 2026-06-20 (backpropagate v1.7).
 1. **Exclusive File Ownership** — No agent edits a file outside its assignment. Violations trigger revert.
 2. **Wave Size** — Max 5 agents per wave (one per domain). Expand to max 10 for large repos by splitting domains.
 3. **Severity Triage** — All findings are triaged CRITICAL/HIGH/MEDIUM/LOW. Remediation follows severity order.
