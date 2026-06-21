@@ -577,6 +577,30 @@ function cmdCollect(args) {
     console.log('');
   }
 
+  // d3b-collect-A-002 (Stage B follow-up): a multi-domain amend wave that ran
+  // WITHOUT --isolate gets a wave-level banner. Each agent's independent
+  // ownership probe was narrowed to its own domain globs (the shared-worktree
+  // diff is not attributable per-agent), so cross-domain enforcement holds only
+  // for self-reported edits. The per-agent `ownership_probe_degraded` note
+  // already records this; the banner surfaces it once, loudly, so the operator
+  // does not have to read every agent record to discover the weakened
+  // guarantee. Observability only — like the divergence note, it never changes
+  // the exit code or the wave gate. See swarms/PROTOCOL.md §Ownership
+  // attribution in non-isolated parallel amend waves.
+  const probeDegraded = result.ownership_probe_degraded;
+  if (probeDegraded && probeDegraded.multi_domain) {
+    console.log('===== [!] OWNERSHIP PROBE DEGRADED [!] =====');
+    console.log('  This amend wave ran without --isolate across multiple domains');
+    console.log(`  (${probeDegraded.domains.join(', ')}). The independent git probe`);
+    console.log('  cannot attribute a shared-worktree edit to a single agent, so each');
+    console.log("  agent's cross-domain ownership check covers only its SELF-REPORTED");
+    console.log('  files_changed. A silent out-of-domain edit an agent also omits from');
+    console.log('  files_changed is NOT independently caught. Re-dispatch with --isolate');
+    console.log('  for full cross-domain attribution. See swarms/PROTOCOL.md §Ownership');
+    console.log('  attribution in non-isolated parallel amend waves.');
+    console.log('');
+  }
+
   // Item 5 (Phase 2-B verification-discipline): when any amend agent dispatched
   // with --skip-verify carried `verification_skipped: true`, the per-agent
   // verify pass was deliberately deferred so parallel agents do not observe
