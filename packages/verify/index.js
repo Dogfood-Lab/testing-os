@@ -19,6 +19,14 @@ import { SUPPORTED_SCHEMA_VERSIONS } from '@dogfood-lab/schemas';
 // instead of hand-rolling .startsWith() chains over the prefix taxonomy.
 export { parseRejectionReason } from './parse-rejection.js';
 
+// Provider-keyed provenance selection. A submission's `source.provider` decides
+// which provider API confirms its run; `provenanceForProvider(provider)` returns
+// the matching adapter factory (or null for an unknown provider). Re-exported
+// from the package root so the wiring layer selects by provider here rather than
+// hand-rolling an if-chain over provider literals. The registry stays in lockstep
+// with the source.provider enum via validators/provenance-registry.test.js.
+export { provenanceForProvider, PROVENANCE_ADAPTERS } from './validators/provenance.js';
+
 // F1-CONTRACTS-001: the persisted record's `schema_version` is the SINGLE
 // source of truth from the contract package — not a hardcoded literal that
 // can drift from `SUPPORTED_SCHEMA_VERSIONS.record.current`.

@@ -22,7 +22,7 @@ import { fileURLToPath } from 'node:url';
 import { randomBytes } from 'node:crypto';
 
 import { verify } from '@dogfood-lab/verify';
-import { stubProvenance, githubProvenance } from '@dogfood-lab/verify/validators/provenance.js';
+import { stubProvenance, provenanceForProvider } from '@dogfood-lab/verify/validators/provenance.js';
 import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-stage.js';
 import { loadGlobalPolicy, loadRepoPolicy, loadScenarios } from './load-context.js';
 import { isDuplicate, writeRecord, computeRecordPath } from './persist.js';
@@ -31,6 +31,34 @@ import { verifyChain, formatChainResult } from './verify-chain.js';
 import { handleAnchorCompute, handleAnchorPost, handleAnchorVerify } from './anchor/cli.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+/**
+ * Resolve the REAL provenance adapter for a submission, routed by
+ * `submission.source.provider` (github | gitlab), sourcing the provider's token
+ * from the environment. Returns `{ provenance }` on success or `{ err }` (a
+ * structured, operator-legible Error the caller surfaces via emitCliErrorEvent
+ * + exit 2). The adapter registry (`provenanceForProvider`) is the single
+ * provider-keyed seam; a provider in the schema enum without a registered
+ * adapter fails here loudly rather than silently skipping verification.
+ *
+ * @param {object} submission
+ * @returns {{ provenance: object } | { err: Error }}
+ */
+function resolveProviderProvenance(submission) {
+  const provider = (submission && submission.source && submission.source.provider) || 'github';
+  const factory = provenanceForProvider(provider);
+  if (!factory) {
+    return { err: new Error(`unknown provenance provider '${provider}' — no adapter registered (supported: github, gitlab).`) };
+  }
+  const token = provider === 'gitlab'
+    ? (process.env.GITLAB_TOKEN || process.env.CI_JOB_TOKEN)
+    : (process.env.GITHUB_TOKEN || process.env.GH_TOKEN);
+  if (!token) {
+    const need = provider === 'gitlab' ? 'GITLAB_TOKEN or CI_JOB_TOKEN' : 'GITHUB_TOKEN or GH_TOKEN';
+    return { err: new Error(`real provenance for provider '${provider}' requires ${need} in the environment.`) };
+  }
+  return { provenance: factory(token) };
+}
 
 /**
  * SEED-1 (d3-ingest-003) — posixify a path-shaped value at the operator/log
@@ -747,32 +775,36 @@ if (isMain) {
     console.error('WARNING: Using stub provenance (test/dev only). Records will NOT have real provenance verification.');
     provenance = stubProvenance;
   } else if (provenanceMode === 'github') {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    if (!token) {
+    // --provenance=github selects REAL provenance; the actual provider is taken
+    // from submission.source.provider, so a GitLab submission is confirmed via
+    // gitlabProvenance end-to-end (the adapter registry keys on the provider).
+    const resolved = resolveProviderProvenance(submission);
+    if (resolved.err) {
       emitCliErrorEvent({
         failedStage: 'cli_provenance_resolve',
         correlationId: cliCorrelationId,
         submissionId: submission && submission.run_id ? submission.run_id : null,
-        err: new Error('--provenance=github requires GITHUB_TOKEN or GH_TOKEN environment variable.'),
+        err: resolved.err,
         humanPrefix: 'provenance precondition unmet'
       });
       process.exit(2);
     }
-    provenance = githubProvenance(token);
+    provenance = resolved.provenance;
   } else if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') {
-    // In CI without explicit flag: default to github provenance, fail if no token
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    if (!token) {
+    // In CI without an explicit flag: default to real provenance, routed by the
+    // submission's source.provider (github | gitlab).
+    const resolved = resolveProviderProvenance(submission);
+    if (resolved.err) {
       emitCliErrorEvent({
         failedStage: 'cli_provenance_resolve',
         correlationId: cliCorrelationId,
         submissionId: submission && submission.run_id ? submission.run_id : null,
-        err: new Error('Running in CI without --provenance flag and no GITHUB_TOKEN. Cannot verify provenance.'),
+        err: resolved.err,
         humanPrefix: 'provenance precondition unmet'
       });
       process.exit(2);
     }
-    provenance = githubProvenance(token);
+    provenance = resolved.provenance;
   } else {
     emitCliErrorEvent({
       failedStage: 'cli_provenance_resolve',

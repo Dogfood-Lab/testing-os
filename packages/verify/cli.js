@@ -38,7 +38,7 @@ import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 
 import { verify, parseRejectionReason } from './index.js';
-import { stubProvenance, githubProvenance } from './validators/provenance.js';
+import { stubProvenance, provenanceForProvider } from './validators/provenance.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -264,17 +264,28 @@ function loadPolicies(submission, repoRoot) {
 
 /**
  * Resolve the provenance adapter for the requested mode. stub is side-effect-
- * free and offline (the dry-run default); github requires a token in the
- * environment (missing token → operator error, exit 2).
+ * free and offline (the dry-run default); the real mode confirms the source run
+ * and is routed by `submission.source.provider` (github | gitlab) through the
+ * adapter registry, sourcing the provider's token from the environment (missing
+ * token → operator error, exit 2).
  */
-function resolveProvenance(provenanceMode) {
+function resolveProvenance(provenanceMode, submission) {
   if (provenanceMode === 'github') {
-    const token = process.env.GITHUB_TOKEN || process.env.GH_TOKEN;
-    if (!token) {
-      throw new OperatorError('--provenance=github requires GITHUB_TOKEN or GH_TOKEN',
-        'export a token with actions:read, or use --provenance=stub for a local dry-run');
+    const provider = (submission && submission.source && submission.source.provider) || 'github';
+    const factory = provenanceForProvider(provider);
+    if (!factory) {
+      throw new OperatorError(`unknown provenance provider '${provider}' (supported: github, gitlab)`,
+        'check submission.source.provider, or use --provenance=stub for a local dry-run');
     }
-    return githubProvenance(token);
+    const token = provider === 'gitlab'
+      ? (process.env.GITLAB_TOKEN || process.env.CI_JOB_TOKEN)
+      : (process.env.GITHUB_TOKEN || process.env.GH_TOKEN);
+    if (!token) {
+      const need = provider === 'gitlab' ? 'GITLAB_TOKEN or CI_JOB_TOKEN' : 'GITHUB_TOKEN or GH_TOKEN';
+      throw new OperatorError(`real provenance for provider '${provider}' requires ${need}`,
+        'export a token with read access to the CI run, or use --provenance=stub for a local dry-run');
+    }
+    return factory(token);
   }
   return stubProvenance;
 }
@@ -406,7 +417,7 @@ export async function run(argv, io = {}) {
   try {
     const submission = loadSubmission(opts);
     const { globalPolicy, repoPolicy, policyVersion } = loadPolicies(submission, repoRoot);
-    const provenance = resolveProvenance(opts.provenanceMode);
+    const provenance = resolveProvenance(opts.provenanceMode, submission);
     record = await verify(submission, { globalPolicy, repoPolicy, provenance, policyVersion });
   } catch (e) {
     // OperatorError → exit 2 with a hint. Anything else thrown here is an

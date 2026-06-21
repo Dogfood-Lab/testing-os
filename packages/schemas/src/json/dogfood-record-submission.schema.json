@@ -60,16 +60,16 @@
       "properties": {
         "provider": {
           "type": "string",
-          "enum": ["github"],
-          "description": "SCM provider. GitHub-only for now."
+          "enum": ["github", "gitlab"],
+          "description": "SCM provider that ran the workflow. 'github' (GitHub Actions) or 'gitlab' (GitLab CI). The verifier selects a provider-specific provenance adapter to confirm the run."
         },
         "workflow": {
           "type": "string",
-          "description": "Workflow filename that produced this submission."
+          "description": "Workflow filename that produced this submission (e.g. a GitHub Actions workflow YAML or '.gitlab-ci.yml')."
         },
         "provider_run_id": {
           "type": "string",
-          "description": "GitHub Actions run ID (provider-native)."
+          "description": "Provider-native run identifier. For 'github' this is the GitHub Actions run ID; for 'gitlab' this is the GitLab pipeline ID (or job ID when run_url points at a job)."
         },
         "attempt": {
           "type": "integer",

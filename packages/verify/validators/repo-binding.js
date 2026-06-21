@@ -44,6 +44,37 @@ export const RUN_URL_PARSERS = {
     );
     return m ? { owner: m[1], repo: m[2] } : null;
   },
+
+  // GitLab run_url shapes (gitlab.com AND self-hosted hosts):
+  //   JOB:      https://<host>/<namespace>/<project>/-/jobs/<id>
+  //   PIPELINE: https://<host>/<namespace>/<project>/-/pipelines/<id>
+  // The project path is everything between the host and the `/-/` run segment.
+  //
+  // NESTED-SUBGROUP MAPPING (load-bearing decision, kept consistent with how
+  // submission.repo is expressed for GitLab): GitLab namespaces can nest —
+  // `group/subgroup/project`. We map owner = the FULL namespace (everything
+  // before the last path segment, slashes preserved) and repo = the LAST segment
+  // (the project). So `${owner}/${repo}` reconstructs the full project path. For
+  // a flat `group/project` this degenerates to owner='group', repo='project'
+  // (same shape as GitHub). The repo-binding guard then compares
+  // `${owner}/${repo}` against submission.repo, so for GitLab submission.repo is
+  // the FULL project path — which may contain more than one slash for nested
+  // subgroups, unlike GitHub's strict two-segment org/repo.
+  //
+  // A single-segment path (no namespace + project, just `<project>/-/jobs/<id>`)
+  // returns null — it cannot be split into owner + repo and is not a valid
+  // GitLab project URL.
+  gitlab(runUrl) {
+    const m = runUrl.match(
+      /^https:\/\/[^/]+\/(.+?)\/-\/(?:jobs|pipelines)\/\d+(?:[/?#].*)?$/
+    );
+    if (!m) return null;
+    const segments = m[1].split('/');
+    if (segments.length < 2) return null; // need at least namespace + project
+    const repo = segments.pop();
+    const owner = segments.join('/');
+    return { owner, repo };
+  },
 };
 
 /**

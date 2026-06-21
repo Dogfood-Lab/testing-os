@@ -60,7 +60,59 @@ describe('repo-binding guard coverage (verify-B-001)', () => {
     });
   });
 
+  describe('gitlab parser', () => {
+    it('decodes owner/repo from a JOB run_url', () => {
+      const bound = parseRunUrlRepo(
+        'gitlab',
+        'https://gitlab.com/acme/widget/-/jobs/987654'
+      );
+      assert.deepEqual(bound, { owner: 'acme', repo: 'widget' });
+    });
+
+    it('decodes owner/repo from a PIPELINE run_url', () => {
+      const bound = parseRunUrlRepo(
+        'gitlab',
+        'https://gitlab.com/acme/widget/-/pipelines/424242'
+      );
+      assert.deepEqual(bound, { owner: 'acme', repo: 'widget' });
+    });
+
+    it('maps nested subgroups: owner = full namespace, repo = last segment', () => {
+      // GitLab supports nested subgroups (group/subgroup/project). The mapping
+      // decision (documented in repo-binding.js): owner = everything before the
+      // LAST path segment (the full namespace, slashes preserved), repo = the
+      // last segment. Reconstructing `${owner}/${repo}` yields the full project
+      // path, which is what submission.repo carries for GitLab.
+      const bound = parseRunUrlRepo(
+        'gitlab',
+        'https://gitlab.com/acme/team-a/widget/-/pipelines/1'
+      );
+      assert.deepEqual(bound, { owner: 'acme/team-a', repo: 'widget' });
+      assert.equal(`${bound.owner}/${bound.repo}`, 'acme/team-a/widget');
+    });
+
+    it('parses self-hosted GitLab hosts (owner/repo = path before /-/)', () => {
+      const bound = parseRunUrlRepo(
+        'gitlab',
+        'https://gitlab.example.com/acme/widget/-/jobs/55'
+      );
+      assert.deepEqual(bound, { owner: 'acme', repo: 'widget' });
+    });
+
+    it('returns null for a foreign/malformed run_url', () => {
+      assert.equal(parseRunUrlRepo('gitlab', 'https://example.com/x'), null);
+    });
+
+    it('returns null when the URL has no /-/ run segment', () => {
+      assert.equal(parseRunUrlRepo('gitlab', 'https://gitlab.com/acme/widget'), null);
+    });
+
+    it('returns null for a single-segment path (no namespace + project)', () => {
+      assert.equal(parseRunUrlRepo('gitlab', 'https://gitlab.com/widget/-/jobs/1'), null);
+    });
+  });
+
   it('returns null for a provider with no parser (no throw)', () => {
-    assert.equal(parseRunUrlRepo('gitlab', 'https://gitlab.com/a/b/-/jobs/1'), null);
+    assert.equal(parseRunUrlRepo('bitbucket', 'https://bitbucket.org/a/b/pipelines/1'), null);
   });
 });

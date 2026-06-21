@@ -68,16 +68,16 @@
       "properties": {
         "provider": {
           "type": "string",
-          "enum": ["github"],
-          "description": "SCM provider. GitHub-only for now."
+          "enum": ["github", "gitlab"],
+          "description": "SCM provider that ran the workflow. 'github' (GitHub Actions) or 'gitlab' (GitLab CI). Carried verbatim from the submission."
         },
         "workflow": {
           "type": "string",
-          "description": "Workflow filename that produced the submission."
+          "description": "Workflow filename that produced the submission (e.g. a GitHub Actions workflow YAML or '.gitlab-ci.yml')."
         },
         "provider_run_id": {
           "type": "string",
-          "description": "GitHub Actions run ID (provider-native)."
+          "description": "Provider-native run identifier. For 'github' this is the GitHub Actions run ID; for 'gitlab' this is the GitLab pipeline ID (or job ID when run_url points at a job)."
         },
         "attempt": {
           "type": "integer",
@@ -267,7 +267,7 @@
         },
         "provenance_confirmed": {
           "type": "boolean",
-          "description": "True if GitHub API confirmed the source run exists and matches claims."
+          "description": "True if the provider API (GitHub Actions or GitLab CI, selected by source.provider) confirmed the source run exists and matches the claimed repo, commit, and finished state."
         },
         "schema_valid": {
           "type": "boolean",

@@ -75,19 +75,22 @@ export interface Ref {
   version?: string;
 }
 
+/** SCM provider that ran the workflow. Mirrors the `source.provider` enum. */
+export type SourceProvider = 'github' | 'gitlab';
+
 /** SCM provenance of the run. Mirrors the `source` object. */
 export interface Source {
-  /** SCM provider. GitHub-only for now. */
-  provider: 'github';
-  /** Workflow filename that produced the submission. */
+  /** SCM provider — 'github' (GitHub Actions) or 'gitlab' (GitLab CI). */
+  provider: SourceProvider;
+  /** Workflow filename that produced the submission (e.g. a GitHub Actions YAML or '.gitlab-ci.yml'). */
   workflow: string;
-  /** Provider-native run ID (GitHub Actions run ID). */
+  /** Provider-native run ID: a GitHub Actions run ID or a GitLab pipeline/job ID. */
   provider_run_id: string;
   /** Run attempt number. Schema default is 1. */
   attempt?: number;
   /** URL to the provider run. Schema format: uri. */
   run_url: string;
-  /** GitHub username that triggered the workflow. */
+  /** Username that triggered the workflow. */
   actor?: string;
 }
 
@@ -256,7 +259,7 @@ export interface Verification {
   /** Final outcome. No pending state in persisted records. */
   status: 'accepted' | 'rejected';
   verified_at: string;
-  /** True if GitHub API confirmed the source run exists and matches claims. */
+  /** True if the provider API (GitHub Actions or GitLab CI, per source.provider) confirmed the source run exists and matches claims. */
   provenance_confirmed: boolean;
   /** True if submission passed JSON Schema validation. */
   schema_valid: boolean;
