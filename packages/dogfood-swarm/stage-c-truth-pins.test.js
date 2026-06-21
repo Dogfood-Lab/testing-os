@@ -45,8 +45,9 @@ import { saveDomainDraft, freezeDomains } from './lib/domains.js';
 import { dispatch } from './commands/dispatch.js';
 import { collect } from './commands/collect.js';
 import { revalidate } from './commands/revalidate.js';
-import { status, formatStatus } from './commands/status.js';
+import { status, formatStatus, computeAssessment } from './commands/status.js';
 import { buildReceipt, exportReceipt } from './commands/receipt.js';
+import { PHASE_MAP } from './lib/advance.js';
 
 const RUN_ID = 'test-stage-c-truth-pins';
 
@@ -521,5 +522,50 @@ describe('receipt JSON and Markdown include serial_verify_required and per-agent
       'receipt MD must mark domain-a (skipped) with the REQUIRED obligation marker');
     assert.match(md, /\| domain-b \| owned \| complete \| — \|/,
       'receipt MD must mark domain-b (did not skip) with the em-dash default-quiet marker');
+  });
+});
+
+// ───────────────────────────────────────────────────────
+// Test 7: swarm-cli-A-001 — computeAssessment finding-gate set
+// ───────────────────────────────────────────────────────
+
+describe('computeAssessment gates on FINDING_GATED_PHASES, not just health-audit-a', () => {
+  // Pins swarm-cli-A-001 — `swarm advance` blocks open CRITICAL/HIGH in
+  // health-audit-a/b/c AND stage-d-audit (lib/advance.js FINDING_GATED_PHASES).
+  // computeAssessment formerly keyed only on health-audit-a, so a collected
+  // health-audit-b/c or stage-d-audit wave with an open HIGH reported
+  // READY TO ADVANCE while advance rejected it. The assessment must say
+  // AMEND NEEDED in every finding-gated phase.
+  const completeAgents = [{ status: 'complete', domain_name: 'd' }];
+  const openHigh = { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0 };
+  const noOpen = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+
+  for (const phase of ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit']) {
+    it(`returns AMEND NEEDED on an open HIGH in finding-gated phase ${phase}`, () => {
+      const wave = { phase, status: 'collected', wave_number: 1, serial_verify_required: 0 };
+      const a = computeAssessment(wave, completeAgents, openHigh, [], []);
+      assert.equal(a.state, 'AMEND NEEDED',
+        `${phase} is finding-gated — must not report READY TO ADVANCE with an open HIGH`);
+    });
+
+    it(`names the phase's amend target in the next action for ${phase}`, () => {
+      const wave = { phase, status: 'collected', wave_number: 1, serial_verify_required: 0 };
+      const a = computeAssessment(wave, completeAgents, openHigh, [], []);
+      const expectedAmend = PHASE_MAP[phase].amend;
+      assert.match(a.nextAction, new RegExp(`swarm dispatch <run-id> ${expectedAmend}`),
+        `next action must dispatch the phase-correct amend (${expectedAmend}), not a hardcoded health-amend-a`);
+    });
+  }
+
+  it('reports READY TO ADVANCE in a finding-gated phase when no CRIT/HIGH are open', () => {
+    const wave = { phase: 'health-audit-b', status: 'collected', wave_number: 1, serial_verify_required: 0 };
+    const a = computeAssessment(wave, completeAgents, noOpen, [], []);
+    assert.equal(a.state, 'READY TO ADVANCE');
+  });
+
+  it('reports READY TO ADVANCE in a non-gated phase even with open HIGH', () => {
+    const wave = { phase: 'feature-audit', status: 'collected', wave_number: 1, serial_verify_required: 0 };
+    const a = computeAssessment(wave, completeAgents, openHigh, [], []);
+    assert.equal(a.state, 'READY TO ADVANCE');
   });
 });

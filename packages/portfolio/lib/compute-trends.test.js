@@ -53,6 +53,36 @@ function writeRecord(repoRoot, { repo, runId, surface, verified, finishedAt, rej
   writeFileSync(join(base, `run-${runId}.json`), JSON.stringify(record, null, 2));
 }
 
+/**
+ * Write a record whose scenario_results carries N entries for the SAME surface.
+ * The submission schema permits this (scenario_results has minItems:1, no
+ * maxItems, no per-surface uniqueness), and one such run must contribute ONE
+ * run to a surface's trend, not N duplicate rows.
+ */
+function writeMultiScenarioRecord(repoRoot, { repo, runId, surface, verified, finishedAt, count }) {
+  const date = new Date(finishedAt);
+  const yyyy = String(date.getUTCFullYear());
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  const base = join(repoRoot, 'records', repo, yyyy, mm, dd);
+  mkdirSync(base, { recursive: true });
+  const scenario_results = Array.from({ length: count }, (_, i) => ({
+    product_surface: surface,
+    scenario_id: `s-${i}`,
+    verdict: verified,
+  }));
+  const record = {
+    schema_version: '1.2.0',
+    repo,
+    run_id: runId,
+    verification: { status: 'accepted' },
+    overall_verdict: { proposed: verified, verified, downgraded: false },
+    timing: { finished_at: finishedAt },
+    scenario_results,
+  };
+  writeFileSync(join(base, `run-${runId}.json`), JSON.stringify(record, null, 2));
+}
+
 function tmpRoot() {
   return mkdtempSync(join(tmpdir(), 'portfolio-trends-'));
 }
@@ -214,6 +244,28 @@ describe('computeTrends — record selection', () => {
       const surf = computeTrends(root)['org/i'].cli;
       assert.equal(surf.history.length, 1, 'rejected record must not enter the history');
       assert.equal(surf.history[0].run_id, 'i-good');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('collapses multiple same-surface scenario_results in one run to a single run-row', () => {
+    const root = tmpRoot();
+    try {
+      // Run A passes (1 web scenario), then run B fails (2 web scenarios). With
+      // no per-run dedup, B contributes TWO rows: sorted = [A, B, B], so
+      // current=B and previous=B — the A->B pass->fail regression vanishes and
+      // pass_rate reads 1/3 instead of 1/2.
+      writeMultiScenarioRecord(root, { repo: 'org/multi', runId: 'A', surface: 'web', verified: 'pass', finishedAt: '2026-03-01T10:00:00Z', count: 1 });
+      writeMultiScenarioRecord(root, { repo: 'org/multi', runId: 'B', surface: 'web', verified: 'fail', finishedAt: '2026-03-02T10:00:00Z', count: 2 });
+
+      const surf = computeTrends(root, { now: Date.parse('2026-03-03T10:00:00Z') })['org/multi'].web;
+      assert.equal(surf.history.length, 2, 'one row per RUN, not per scenario_result');
+      assert.equal(surf.current.run_id, 'B');
+      assert.equal(surf.previous.run_id, 'A', 'previous must be the prior RUN, not a duplicate of current');
+      assert.equal(surf.regressed, true, 'A(pass) -> B(fail) is a regression that per-run dedup must reveal');
+      assert.equal(surf.pass_rate_sample, 2, 'pass-rate sample counts runs, not scenario_results');
+      assert.ok(Math.abs(surf.pass_rate - 0.5) < 1e-9, `expected 0.50, got ${surf.pass_rate}`);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

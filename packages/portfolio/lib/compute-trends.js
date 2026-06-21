@@ -172,10 +172,25 @@ export function computeTrends(repoRoot, options = {}) {
     trends[repo] = {};
     for (const [surface, rows] of Object.entries(surfaces)) {
       // Order oldest -> newest by ms (NaN sorts oldest). Stable for equal ms.
-      const sorted = rows.slice().sort((a, b) => {
+      const ordered = rows.slice().sort((a, b) => {
         const am = Number.isFinite(a._ms) ? a._ms : -Infinity;
         const bm = Number.isFinite(b._ms) ? b._ms : -Infinity;
         return am - bm;
+      });
+
+      // Collapse to one row per run: the submission schema permits multiple
+      // scenario_results with the same product_surface in a single run (minItems:1,
+      // no maxItems, no uniqueness), and each contributed an identical row here
+      // (same run_id/verified/finished_at). Without this, a run's N duplicates
+      // would let current/previous land on the SAME run — masking a real
+      // pass->fail regression — and would skew the windowed pass-rate (N votes
+      // for one run). Dedup keeps the first occurrence per run_id; ordering is
+      // already chronological so the kept row is correct.
+      const seenRuns = new Set();
+      const sorted = ordered.filter((r) => {
+        if (seenRuns.has(r.run_id)) return false;
+        seenRuns.add(r.run_id);
+        return true;
       });
 
       const history = sorted.map(({ run_id, verified, finished_at }) => ({

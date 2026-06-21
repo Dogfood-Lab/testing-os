@@ -241,24 +241,91 @@ describe('VD-NEW-1 — files_changed is no longer the sole ownership input', () 
     rmSync(tmpDir, { recursive: true, force: true });
   });
 
-  it('catches a domain-a agent that touches domain-b files even when files_changed is empty', () => {
-    // Domain-a agent self-reports an empty files_changed list — but in the
-    // worktree, they actually edited a file owned by domain-b. Pre-fix:
-    // checkOwnership saw an empty list and skipped enforcement entirely.
-    // Post-fix: the git probe surfaces the edit and ownership flags it.
-    writeFileSync(join(repoPath, 'packages/b/src/baz.js'), 'tampered by A\n');
+  it('catches a self-reported domain-a edit of a domain-b file (non-isolated)', () => {
+    // Domain-a SELF-REPORTS editing a domain-b file. The agent's own
+    // files_changed is always checked in full, even in a non-isolated wave, so
+    // a self-confessed out-of-domain edit is still flagged. (The independent
+    // git probe is restricted to domain-a's globs in non-isolated mode — see
+    // the d3b-collect-A-002 block below — but the self-report path is not.)
+    const outA = join(tmpDir, 'a.json');
+    const outB = join(tmpDir, 'b.json');
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a',
+      summary: 'self-reported out-of-domain edit',
+      fixes: [{ finding_id: 'F-A-001', description: 'fixed it' }],
+      files_changed: ['packages/b/src/baz.js'],
+    }));
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b',
+      summary: 'no work',
+      fixes: [{ finding_id: 'F-B-001', description: 'fixed it' }],
+      files_changed: [],
+    }));
+
+    const report = collect({
+      runId: RUN_ID,
+      dbPath,
+      outputs: { 'domain-a': outA, 'domain-b': outB },
+    });
+
+    const aReport = report.agents.find(r => r.domain === 'domain-a');
+    assert.equal(aReport.status, 'ownership_violation',
+      'a self-reported edit of another domain\'s file must be flagged');
+    assert.ok(report.violations.some(v => v.file === 'packages/b/src/baz.js'),
+      'the violated file must appear in the ownership-violations report');
+  });
+});
+
+describe('d3b-collect-A-002 — non-isolated wave does not flag phantom cross-domain violations', () => {
+  // In a NON-isolated parallel amend wave (no --isolate), every agent shares
+  // run.local_path. getActualTouchedFiles returns the whole-tree union of all
+  // agents' edits — so domain-a's independent touched set includes domain-b's
+  // files and vice versa. The OLD code attributed that union to each agent and
+  // flagged the OTHER domain's legitimate edits as ownership violations,
+  // flipping a clean wave to failed. The fix restricts each agent's independent
+  // probe to its own globs when isolation is absent.
+  let tmpDir, dbPath, repoPath;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'verif-disc-a002-'));
+    dbPath = join(tmpDir, 'control-plane.db');
+    repoPath = join(tmpDir, 'repo');
+    mkdirSync(join(repoPath, 'packages/a/src'), { recursive: true });
+    mkdirSync(join(repoPath, 'packages/b/src'), { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repoPath });
+    execFileSync('git', ['config', 'user.email', 't@t.t'], { cwd: repoPath });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: repoPath });
+    writeFileSync(join(repoPath, 'packages/a/src/foo.js'), 'seed\n');
+    writeFileSync(join(repoPath, 'packages/b/src/baz.js'), 'seed\n');
+    execFileSync('git', ['add', '.'], { cwd: repoPath });
+    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: repoPath });
+
+    setupRun(dbPath, repoPath);
+    dispatch({ runId: RUN_ID, phase: 'health-amend-a', dbPath, outputDir: tmpDir });
+  });
+
+  afterEach(() => {
+    closeDb(dbPath);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('neither domain is flagged when each agent edits only its own files in a shared tree', () => {
+    // Both agents edit only their own files, but the shared tree carries BOTH
+    // edits — exactly the parallel-amend reality the bug mis-attributed.
+    writeFileSync(join(repoPath, 'packages/a/src/foo.js'), 'fixed by A\n');
+    writeFileSync(join(repoPath, 'packages/b/src/baz.js'), 'fixed by B\n');
 
     const outA = join(tmpDir, 'a.json');
     const outB = join(tmpDir, 'b.json');
     writeFileSync(outA, JSON.stringify({
       domain: 'domain-a',
-      summary: 'under-reporting probe',
+      summary: 'fixed own file',
       fixes: [{ finding_id: 'F-A-001', description: 'fixed it' }],
-      files_changed: [],
+      files_changed: ['packages/a/src/foo.js'],
     }));
     writeFileSync(outB, JSON.stringify({
       domain: 'domain-b',
-      summary: 'no work',
+      summary: 'fixed own file',
       fixes: [{ finding_id: 'F-B-001', description: 'fixed it' }],
       files_changed: ['packages/b/src/baz.js'],
     }));
@@ -269,13 +336,46 @@ describe('VD-NEW-1 — files_changed is no longer the sole ownership input', () 
       outputs: { 'domain-a': outA, 'domain-b': outB },
     });
 
-    // Domain-a touched packages/b/src/baz.js — domain-b territory. The
-    // ownership check must now fire on the independently-computed set.
     const aReport = report.agents.find(r => r.domain === 'domain-a');
-    assert.equal(aReport.status, 'ownership_violation',
-      'an agent that under-reports files_changed must still be caught by the independent diff');
-    assert.ok(report.violations.some(v => v.file === 'packages/b/src/baz.js'),
-      'the violated file must appear in the ownership-violations report');
+    const bReport = report.agents.find(r => r.domain === 'domain-b');
+    assert.notEqual(aReport.status, 'ownership_violation',
+      'domain-a must not be flagged for domain-b\'s edit in a shared tree');
+    assert.notEqual(bReport.status, 'ownership_violation',
+      'domain-b must not be flagged for domain-a\'s edit in a shared tree');
+    assert.equal(report.violations.length, 0,
+      'a clean parallel amend wave must produce zero ownership violations');
+  });
+
+  it('surfaces an ownership_probe_degraded note when isolation is absent', () => {
+    writeFileSync(join(repoPath, 'packages/a/src/foo.js'), 'fixed by A\n');
+
+    const outA = join(tmpDir, 'a.json');
+    const outB = join(tmpDir, 'b.json');
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-A-001', description: 'fixed it' }],
+      files_changed: ['packages/a/src/foo.js'],
+    }));
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b',
+      summary: 'no work',
+      fixes: [{ finding_id: 'F-B-001', description: 'fixed it' }],
+      files_changed: [],
+    }));
+
+    const report = collect({
+      runId: RUN_ID,
+      dbPath,
+      outputs: { 'domain-a': outA, 'domain-b': outB },
+    });
+
+    const aReport = report.agents.find(r => r.domain === 'domain-a');
+    assert.ok(aReport.ownership_probe_degraded,
+      'non-isolated wave must surface the degraded-probe note');
+    assert.equal(aReport.ownership_probe_degraded.isolated, false);
+    assert.match(aReport.ownership_probe_degraded.reason, /--isolate/,
+      'the note must point the operator at --isolate for full attribution');
   });
 });
 

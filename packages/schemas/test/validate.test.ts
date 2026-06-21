@@ -161,6 +161,27 @@ describe('@dogfood-lab/schemas validation harness', () => {
       expectError(result, e => /required/i.test(e.message) && /run_id/.test(JSON.stringify(e.params)));
     });
 
+    // ci-tooling-A-002: run_id is a filesystem path segment (ingest/persist.js
+    // computeRecordPath builds run-<run_id>.json). A run_id carrying a shell
+    // metacharacter or path separator must be rejected at the SCHEMA boundary,
+    // not discovered late at persist time. Mirrors the persist.js guard /^[\w-]+$/.
+    it('rejects a run_id containing a shell metacharacter (pattern violation)', () => {
+      const bad = { ...valid, run_id: '$(rm -rf /)' };
+      const result = validatePayload('recordSubmission', bad);
+      expectError(result, e => e.path.includes('/run_id') && e.keyword === 'pattern');
+    });
+
+    it('rejects a run_id containing a path separator (pattern violation)', () => {
+      const bad = { ...valid, run_id: '../escape' };
+      const result = validatePayload('recordSubmission', bad);
+      expectError(result, e => e.path.includes('/run_id') && e.keyword === 'pattern');
+    });
+
+    it('accepts a real GitHub-style run_id (digits + dashes)', () => {
+      const result = validatePayload('recordSubmission', { ...valid, run_id: 'claude-guardian-24922209099-1' });
+      expect(result.valid, JSON.stringify(result.errors)).toBe(true);
+    });
+
     it('rejects a malformed commit_sha (pattern violation)', () => {
       const bad = { ...valid, ref: { commit_sha: 'not-a-sha' } };
       const result = validatePayload('recordSubmission', bad);
@@ -228,6 +249,15 @@ describe('@dogfood-lab/schemas validation harness', () => {
       const { verification: _, ...bad } = valid;
       const result = validatePayload('record', bad);
       expectError(result, e => /required/i.test(e.message) && /verification/.test(JSON.stringify(e.params)));
+    });
+
+    // ci-tooling-A-002: the persisted record carries run_id forward from the
+    // submission; it must enforce the same path-segment charset so a tampered
+    // record can never be written to an attacker-chosen path.
+    it('rejects a run_id containing a shell metacharacter (pattern violation)', () => {
+      const bad = { ...valid, run_id: '$(rm -rf /)' };
+      const result = validatePayload('record', bad);
+      expectError(result, e => e.path.includes('/run_id') && e.keyword === 'pattern');
     });
 
     // F-246817-001 — partial provenance_remediation (status without remediated_at)

@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
+import { FINDING_GATED_PHASES } from '../lib/advance.js';
 
 /**
  * Build a receipt object from DB truth.
@@ -348,8 +349,12 @@ export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta
   const wavePart = `Wave: ${waveDelta.waveNew} new (${waveDelta.waveNewCrit} CRIT + ${waveDelta.waveNewHigh} HIGH)`;
   const runPart = `Run total: ${openBySeverity.CRITICAL} CRIT + ${openBySeverity.HIGH} HIGH open (fixed: ${waveDelta.totalFixed})`;
 
-  // All complete — check OPEN severity (fixed/rejected findings are not blockers)
-  if (wave.phase.startsWith('health-audit-a') && (openBySeverity.CRITICAL > 0 || openBySeverity.HIGH > 0)) {
+  // All complete — check OPEN severity (fixed/rejected findings are not blockers).
+  // Gate on the same FINDING_GATED_PHASES set lib/advance.js enforces, so the
+  // receipt's recommendation can never say ADVANCE while `swarm advance` blocks
+  // — that mismatch surfaced in health-audit-b/c and stage-d-audit, which are
+  // finding-gated but were not caught by the old health-audit-a prefix test.
+  if (FINDING_GATED_PHASES.has(wave.phase) && (openBySeverity.CRITICAL > 0 || openBySeverity.HIGH > 0)) {
     return {
       action: 'AMEND',
       reason: `${wavePart} | ${runPart} — approve and amend`,

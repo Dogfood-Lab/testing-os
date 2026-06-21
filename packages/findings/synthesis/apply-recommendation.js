@@ -34,6 +34,7 @@ import { resolve } from 'node:path';
 import { existsSync, readFileSync } from 'node:fs';
 import yaml from 'js-yaml';
 
+import { isUnsafeSegment } from '@dogfood-lab/ingest/lib/unsafe-segment.js';
 import { atomicWriteFileSync } from '../lib/atomic-write.js';
 import { findArtifactById } from '../review/review-artifacts.js';
 import { createEvent, appendEvent } from '../review/event-log.js';
@@ -88,6 +89,22 @@ export function applyRecommendation(rootDir, params) {
 
   const action = rec.action || {};
   const surfaces = rec.applies_to?.product_surfaces || [];
+
+  // findings-A-001 — path-traversal guard on the operator-supplied --policy
+  // <org/repo>. `policyPathFor` resolves `policies/repos/<org>/<repo>.yaml`; an
+  // org/repo carrying `..` or a separator would escape the policies tree on
+  // BOTH the dry-run (path leaked in preview) and write (file touched) paths,
+  // so reject here before either branch resolves a path.
+  if (params.policyRepo) {
+    const [pOrg, pRepo] = String(params.policyRepo).split('/');
+    if (!pOrg || !pRepo || isUnsafeSegment(pOrg) || isUnsafeSegment(pRepo)) {
+      return structuredError(
+        'RECOMMENDATION_UNSAFE_POLICY',
+        `policy repo "${params.policyRepo}" is not a safe org/repo path segment`,
+        'Pass --policy <org/repo> with no ".." or path separators inside the org or repo name.'
+      );
+    }
+  }
 
   // Build the resolution context shared by dry-run and write.
   const isStructured = STRUCTURED_LIST_ACTIONS.has(action.type);

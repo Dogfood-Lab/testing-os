@@ -11,6 +11,7 @@ import { openDb } from '../db/connection.js';
 import { isBlocked, isInFlight, getTimeoutPolicy } from '../lib/state-machine.js';
 import { getWaveTransitionHistory, BLOCKED_STATUSES } from '../lib/wave-state-machine.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
+import { FINDING_GATED_PHASES, PHASE_MAP } from '../lib/advance.js';
 
 /**
  * @param {object} opts
@@ -432,7 +433,7 @@ export function blockerHintForStatus(status, ctx = {}) {
   }
 }
 
-function computeAssessment(wave, agents, openBySeverity, blocked, inFlight, ctx = {}) {
+export function computeAssessment(wave, agents, openBySeverity, blocked, inFlight, ctx = {}) {
   if (!wave) {
     return { state: 'NO WAVE', blockers: [], nextAction: 'Run `swarm dispatch <run-id> <phase>`' };
   }
@@ -527,12 +528,17 @@ function computeAssessment(wave, agents, openBySeverity, blocked, inFlight, ctx 
         nextAction: 'Run `npm run verify` against the cumulative tree (one serial pass — see PROTOCOL.md §Serial final verification). Advancing without it skips the authoritative verification for this wave.',
       };
     }
-    // Check severity gates
-    if (wave.phase.startsWith('health-audit-a') && (openBySeverity.CRITICAL > 0 || openBySeverity.HIGH > 0)) {
+    // Check severity gates. The set of finding-gated phases is owned by
+    // lib/advance.js (FINDING_GATED_PHASES) — `swarm advance` rejects an
+    // open CRITICAL/HIGH in ANY of health-audit-a/b/c and stage-d-audit.
+    // Keying only on health-audit-a here would tell the operator "READY TO
+    // ADVANCE" in health-audit-b/c or stage-d-audit while advance blocks.
+    if (FINDING_GATED_PHASES.has(wave.phase) && (openBySeverity.CRITICAL > 0 || openBySeverity.HIGH > 0)) {
+      const amendPhase = PHASE_MAP[wave.phase]?.amend ?? '<amend-phase>';
       return {
         state: 'AMEND NEEDED',
         blockers,
-        nextAction: `${openBySeverity.CRITICAL} CRITICAL + ${openBySeverity.HIGH} HIGH open. Run \`swarm approve\` then \`swarm dispatch <run-id> health-amend-a\`.`,
+        nextAction: `${openBySeverity.CRITICAL} CRITICAL + ${openBySeverity.HIGH} HIGH open. Run \`swarm approve\` then \`swarm dispatch <run-id> ${amendPhase}\`.`,
       };
     }
     return {

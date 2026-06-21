@@ -592,3 +592,160 @@ describe('githubProvenance fetch timeout (F-246817-014)', () => {
     assert.equal(result, false);
   });
 });
+
+// ── githubProvenance binds persisted ref.commit_sha to the run (verify-A-001) ─
+//
+// HIGH/security: the commit a record attests to is submission.ref.commit_sha
+// (index.js persists submission.ref verbatim). Pre-fix, provenance only compared
+// the run head against source.commit_sha — a DIFFERENT, OPTIONAL field — so an
+// authenticated submitter who owns a real completed run could set ref.commit_sha
+// to any arbitrary 40-hex sha and earn a provenance_confirmed 'pass' record for a
+// commit the run never executed. The fix binds the run head to the persisted
+// commit by passing ref.commit_sha into confirm() and rejecting any mismatch.
+
+describe('githubProvenance binds ref.commit_sha to the run (verify-A-001)', () => {
+  const RUN_HEAD = 'c5d6c4e0000000000000000000000000deadbeef';
+  const FORGED = 'f0f0f0f0000000000000000000000000baddecaf';
+
+  function fetchReturning(run) {
+    return async () => ({ ok: true, json: async () => run });
+  }
+  const completedRun = {
+    id: 9123456789,
+    status: 'completed',
+    conclusion: 'success',
+    head_sha: RUN_HEAD,
+    repository: { full_name: 'owner/repo' }
+  };
+  const source = {
+    provider: 'github',
+    provider_run_id: '9123456789',
+    run_url: 'https://github.com/owner/repo/actions/runs/9123456789',
+    repo: 'owner/repo'
+  };
+
+  // Schema-valid source for the full-pipeline cases: the source schema requires
+  // `workflow` and forbids additional properties, so the pilot-0 source shape is
+  // reused and only the run-locating fields are pointed at owner/repo.
+  function pipelineSource() {
+    return {
+      ...pilot0.source,
+      run_url: 'https://github.com/owner/repo/actions/runs/9123456789',
+      provider_run_id: '9123456789'
+    };
+  }
+
+  it('rejects when the persisted ref.commit_sha differs from the run head_sha', async () => {
+    const adapter = githubProvenance('token', {
+      timeoutMs: 1000,
+      fetchImpl: fetchReturning(completedRun)
+    });
+    const ok = await adapter.confirm(source, { refCommitSha: FORGED });
+    assert.equal(ok, false,
+      'a ref.commit_sha that does not match the confirmed run head must NOT be confirmed');
+  });
+
+  it('confirms when the persisted ref.commit_sha matches the run head_sha', async () => {
+    const adapter = githubProvenance('token', {
+      timeoutMs: 1000,
+      fetchImpl: fetchReturning(completedRun)
+    });
+    const ok = await adapter.confirm(source, { refCommitSha: RUN_HEAD });
+    assert.equal(ok, true,
+      'a ref.commit_sha equal to the confirmed run head must be confirmed');
+  });
+
+  it('full pipeline: a forged ref.commit_sha is rejected with a provenance reason', async () => {
+    // Real githubProvenance through verify(): index.js must pass the persisted
+    // ref.commit_sha into confirm so the forgery is caught before persistence.
+    const forged = structuredClone(pilot0);
+    forged.repo = 'owner/repo';
+    forged.source = pipelineSource();
+    forged.ref = { ...forged.ref, commit_sha: FORGED };
+
+    const record = await verify(forged, {
+      globalPolicy,
+      repoPolicy,
+      provenance: githubProvenance('token', {
+        timeoutMs: 1000,
+        fetchImpl: fetchReturning(completedRun)
+      }),
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.provenance_confirmed, false);
+    assert.equal(record.verification.status, 'rejected');
+    assert.ok(
+      record.verification.rejection_reasons.some(r => r.startsWith('provenance:')),
+      `expected a provenance: rejection, got ${JSON.stringify(record.verification.rejection_reasons)}`
+    );
+  });
+
+  it('full pipeline: a matching ref.commit_sha is confirmed', async () => {
+    const honest = structuredClone(pilot0);
+    honest.repo = 'owner/repo';
+    honest.source = pipelineSource();
+    honest.ref = { ...honest.ref, commit_sha: RUN_HEAD };
+
+    const record = await verify(honest, {
+      globalPolicy,
+      repoPolicy,
+      provenance: githubProvenance('token', {
+        timeoutMs: 1000,
+        fetchImpl: fetchReturning(completedRun)
+      }),
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.provenance_confirmed, true,
+      `expected confirmed provenance, got reasons ${JSON.stringify(record.verification.rejection_reasons)}`);
+  });
+});
+
+// ── githubProvenance distinguishes ops outages from missing runs (verify-A-002) ─
+//
+// MEDIUM/silent_failure: `if (!resp.ok) return false` collapsed every non-2xx
+// (401/403 expired token, 429 rate limit, 5xx outage) into the SAME 'unconfirmed'
+// result a genuinely-missing run (404) produces. index.js then records a
+// submission-bad 'provenance: source run could not be confirmed' and routing
+// bounces an ops outage to submitters. Mirroring the timeout fix, auth/operational
+// statuses now THROW so the verifier records them as operational; only 404 (run
+// genuinely absent) returns the not-found rejection.
+
+describe('githubProvenance distinguishes ops failures from missing runs (verify-A-002)', () => {
+  const source = {
+    provider: 'github',
+    provider_run_id: '12345',
+    run_url: 'https://github.com/owner/repo/actions/runs/12345'
+  };
+
+  function fetchWithStatus(status) {
+    return async () => ({ ok: false, status, json: async () => ({}) });
+  }
+
+  for (const status of [401, 403, 429, 500, 503]) {
+    it(`throws an operational error on HTTP ${status} (not a submission-bad false)`, async () => {
+      const adapter = githubProvenance('token', {
+        timeoutMs: 1000,
+        fetchImpl: fetchWithStatus(status)
+      });
+      await assert.rejects(
+        adapter.confirm(source),
+        err => {
+          assert.match(err.message, /provenance: GitHub API returned/);
+          assert.match(err.message, new RegExp(String(status)));
+          return true;
+        }
+      );
+    });
+  }
+
+  it('still returns false (run genuinely absent) on HTTP 404', async () => {
+    const adapter = githubProvenance('token', {
+      timeoutMs: 1000,
+      fetchImpl: fetchWithStatus(404)
+    });
+    const ok = await adapter.confirm(source);
+    assert.equal(ok, false, '404 means the run does not exist — a real rejection, not an outage');
+  });
+});

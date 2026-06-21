@@ -26,7 +26,8 @@
     "run_id": {
       "type": "string",
       "minLength": 1,
-      "description": "Unique dogfood run identifier. ULID recommended for sortability."
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "Unique dogfood run identifier. ULID recommended for sortability. Charset is constrained because run_id becomes a filesystem path segment in the persisted record path; this mirrors the persist-time guard."
     },
 
     "repo": {

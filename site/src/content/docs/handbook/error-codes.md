@@ -313,6 +313,35 @@ A doctrine payload failed `dogfood-doctrine.schema.json` validation BEFORE touch
 - **Carries:** `doctrineId`, `errors[]`.
 - **Operator action:** fix the derivation rule.
 
+### `FINDING_UNSAFE_REPO`
+
+:::caution[Severity: HIGH]
+A finding's `repo` field carried a path-traversal segment (`..` or a path separator) and was refused **before any write**. No file lands; the write side now matches the read side, which already rejected such segments. Same fail-closed input-guard class as the `SCHEMA_INVALID` family, but the threat is filesystem escape rather than a malformed payload.
+:::
+
+- **Class:** `FindingUnsafeRepoError` (`packages/findings/derive/write-findings.js`)
+- **Trigger:** `writeFinding` / `writeFindings` invoked with a finding whose `repo` splits into an `org`/`repo` segment containing `..` or a separator. The `dogfood-finding` schema's `repo` pattern admits `.`/`..`, so a schema-valid `repo: '../policies'` previously resolved one directory level under `rootDir` and wrote outside `findings/` (into sibling runtime dirs like `policies/`, `indexes/`, `reports/`). The read path (`loadRecordsForRepoWithSkips`) already guarded this via `isUnsafeSegment`; this closes the write side (findings-A-001).
+- **Message shape:** `unsafe repo path segment in finding (<finding_id>): '<repo>' contains a path-traversal or separator and was refused before any write (findings-A-001).`
+- **Carries:** `repo`, `findingId`.
+- **Operator action:**
+  1. Inspect the offending record/finding — the `repo` field is malformed (contains `..` or `/` inside the org or repo name).
+  2. Fix the upstream emitter (the source repo's submission builder), not the guard. A legitimate `repo` is exactly `<org>/<repo>` with no traversal segments.
+  3. Re-run `dogfood findings derive --write` once the emitter is corrected.
+
+### `RECOMMENDATION_UNSAFE_POLICY`
+
+:::caution[Severity: HIGH]
+The operator-supplied `--policy <org/repo>` carried a path-traversal segment and was refused on **both** the dry-run (path would leak in the preview) and write (file would be touched) paths, before either branch resolved a path. Sibling guard to `FINDING_UNSAFE_REPO`.
+:::
+
+- **Class:** structured error `{ code: 'RECOMMENDATION_UNSAFE_POLICY', … }` (`packages/findings/synthesis/apply-recommendation.js`)
+- **Trigger:** `dogfood findings advise --policy <org/repo>` (apply-recommendation) invoked with an `org`/`repo` that is empty or contains `..` / a separator. `policyPathFor` resolves `policies/repos/<org>/<repo>.yaml`; an unsafe segment would escape the `policies/` tree.
+- **Message shape:** `policy repo "<repo>" is not a safe org/repo path segment`
+- **Hint:** `Pass --policy <org/repo> with no ".." or path separators inside the org or repo name.`
+- **Operator action:**
+  1. Re-invoke `--policy` with a clean `<org>/<repo>` value — no `..`, no extra separators.
+  2. The control plane and filesystem are untouched; no cleanup is needed before retrying.
+
 ### `VALIDATOR_FAULT_SCHEMA`
 
 :::caution[Severity: HIGH]

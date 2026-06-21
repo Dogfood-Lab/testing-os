@@ -595,7 +595,8 @@ describe('Wave receipt', () => {
 describe('Receipt recommendation footer', () => {
   const completeAgents = [{ status: 'complete' }, { status: 'complete' }];
   const auditWave = { phase: 'health-audit-a' };
-  const postAuditWave = { phase: 'health-audit-b' };
+  // feature-audit is NOT in FINDING_GATED_PHASES — open CRIT/HIGH do not block it.
+  const ungatedWave = { phase: 'feature-audit' };
 
   it('surfaces wave-delta AND run-total in ADVANCE reason when open counts are zero', () => {
     const open = { CRITICAL: 0, HIGH: 0, MEDIUM: 2, LOW: 5 };
@@ -625,12 +626,26 @@ describe('Receipt recommendation footer', () => {
     assert.match(rec.reason, /Run total: 1 CRIT \+ 4 HIGH open \(fixed: 10\)/);
   });
 
-  it('ADVANCE in post-Stage-A phases even when open CRIT/HIGH exist (gate is audit-a only)', () => {
+  it('ADVANCE in non-finding-gated phases even when open CRIT/HIGH exist', () => {
     const open = { CRITICAL: 2, HIGH: 3, MEDIUM: 0, LOW: 0 };
     const waveDelta = { waveNew: 0, waveNewCrit: 0, waveNewHigh: 0, totalFixed: 0 };
-    const rec = computeRecommendation(postAuditWave, completeAgents, open, waveDelta);
+    const rec = computeRecommendation(ungatedWave, completeAgents, open, waveDelta);
     assert.equal(rec.action, 'ADVANCE');
   });
+
+  // swarm-cli-A-001: health-audit-b/c and stage-d-audit are finding-gated by
+  // lib/advance.js. The receipt recommendation must AMEND (not ADVANCE) on an
+  // open HIGH in those phases, or it tells the operator "ADVANCE" while
+  // `swarm advance` blocks. The old health-audit-a prefix test missed them.
+  for (const phase of ['health-audit-b', 'health-audit-c', 'stage-d-audit']) {
+    it(`recommends AMEND on an open HIGH in finding-gated phase ${phase}`, () => {
+      const open = { CRITICAL: 0, HIGH: 1, MEDIUM: 0, LOW: 0 };
+      const waveDelta = { waveNew: 1, waveNewCrit: 0, waveNewHigh: 1, totalFixed: 0 };
+      const rec = computeRecommendation({ phase }, completeAgents, open, waveDelta);
+      assert.equal(rec.action, 'AMEND',
+        `${phase} is finding-gated — an open HIGH must not recommend ADVANCE`);
+    });
+  }
 
   it('WAIT reason short-circuits before wave-delta formatting (no waveDelta deref)', () => {
     const rec = computeRecommendation(

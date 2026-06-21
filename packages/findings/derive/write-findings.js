@@ -34,6 +34,7 @@ import { mkdirSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import yaml from 'js-yaml';
 
+import { isUnsafeSegment } from '@dogfood-lab/ingest/lib/unsafe-segment.js';
 import { atomicWriteFileSync } from '../lib/atomic-write.js';
 import { validateFinding } from '../validate.js';
 
@@ -71,6 +72,26 @@ export class FindingIdCollisionError extends Error {
     super(`finding_id collision: '${findingId}' already written in this process; refused to silently clobber (D2B-008 / L3-001 family-seal). Call resetSeenWrites() if a legitimate re-write is intended.`);
     this.name = 'FindingIdCollisionError';
     this.code = 'FINDING_ID_COLLISION';
+    this.findingId = findingId;
+  }
+}
+
+/**
+ * Structured error thrown when a finding's `repo` splits into an org/repo
+ * segment that is a path-traversal vector (`..` or a path separator).
+ *
+ * findings-A-001 — write-side traversal guard. The READ side
+ * (`loadRecordsForRepoWithSkips`) already rejects such segments via
+ * `isUnsafeSegment`; the WRITE side did not, so a schema-valid
+ * `repo: '../policies'` (the dogfood-finding `repo` pattern admits `.`/`..`)
+ * resolved one level under rootDir and wrote outside `findings/`.
+ */
+export class FindingUnsafeRepoError extends Error {
+  constructor(repo, findingId) {
+    super(`unsafe repo path segment in finding${findingId ? ` (${findingId})` : ''}: '${repo}' contains a path-traversal or separator and was refused before any write (findings-A-001).`);
+    this.name = 'FindingUnsafeRepoError';
+    this.code = 'FINDING_UNSAFE_REPO';
+    this.repo = repo;
     this.findingId = findingId;
   }
 }
@@ -126,6 +147,13 @@ export function writeFinding(rootDir, finding) {
 
   const [org, repo] = (finding.repo || '').split('/');
   if (!org || !repo) throw new Error(`Invalid repo in finding: ${finding.repo}`);
+
+  // findings-A-001 — write-side path-traversal guard. Mirrors the READ side
+  // (load-records.js loadRecordsForRepoWithSkips) so a schema-valid
+  // `repo: '../policies'` cannot escape `findings/` into a sibling data dir.
+  if (isUnsafeSegment(org) || isUnsafeSegment(repo)) {
+    throw new FindingUnsafeRepoError(finding.repo, finding.finding_id);
+  }
 
   // L3-001 (Wave A2 amend2): same-process same-id refusal. Programmatic
   // callers that loop over assembleFinding output now fail-closed at the

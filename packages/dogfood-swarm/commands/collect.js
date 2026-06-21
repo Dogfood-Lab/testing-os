@@ -17,6 +17,7 @@ import { resolve as resolvePath, join as joinPath, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { openDb } from '../db/connection.js';
 import { getDomains, checkOwnership } from '../lib/domains.js';
+import { minimatch } from 'minimatch';
 import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from '../lib/output-schema.js';
 import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate-agent-output.js';
 import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
@@ -518,14 +519,34 @@ export function collect(opts) {
     // reporting). When git is unavailable (no .git), we fall back to the
     // agent's self-report and surface the degradation in the report.
     if (isAmend && output.files_changed !== undefined) {
+      const isolated = !!ar.worktree_path;
       const worktree = ar.worktree_path || run.local_path;
       const actualTouched = getActualTouchedFiles(worktree);
       const reported = Array.isArray(output.files_changed) ? output.files_changed : [];
-      const divergence = diffReportedVsActual(reported, actualTouched.all);
+
+      // d3b-collect-A-002: in a NON-isolated parallel amend wave (no --isolate),
+      // every agent shares run.local_path, so getActualTouchedFiles returns the
+      // UNION of every agent's edits — git cannot attribute a given file to a
+      // given agent. Attributing that whole-tree diff to one agent would flag
+      // files another domain legitimately edited as ownership violations,
+      // failing the wave on phantom out-of-domain edits. Without per-agent
+      // isolation the independent probe can only soundly validate THIS domain's
+      // own files; restrict the independent contribution to the domain's globs.
+      // The agent's self-reported `files_changed` is still checked in full, so
+      // a self-confessed out-of-domain edit is still caught. Under --isolate the
+      // worktree holds only this agent's edits, so the full diff is attributable
+      // and the cross-domain under-report catch (VD-NEW-1) is preserved.
+      const independentTouched = isolated
+        ? actualTouched.all
+        : actualTouched.all.filter(
+            f => (domain.globs || []).some(g => minimatch(f, g, { dot: true }))
+          );
+
+      const divergence = diffReportedVsActual(reported, independentTouched);
 
       const ownershipSet = new Set([
         ...reported.map(p => p.replace(/\\/g, '/')),
-        ...actualTouched.all,
+        ...independentTouched,
       ]);
       const filesForOwnership = Array.from(ownershipSet);
 
@@ -539,6 +560,19 @@ export function collect(opts) {
       }
       if (actualTouched.unavailable) {
         agentReport.files_changed_divergence = { unavailable: true, reason: 'git probe failed; ownership check used agent self-report only' };
+      }
+      // Degradation note: without --isolate the independent probe cannot
+      // attribute cross-domain edits to a single agent, so its coverage is
+      // narrowed to this domain's own files. Operator-visible so the weakened
+      // guarantee is never silent.
+      if (!isolated && !actualTouched.unavailable) {
+        agentReport.ownership_probe_degraded = {
+          isolated: false,
+          reason:
+            'non-isolated wave: shared worktree diff cannot be attributed per-agent; ' +
+            'independent ownership probe restricted to this domain\'s globs. ' +
+            'Re-dispatch with --isolate for full cross-domain attribution.',
+        };
       }
 
       if (filesForOwnership.length > 0) {

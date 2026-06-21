@@ -8,6 +8,7 @@
  */
 
 import { loadFindings } from '../reader.js';
+import { boundaryHash } from '../derive/ids.js';
 
 /**
  * Derive candidate patterns from accepted findings.
@@ -120,7 +121,7 @@ function isFalseRecurrence(findings) {
 /**
  * Build a pattern candidate from a cluster.
  */
-function buildPatternCandidate(cluster) {
+export function buildPatternCandidate(cluster) {
   const { findings, issue_kind, root_cause_kind, remediation_kind } = cluster;
   const now = new Date().toISOString();
 
@@ -141,8 +142,16 @@ function buildPatternCandidate(cluster) {
   // otherwise two clusters that differ only by root_cause_kind collide on pattern_id and the
   // second writePattern() silently overwrites the first on disk. Surface is added for readability,
   // not for uniqueness.
+  //
+  // The human-readable slug runs `.replace(/_/g, '-')` AFTER concatenation, which folds the
+  // underscore inside a component into the same `-` that delimits components: issue_kind='a_b' +
+  // root_cause='c' and issue_kind='a' + root_cause='b_c' both flatten to `...-a-b-c`
+  // (findings-A-002). A trailing boundary hash over the UN-flattened cluster key keeps the two
+  // distinct, so legitimately different clusters no longer trip the L3-001 *_ID_COLLISION guard.
   const surfaceStr = surfaces.size === 1 ? [...surfaces][0] : 'multi-surface';
-  const slug = `${surfaceStr}-${issue_kind}-${root_cause_kind}`.replace(/_/g, '-');
+  const readable = `${surfaceStr}-${issue_kind}-${root_cause_kind}`.replace(/_/g, '-');
+  const boundary = boundaryHash([surfaceStr, issue_kind, root_cause_kind]);
+  const slug = `${readable}-${boundary}`;
 
   // Determine strength
   const strength = repos.size >= 3 ? 'strong' : repos.size >= 2 ? 'emerging' : 'emerging';

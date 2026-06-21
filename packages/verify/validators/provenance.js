@@ -48,7 +48,16 @@ export function githubProvenance(token, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? GITHUB_PROVENANCE_TIMEOUT_MS;
   const fetchImpl = opts.fetchImpl ?? fetch;
   return {
-    async confirm(source) {
+    /**
+     * @param {object} source - submission.source (provider-scoped run claim)
+     * @param {{ refCommitSha?: string }} [expected] - cross-field invariants the
+     *   verifier binds at the call site. `refCommitSha` is the PERSISTED
+     *   `submission.ref.commit_sha` — the commit the record will attest to. When
+     *   present it is checked MANDATORILY against the confirmed run head, so a
+     *   submitter cannot point a real run at an arbitrary persisted commit
+     *   (verify-A-001).
+     */
+    async confirm(source, expected = {}) {
       if (source.provider !== 'github') {
         throw new Error(`unsupported provider: ${source.provider}`);
       }
@@ -91,12 +100,31 @@ export function githubProvenance(token, opts = {}) {
           signal: controller.signal
         });
 
-        if (!resp.ok) return false;
+        if (!resp.ok) {
+          // verify-A-002: only 404 means the run is genuinely absent — a real
+          // submission-bad rejection. Every other non-2xx is an OPERATIONAL
+          // signal (401/403 expired/insufficient token, 429 rate limit, 5xx
+          // GitHub outage). Collapsing those into `return false` made the
+          // verifier record 'source run could not be confirmed' and routing
+          // bounced an ops incident to submitters. Throw so the existing catch
+          // in index.js records it as a provenance verification failure
+          // (operational), mirroring the timeout fix above.
+          if (resp.status === 404) return false;
+          throw new Error(`provenance: GitHub API returned ${resp.status}`);
+        }
 
         run = await resp.json();
       } catch (err) {
         if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
           throw new Error(`provenance: GitHub API timeout after ${timeoutMs}ms`);
+        }
+        // verify-A-002: operational signals we raised ourselves (non-2xx HTTP)
+        // already carry the 'provenance:' prefix — re-throw them so they reach
+        // index.js as a verification failure rather than being swallowed into
+        // 'return false'. Reserve `return false` for genuine transport errors
+        // (DNS, connection refused) where there is no run to confirm.
+        if (err && typeof err.message === 'string' && err.message.startsWith('provenance:')) {
+          throw err;
         }
         return false;
       } finally {
@@ -112,6 +140,14 @@ export function githubProvenance(token, opts = {}) {
       // underlying CI evidence exists. Rejects 'queued' / 'in_progress' / 'waiting'.
       if (run.status !== 'completed') return false;
 
+      // verify-A-001: bind the persisted commit to the confirmed run. The record
+      // attests to submission.ref.commit_sha (index.js persists submission.ref
+      // verbatim), so the run head MUST equal it. Without this, a submitter who
+      // owns a real completed run could set ref.commit_sha to any 40-hex sha and
+      // earn a provenance_confirmed 'pass' for a commit the run never executed.
+      // Mandatory whenever the binding is supplied — not gated on the optional
+      // source.commit_sha.
+      if (expected.refCommitSha && run.head_sha !== expected.refCommitSha) return false;
       if (source.commit_sha && run.head_sha !== source.commit_sha) return false;
       if (source.repo && run.repository?.full_name !== source.repo) return false;
 

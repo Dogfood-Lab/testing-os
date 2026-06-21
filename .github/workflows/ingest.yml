@@ -146,12 +146,21 @@ jobs:
         # operator see which attempt landed; the final `::error::`
         # only fires when all 3 failed.
         if: steps.result.outputs.written == 'true'
+        # CWE-78: hoist run_id/status into env rather than interpolating
+        # ${{ steps.result.outputs.* }} inline into the shell `run:` body.
+        # run_id originates from untrusted repository_dispatch client_payload;
+        # inline interpolation would let a value containing shell metacharacters
+        # execute verbatim — the same antipattern the two ingestion legs above
+        # already env-hoist for. persist.js's /^[\w-]+$/ run_id guard (which
+        # gates written=='true') makes this unreachable today, but workflow-level
+        # hardening should not depend on a guard in a different package.
+        env:
+          RUN_ID: ${{ steps.result.outputs.run_id }}
+          STATUS: ${{ steps.result.outputs.status }}
         run: |
           git config user.name "dogfood-bot"
           git config user.email "64996768+mcp-tool-shop@users.noreply.github.com"
           git add records/ indexes/
-          RUN_ID="${{ steps.result.outputs.run_id }}"
-          STATUS="${{ steps.result.outputs.status }}"
           git diff --cached --quiet && echo "No changes to commit" && exit 0
           git commit -m "ingest: ${STATUS} dogfood record ${RUN_ID}"
 

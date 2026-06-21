@@ -182,7 +182,14 @@ export async function verify(submission, options) {
   let provenanceConfirmed = false;
   if (schemaResult.valid && submission.source) {
     try {
-      provenanceConfirmed = await provenance.confirm(submission.source);
+      // verify-A-001: bind the PERSISTED commit (submission.ref.commit_sha) to the
+      // verified run. The record attests to this commit, so the provenance adapter
+      // must reject a run whose head differs from it — otherwise a real run can be
+      // pointed at an arbitrary persisted sha. Adapters that ignore the binding
+      // (stub/rejecting) accept the extra arg harmlessly.
+      provenanceConfirmed = await provenance.confirm(submission.source, {
+        refCommitSha: submission.ref?.commit_sha
+      });
     } catch (err) {
       reasons.push(`provenance: verification failed: ${err.message}`);
     }

@@ -8,7 +8,8 @@
  *
  * Regenerated on every accepted/rejected write in Phase 1.
  *
- * Multi-file commit-group atomicity (W3-PIPE-002):
+ * Multi-file commit-group: crash/IO-failure RECOVERY-atomic, NOT reader-atomic
+ * (W3-PIPE-002):
  * The 3 indexes are written together via a two-phase commit pattern. Phase 1
  * stages all 3 files to temp paths AND records them in a journal file. Phase 2
  * renames each temp into its final location, then deletes the journal. If the
@@ -17,10 +18,27 @@
  * is idempotent (it scans records/ end-to-end), so re-running is the correct
  * recovery action.
  *
- * Pattern reference: choke-point fix (Pattern #4) for multi-file atomicity.
+ * IMPORTANT — what "atomicity" means here. The guarantee is RECOVERY-atomic,
+ * not READER-atomic. Phase 2 promotes the temps with a per-leg `renameSync`
+ * (each rename is individually atomic), but the GROUP is not promoted under a
+ * single atomic operation. During the promote window — and during the heal
+ * window after a mid-promote IO failure (ENOSPC/EACCES after the first
+ * final is renamed but a later one is not) — a concurrent reader CAN observe
+ * the index group in a mutually-inconsistent intermediate state (e.g. an
+ * already-promoted latest-by-repo.json against a not-yet-promoted failing.json).
+ * The catch on a promote failure does NOT roll back already-promoted finals;
+ * it preserves the journal and emits a structured error event so an operator
+ * can force an immediate rebuild before the next scheduled run heals it. The
+ * design is sound because the only writer (the ingest pipeline) serializes
+ * rebuilds and `rebuildIndexes` is synchronous — there is no in-flight reader
+ * that races a writer mid-promote within a single process. If you ever need
+ * true reader-atomicity (a reader that NEVER sees a torn group), this design
+ * must change (e.g. swap a single directory symlink, or version the index dir).
+ *
+ * Pattern reference: choke-point fix (Pattern #4) for multi-file recovery.
  * Single-file `atomicWriteFileSync` (lib/atomic-write.js) handles each leg;
- * the journal handles the cross-file boundary. The single-file helper is
- * the same one Class #6 helper-adoption-sweep enforces as canonical for
+ * the journal handles the cross-file recovery boundary. The single-file helper
+ * is the same one Class #6 helper-adoption-sweep enforces as canonical for
  * temp+rename writes under `packages/ingest/`.
  */
 
@@ -307,15 +325,23 @@ export function rebuildIndexes(repoRoot, options = {}) {
  * AND records them in a journal first; then renames them in caller-given
  * order. The journal is deleted only after every rename succeeds.
  *
- * Crash semantics:
- *   - Crash during STAGE phase: every staged temp is unlinked in the catch
+ * Crash / IO-failure semantics (RECOVERY-atomic, not reader-atomic):
+ *   - Failure during STAGE phase: every staged temp is unlinked in the catch
  *     block; the journal (if written) is unlinked too. No partial visible
- *     state.
- *   - Crash during PROMOTE phase: any successfully-renamed file is at its
- *     final path; remaining temps are still next to their finals. The
- *     journal still exists. Next run's `cleanupCrashedJournals` deletes
- *     residual temps and the journal; the next normal `rebuildIndexes`
- *     call rewrites all 3 indexes from scratch (idempotent).
+ *     state — no final was touched.
+ *   - Failure during PROMOTE phase: any successfully-renamed file is at its
+ *     final path with its NEW content; remaining temps are still next to
+ *     their (still-OLD) finals. The group is therefore mutually inconsistent
+ *     until healed — a reader in this window sees a torn group. We do NOT
+ *     roll back the already-promoted finals (their prior content was already
+ *     overwritten by the atomic rename — there is nothing to roll back to
+ *     without re-reading the journal). Instead we emit a structured
+ *     `logStage('error', { kind: 'commit_group_partial_promote', ... })`
+ *     naming which finals were promoted vs left stale so an operator can
+ *     force an immediate rebuild, and we preserve the journal. Next run's
+ *     `cleanupCrashedJournals` deletes residual temps and the journal; the
+ *     next normal `rebuildIndexes` call rewrites all 3 indexes from scratch
+ *     (idempotent), which is what heals the torn group.
  *
  * Why journal-then-rename rather than journal-only: the rename phase needs
  * to be the visible commit point. A journal-only design would require
@@ -339,8 +365,12 @@ function commitGroupRename(indexDir, entries) {
 
     // Write journal AFTER staging so it never points at a non-existent temp.
     // Atomic write of the journal itself: writeFileSync directly is fine here
-    // because the journal is process-private (the pid suffix guarantees no
-    // collision with concurrent rebuilds).
+    // because the journal is process-private — the pid + random suffix make
+    // the filename collision-free, and `cleanupCrashedJournals` is pid-aware
+    // (it skips journals whose pid is a still-live process), so a future
+    // concurrent rebuild's in-flight journal is never reaped out from under
+    // it. The temp `entries` it lists are equally collision-free (each carries
+    // its own random suffix from `stageWriteFileSync`).
     writeFileSync(
       journalPath,
       JSON.stringify({
@@ -374,6 +404,24 @@ function commitGroupRename(indexDir, entries) {
     // (their previous content is already overwritten — the rename was
     // atomic at each individual leg, just not as a group). The next run
     // is idempotent and will rewrite all three from scratch.
+    //
+    // ingest-A-001: the group is now reader-inconsistent (promoted finals
+    // carry new content; stale finals carry old content). Name which finals
+    // are which in a structured error event so an operator can force an
+    // immediate rebuild rather than wait for the next scheduled run to heal
+    // the torn group.
+    const promoted = stagedTmps.slice(0, promotedCount).map((e) => e.finalPath);
+    const stale = stagedTmps.slice(promotedCount).map((e) => e.finalPath);
+    logStage('error', {
+      kind: 'commit_group_partial_promote',
+      reason: err && err.code ? err.code : 'promote_failed',
+      promoted_count: promotedCount,
+      total: stagedTmps.length,
+      promoted_finals: promoted,
+      stale_finals: stale,
+      journal: journalPath,
+      error: err && err.message ? err.message : String(err),
+    });
     throw new Error(
       `commitGroupRename: promote failed after ${promotedCount}/${stagedTmps.length} files; ` +
       `journal preserved at ${journalPath} for next-run cleanup. Original error: ${err.message}`
@@ -388,9 +436,40 @@ function commitGroupRename(indexDir, entries) {
 }
 
 /**
+ * Probe whether a pid is still a live process. `process.kill(pid, 0)` sends
+ * no signal — it only performs the permission/existence check, throwing
+ * ESRCH when the pid is dead. An EPERM means the process exists but is owned
+ * by another user; that still counts as "live" for our purpose (do not reap
+ * its journal). Any other error (or a non-integer pid) is treated as "not
+ * provably live" so a malformed journal never blocks its own cleanup.
+ *
+ * @param {unknown} pid
+ * @returns {boolean}
+ */
+function isProcessAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === 'EPERM';
+  }
+}
+
+/**
  * Find and clean up any in-progress journals from previous runs. Each journal
  * lists the temp paths that were staged; we unlink any that still exist
  * (they are residue from a crashed run) and delete the journal.
+ *
+ * ingest-A-002: cleanup is PID-AWARE. A journal whose `pid` is a still-live
+ * process is the in-flight recovery state of a concurrent rebuild — reaping
+ * it would delete that run's temps and journal mid-flight. Today the only
+ * writer serializes rebuilds and `rebuildIndexes` is synchronous, so no live
+ * sibling journal exists at Phase-0 cleanup time; this guard makes the design
+ * correct (not merely safe-by-serialization) so a future maintainer who adds
+ * concurrency does not silently corrupt a peer. A dead pid, a missing/
+ * malformed pid, or an unreadable journal is still reaped — that is the
+ * crashed-run residue this function exists to clear.
  *
  * Idempotent: on a clean filesystem it's a no-op; on a crashed-mid-promote
  * filesystem it cleans the slate so the upcoming `commitGroupRename` can
@@ -411,6 +490,11 @@ function cleanupCrashedJournals(indexDir) {
       // Unreadable journal — best we can do is delete it. The temps it
       // referenced will linger but they're harmless (they have a unique
       // suffix that won't be re-used).
+    }
+    // Skip a journal owned by a still-live process — it belongs to a
+    // concurrent rebuild's in-flight recovery state, not crashed residue.
+    if (parsed && isProcessAlive(parsed.pid) && parsed.pid !== process.pid) {
+      continue;
     }
     if (parsed && Array.isArray(parsed.entries)) {
       for (const e of parsed.entries) {
