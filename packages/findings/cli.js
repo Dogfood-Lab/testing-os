@@ -279,6 +279,14 @@ Synthesis artifacts (patterns / recommendations / doctrine):
   doctrine <accept|reject> <id> [--actor X] [--reason Y]
   doctrine queue
 
+Advice (read-only, derived from accepted artifacts):
+  advise --surface <surface> [--execution-mode <mode>] [--repo <org/repo>] [--json]
+                                       Bootstrap guidance for a new repo/surface.
+                                       --json emits the structured advice bundle
+                                       as pure JSON (pipeable; no human text on
+                                       stdout) for shipcheck / repo-knowledge.
+  sync-export [--json]                 Export accepted artifacts for downstream sync.
+
   Note: patterns carry a literal "invalidated" status; recommendations and
   doctrine do not, so invalidate is supported for patterns only. The review /
   reopen verbs target the intermediate "reviewed" state, which the artifact
@@ -1094,6 +1102,14 @@ Filters (for list):
 
     const bundle = generateAdviceBundle(ROOT, { surface, executionMode, repo });
     const a = bundle.advice;
+
+    // --json keeps stdout pure JSON so downstream tools (shipcheck,
+    // repo-knowledge) can pipe the structured bundle without scraping the
+    // human formatter. Matches the sync-export verb's flags.json idiom below.
+    if (flags.json) {
+      console.log(JSON.stringify(bundle, null, 2));
+      process.exit(0);
+    }
 
     console.log(`Advice for: ${[surface, executionMode, repo].filter(Boolean).join(', ') || 'general'}\n`);
 

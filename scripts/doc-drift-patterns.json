@@ -176,9 +176,10 @@
         "packages/ingest/rebuild-indexes.js",
         "packages/findings/review/event-log.js",
         "packages/portfolio/generate.js",
-        "packages/report/build-submission.js"
+        "packages/report/build-submission.js",
+        "packages/report/cli.js"
       ],
-      "wrapperHint": "Cross-package: import via @dogfood-lab/findings/lib/atomic-write.js. Same package: relative import. Wrappers that pin a component tag are allowed; the wrapper file must still import the helper. Phase 7 wave 2 W2-BACK-003: 6 dogfood-swarm/ callers migrated to import the helper; allowlist shrunk from 13 to 6 entries (5 cross-domain pipeline/outputs callers + the helper itself remain). Verify/runner.js was confirmed STALE (no callsites in source) and removed entirely. Phase 7 wave 3 W3-PIPE-001/002 added: `findings/lib/file-lock.js` (the lock helper itself uses raw writeFileSync in atomicCreateLock — its purpose IS to be the choke point for cross-process exclusion, distinct from atomic-write's torn-write contract) and `ingest/lib/atomic-write.js` (sibling helper to findings/lib/atomic-write.js — cannot import the findings copy without creating a workspace dependency cycle since findings already depends on ingest)."
+      "wrapperHint": "Cross-package: import via @dogfood-lab/findings/lib/atomic-write.js. Same package: relative import. Wrappers that pin a component tag are allowed; the wrapper file must still import the helper. Phase 7 wave 2 W2-BACK-003: 6 dogfood-swarm/ callers migrated to import the helper; allowlist shrunk from 13 to 6 entries (5 cross-domain pipeline/outputs callers + the helper itself remain). Verify/runner.js was confirmed STALE (no callsites in source) and removed entirely. Phase 7 wave 3 W3-PIPE-001/002 added: `findings/lib/file-lock.js` (the lock helper itself uses raw writeFileSync in atomicCreateLock — its purpose IS to be the choke point for cross-process exclusion, distinct from atomic-write's torn-write contract) and `ingest/lib/atomic-write.js` (sibling helper to findings/lib/atomic-write.js — cannot import the findings copy without creating a workspace dependency cycle since findings already depends on ingest). Feature pass FT-i: `report/cli.js` joins its sibling `report/build-submission.js` — `@dogfood-lab/report` is the consumer-side submission builder that intentionally carries NO dependency on the findings backend cycle; its `--output` write targets a user-specified local path (a CLI convenience, equivalent to a shell redirect), not the shared evidence store, so the torn-write contract that protects records/ + indexes/ does not apply."
     },
     {
       "id": "helper-adoption--log-stage",
@@ -275,21 +276,58 @@
           "path": "version"
         },
         "verbCount": {
-          "source": "pattern-count",
+          "source": "command-map-count",
           "file": "packages/dogfood-swarm/cli.js",
-          "pattern": "^function cmd[A-Z]",
-          "flags": "gm"
+          "bindingName": "commands"
         }
       },
       "claims": [
         {
           "id": "ship-gate-verb-count",
-          "title": "SHIP_GATE `swarm` bin subcommand count matches cli.js cmdXxx handlers",
+          "title": "SHIP_GATE `swarm` bin subcommand count matches the cli.js commands map",
           "target": "SHIP_GATE.md",
           "pattern": "`swarm` bin documents its (\\d+) subcommands",
           "captureGroup": 1,
           "resolver": "verbCount",
-          "hint": "Either update the SHIP_GATE row to reflect the current cmdXxx count in packages/dogfood-swarm/cli.js, or remove/add a cmdXxx handler if the docs are right and the code is wrong."
+          "hint": "Either update the SHIP_GATE row to reflect the current registered-verb count (the keys of the `commands = { ... }` map in packages/dogfood-swarm/cli.js), or add/remove a verb from that map if the docs are right and the code is wrong."
+        },
+        {
+          "id": "handbook-index-verb-count",
+          "title": "handbook index 'all N swarm verbs' matches the cli.js commands map (total)",
+          "target": "site/src/content/docs/handbook/index.md",
+          "pattern": "all (\\d+) `swarm` verbs",
+          "captureGroup": 1,
+          "resolver": "verbCount",
+          "hint": "Update site/src/content/docs/handbook/index.md's 'per-verb quick reference for all N `swarm` verbs' to the current registered-verb count (keys of the `commands` map in packages/dogfood-swarm/cli.js)."
+        },
+        {
+          "id": "handbook-cli-reference-verb-count",
+          "title": "handbook cli-reference 'all N verbs' matches the cli.js commands map (total)",
+          "target": "site/src/content/docs/handbook/cli-reference.md",
+          "pattern": "scan all (\\d+) verbs",
+          "captureGroup": 1,
+          "resolver": "verbCount",
+          "hint": "Update site/src/content/docs/handbook/cli-reference.md's 'scan all N verbs' to the current registered-verb count (keys of the `commands` map in packages/dogfood-swarm/cli.js)."
+        },
+        {
+          "id": "handbook-swarm-history-sibling-count",
+          "title": "handbook swarm-history 'all N sibling verbs' matches total minus 1 (history itself)",
+          "target": "site/src/content/docs/handbook/swarm-history.md",
+          "pattern": "all (\\d+) sibling verbs",
+          "captureGroup": 1,
+          "resolver": "verbCount",
+          "offset": -1,
+          "hint": "Update site/src/content/docs/handbook/swarm-history.md's 'swarm history and all N sibling verbs' to (total registered verbs − 1) — the page is one of the verbs, so it counts its siblings. The total is the key count of the `commands` map in packages/dogfood-swarm/cli.js."
+        },
+        {
+          "id": "handbook-operating-guide-other-verb-count",
+          "title": "handbook operating-guide 'the other N verbs' matches total minus the 11 verbs named inline",
+          "target": "site/src/content/docs/handbook/operating-guide.md",
+          "pattern": "and the other (\\d+) verbs",
+          "captureGroup": 1,
+          "resolver": "verbCount",
+          "offset": -11,
+          "hint": "Update site/src/content/docs/handbook/operating-guide.md's 'init / domains / dispatch / collect / verify / advance / status / revalidate / rewind / redrive / history and the other N verbs' to (total registered verbs − 11). The 11 inline-named verbs are subtracted; if you add or remove a verb from that inline list, update this claim's `offset` to match. The total is the key count of the `commands` map in packages/dogfood-swarm/cli.js."
         },
         {
           "id": "ship-gate-version-row-at",

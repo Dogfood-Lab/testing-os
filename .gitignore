@@ -15,12 +15,14 @@ swarms/*/snapshots/
 swarms/*/output/
 records/incoming/
 indexes/*.tmp.json
-# F3-001 / F5-04 — portfolio generator runtime artifacts. The committed
-# deliverable is the generator (packages/portfolio), not a snapshot, so a local
-# `node packages/portfolio/generate.js` must not dirty the tree. Serving fresh
-# snapshots via CI is a deferred follow-up that parallels reports/.
-indexes/trends.json
-indexes/badges/
+# FT-f-unignore: indexes/trends.json and indexes/badges/*.json are now COMMITTED
+# served artifacts, mirroring the already-committed indexes/latest-by-repo.json.
+# packages/portfolio/generate.js writes them as part of the cross-repo portfolio,
+# and consumers read them over raw.githubusercontent.com — so they must live in
+# the tree, not be ignored. The earlier F3-001 / F5-04 framing treated a local
+# `node generate.js` run as tree-dirtying noise; that is superseded now that the
+# snapshot IS the deliverable. The `.tmp.json` ignore above still covers the
+# transient mid-write files.
 
 # Translation cache (regenerated)
 .polyglot-cache.json

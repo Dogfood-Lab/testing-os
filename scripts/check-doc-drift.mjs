@@ -860,10 +860,30 @@ const sourceOfTruthCrossRefHandler = {
       }
 
       // Apply optional valueMap (used for boolean resolvers asserted as
-      // human-readable tokens like 'yes'/'no' in the target text).
-      const expected = claim.valueMap
-        ? String(claim.valueMap[String(rawResolver)] ?? rawResolver)
-        : String(rawResolver);
+      // human-readable tokens like 'yes'/'no' in the target text), then an
+      // optional numeric offset (FT-g: relative-count claims). A surface that
+      // says "all N sibling verbs" asserts total-1; "the other N verbs" after
+      // naming K verbs inline asserts total-K. The offset is added to the
+      // numeric resolver value before stringifying, so one verbCount resolver
+      // governs every relative form. A non-integer resolver value with an
+      // offset is a config error (you can't offset a version string).
+      let resolved = claim.valueMap
+        ? (claim.valueMap[String(rawResolver)] ?? rawResolver)
+        : rawResolver;
+      if (claim.offset !== undefined) {
+        const base = Number(resolved);
+        if (!Number.isInteger(base)) {
+          reports.push({
+            checkId: check.id,
+            severity: 'config-error',
+            message: `[${check.id}/${claim.id}] claim has 'offset' but resolver '${claim.resolver}' yielded a non-integer value '${resolved}' — offsets only apply to numeric (count) resolvers`,
+            hint: `Remove 'offset' from claim '${claim.id}', or point it at a count resolver (pattern-count / command-map-count).`,
+          });
+          continue;
+        }
+        resolved = base + claim.offset;
+      }
+      const expected = String(resolved);
 
       const text = readFileSync(targetAbs, 'utf8');
       const lines = text.split(/\r?\n/);
@@ -972,7 +992,153 @@ function resolveOne(spec, repoRoot) {
     }
     return count;
   }
-  throw new Error(`unknown resolver source: '${spec.source}' (known: package-json-field, package-json-publishable, pattern-count)`);
+  if (spec.source === 'command-map-count') {
+    // FT-g: count the registered verbs of a CLI dispatch table — the
+    // AUTHORITATIVE verb count — by parsing the `commands = { ... }` object
+    // literal rather than the `function cmd*` definitions. The two diverge the
+    // moment a cmd* function exists that isn't wired into the map (a private
+    // helper, a renamed-but-not-deleted handler) or a verb is registered as an
+    // alias to a shared handler (e.g. several verify-* verbs mapping to one
+    // function). The dispatch map is the contract operators reach via `swarm
+    // <verb>`; the function list is an implementation detail. Counting the map
+    // is what makes the gate track the real surface.
+    if (!spec.file) throw new Error('command-map-count resolver requires `file`');
+    if (!spec.bindingName) throw new Error('command-map-count resolver requires `bindingName` (e.g. "commands")');
+    const abs = resolve(repoRoot, spec.file);
+    if (!existsSync(abs)) throw new Error(`source file not found: ${spec.file}`);
+    const src = readFileSync(abs, 'utf8');
+    return countCommandMapEntries(src, spec.bindingName, spec.file);
+  }
+  throw new Error(`unknown resolver source: '${spec.source}' (known: package-json-field, package-json-publishable, pattern-count, command-map-count)`);
+}
+
+/**
+ * Count the top-level keys of a `const <bindingName> = { ... }` object literal
+ * in a JS source string. Used by the `command-map-count` resolver to count the
+ * registered verbs of a CLI dispatch table.
+ *
+ * Implementation: locate the binding, find the opening brace of its object
+ * literal, then walk the source tracking brace/bracket/paren depth and
+ * string/comment state so nested objects, arrays, and template literals don't
+ * confuse the boundary. Keys are counted as the identifiers/string-literals
+ * that sit at depth 1 immediately before a `:`. A trailing comma produces no
+ * phantom key because we only count a key when a `:` follows it at depth 1.
+ *
+ * This is deliberately a small purpose-built scanner rather than a full JS
+ * parser: pulling acorn/espree into a CI doc-gate would be a heavyweight dep
+ * for one resolver, and the dispatch-table shape we parse is constrained
+ * (a flat map of verb → handler). If the map ever grows computed keys or
+ * spread elements the scanner throws, which surfaces as a config-error rather
+ * than a silently-wrong count.
+ *
+ * @param {string} src         - JS source
+ * @param {string} bindingName - e.g. 'commands'
+ * @param {string} fileLabel   - for error messages
+ * @returns {number} number of keys at depth 1
+ */
+export function countCommandMapEntries(src, bindingName, fileLabel) {
+  const bindingRe = new RegExp(
+    `(?:const|let|var)\\s+${escapeRegex(bindingName)}\\s*=\\s*\\{`,
+  );
+  const m = bindingRe.exec(src);
+  if (!m) {
+    throw new Error(
+      `command-map-count: binding '${bindingName} = {' not found in ${fileLabel}`,
+    );
+  }
+  // Start scanning just after the opening brace of the object literal.
+  let i = m.index + m[0].length;
+  let depth = 1; // we're inside the object literal
+  let keyCount = 0;
+  let pendingKeyAtTopLevel = false; // saw a key token at depth 1, awaiting ':'
+  const n = src.length;
+
+  while (i < n && depth > 0) {
+    const c = src[i];
+    const c2 = src[i + 1];
+
+    // Skip line comments.
+    if (c === '/' && c2 === '/') {
+      while (i < n && src[i] !== '\n') i++;
+      continue;
+    }
+    // Skip block comments.
+    if (c === '/' && c2 === '*') {
+      i += 2;
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i++;
+      i += 2;
+      continue;
+    }
+    // Skip string / template literals wholesale. A string at depth 1 that is
+    // immediately followed (after optional whitespace) by ':' is a quoted key
+    // (e.g. 'verify-fixed': cmdVerifyFixed) — mark it pending.
+    if (c === '"' || c === "'" || c === '`') {
+      const quote = c;
+      i++;
+      while (i < n && src[i] !== quote) {
+        if (src[i] === '\\') i += 2;
+        else i++;
+      }
+      i++; // past closing quote
+      if (depth === 1) pendingKeyAtTopLevel = true;
+      continue;
+    }
+
+    if (c === '{' || c === '[' || c === '(') {
+      depth++;
+      i++;
+      continue;
+    }
+    if (c === '}' || c === ']' || c === ')') {
+      depth--;
+      i++;
+      continue;
+    }
+
+    if (depth === 1) {
+      if (c === ':') {
+        // A ':' at depth 1 confirms the most recent key token. Guard against
+        // counting a stray ':' with no preceding key (shouldn't happen in a
+        // well-formed map, but stays defensive).
+        if (pendingKeyAtTopLevel) {
+          keyCount++;
+          pendingKeyAtTopLevel = false;
+        }
+        i++;
+        continue;
+      }
+      if (c === ',') {
+        // Reset between entries. A trailing comma before `}` leaves no pending
+        // key, so it contributes nothing.
+        pendingKeyAtTopLevel = false;
+        i++;
+        continue;
+      }
+      // An identifier-start at depth 1 begins an unquoted key (e.g. `init:`).
+      if (/[A-Za-z_$]/.test(c)) {
+        // Consume the whole identifier so we don't mark every char pending.
+        i++;
+        while (i < n && /[A-Za-z0-9_$]/.test(src[i])) i++;
+        pendingKeyAtTopLevel = true;
+        continue;
+      }
+      // A spread element (`...x`) or computed key (`[expr]:`) is outside the
+      // constrained shape this resolver supports — fail loud.
+      if (c === '.' && src[i + 1] === '.' && src[i + 2] === '.') {
+        throw new Error(
+          `command-map-count: spread element in '${bindingName}' object literal in ${fileLabel} — the resolver only supports a flat verb→handler map`,
+        );
+      }
+    }
+    i++;
+  }
+
+  if (depth !== 0) {
+    throw new Error(
+      `command-map-count: unbalanced braces while scanning '${bindingName}' object literal in ${fileLabel}`,
+    );
+  }
+  return keyCount;
 }
 
 const HANDLERS = {

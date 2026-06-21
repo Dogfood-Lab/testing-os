@@ -163,6 +163,15 @@ export function buildReceipt(opts) {
       // exists for the wave (the legacy `verification: null` shape hid
       // exactly the situation the operator needs to see).
       serial_verify_required: !!wave.serial_verify_required,
+      // FT-d: persisted ownership-attribution-degraded signal. When a
+      // non-isolated amend wave narrowed its independent ownership probe to
+      // each agent's own globs, a silent cross-domain edit the agent also
+      // omits from `files_changed` is no longer independently caught. Surfacing
+      // it here makes the weakened guarantee visible to a post-hoc receipt
+      // reader who never saw the collect-time NDJSON/stdout hint. Observability
+      // only — never a gate; the operator's action is to re-dispatch with
+      // --isolate. Mirrors serial_verify_required directly above.
+      ownership_probe_degraded: !!wave.ownership_probe_degraded,
     },
     agents: agentRuns.map(ar => ({
       domain: ar.domain_name,
@@ -259,6 +268,16 @@ function formatReceiptMarkdown(r) {
   // TRUTH-003: surface the wave-level discipline signal so the operator
   // reading the receipt sees the same truth `swarm status` did.
   lines.push(`**Serial verify required:** ${r.wave.serial_verify_required ? 'yes' : 'no'}`);
+  // FT-d: render the persisted ownership-attribution-degraded signal. Like the
+  // `REQUIRED` obligation marker in the Agents table, frame the degraded state
+  // as an operator action (`DEGRADED — re-dispatch with --isolate`) rather than
+  // a neutral boolean, so the weakened ownership guarantee reads pre-attentively
+  // on a wave that ran without --isolate. The default-quiet state stays `no`.
+  lines.push(
+    `**Ownership probe:** ${
+      r.wave.ownership_probe_degraded ? 'DEGRADED — re-dispatch with --isolate for full attribution' : 'full'
+    }`,
+  );
   lines.push(`**Generated:** ${r.generated_at}`);
   lines.push('');
 

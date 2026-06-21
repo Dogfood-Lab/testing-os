@@ -135,8 +135,25 @@ jobs:
       # different lockfile shape (sorted-keys, integrity-hash format),
       # which a 24-leg can write but a 22-leg can't and vice versa. The
       # `if:` condition gates the install + diff steps to the 22 leg only.
-      - name: Lockfile-drift gate — install (Node 22 only; D4B-002)
-        if: ${{ matrix.node-version == 22 }}
+      #
+      # FT-a (Dependabot compatibility) — skip the regenerate-and-diff drift
+      # check on Dependabot PRs. The gate runs `npm install --package-lock-only`
+      # and diffs the result, which is a FULL lockfile regeneration. Dependabot
+      # commits a lockfile that it derived from a targeted single-dependency
+      # bump; a full regeneration on a different npm minor (or with transitive
+      # deps that resolved differently at PR-open time vs CI-run time) does not
+      # reproduce Dependabot's committed lockfile byte-for-byte, so the diff is
+      # non-empty and the gate fails every Dependabot npm PR (confirmed on PR
+      # #40). Dependabot already commits an internally-consistent lockfile —
+      # `npm ci` in the `npm ci` step above is the real consistency check for
+      # those PRs (it fails if package.json and the lockfile disagree). So we
+      # gate the destructive regenerate-and-diff to non-Dependabot actors.
+      # `github.actor` is the user that triggered the run; on a Dependabot PR it
+      # is `dependabot[bot]`. We also check `github.event.pull_request.user.login`
+      # so the skip holds when the workflow is re-run manually by a human (which
+      # changes github.actor) on a Dependabot-authored PR.
+      - name: Lockfile-drift gate — install (Node 22, non-Dependabot only; D4B-002 + FT-a)
+        if: ${{ matrix.node-version == 22 && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' }}
         id: lockfile_install
         run: |
           set +e
@@ -158,8 +175,15 @@ jobs:
             exit 1
           fi
           echo "skipped=false" >> "$GITHUB_OUTPUT"
-      - name: Lockfile-drift gate — diff (Node 22 only; D4B-002)
-        if: ${{ matrix.node-version == 22 && steps.lockfile_install.outputs.skipped != 'true' }}
+      # FT-a: the diff step is naturally gated on the install step having run —
+      # `steps.lockfile_install.outputs.skipped` is only ever 'false' when the
+      # install step executed, and a step skipped by its own `if:` produces an
+      # empty (falsy) outputs object, so `!= 'true'` is satisfied. To be
+      # explicit (and robust if someone later flips the install default), repeat
+      # the Dependabot guard here so the diff cannot run on a Dependabot PR even
+      # if the install step's condition is edited independently.
+      - name: Lockfile-drift gate — diff (Node 22, non-Dependabot only; D4B-002 + FT-a)
+        if: ${{ matrix.node-version == 22 && github.actor != 'dependabot[bot]' && github.event.pull_request.user.login != 'dependabot[bot]' && steps.lockfile_install.outputs.skipped != 'true' }}
         run: |
           git diff --exit-code package-lock.json || {
             echo "::error::package-lock.json drifted from package.json. Run 'npm install' locally and commit the regenerated lockfile. (This failure is a REAL lockfile mismatch — the install step succeeded, so no transient-network suspicion.)"

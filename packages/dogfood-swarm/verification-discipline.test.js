@@ -32,6 +32,7 @@ import { openDb, closeDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains } from './lib/domains.js';
 import { dispatch } from './commands/dispatch.js';
 import { collect } from './commands/collect.js';
+import { buildReceipt } from './commands/receipt.js';
 import { renderProbeDegradedAgents } from './cli.js';
 import {
   getActualTouchedFiles,
@@ -548,6 +549,154 @@ describe('d3b-collect-A-002 — non-isolated wave does not flag phantom cross-do
     const cleanReport = { agents: [{ domain: 'domain-a', status: 'complete' }] };
     assert.deepEqual(renderProbeDegradedAgents(cleanReport), [],
       'a report with no degraded agent must render zero degraded lines');
+  });
+});
+
+describe('FT-d — collect persists ownership_probe_degraded into the wave receipt', () => {
+  // The per-agent / wave-level ownership_probe_degraded note is computed in
+  // collect.js, emitted to NDJSON, and printed to collect stdout — but it was
+  // NOT persisted to the control plane, so the wave receipt and any post-hoc
+  // audit could not see that a wave ran with weakened ownership attribution.
+  // FT-d persists a wave-level waves.ownership_probe_degraded column and
+  // surfaces it on the receipt. These tests assert the round-trip:
+  // collect → DB column → buildReceipt → receipt.wave.ownership_probe_degraded.
+  let tmpDir, dbPath, repoPath;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'verif-disc-ftd-'));
+    dbPath = join(tmpDir, 'control-plane.db');
+    repoPath = join(tmpDir, 'repo');
+    mkdirSync(join(repoPath, 'packages/a/src'), { recursive: true });
+    mkdirSync(join(repoPath, 'packages/b/src'), { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repoPath });
+    execFileSync('git', ['config', 'user.email', 't@t.t'], { cwd: repoPath });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: repoPath });
+    writeFileSync(join(repoPath, 'packages/a/src/foo.js'), 'seed\n');
+    writeFileSync(join(repoPath, 'packages/b/src/baz.js'), 'seed\n');
+    execFileSync('git', ['add', '.'], { cwd: repoPath });
+    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: repoPath });
+
+    setupRun(dbPath, repoPath);
+    dispatch({ runId: RUN_ID, phase: 'health-amend-a', dbPath, outputDir: tmpDir });
+  });
+
+  afterEach(() => {
+    closeDb(dbPath);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('a NON-isolated amend wave records ownership_probe_degraded=true on the receipt', () => {
+    // Both agents edit their own files in the shared (non-isolated) worktree —
+    // every agent's independent probe is narrowed, so the wave is degraded.
+    writeFileSync(join(repoPath, 'packages/a/src/foo.js'), 'fixed by A\n');
+    writeFileSync(join(repoPath, 'packages/b/src/baz.js'), 'fixed by B\n');
+
+    const outA = join(tmpDir, 'a.json');
+    const outB = join(tmpDir, 'b.json');
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-A-001', description: 'fixed it' }],
+      files_changed: ['packages/a/src/foo.js'],
+    }));
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-B-001', description: 'fixed it' }],
+      files_changed: ['packages/b/src/baz.js'],
+    }));
+
+    const report = collect({
+      runId: RUN_ID,
+      dbPath,
+      outputs: { 'domain-a': outA, 'domain-b': outB },
+    });
+    assert.ok(report.ownership_probe_degraded,
+      'precondition: the non-isolated wave must compute a degraded signal');
+
+    // The persisted DB column must carry the signal (not just the returned
+    // object that scrolls past).
+    const db = openDb(dbPath);
+    const waveRow = db.prepare(
+      'SELECT ownership_probe_degraded FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1',
+    ).get(RUN_ID);
+    assert.equal(waveRow.ownership_probe_degraded, 1,
+      'collect must persist waves.ownership_probe_degraded=1 for a non-isolated wave');
+
+    const receipt = buildReceipt({ runId: RUN_ID, dbPath });
+    assert.equal(receipt.wave.ownership_probe_degraded, true,
+      'the receipt must surface the persisted degraded signal so a post-hoc audit sees it');
+  });
+
+  it('an ISOLATED wave records ownership_probe_degraded=false on the receipt', () => {
+    // Give each agent_run its OWN isolated worktree (`worktree_path` set) — the
+    // real `--isolate` shape, where each agent edits a private checkout. The
+    // independent probe runs at full scope per agent and sees ONLY that agent's
+    // own edit, so the degradation note is NEVER raised and the receipt must
+    // read false. Build a per-domain git worktree, each editing only its own
+    // file.
+    const wtA = join(tmpDir, 'wt-a');
+    const wtB = join(tmpDir, 'wt-b');
+    for (const [wt, rel] of [[wtA, 'packages/a/src/foo.js'], [wtB, 'packages/b/src/baz.js']]) {
+      mkdirSync(join(wt, 'packages/a/src'), { recursive: true });
+      mkdirSync(join(wt, 'packages/b/src'), { recursive: true });
+      execFileSync('git', ['init', '-q'], { cwd: wt });
+      execFileSync('git', ['config', 'user.email', 't@t.t'], { cwd: wt });
+      execFileSync('git', ['config', 'user.name', 't'], { cwd: wt });
+      writeFileSync(join(wt, 'packages/a/src/foo.js'), 'seed\n');
+      writeFileSync(join(wt, 'packages/b/src/baz.js'), 'seed\n');
+      execFileSync('git', ['add', '.'], { cwd: wt });
+      execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: wt });
+      // Each isolated worktree edits ONLY its own domain's file.
+      writeFileSync(join(wt, rel), 'fixed in isolation\n');
+    }
+
+    const db = openDb(dbPath);
+    const waveId = db.prepare(
+      'SELECT id FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1',
+    ).get(RUN_ID).id;
+    const arRows = db.prepare(`
+      SELECT ar.id, d.name AS domain
+      FROM agent_runs ar JOIN domains d ON ar.domain_id = d.id
+      WHERE ar.wave_id = ?
+    `).all(waveId);
+    const setWt = db.prepare('UPDATE agent_runs SET worktree_path = ? WHERE id = ?');
+    for (const ar of arRows) setWt.run(ar.domain === 'domain-a' ? wtA : wtB, ar.id);
+    closeDb(dbPath);
+
+    const outA = join(tmpDir, 'a.json');
+    const outB = join(tmpDir, 'b.json');
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-A-001', description: 'fixed it' }],
+      files_changed: ['packages/a/src/foo.js'],
+    }));
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-B-001', description: 'fixed it' }],
+      files_changed: ['packages/b/src/baz.js'],
+    }));
+
+    const report = collect({
+      runId: RUN_ID,
+      dbPath,
+      outputs: { 'domain-a': outA, 'domain-b': outB },
+    });
+    assert.equal(report.ownership_probe_degraded, null,
+      'precondition: an isolated wave must NOT compute a degraded signal');
+
+    const db2 = openDb(dbPath);
+    const waveRow = db2.prepare(
+      'SELECT ownership_probe_degraded FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1',
+    ).get(RUN_ID);
+    assert.equal(waveRow.ownership_probe_degraded, 0,
+      'an isolated wave must leave waves.ownership_probe_degraded at its 0 default');
+
+    const receipt = buildReceipt({ runId: RUN_ID, dbPath });
+    assert.equal(receipt.wave.ownership_probe_degraded, false,
+      'the receipt of an isolated wave must record ownership_probe_degraded=false');
   });
 });
 

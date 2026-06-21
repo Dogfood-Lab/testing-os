@@ -776,6 +776,16 @@ export function collect(opts) {
   if (report.serial_verify_required) {
     db.prepare('UPDATE waves SET serial_verify_required = 1 WHERE id = ?').run(wave.id);
   }
+  // FT-d: persist the wave-level ownership-attribution-degraded signal so the
+  // receipt and any post-hoc audit see that this wave ran with a narrowed
+  // ownership probe. `report.ownership_probe_degraded` is non-null iff at least
+  // one agent's independent probe was restricted for lack of --isolate (set in
+  // the per-agent loop above). Persisted independently of the state machine,
+  // exactly like serial_verify_required — it is a discipline signal, not a
+  // wave-status concern, and must outlive the collect-time stdout/NDJSON hint.
+  if (report.ownership_probe_degraded) {
+    db.prepare('UPDATE waves SET ownership_probe_degraded = 1 WHERE id = ?').run(wave.id);
+  }
 
   // Generate summary
   report.summary = buildSummary(db, opts.runId, wave, report);

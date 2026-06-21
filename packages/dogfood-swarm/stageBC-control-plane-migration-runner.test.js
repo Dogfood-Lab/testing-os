@@ -238,6 +238,71 @@ describe('F4-CP-04 — ordered/versioned control-plane migration-runner', () => 
     });
   });
 
+  describe('FT-d — v7 waves.ownership_probe_degraded migration', () => {
+    it('a fresh DB has the waves.ownership_probe_degraded column after migrate', () => {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(SCHEMA_SQL);
+      migrateDb(db, 0);
+      assert.ok(
+        tableColumns(db, 'waves').includes('ownership_probe_degraded'),
+        'the v7 migration must add waves.ownership_probe_degraded',
+      );
+      // The ledger records the v7 migration as applied.
+      const row = ledgerRows(db).find((r) => r.migration_id === 'v7-waves-ownership-probe-degraded');
+      assert.ok(row, 'the v7 migration must be recorded in the ledger');
+      assert.equal(row.target_version, SCHEMA_VERSION);
+      db.close();
+    });
+
+    it('a pre-v7 DB (no ownership_probe_degraded column, no ledger) bootstraps the older migrations and APPLIES v7', () => {
+      // Simulate a DB written by a build at SCHEMA_VERSION 6: apply SCHEMA_SQL
+      // but DROP the new column so the table is at its pre-FT-d shape, apply
+      // every flat migration EXCEPT the v7 one, and remove the ledger. The
+      // runner must bootstrap the already-present older artifacts AND actually
+      // run (apply, not bootstrap) the v7 ADD COLUMN.
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(SCHEMA_SQL);
+      // Roll the waves table back to its pre-v7 shape. SQLite supports
+      // DROP COLUMN (>=3.35); better-sqlite3 ships a modern SQLite.
+      db.exec('ALTER TABLE waves DROP COLUMN ownership_probe_degraded');
+      assert.ok(
+        !tableColumns(db, 'waves').includes('ownership_probe_degraded'),
+        'precondition: the v7 column must be absent',
+      );
+      // Apply every flat migration except the v7 ADD COLUMN the old way.
+      for (const sql of MIGRATIONS_SQL.slice(0, -1)) {
+        try { db.exec(sql); } catch (e) {
+          if (!e.message.includes('duplicate column')) throw e;
+        }
+      }
+      db.prepare("INSERT OR REPLACE INTO kv (key, value) VALUES ('schema_version', ?)").run('6');
+      db.exec('DROP TABLE IF EXISTS migrations_ledger');
+
+      const plan = migrateDb(db, 6);
+
+      // The column now exists.
+      assert.ok(
+        tableColumns(db, 'waves').includes('ownership_probe_degraded'),
+        'migrate must add the v7 column to a pre-v7 DB',
+      );
+      // The v7 migration was APPLIED (column was missing), the rest bootstrapped.
+      assert.ok(
+        plan.applied.some((m) => m.id === 'v7-waves-ownership-probe-degraded'),
+        'the v7 migration must be APPLIED (not bootstrapped) when the column is missing',
+      );
+      const v7Bootstrapped = plan.bootstrapped.some((m) => m.id === 'v7-waves-ownership-probe-degraded');
+      assert.ok(!v7Bootstrapped, 'v7 must not be bootstrapped when its column was absent');
+      // The whole ledger is seeded; a second run is a pure no-op.
+      assert.equal(ledgerRows(db).length, MIGRATIONS_MANIFEST.length);
+      const plan2 = migrateDb(db, SCHEMA_VERSION);
+      assert.equal(plan2.applied.length, 0);
+      assert.equal(plan2.bootstrapped.length, 0);
+      db.close();
+    });
+  });
+
   describe('openMemoryDb / openDb continue to produce a fully-migrated DB', () => {
     it('openMemoryDb has all migrated columns + a full ledger', () => {
       const db = openMemoryDb();

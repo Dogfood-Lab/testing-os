@@ -4,8 +4,13 @@
   "type": "module",
   "description": "Central verifier for testing-os. Validates submissions against schema and policy, produces persisted records.",
   "main": "index.js",
+  "bin": {
+    "dogfood-verify": "cli.js"
+  },
   "exports": {
     ".": "./index.js",
+    "./cli.js": "./cli.js",
+    "./parse-rejection.js": "./parse-rejection.js",
     "./validators/*": "./validators/*",
     "./validators/*.js": "./validators/*.js"
   },
@@ -15,6 +20,8 @@
   },
   "files": [
     "index.js",
+    "cli.js",
+    "parse-rejection.js",
     "validators/",
     "README.md",
     "LICENSE"

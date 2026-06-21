@@ -12,7 +12,7 @@
  *   node tools/portfolio/generate.js --output /tmp/portfolio.json
  */
 
-import { readFileSync, writeFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs';
+import { readFileSync, readdirSync, mkdirSync, existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createRequire } from 'node:module';
@@ -20,6 +20,15 @@ import yaml from 'js-yaml';
 
 import { computeTrends } from './lib/compute-trends.js';
 import { generateBadges } from './lib/generate-badges.js';
+// FT-f — the served trends/badges artifacts go out under the same temp+rename
+// discipline the rest of testing-os uses for indexes/, so a torn write never
+// leaves a half-written endpoint JSON that a consumer's shields.io fetch (or the
+// raw.githubusercontent.com read API) would choke on. atomicWriteFileSync is the
+// extracted leaf helper from @dogfood-lab/findings; reaching it via the
+// `./lib/*` subpath export (not the package root) keeps this a single-purpose
+// cross-package edge, the same seam discipline the dependency-graph cycle note
+// in CLAUDE.md prescribes. portfolio is not in that cycle, so this adds no new one.
+import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 
 // d3-ingest-B002 (Stage C humanization) — PORTFOLIO_REPO_ROOT lets a test
 // harness redirect every read/write (INDEX_PATH, POLICIES_ROOT, the output
@@ -40,9 +49,15 @@ const INDEX_PATH = join(ROOT, 'indexes', 'latest-by-repo.json');
 // dropped dogfood-lab/* repos from the portfolio.
 const POLICIES_ROOT = join(ROOT, 'policies', 'repos');
 const DEFAULT_OUTPUT = join(ROOT, 'reports', 'dogfood-portfolio.json');
-// F3-001 / F5-04 — runtime artifacts emitted alongside the portfolio report.
-// Both are git-ignored (root .gitignore) so a local `generate` never dirties
-// the working tree; the committed deliverable is the GENERATOR, not a snapshot.
+// F3-001 / F5-04 / FT-f — read-API artifacts SERVED out of indexes/ alongside
+// latest-by-repo.json. indexes/ is the committed shared backing store consumers
+// read over raw.githubusercontent.com/dogfood-lab/testing-os/main/...; these two
+// surfaces (the trend/regression history and the per-repo+surface shields.io
+// endpoints) are the served read API for trends + badges. They were previously
+// git-ignored (the deliverable was framed as the GENERATOR, not a snapshot), but
+// an endpoint that is computed and never committed cannot be fetched by a README
+// badge or a dashboard — FT-f redirects them to the served location. The
+// matching .gitignore entries are removed by the ci-tooling agent so they commit.
 const TRENDS_OUTPUT = join(ROOT, 'indexes', 'trends.json');
 const BADGES_DIR = join(ROOT, 'indexes', 'badges');
 
@@ -380,12 +395,12 @@ function main() {
   const outputDir = join(outputPath, '..');
   if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true });
 
-  writeFileSync(outputPath, JSON.stringify(portfolio, null, 2) + '\n');
+  atomicWriteFileSync(outputPath, JSON.stringify(portfolio, null, 2) + '\n');
 
   if (emitTrends) {
     const trendsDir = join(TRENDS_OUTPUT, '..');
     if (!existsSync(trendsDir)) mkdirSync(trendsDir, { recursive: true });
-    writeFileSync(TRENDS_OUTPUT, JSON.stringify(trends, null, 2) + '\n');
+    atomicWriteFileSync(TRENDS_OUTPUT, JSON.stringify(trends, null, 2) + '\n');
   }
 
   // F5-04 — emit one shields.io endpoint JSON per repo+surface so any repo
@@ -396,7 +411,7 @@ function main() {
     const badges = generateBadges(index);
     if (!existsSync(BADGES_DIR)) mkdirSync(BADGES_DIR, { recursive: true });
     for (const [filename, endpoint] of Object.entries(badges)) {
-      writeFileSync(join(BADGES_DIR, filename), JSON.stringify(endpoint, null, 2) + '\n');
+      atomicWriteFileSync(join(BADGES_DIR, filename), JSON.stringify(endpoint, null, 2) + '\n');
       badgeCount++;
     }
   }

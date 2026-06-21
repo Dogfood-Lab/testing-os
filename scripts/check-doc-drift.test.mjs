@@ -24,7 +24,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runDriftChecks, expandGlobs, REGISTERED_HANDLERS, parseCheckId } from './check-doc-drift.mjs';
+import { runDriftChecks, expandGlobs, REGISTERED_HANDLERS, parseCheckId, countCommandMapEntries } from './check-doc-drift.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
@@ -1818,4 +1818,264 @@ test('parseCheckId: `--check` immediately followed by another flag returns an er
   const result = parseCheckId(['--check', '--json']);
   assert.equal(result.checkId, undefined);
   assert.match(result.error, /--check requires a check id/);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// FT-g: command-map-count resolver + relative-offset claims.
+//
+// The verbCount resolver used to count `^function cmd[A-Z]` definitions, which
+// is NOT the authoritative verb count — the authority is the keys of the
+// `commands = { ... }` dispatch map in packages/dogfood-swarm/cli.js. The two
+// happen to agree today (23 == 23), but they diverge the moment a cmd*
+// function exists that isn't wired into the map, or two verbs alias one
+// handler. These tests pin the resolver to the map and exercise the
+// relative-count claims (sibling = total-1, "the other N" = total-K).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('FT-g: countCommandMapEntries counts the real cli.js commands map as 23', () => {
+  const cliSrc = readFileSync(
+    resolve(repoRoot, 'packages/dogfood-swarm/cli.js'),
+    'utf8',
+  );
+  assert.equal(
+    countCommandMapEntries(cliSrc, 'commands', 'packages/dogfood-swarm/cli.js'),
+    23,
+    'The authoritative verb count is the key count of the `commands` dispatch map. ' +
+      'If this changed, every prose surface stating the count (and its offsets) must follow.',
+  );
+});
+
+test('FT-g: command-map-count counts map keys, not cmd* function definitions', () => {
+  // A source where the cmd*-function count and the map-key count DIVERGE:
+  // 4 cmd functions defined, but only 3 wired into the map (cmdOrphan is a
+  // private helper), plus one quoted alias key. The old `^function cmd[A-Z]`
+  // resolver would report 4; the authoritative map count is 3.
+  const src = [
+    'function cmdAlpha() {}',
+    'function cmdBeta() {}',
+    'function cmdGamma() {}',
+    'function cmdOrphan() {}', // defined but NOT registered
+    'const commands = {',
+    '  alpha: cmdAlpha,',
+    "  'beta-verb': cmdBeta,", // quoted key with a hyphen
+    '  gamma: cmdGamma,', // trailing comma — must not produce a phantom key
+    '};',
+  ].join('\n');
+  assert.equal(
+    countCommandMapEntries(src, 'commands', 'fixture.js'),
+    3,
+    'Only registered verbs count. cmdOrphan is defined but unwired; a trailing ' +
+      'comma must not inflate the count; quoted hyphenated keys must count.',
+  );
+});
+
+test('FT-g: command-map-count ignores braces/commas inside nested values and comments', () => {
+  const src = [
+    'const commands = {',
+    '  a: makeHandler({ retries: 3, tags: ["x", "y"] }),', // nested object + array
+    '  b: cmdB, // inline comment with a stray : colon and , comma',
+    '  /* block , comment : with punctuation */',
+    "  c: () => ({ ok: true }),", // arrow returning an object literal
+    '};',
+  ].join('\n');
+  assert.equal(
+    countCommandMapEntries(src, 'commands', 'fixture.js'),
+    3,
+    'Nested object/array literals, arrow-returned objects, and punctuation ' +
+      'inside comments must not be miscounted as top-level keys.',
+  );
+});
+
+test('FT-g: command-map-count throws on a missing binding (surfaces as config-error)', () => {
+  assert.throws(
+    () => countCommandMapEntries('const other = { a: 1 };', 'commands', 'fixture.js'),
+    /binding 'commands = \{' not found/,
+  );
+});
+
+test('FT-g: command-map-count resolver wires into source-of-truth-cross-ref and matches a current claim', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  fx.write('packages/dogfood-swarm/cli.js', [
+    'function cmdA() {}',
+    'function cmdB() {}',
+    'function cmdC() {}',
+    'function cmdHidden() {}', // unwired helper — old resolver would have counted 4
+    'const commands = {',
+    '  a: cmdA,',
+    '  b: cmdB,',
+    '  c: cmdC,',
+    '};',
+  ].join('\n'));
+  fx.write('SHIP_GATE.md', '- [x] `swarm` bin documents its 3 subcommands\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        verbCount: { source: 'command-map-count', file: 'packages/dogfood-swarm/cli.js', bindingName: 'commands' },
+      },
+      claims: [{
+        id: 'ship-gate-verb-count',
+        target: 'SHIP_GATE.md',
+        pattern: '`swarm` bin documents its (\\d+) subcommands',
+        captureGroup: 1,
+        resolver: 'verbCount',
+        title: 'SHIP_GATE swarm-verb count',
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('FT-g META: a deliberately-wrong verb count is caught (drift surfaces 3 vs 99)', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  fx.write('packages/dogfood-swarm/cli.js', [
+    'const commands = {',
+    '  a: cmdA,',
+    '  b: cmdB,',
+    '  c: cmdC,',
+    '};',
+  ].join('\n'));
+  fx.write('SHIP_GATE.md', '- [x] `swarm` bin documents its 99 subcommands\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        verbCount: { source: 'command-map-count', file: 'packages/dogfood-swarm/cli.js', bindingName: 'commands' },
+      },
+      claims: [{
+        id: 'ship-gate-verb-count',
+        target: 'SHIP_GATE.md',
+        pattern: '`swarm` bin documents its (\\d+) subcommands',
+        captureGroup: 1,
+        resolver: 'verbCount',
+      }],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  const drift = result.reports.find((r) => r.severity === 'drift');
+  assert.ok(drift, 'expected a drift report');
+  assert.match(drift.message, /99.*3|3.*99/, 'drift must surface both the asserted and the resolved counts');
+});
+
+test('FT-g: relative-offset claims resolve total-1 (sibling) and total-K (other) correctly', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  // 5 registered verbs.
+  fx.write('packages/dogfood-swarm/cli.js', [
+    'const commands = {',
+    '  a: cmdA, b: cmdB, c: cmdC, d: cmdD, e: cmdE,',
+    '};',
+  ].join('\n'));
+  fx.write('total.md', 'all 5 verbs\n');
+  fx.write('sibling.md', 'all 4 sibling verbs\n');     // total - 1
+  fx.write('other.md', 'and the other 3 verbs\n');     // total - 2
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        verbCount: { source: 'command-map-count', file: 'packages/dogfood-swarm/cli.js', bindingName: 'commands' },
+      },
+      claims: [
+        { id: 'total', target: 'total.md', pattern: 'all (\\d+) verbs', captureGroup: 1, resolver: 'verbCount' },
+        { id: 'sibling', target: 'sibling.md', pattern: 'all (\\d+) sibling verbs', captureGroup: 1, resolver: 'verbCount', offset: -1 },
+        { id: 'other', target: 'other.md', pattern: 'and the other (\\d+) verbs', captureGroup: 1, resolver: 'verbCount', offset: -2 },
+      ],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('FT-g META: a wrong offset value drifts (sibling says total instead of total-1)', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  fx.write('packages/dogfood-swarm/cli.js', [
+    'const commands = {',
+    '  a: cmdA, b: cmdB, c: cmdC, d: cmdD, e: cmdE,',
+    '};',
+  ].join('\n'));
+  // Says "all 5 sibling verbs" but the resolver-with-offset expects 4.
+  fx.write('sibling.md', 'all 5 sibling verbs\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        verbCount: { source: 'command-map-count', file: 'packages/dogfood-swarm/cli.js', bindingName: 'commands' },
+      },
+      claims: [
+        { id: 'sibling', target: 'sibling.md', pattern: 'all (\\d+) sibling verbs', captureGroup: 1, resolver: 'verbCount', offset: -1 },
+      ],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  const drift = result.reports.find((r) => r.severity === 'drift');
+  assert.ok(drift, 'expected a drift report');
+  assert.match(drift.message, /'5'.*'4'|'4'.*'5'/, 'drift must surface the asserted (5) vs the offset-resolved (4) value');
+});
+
+test('FT-g: offset on a non-numeric resolver value reports config-error', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('package.json', JSON.stringify({ name: 'fx', version: '9.9.9' }, null, 2));
+  fx.write('doc.md', 'version 9.9.8\n');
+  const cfg = fx.config({
+    checks: [{
+      id: 'sot',
+      kind: 'source-of-truth-cross-ref',
+      title: 'sot',
+      resolvers: {
+        version: { source: 'package-json-field', file: 'package.json', path: 'version' },
+      },
+      claims: [
+        // Offset on a version string is nonsensical — must be a config-error.
+        { id: 'bad', target: 'doc.md', pattern: 'version ([0-9.]+)', captureGroup: 1, resolver: 'version', offset: -1 },
+      ],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  const cfgErr = result.reports.find((r) => r.severity === 'config-error');
+  assert.ok(cfgErr, 'expected a config-error report');
+  assert.match(cfgErr.message, /offset.*non-integer|non-integer.*offset/i);
+});
+
+test('FT-g LIVE: the real config\'s verbCount resolver uses command-map-count, not pattern-count', async () => {
+  const config = JSON.parse(
+    readFileSync(resolve(repoRoot, 'scripts/doc-drift-patterns.json'), 'utf8'),
+  );
+  const sot = config.checks.find((c) => c.id === 'source-of-truth-cross-ref');
+  assert.ok(sot, 'source-of-truth-cross-ref check must exist');
+  assert.equal(
+    sot.resolvers.verbCount.source,
+    'command-map-count',
+    'FT-g: the verbCount resolver must count the `commands` dispatch map, not `function cmd*` definitions. ' +
+      'The two can diverge; the map is the authoritative surface.',
+  );
+  assert.equal(sot.resolvers.verbCount.bindingName, 'commands');
+
+  // The four prose surfaces FT-g extended coverage to must each have a claim.
+  const claimTargets = sot.claims.map((c) => c.target);
+  for (const surface of [
+    'site/src/content/docs/handbook/index.md',
+    'site/src/content/docs/handbook/cli-reference.md',
+    'site/src/content/docs/handbook/swarm-history.md',
+    'site/src/content/docs/handbook/operating-guide.md',
+  ]) {
+    assert.ok(
+      claimTargets.includes(surface),
+      `FT-g: ${surface} states the verb count and must be guarded by a verbCount claim.`,
+    );
+  }
 });

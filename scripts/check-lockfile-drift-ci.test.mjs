@@ -46,22 +46,58 @@ test('ci.yml exists', () => {
 
 test('D4B-002: lockfile-drift gate is pinned to Node 22 only (not run on every matrix leg)', () => {
   const text = readFileSync(ciPath, 'utf8');
-  // The fix expresses the pin via `if: ${{ matrix.node-version == 22 }}`.
-  // Accept either the spaced or unspaced canonical form; the load-bearing
-  // assertion is the matrix.node-version comparison gate on the install /
-  // diff steps. Pin both steps independently so a future re-split also
-  // ships the gate.
-  const installIf = /Lockfile-drift gate — install[\s\S]{0,400}?if:\s*\$\{\{\s*matrix\.node-version\s*==\s*22\s*\}\}/;
-  const diffIf = /Lockfile-drift gate — diff[\s\S]{0,400}?if:\s*\$\{\{\s*matrix\.node-version\s*==\s*22[\s\S]{0,200}?\}\}/;
+  // The fix expresses the pin via `if: ${{ matrix.node-version == 22 ... }}`.
+  // FT-a appended a Dependabot-actor guard to the same condition, so the
+  // matrix gate is no longer immediately followed by `}}` — match the
+  // `matrix.node-version == 22` token up to the closing `}}` of the `if:`
+  // expression. The load-bearing assertion is that both steps carry the
+  // Node-22 pin; the trailing-content tolerance lets the Dependabot guard
+  // (or any future additive condition) coexist without breaking the pin.
+  const installIf = /Lockfile-drift gate — install[\s\S]{0,400}?if:\s*\$\{\{\s*matrix\.node-version\s*==\s*22[\s\S]{0,300}?\}\}/;
+  const diffIf = /Lockfile-drift gate — diff[\s\S]{0,400}?if:\s*\$\{\{\s*matrix\.node-version\s*==\s*22[\s\S]{0,300}?\}\}/;
   assert.match(
     text,
     installIf,
-    'Lockfile-drift gate install step must carry `if: ${{ matrix.node-version == 22 }}` — otherwise the gate runs on every matrix leg and risks phantom drift from npm-version differences (Node 22 ships npm 10.9; Node 24 ships npm 11.x).',
+    'Lockfile-drift gate install step must carry `if: ${{ matrix.node-version == 22 ... }}` — otherwise the gate runs on every matrix leg and risks phantom drift from npm-version differences (Node 22 ships npm 10.9; Node 24 ships npm 11.x).',
   );
   assert.match(
     text,
     diffIf,
     'Lockfile-drift gate diff step must also be Node-22-only — otherwise diff runs on the 24 leg without a fresh install of the lockfile from this run.',
+  );
+});
+
+test('FT-a: lockfile-drift gate skips Dependabot PRs (both install and diff steps)', () => {
+  const text = readFileSync(ciPath, 'utf8');
+  // The drift gate does a FULL `npm install --package-lock-only` regeneration
+  // and diffs it. Dependabot commits a lockfile derived from a targeted
+  // single-dep bump that a full regeneration does not reproduce byte-for-byte,
+  // so the gate failed every Dependabot npm PR (confirmed on PR #40). The fix
+  // guards both steps with a Dependabot-actor check. `npm ci` (run earlier and
+  // unconditionally) is the real lockfile-vs-manifest consistency check that
+  // still covers Dependabot PRs, so skipping the regenerate-and-diff loses no
+  // safety for them.
+  const installGuard = /Lockfile-drift gate — install[\s\S]{0,400}?if:\s*\$\{\{[\s\S]{0,200}?github\.actor\s*!=\s*'dependabot\[bot\]'/;
+  const diffGuard = /Lockfile-drift gate — diff[\s\S]{0,400}?if:\s*\$\{\{[\s\S]{0,300}?github\.actor\s*!=\s*'dependabot\[bot\]'/;
+  assert.match(
+    text,
+    installGuard,
+    "Lockfile-drift install step must skip when `github.actor != 'dependabot[bot]'` — a full lockfile regeneration cannot reproduce Dependabot's targeted-bump lockfile, so the gate produced false failures on every Dependabot npm PR.",
+  );
+  assert.match(
+    text,
+    diffGuard,
+    "Lockfile-drift diff step must carry the same `github.actor != 'dependabot[bot]'` guard so it cannot run on a Dependabot PR even if the install step's condition is edited independently.",
+  );
+
+  // The PR-author guard (`github.event.pull_request.user.login`) keeps the
+  // skip in force when a human re-runs the workflow on a Dependabot-authored
+  // PR — a manual re-run changes github.actor to the human, but the PR author
+  // is still dependabot[bot].
+  assert.match(
+    text,
+    /github\.event\.pull_request\.user\.login\s*!=\s*'dependabot\[bot\]'/,
+    "The gate must also check `github.event.pull_request.user.login != 'dependabot[bot]'` so a manual re-run by a human on a Dependabot PR (which changes github.actor) still skips the destructive regenerate-and-diff.",
   );
 });
 

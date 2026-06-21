@@ -5,7 +5,7 @@
  * artifacts, findings, finding_events, verification_receipts, kv.
  */
 
-export const SCHEMA_VERSION = 6;
+export const SCHEMA_VERSION = 7;
 
 export const SCHEMA_SQL = `
 -- ───────────────────────────────────────────
@@ -41,6 +41,17 @@ CREATE TABLE IF NOT EXISTS waves (
   -- landed. Persistence so the discipline signal does not disappear when the
   -- collect-time stdout hint scrolls past.
   serial_verify_required INTEGER NOT NULL DEFAULT 0,
+  -- FT-d: ownership-attribution-degraded signal. Set by collect.js when a
+  -- NON-isolated amend wave narrowed each agent's independent git ownership
+  -- probe to its own domain globs (a shared-worktree diff cannot be attributed
+  -- per-agent). The per-agent and wave-level ownership_probe_degraded notes
+  -- were emitted to NDJSON + collect stdout but never persisted, so the wave
+  -- receipt and any post-hoc audit could not see that the wave ran with
+  -- weakened ownership attribution. This column is the durable record; the
+  -- receipt surfaces it as wave.ownership_probe_degraded. Observability only
+  -- — never a gate (matches the collect-time semantics). Mirrors the
+  -- serial_verify_required persistence pattern directly above.
+  ownership_probe_degraded INTEGER NOT NULL DEFAULT 0,
   created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
   completed_at           TEXT,
   UNIQUE(run_id, wave_number)
@@ -345,6 +356,13 @@ export const MIGRATIONS_SQL = [
   // control-plane.db audited at swarm-v131-pre held zero findings, so the
   // ungated rollout is safe in practice.
   "CREATE UNIQUE INDEX IF NOT EXISTS idx_findings_run_finding_id ON findings(run_id, finding_id)",
+  // FT-d (target_version 7): waves: persisted ownership-attribution-degraded
+  // signal. Mirrors serial_verify_required — collect.js sets it to 1 when a
+  // non-isolated amend wave narrowed its independent ownership probe, so the
+  // receipt and post-hoc audit can see the weakened guarantee after the
+  // collect-time NDJSON/stdout hint scrolls past. Default 0 keeps every
+  // existing row (isolated waves, audit waves) at the un-degraded baseline.
+  "ALTER TABLE waves ADD COLUMN ownership_probe_degraded INTEGER NOT NULL DEFAULT 0",
 ];
 
 /**
@@ -391,6 +409,8 @@ export const MIGRATIONS_MANIFEST = [
   { id: 'v5-wave-state-events-index',       target_version: 5, sql: MIGRATIONS_SQL[11] },
   // D3B-006 finding-id uniqueness index (target_version 6)
   { id: 'v6-findings-run-finding-id-unique',target_version: 6, sql: MIGRATIONS_SQL[12] },
+  // FT-d ownership-probe-degraded receipt signal (target_version 7)
+  { id: 'v7-waves-ownership-probe-degraded', target_version: 7, sql: MIGRATIONS_SQL[13] },
 ];
 
 /**
