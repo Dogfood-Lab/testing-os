@@ -1,0 +1,22 @@
+[
+  {
+    "scenario_id": "cli-smoke",
+    "scenario_name": "CLI builds and runs --help",
+    "scenario_version": "1.0.0",
+    "product_surface": "cli",
+    "execution_mode": "bot",
+    "verdict": "pass",
+    "notes": "Bot-driven build + --help smoke check in CI.",
+    "step_results": [
+      { "step_id": "build", "status": "pass" },
+      { "step_id": "help-exits-zero", "status": "pass" }
+    ],
+    "evidence": [
+      {
+        "kind": "log",
+        "description": "CI run log with build + smoke output",
+        "url": "https://github.com/your-org/your-repo/actions/runs/REPLACE_WITH_RUN_ID"
+      }
+    ]
+  }
+]

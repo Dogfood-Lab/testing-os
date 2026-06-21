@@ -5,12 +5,14 @@
   "description": "Submission builder for testing-os — turns swarm/run results into the JSON envelope expected by the verifier.",
   "main": "build-submission.js",
   "bin": {
-    "dogfood-report": "cli.js"
+    "dogfood-report": "cli.js",
+    "dogfood-init": "init.js"
   },
   "exports": {
     ".": "./build-submission.js",
     "./build-submission.js": "./build-submission.js",
-    "./cli.js": "./cli.js"
+    "./cli.js": "./cli.js",
+    "./init.js": "./init.js"
   },
   "scripts": {
     "test": "node --test"
@@ -18,6 +20,8 @@
   "files": [
     "build-submission.js",
     "cli.js",
+    "init.js",
+    "templates/",
     "README.md",
     "LICENSE"
   ],
