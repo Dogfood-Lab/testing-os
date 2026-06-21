@@ -28,6 +28,21 @@ import { join } from 'node:path';
 import { computeTrends } from './compute-trends.js';
 
 /**
+ * Write a raw (non-JSON) record file at the dated path, simulating a corrupt /
+ * truncated record on disk. JSON.parse throws on this content, exercising the
+ * per-record tolerance path.
+ */
+function writeCorruptRecord(repoRoot, { repo, runId, finishedAt }) {
+  const date = new Date(finishedAt);
+  const yyyy = String(date.getUTCFullYear());
+  const mm = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(date.getUTCDate()).padStart(2, '0');
+  const base = join(repoRoot, 'records', repo, yyyy, mm, dd);
+  mkdirSync(base, { recursive: true });
+  writeFileSync(join(base, `run-${runId}.json`), '{ this is not valid json');
+}
+
+/**
  * Write a single record file into a temp records/ tree at the dated path the
  * real pipeline uses: records/<org>/<repo>/YYYY/MM/DD/run-<id>.json.
  */
@@ -305,6 +320,58 @@ describe('computeTrends — record selection', () => {
         `latest_path must be forward-slash only, got: ${surf.latest_path}`);
       assert.ok(surf.latest_path.startsWith('records/'),
         `latest_path should be repo-root-relative, got: ${surf.latest_path}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('computeTrends — skip tally (observability)', () => {
+  it('accumulates a non-zero corrupt-record tally into an injected skipTally', () => {
+    const root = tmpRoot();
+    const warnings = [];
+    const origWarn = console.warn;
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      // One good record so a trend still materializes, plus one corrupt sibling
+      // whose JSON.parse throws. Pre-fix the corrupt record was silently
+      // continue'd with no count and no warn.
+      writeRecord(root, { repo: 'org/skip', runId: 'good', surface: 'cli', verified: 'pass', finishedAt: '2026-03-01T10:00:00Z' });
+      writeCorruptRecord(root, { repo: 'org/skip', runId: 'corrupt', finishedAt: '2026-03-02T10:00:00Z' });
+
+      const skipTally = {};
+      const trends = computeTrends(root, { skipTally });
+
+      // The good record still produced a trend — degradation is graceful.
+      assert.equal(trends['org/skip'].cli.history.length, 1);
+      assert.equal(trends['org/skip'].cli.history[0].run_id, 'good');
+
+      // The corrupt record is now COUNTED, not silently dropped.
+      assert.equal(skipTally.corruptRecords, 1, 'one corrupt record must be tallied');
+      assert.ok(Array.isArray(skipTally.corruptRecordPaths), 'offending paths are recorded');
+      assert.equal(skipTally.corruptRecordPaths.length, 1);
+      assert.ok(skipTally.corruptRecordPaths[0].includes('corrupt'),
+        'the offending path names the corrupt file');
+
+      // And it WARNS, mirroring loadPolicies' per-skipped-file warn.
+      assert.ok(
+        warnings.some((w) => w.includes('corrupt') && w.includes('portfolio')),
+        `expected a portfolio warn naming the corrupt record, got: ${JSON.stringify(warnings)}`
+      );
+    } finally {
+      console.warn = origWarn;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a zero corrupt tally for a clean corpus (skipTally is always populated)', () => {
+    const root = tmpRoot();
+    try {
+      writeRecord(root, { repo: 'org/clean', runId: 'c-1', surface: 'cli', verified: 'pass', finishedAt: '2026-03-01T10:00:00Z' });
+      const skipTally = {};
+      computeTrends(root, { skipTally });
+      assert.equal(skipTally.corruptRecords, 0);
+      assert.equal(skipTally.unreadableSubtrees, 0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

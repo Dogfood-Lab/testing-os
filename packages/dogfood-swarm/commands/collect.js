@@ -591,6 +591,22 @@ export function collect(opts) {
             'Re-dispatch with --isolate for full cross-domain attribution.',
         };
         ownershipDegradedDomains.push(domain.name);
+        // swarm-cli-B-001 (Stage C carry-over): emit a structured event at the
+        // exact point the per-agent guarantee is weakened, mirroring the
+        // transition_skipped / agent_output_invalid logStage pattern in this
+        // file. Before this, the degradation reached the returned object but
+        // NO NDJSON line — an operator tailing stderr couldn't grep the
+        // weakened-attribution moment that --isolate would have closed.
+        logStage('ownership_probe_degraded', {
+          correlation_id: mintCorrelationId(),
+          domain: domain.name,
+          runId: opts.runId,
+          waveId: wave.id,
+          waveNumber: wave.wave_number,
+          isolated: false,
+          reason: 'probe_restricted_to_domain_globs',
+          remediation: '--isolate',
+        });
       }
 
       if (filesForOwnership.length > 0) {

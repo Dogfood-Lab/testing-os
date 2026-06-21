@@ -368,7 +368,13 @@ function main() {
   // (generatePortfolio only sees the collapsed latest-by-repo index, so it
   // cannot express a trend). Merge it into the report under `trends` and,
   // unless opted out, emit indexes/trends.json (git-ignored runtime artifact).
-  const trends = computeTrends(ROOT);
+  //
+  // d3-portfolio-B001 — capture computeTrends' degradation tally so the summary
+  // below can report how many records the trend scan had to exclude. A partial
+  // trend that reads "no regressions" is dangerous if the operator can't see it
+  // skipped corrupt records or an unreadable subtree.
+  const trendSkips = {};
+  const trends = computeTrends(ROOT, { skipTally: trendSkips });
   portfolio.trends = trends;
 
   const outputDir = join(outputPath, '..');
@@ -407,6 +413,16 @@ function main() {
   console.log(`  Missing: ${portfolio.missing.length}`);
   console.log(`  Unknown freshness: ${portfolio.unknown_freshness.length}`);
   console.log(`  Regressed (pass→fail): ${regressedCount}`);
+  // d3-portfolio-B001 — only surface the skip line when the trend scan actually
+  // dropped something; a clean corpus stays quiet. When it did degrade, name the
+  // breakdown so the operator can weigh the trend's completeness.
+  if (trendSkips.corruptRecords || trendSkips.unreadableSubtrees || trendSkips.droppedRecords) {
+    console.log(
+      `  Trend records skipped: ${trendSkips.corruptRecords} corrupt, ` +
+      `${trendSkips.unreadableSubtrees} unreadable subtrees, ` +
+      `${trendSkips.droppedRecords} dropped (non-accepted/malformed)`
+    );
+  }
   if (emitTrends) console.log(`  Trends written: ${TRENDS_OUTPUT}`);
   if (emitBadges) console.log(`  Badges written: ${badgeCount} → ${BADGES_DIR}`);
 }

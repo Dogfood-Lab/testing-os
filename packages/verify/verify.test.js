@@ -5,7 +5,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 
-import { verify } from './index.js';
+import { verify, parseRejectionReason } from './index.js';
 import { validateSubmissionSchema } from './validators/schema.js';
 import { validateStepResults } from './validators/steps.js';
 import { validatePolicy } from './validators/policy.js';
@@ -100,6 +100,25 @@ describe('step results validation', () => {
     scenario.step_results[0].status = 'fail';
     const errors = validateStepResults(scenario);
     assert.deepEqual(errors, []);
+  });
+
+  it('does not throw on a null step element under a pass verdict (verify-B-004)', () => {
+    // A null step element is submission-bad and must surface as a returned error,
+    // NOT a TypeError. Pre-fix the pass-verdict consistency filter dereferenced
+    // `s.status` without a null-guard (its sibling loops guard `step == null`),
+    // so a null element threw — which runValidator in index.js would then
+    // misclassify as VALIDATOR_FAULT_STEPS (operational) instead of submission-bad.
+    const scenario = structuredClone(pilot0.scenario_results[0]);
+    scenario.verdict = 'pass';
+    scenario.step_results.push(null);
+    let errors;
+    assert.doesNotThrow(() => {
+      errors = validateStepResults(scenario);
+    });
+    assert.ok(
+      errors.some(e => e.includes('malformed')),
+      `expected a malformed-step error, got: ${JSON.stringify(errors)}`
+    );
   });
 });
 
@@ -484,6 +503,26 @@ describe('null submission produces persistable rejection record', () => {
     // We pick the explicit-skip approach: ingest reads this and skips writeRecord.
     assert.equal(record._skipPersist, true,
       'null-input rejection should be marked _skipPersist so persist layer is bypassed');
+  });
+
+  it('emits a reason that classifies operational, not unknown (verify-B-003)', async () => {
+    // A null submission is a malfunctioning dispatcher (operational), not a
+    // bad-but-shaped submitter payload. The end-to-end signal must route to ops.
+    const record = await verify(null, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+    const classes = record.verification.rejection_reasons.map(r => parseRejectionReason(r).class);
+    assert.ok(
+      classes.includes('operational'),
+      `expected an operational class, got: ${JSON.stringify(classes)}`
+    );
+    assert.ok(
+      !classes.includes('unknown'),
+      `null-submission reason should not classify 'unknown', got: ${JSON.stringify(classes)}`
+    );
   });
 
   it('handles non-object input (string, number, array) the same way', async () => {

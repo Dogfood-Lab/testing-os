@@ -285,6 +285,48 @@ function warnMissingAllOutputs(missing) {
   console.error('  Re-run the agent for that domain, or supply its output with --domain=name:path.');
 }
 
+/**
+ * swarm-cli-B-001 (Stage C carry-over): build the per-agent degraded-probe
+ * lines for `swarm collect` stdout. collect.js sets
+ * `agentReport.ownership_probe_degraded` (and `files_changed_divergence`) on
+ * every non-isolated amend agent, but the only operator surface was the
+ * wave-level banner — which fires ONLY for `multi_domain` (≥2 degraded
+ * domains). A SINGLE degraded domain reached no surface at all, so the
+ * operator never learned that re-dispatching with --isolate would restore full
+ * cross-domain attribution. This renders one scannable `[degraded]` line per
+ * affected agent so the weakened guarantee is visible at any domain count.
+ *
+ * Pure (returns lines; the caller prints) so the render path is unit-testable
+ * without spawning the CLI. Observability only — like the banner it never
+ * changes the exit code or the wave gate.
+ *
+ * @param {{ agents?: Array<object> }} result — the collect() report
+ * @returns {string[]} zero or more stdout lines
+ */
+export function renderProbeDegradedAgents(result) {
+  const lines = [];
+  for (const a of (result?.agents || [])) {
+    if (!a.ownership_probe_degraded) continue;
+    lines.push(
+      `[degraded] ${a.domain}: ownership probe restricted to domain globs — ` +
+      're-dispatch with --isolate for full cross-domain attribution'
+    );
+    // The independent-diff divergence is the partner signal: when present it
+    // tells the operator WHICH files the narrowed probe could/could not see.
+    const div = a.files_changed_divergence;
+    if (div && !div.unavailable) {
+      const missing = (div.missing_from_report || []).length;
+      const extra = (div.extra_in_report || []).length;
+      if (missing || extra) {
+        lines.push(
+          `             files_changed divergence: ${missing} unreported, ${extra} phantom`
+        );
+      }
+    }
+  }
+  return lines;
+}
+
 // ── Command handlers ──
 
 function cmdInit(args) {
@@ -587,6 +629,17 @@ function cmdCollect(args) {
   // guarantee. Observability only — like the divergence note, it never changes
   // the exit code or the wave gate. See swarms/PROTOCOL.md §Ownership
   // attribution in non-isolated parallel amend waves.
+  // swarm-cli-B-001 (Stage C carry-over): per-agent degraded-probe lines. These
+  // render at ANY domain count — including the single-degraded-domain case the
+  // wave-level multi_domain banner below skips — so the weakened cross-domain
+  // attribution is never silent. Printed before the banner so the operator sees
+  // which domains are affected, then the once-loud --isolate recommendation.
+  const degradedLines = renderProbeDegradedAgents(result);
+  if (degradedLines.length > 0) {
+    for (const line of degradedLines) console.log(line);
+    console.log('');
+  }
+
   const probeDegraded = result.ownership_probe_degraded;
   if (probeDegraded && probeDegraded.multi_domain) {
     console.log('===== [!] OWNERSHIP PROBE DEGRADED [!] =====');

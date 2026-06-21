@@ -11,6 +11,7 @@ import { validatePolicy as _defaultValidatePolicy } from './validators/policy.js
 import { validateStepResults as _defaultValidateStepResults } from './validators/steps.js';
 import { validateSchemaVersion as _defaultValidateSchemaVersion } from './validators/schema-version.js';
 import { computeVerdict } from './validators/verdict.js';
+import { parseRunUrlRepo } from './validators/repo-binding.js';
 import { SUPPORTED_SCHEMA_VERSIONS } from '@dogfood-lab/schemas';
 
 // F1-CONTRACTS-003: re-export the rejection-reason classifier from the package
@@ -95,7 +96,12 @@ export async function verify(submission, options) {
         provenance_confirmed: false,
         schema_valid: false,
         policy_valid: false,
-        rejection_reasons: ['submission is null or not an object']
+        // verify-B-003: a null/non-object submission is a malfunctioning
+        // DISPATCHER (the caller handed us garbage), not a submitter who sent a
+        // bad-but-shaped payload. Carry a typed `submission-malformed:` prefix so
+        // parseRejectionReason classifies it 'operational' (page the runner) instead
+        // of bouncing an ops incident back to the submitter as 'unknown'.
+        rejection_reasons: ['submission-malformed: submission is null or not an object']
       }
     };
   }
@@ -117,13 +123,17 @@ export async function verify(submission, options) {
   //    real, legitimate run from their own repo. Provenance would confirm (the run
   //    exists), and the persist layer would file the record under victim-org's path
   //    — a forged "pass" verdict for a repo the submitter does not control.
-  //    Format: https://github.com/{owner}/{repo}/actions/runs/{id}
+  //
+  //    verify-B-001: the run_url shape is PROVIDER-specific, so the decode is keyed
+  //    by `source.provider` in validators/repo-binding.js. RUN_URL_PARSERS there MUST
+  //    stay in lockstep with the source.provider enum in the submission schema — a
+  //    coverage test (validators/repo-binding.test.js) fails CI if a provider is
+  //    added to the schema without a parser, so this binding can never silently
+  //    no-op for a new provider (which would reopen the verify-A-001 forgery vector).
   if (submission.repo && submission.source?.run_url) {
-    const m = submission.source.run_url.match(
-      /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/actions\/runs\/\d+$/
-    );
-    if (m) {
-      const sourceRepo = `${m[1]}/${m[2]}`;
+    const bound = parseRunUrlRepo(submission.source.provider, submission.source.run_url);
+    if (bound) {
+      const sourceRepo = `${bound.owner}/${bound.repo}`;
       if (sourceRepo !== submission.repo) {
         reasons.push(
           `repo:mismatch: submission.repo (${submission.repo}) does not match source.run_url repo (${sourceRepo})`

@@ -57,6 +57,13 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
       'CONTRACT_SCHEMA_TOO_OLD:',
     ],
 
+    // operational — a malfunctioning dispatcher (verify-B-003), page ops
+    [
+      'submission-malformed: submission is null or not an object',
+      'operational',
+      'submission-malformed:',
+    ],
+
     // operational — the verifier itself faulted
     ['VALIDATOR_FAULT_SCHEMA: ajv compile failed', 'operational', 'VALIDATOR_FAULT_SCHEMA:'],
     ['VALIDATOR_FAULT_POLICY: merge cycle', 'operational', 'VALIDATOR_FAULT_POLICY:'],
@@ -107,9 +114,18 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
     assert.equal(parsed.detail, 'gremlins: something weird happened');
   });
 
-  it('maps the bare null-submission reason (no prefix) to unknown', () => {
-    // verify/index.js emits this prefix-less reason for null/non-object input.
-    const parsed = parseRejectionReason('submission is null or not an object');
+  it('classifies the null/non-object submission reason as operational (verify-B-003)', () => {
+    // verify/index.js emits this typed prefix for null/non-object input. A null
+    // submission is a malfunctioning dispatcher, not a bad-but-shaped payload —
+    // it must route to ops, not bounce back to the submitter as 'unknown'.
+    const parsed = parseRejectionReason('submission-malformed: submission is null or not an object');
+    assert.equal(parsed.class, 'operational');
+    assert.equal(parsed.prefix, 'submission-malformed:');
+    assert.equal(parsed.detail, 'submission is null or not an object');
+  });
+
+  it('maps a genuinely prefix-less reason to unknown', () => {
+    const parsed = parseRejectionReason('something weird happened with no prefix');
     assert.equal(parsed.class, 'unknown');
     assert.equal(parsed.prefix, null);
   });

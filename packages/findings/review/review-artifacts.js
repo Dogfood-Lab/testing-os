@@ -32,10 +32,12 @@
  * partial coverage, not a silent no-op.
  */
 
+import { relative } from 'node:path';
+
 import { validateTransition, ACTION_TARGET_STATUS, REASON_REQUIRED, REQUIRES_ACCEPTED, REQUIRES_CLOSED } from './transitions.js';
 import { createEvent, appendEvent } from './event-log.js';
 import {
-  resetSeenArtifactWrites,
+  resetSeenArtifactWrite,
   writePattern,
   writeRecommendation,
   writeDoctrine,
@@ -43,6 +45,34 @@ import {
   loadRecommendationsWithSkips,
   loadDoctrinesWithSkips
 } from '../synthesis/write-artifacts.js';
+
+/**
+ * Surface torn/unreadable artifact YAML on stderr — the lookup-path analogue of
+ * the derive CLI's "N pattern(s) skipped (torn/unreadable)" reporting
+ * (cli.js) and `findRecordFile`'s stderr note (derive/load-records.js).
+ *
+ * B-001 — `findArtifactById` / `getArtifactReviewQueue` consumed only the
+ * loader's `entries`, discarding `skipped[]`. A torn artifact YAML for the very
+ * id under accept/show/queue therefore vanished behind a bare "<type> not
+ * found", giving the operator no signal that a file was unreadable. The id
+ * lives INSIDE the file, so a torn file can't be matched to a requested id;
+ * the honest signal is to name the torn files whenever any are present so the
+ * operator can distinguish "absent" from "present but unparseable". Returns the
+ * skipped list so callers can decide whether the not-found was hint-worthy.
+ *
+ * @param {string} rootDir
+ * @param {string} type - artifact kind, for the message prefix
+ * @param {Array<{ path: string, error: string }>} skipped
+ */
+function reportArtifactSkips(rootDir, type, skipped) {
+  if (!skipped || skipped.length === 0) return;
+  // eslint-disable-next-line no-console
+  console.error(`${skipped.length} ${type}(s) skipped (torn/unreadable):`);
+  for (const s of skipped) {
+    // eslint-disable-next-line no-console
+    console.error(`  ${relative(rootDir, s.path)} — ${s.error}`);
+  }
+}
 
 /**
  * Per-artifact-type configuration: the on-disk directory, the id field name,
@@ -87,12 +117,15 @@ const ARTIFACT_TYPES = {
 export function findArtifactById(rootDir, type, id) {
   const cfg = ARTIFACT_TYPES[type];
   if (!cfg) return null;
-  const { entries } = cfg.loadWithSkips(rootDir);
+  const { entries, skipped } = cfg.loadWithSkips(rootDir);
   for (const entry of entries) {
     if (entry.data && entry.data[cfg.idKey] === id) {
       return { data: entry.data, path: entry.path, type };
     }
   }
+  // B-001 — id absent from the clean entries. A torn file may be hiding it;
+  // name the torn files rather than letting a bare not-found mislead.
+  reportArtifactSkips(rootDir, type, skipped);
   return null;
 }
 
@@ -217,11 +250,13 @@ export function reviewArtifact(rootDir, params) {
   });
 
   // Persist via the synthesis writer — which RE-VALIDATES the promoted artifact
-  // against its JSON Schema (fail-closed). `resetSeenArtifactWrites` is the
-  // documented opt-in for a legitimate re-write of an id already touched in this
-  // process (the synthesis collision guard otherwise refuses the second write).
+  // against its JSON Schema (fail-closed). The reset is the documented opt-in
+  // for a legitimate re-write of an id already touched in this process (the
+  // synthesis collision guard otherwise refuses the second write). B-003 —
+  // scope it to THIS id so a future batch reviewer doesn't disarm the guard for
+  // the other ids it has written this process.
   try {
-    resetSeenArtifactWrites(rootDir);
+    resetSeenArtifactWrite(rootDir, type, id);
     cfg.write(rootDir, artifact);
   } catch (err) {
     return { success: false, error: err.message, code: err.code };
@@ -249,7 +284,10 @@ export function getArtifactReviewQueue(rootDir, type) {
   for (const t of types) {
     const cfg = ARTIFACT_TYPES[t];
     if (!cfg) continue;
-    const { entries } = cfg.loadWithSkips(rootDir);
+    const { entries, skipped } = cfg.loadWithSkips(rootDir);
+    // B-001 — a torn artifact silently shrinks the review queue; name it so the
+    // operator knows the queue is partial rather than complete.
+    reportArtifactSkips(rootDir, t, skipped);
     for (const entry of entries) {
       const data = entry.data;
       if (!data) continue;

@@ -93,11 +93,11 @@ jobs:
       - name: Verify (full pre-publish gate)
         run: npm run verify
 
-      - name: Publish 6 public packages to npm with provenance
-        run: npm publish --workspaces --access public --provenance
-        env:
-          NPM_CONFIG_PROVENANCE: true
-
+      # Extract release notes BEFORE npm publish so a missing/typo'd CHANGELOG
+      # section fails the workflow while everything is still reversible. If this
+      # ran after publish (the old order), an empty awk result would mint a
+      # release with an empty body AND leave the packages live on npm with no
+      # failure signal — the workflow would still go green.
       - name: Extract release notes from CHANGELOG
         run: |
           # Carve out the [${TAG_VERSION}] section from CHANGELOG.md.
@@ -109,9 +109,21 @@ jobs:
             capture && /^## \[/ { exit }
             capture { print }
           ' CHANGELOG.md > /tmp/release-notes.md
+          # Fail closed if the section was absent (header typo or a forgotten
+          # CHANGELOG entry): an empty notes file would otherwise cut a release
+          # with an empty body. -s is true only for a non-empty file.
+          if [ ! -s /tmp/release-notes.md ]; then
+            echo "::error::No CHANGELOG section found for ${TAG_VERSION} — release notes would be empty. Check the '## [${TAG_VERSION}]' header in CHANGELOG.md."
+            exit 1
+          fi
           echo "--- release notes preview ---"
           head -30 /tmp/release-notes.md
           echo "--- (end preview) ---"
+
+      - name: Publish 6 public packages to npm with provenance
+        run: npm publish --workspaces --access public --provenance
+        env:
+          NPM_CONFIG_PROVENANCE: true
 
       - name: Create GitHub Release
         env:

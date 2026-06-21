@@ -117,6 +117,72 @@ export function findJsonFiles(dir) {
 }
 
 /**
+ * Probe whether `dir` exists but is unreadable at its OWN level (EACCES /
+ * Windows lock / ENOTDIR) — as distinct from a deep leaf failing mid-walk.
+ *
+ * ingest-B-002: `findJsonFiles` deliberately degrades an unreadable subtree to
+ * "those records are missing" and returns `[]`. That is correct for a single
+ * locked LEAF, but catastrophic for the records/ ROOT: a transiently-locked
+ * root makes the WHOLE corpus invisible, and an unguarded rebuild would then
+ * overwrite every index with empty content. This probe lets `rebuildIndexes`
+ * tell the two apart so it can REFUSE to clobber good indexes when the root
+ * itself is the thing that failed. A non-existent dir is NOT unreadable — that
+ * is the legitimate empty-corpus case, which must still rebuild empty indexes.
+ *
+ * @param {string} dir
+ * @returns {{ unreadable: boolean, code: string|null, error: string|null }}
+ */
+function probeDirReadable(dir) {
+  if (!existsSync(dir)) return { unreadable: false, code: null, error: null };
+  try {
+    readdirSync(dir);
+    return { unreadable: false, code: null, error: null };
+  } catch (err) {
+    return {
+      unreadable: true,
+      code: err && err.code ? err.code : 'readdir_failed',
+      error: err && err.message ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Read the prior committed latest-by-repo.json so a rebuild can tell whether
+ * the index it is about to overwrite currently has content. Used by the
+ * ingest-B-002 refuse-to-overwrite guard: an empty scan is only suspicious if
+ * the prior index was non-empty. A missing or unparseable prior index counts
+ * as "no prior content" (the legitimate first-run / empty-corpus case).
+ *
+ * @param {string} latestPath
+ * @returns {boolean} true if the prior index existed and held at least one repo
+ */
+function priorIndexHasContent(latestPath) {
+  if (!existsSync(latestPath)) return false;
+  try {
+    const prior = JSON.parse(readFileSync(latestPath, 'utf-8'));
+    return prior && typeof prior === 'object' && Object.keys(prior).length > 0;
+  } catch {
+    // Unparseable prior index — treat as no usable content so a corrupt index
+    // never wedges the rebuild into a permanent refuse state.
+    return false;
+  }
+}
+
+/**
+ * Whether the freshly-built latest-by-repo map has no repos. Used by the
+ * ingest-B-002 refuse-to-overwrite guard to recognise an empty scan. A scan
+ * can be empty because there are genuinely no accepted records (legitimate)
+ * or because the corpus was invisible (a transiently-locked records tree) —
+ * the guard combines this with `priorIndexHasContent` to tell them apart.
+ *
+ * @param {object} latestByRepo
+ * @returns {boolean}
+ */
+function latestByRepoIsEmpty(latestByRepo) {
+  return !latestByRepo || Object.keys(latestByRepo).length === 0;
+}
+
+/**
  * Load and parse a record file.
  *
  * @param {string} filePath
@@ -149,8 +215,20 @@ export function rebuildIndexes(repoRoot, options = {}) {
   const indexDir = join(repoRoot, 'indexes');
   mkdirSync(indexDir, { recursive: true });
 
-  // Collect all records (accepted + rejected)
+  // ingest-B-002: capture two facts BEFORE the scan so we can refuse to clobber
+  // good indexes with empty ones when the corpus is invisible rather than empty.
+  //   1. Is the records/ ROOT itself unreadable (vs a deep leaf, vs absent)?
+  //      A locked root makes the WHOLE corpus invisible — findJsonFiles would
+  //      return [] after one low `dir_unreadable` warn, and an unguarded
+  //      commit-group would then overwrite every index with {}.
+  //   2. Did the PRIOR latest-by-repo.json have content? An empty scan is only
+  //      suspicious if there was something to lose; a legitimately empty
+  //      first-run corpus must still write empty indexes.
   const recordsDir = join(repoRoot, 'records');
+  const latestPath = join(indexDir, 'latest-by-repo.json');
+  const rootProbe = probeDirReadable(recordsDir);
+  const hadPriorIndex = priorIndexHasContent(latestPath);
+
   const acceptedFiles = findJsonFiles(recordsDir)
     .filter(f => {
       const rel = relative(recordsDir, f);
@@ -286,9 +364,49 @@ export function rebuildIndexes(repoRoot, options = {}) {
     }
   }
 
+  // ingest-B-002: REFUSE to overwrite good indexes with empty ones when the
+  // corpus was invisible rather than genuinely empty. Two refuse conditions:
+  //   - records_root_unreadable: the records/ ROOT itself failed to read
+  //     (EACCES / Windows lock / ENOTDIR). The entire corpus is invisible —
+  //     committing now would wipe every index. This is distinct from a single
+  //     locked leaf, which findJsonFiles already degrades to a partial scan.
+  //   - empty_scan_with_prior_index: the root read fine but the scan found
+  //     zero accepted records while the prior latest-by-repo had content. The
+  //     records likely vanished transiently; clobbering loses the portfolio.
+  // A legitimately empty corpus (no accepted records AND no prior content) is
+  // NOT refused — it must still write empty indexes (first-run case). We skip
+  // the commit-group and emit a structured, greppable event so the operator
+  // sees the refusal loudly instead of a silently-emptied portfolio.
+  const noAcceptedScanned = latestByRepoIsEmpty(latestByRepo);
+  if (rootProbe.unreadable || (noAcceptedScanned && hadPriorIndex)) {
+    const reason = rootProbe.unreadable
+      ? 'records_root_unreadable'
+      : 'empty_scan_with_prior_index';
+    // A root IO failure is an operator-actionable error (the corpus is gone);
+    // an empty scan over a readable root is a warn (recoverable next run).
+    logStage(rootProbe.unreadable ? 'error' : 'warn', {
+      kind: 'index_rebuild_skipped',
+      reason,
+      records_dir: recordsDir,
+      accepted_scanned: acceptedFiles.length,
+      prior_index_non_empty: hadPriorIndex,
+      root_error_code: rootProbe.code,
+      error: rootProbe.error,
+    });
+    return {
+      latestByRepo,
+      failing,
+      stale,
+      accepted: acceptedFiles.length,
+      rejected: rejectedFiles.length,
+      corrupted,
+      skipped,
+      skippedCommit: reason,
+    };
+  }
+
   // Write indexes via commit-group two-phase commit. See module header
   // for the full design rationale.
-  const latestPath = join(indexDir, 'latest-by-repo.json');
   const failingPath = join(indexDir, 'failing.json');
   const stalePath = join(indexDir, 'stale.json');
 

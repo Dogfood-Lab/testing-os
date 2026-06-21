@@ -75,6 +75,24 @@ import recordSchema from '@dogfood-lab/schemas/json/dogfood-record.schema.json' 
 
 `$id` is a contract field. Changes that consumers should treat as contract changes bump the monorepo's lockstep version.
 
+## Schema versioning
+
+Payloads that carry a `schema_version` are gated by **MAJOR range**, not exact match. The accepted ranges live in one place — `SUPPORTED_SCHEMA_VERSIONS` (`src/schema-versions.ts`), which `@dogfood-lab/verify` imports to drive the gate and to stamp the persisted record's `schema_version`:
+
+| Field | Meaning |
+|---|---|
+| `current` | the version this build emits for the contract |
+| `minMajor` | lowest MAJOR accepted (inclusive) |
+| `maxMajor` | highest MAJOR accepted (inclusive) |
+
+The gate compares the payload's MAJOR against `[minMajor, maxMajor]`:
+
+- **MAJOR inside the range** (any patch/minor) → **accepted**.
+- **MAJOR above `maxMajor`** → rejected `CONTRACT_SCHEMA_TOO_NEW` — the payload was emitted against a newer contract than this build understands. **Operator action: upgrade testing-os.**
+- **MAJOR below `minMajor`** → rejected `CONTRACT_SCHEMA_TOO_OLD` — the payload predates the supported contract. **Operator action: re-emit against the current contract.**
+
+The contracts that carry `schema_version` are `record`, `recordSubmission`, `finding`, `pattern`, `recommendation`, `doctrine`, and the `agentOutput` swarm envelope. **`policy` and `scenario` deliberately carry no `schema_version`** and are exempt from the gate — the gate only fires on payloads that declare one. See the [error code reference](https://dogfood-lab.github.io/testing-os/handbook/error-codes/) for how the `CONTRACT_SCHEMA_TOO_*` rejections surface to a consumer.
+
 ## Docs
 
 📖 Full handbook: **<https://dogfood-lab.github.io/testing-os/handbook/>**

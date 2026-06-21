@@ -27,23 +27,14 @@ import { validatePayload } from '@dogfood-lab/schemas';
  * @returns {{ valid: boolean, errors: string[] }}
  */
 export function validateSubmissionSchema(submission) {
-  let result;
-  try {
-    result = validatePayload('recordSubmission', submission);
-  } catch (e) {
-    // The canonical compile path can throw at compileSchema time if the
-    // schema file is unreadable or malformed (Ajv compile fault). Pre-H3
-    // the corresponding fault was surfaced via a `{ __loadError }` sentinel
-    // that the runValidator helper in verify/index.js never actually
-    // routed through `VALIDATOR_FAULT_*` — `getValidator` returned a plain
-    // object and the call site special-cased its `__loadError` key. The
-    // post-H3 path is cleaner: a thrown error here propagates up to
-    // runValidator which already wraps thrown validators in
-    // `VALIDATOR_FAULT_SCHEMA` (D1B-003 humanization). Same operator-
-    // facing prefix, just routed through the lawful seam instead of a
-    // sentinel. No catch — propagate.
-    throw e;
-  }
+  // The canonical compile path can throw at compileSchema time if the schema
+  // file is unreadable or malformed (Ajv compile fault). We deliberately do
+  // NOT catch it here: a thrown error propagates up to runValidator in
+  // verify/index.js, which wraps thrown validators in `VALIDATOR_FAULT_SCHEMA`
+  // (D1B-003 humanization). Pre-H3 this fault was surfaced via a `{ __loadError }`
+  // sentinel the call site special-cased; routing the throw through the lawful
+  // runValidator seam yields the same operator-facing prefix without the sentinel.
+  const result = validatePayload('recordSubmission', submission);
 
   if (result.valid) {
     return { valid: true, errors: [] };

@@ -24,7 +24,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runDriftChecks, expandGlobs, REGISTERED_HANDLERS } from './check-doc-drift.mjs';
+import { runDriftChecks, expandGlobs, REGISTERED_HANDLERS, parseCheckId } from './check-doc-drift.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
@@ -1788,4 +1788,34 @@ test('R9 LIVE META: every configured source-of-truth claim fires drift when its 
     `Fix in scripts/doc-drift-patterns.json: ensure each claim's pattern + captureGroup actually anchor to a current-state assertion in its declared target. ` +
     `A pattern that matches zero lines today, OR matches but the captured value is still equal after mutation, means the gate protects nothing.`,
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// parseCheckId — `--check <id>` argument validation (ci-tooling-B-002)
+//
+// A bare `--check` (or `--check --json`) used to yield checkId=undefined and
+// silently run ALL checks — an operator who fat-fingers the id gets a green
+// full run and assumes their single check passed. parseCheckId fails loud
+// instead, matching the sibling check-finding-regression-pins.mjs which
+// validates its value-taking flags.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('parseCheckId: valid `--check <id>` returns the id', () => {
+  assert.deepEqual(parseCheckId(['--check', 'error-codes']), { checkId: 'error-codes' });
+});
+
+test('parseCheckId: no `--check` flag returns undefined (run-all path)', () => {
+  assert.deepEqual(parseCheckId(['--json']), { checkId: undefined });
+});
+
+test('parseCheckId: bare trailing `--check` (no id) returns an error, not undefined', () => {
+  const result = parseCheckId(['--check']);
+  assert.equal(result.checkId, undefined);
+  assert.match(result.error, /--check requires a check id/);
+});
+
+test('parseCheckId: `--check` immediately followed by another flag returns an error', () => {
+  const result = parseCheckId(['--check', '--json']);
+  assert.equal(result.checkId, undefined);
+  assert.match(result.error, /--check requires a check id/);
 });

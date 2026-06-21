@@ -52,8 +52,12 @@ export function validateStepResults(scenarioResult) {
 
   // A scenario cannot be "pass" if any step is "fail" or "blocked"
   if (verdict === 'pass') {
+    // Guard `s != null` to match the two sibling loops above: a null element is
+    // already reported as malformed there, and dereferencing `s.status` here
+    // would throw a TypeError that runValidator misclassifies as an operational
+    // VALIDATOR_FAULT_STEPS instead of a submission-bad signal (verify-B-004).
     const failingSteps = step_results.filter(
-      s => s.status === 'fail' || s.status === 'blocked'
+      s => s != null && (s.status === 'fail' || s.status === 'blocked')
     );
     if (failingSteps.length > 0) {
       const ids = failingSteps.map(s => s.step_id).join(', ');

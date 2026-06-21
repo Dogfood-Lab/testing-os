@@ -108,8 +108,9 @@ Discrimination happens by **class**, surfaced by `parseRejectionReason` (below).
 | `VALIDATOR_FAULT_POLICY:` | `runValidator('policy', …)` catch | Internal exception inside the policy validator. |
 | `VALIDATOR_FAULT_STEPS:` | `runValidator('steps', …)` catch | Internal exception inside the steps validator. |
 | `VALIDATOR_FAULT_CONTRACT_SCHEMA_VERSION:` | `runValidator('contract_schema_version', …)` catch | The version gate was called with an unknown contract key (a programmer error at the call site, not a submission fault). |
+| `submission-malformed:` | `index.js` null/non-object early-return | The submission itself was `null` or not an object — a malfunctioning **dispatcher** sent garbage, not a submitter who authored a bad-but-shaped payload. Page ops / inspect the dispatch pipeline; do NOT bounce it to a submitter. |
 
-Any future `VALIDATOR_FAULT_<NEW>:` prefix is classified `operational` by family — `parseRejectionReason` matches the `VALIDATOR_FAULT_` head, so a new validator class needs no parser edit.
+Any future `VALIDATOR_FAULT_<NEW>:` prefix is classified `operational` by family — `parseRejectionReason` matches the `VALIDATOR_FAULT_` head, so a new validator class needs no parser edit. The `submission-malformed:` prefix is matched literally (it is not part of the `VALIDATOR_FAULT_` family).
 
 **Ingest** — `class: 'ingest'` (an ingest-side load fault, not a verifier gate):
 

@@ -1253,6 +1253,27 @@ function makeStructuralValidator(schema) {
 // CLI entry
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * Resolve the `--check <id>` selector from a raw argv slice.
+ *
+ * Returns `{ checkId }` on success or `{ error }` when `--check` was passed
+ * without a usable value. A bare `--check` (last token) or one immediately
+ * followed by another flag silently ran ALL checks before this guard existed —
+ * an operator who fat-fingers the id gets a full green run and assumes their
+ * single check passed. The sibling check-finding-regression-pins.mjs already
+ * validates its value-taking flags (`--write-index requires a path argument`);
+ * this brings --check to the same standard.
+ */
+export function parseCheckId(args) {
+  const checkIdx = args.indexOf('--check');
+  if (checkIdx === -1) return { checkId: undefined };
+  const value = args[checkIdx + 1];
+  if (value === undefined || value.startsWith('--')) {
+    return { error: 'error: --check requires a check id' };
+  }
+  return { checkId: value };
+}
+
 // F-W1-CI-005: previous heuristic compared `resolve(fileURLToPath(import.meta.url))`
 // to `resolve(process.argv[1])`. That mostly works but is the same fragile
 // path-string class apply-finding-migration.mjs already fixed in W31-BACK-001:
@@ -1269,8 +1290,12 @@ if (isMain) {
 
   const args = process.argv.slice(2);
   const json = args.includes('--json');
-  const checkIdx = args.indexOf('--check');
-  const checkId = checkIdx !== -1 ? args[checkIdx + 1] : undefined;
+  const parsed = parseCheckId(args);
+  if (parsed.error) {
+    console.error(parsed.error);
+    process.exit(2);
+  }
+  const checkId = parsed.checkId;
 
   runDriftChecks({ repoRoot, checkId })
     .then((result) => {

@@ -4,7 +4,7 @@
  */
 
 import { readdirSync, existsSync, statSync } from 'node:fs';
-import { resolve, join, basename, extname } from 'node:path';
+import { resolve, join, basename, extname, relative } from 'node:path';
 import { parseFinding, validateFinding } from './validate.js';
 
 /**
@@ -129,9 +129,21 @@ export function loadFindings(rootDir, opts = {}) {
  * @returns {{ path: string, data: object, valid: boolean, errors: Array } | null}
  */
 export function findById(rootDir, findingId) {
+  // B-002 — collect torn finding files encountered during the scan. The
+  // finding_id lives INSIDE the file, so a torn file cannot be matched to the
+  // requested id; if the id turns out absent from every clean file, any torn
+  // file may be the one hiding it. Surfacing them on stderr (below) mirrors the
+  // derive CLI's "N finding(s) skipped (torn/unreadable)" honesty so a torn
+  // YAML never silently masquerades as a not-found id.
+  const torn = [];
+
   // Search real findings
   for (const filePath of discoverFindings(rootDir)) {
-    const { data } = parseFinding(filePath);
+    const { data, error } = parseFinding(filePath);
+    if (error) {
+      torn.push({ path: filePath, error });
+      continue;
+    }
     if (data && data.finding_id === findingId) {
       const result = validateFinding(data);
       return { path: filePath, data, ...result };
@@ -140,10 +152,23 @@ export function findById(rootDir, findingId) {
 
   // Search valid fixtures
   for (const filePath of discoverFixtures(rootDir, 'valid')) {
-    const { data } = parseFinding(filePath);
+    const { data, error } = parseFinding(filePath);
+    if (error) {
+      torn.push({ path: filePath, error });
+      continue;
+    }
     if (data && data.finding_id === findingId) {
       const result = validateFinding(data);
       return { path: filePath, data, ...result };
+    }
+  }
+
+  if (torn.length > 0) {
+    // eslint-disable-next-line no-console
+    console.error(`${torn.length} finding(s) skipped (torn/unreadable):`);
+    for (const t of torn) {
+      // eslint-disable-next-line no-console
+      console.error(`  ${relative(rootDir, t.path)} — ${t.error}`);
     }
   }
 

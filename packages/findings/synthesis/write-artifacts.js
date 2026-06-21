@@ -60,6 +60,24 @@ export function resetSeenArtifactWrites(rootDir) {
 }
 
 /**
+ * Reset the collision memory for a SINGLE artifact id only.
+ *
+ * B-003 — `reviewArtifact` re-writes the one id it is promoting, which
+ * legitimately needs that id's guard cleared. Clearing the whole root (via
+ * `resetSeenArtifactWrites(rootDir)`) also disarms the silent-clobber guard for
+ * every OTHER kind/id — latent for a future batch caller reviewing several ids
+ * in one process. Scope the reset to `${rootDir}:${kind}:${id}` so only the id
+ * under review is cleared.
+ *
+ * @param {string} rootDir
+ * @param {'pattern'|'recommendation'|'doctrine'} kind
+ * @param {string} id
+ */
+export function resetSeenArtifactWrite(rootDir, kind, id) {
+  seenArtifactWrites.delete(`${rootDir}:${kind}:${id}`);
+}
+
+/**
  * Structured collision errors thrown by the singleton writers when called
  * twice in the same process with the same id. Mirror the batch helpers'
  * collision codes so the operator-facing vocabulary is identical.

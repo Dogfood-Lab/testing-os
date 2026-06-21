@@ -32,10 +32,38 @@ import { openDb, closeDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains } from './lib/domains.js';
 import { dispatch } from './commands/dispatch.js';
 import { collect } from './commands/collect.js';
+import { renderProbeDegradedAgents } from './cli.js';
 import {
   getActualTouchedFiles,
   diffReportedVsActual,
 } from './lib/git-touched-files.js';
+
+/**
+ * Capture every console.error line produced during fn(), then restore.
+ * Mirrors the helper in stageC-swarm-cli-operator-signal.test.js — used to
+ * assert the structured logStage NDJSON event (a RENDER/event path, not just
+ * the returned object field).
+ */
+function captureStderrLines(fn) {
+  const orig = console.error;
+  const lines = [];
+  console.error = (...a) => { lines.push(a.map(String).join(' ')); };
+  let result;
+  try { result = fn(); } finally { console.error = orig; }
+  return { result, lines };
+}
+
+function ndjsonEvents(lines) {
+  const out = [];
+  for (const ln of lines) {
+    if (!ln.startsWith('{')) continue;
+    try {
+      const obj = JSON.parse(ln);
+      if (obj && obj.stage) out.push(obj);
+    } catch { /* not NDJSON */ }
+  }
+  return out;
+}
 
 const RUN_ID = 'test-verification-discipline';
 
@@ -416,6 +444,110 @@ describe('d3b-collect-A-002 — non-isolated wave does not flag phantom cross-do
       [...report.ownership_probe_degraded.domains].sort(),
       ['domain-a', 'domain-b'],
       'the wave-level signal must list every domain whose probe was narrowed');
+  });
+
+  // swarm-cli-B-001 (Stage C carry-over): the per-agent degraded flag was set
+  // on the returned object but reached NO operator surface. A SINGLE degraded
+  // domain never tripped the wave-level `multi_domain` banner, and the flag-set
+  // point in collect.js emitted no structured event. These two tests assert the
+  // RENDER path (cli render helper) and the NDJSON event — not just the field.
+
+  it('emits a structured ownership_probe_degraded NDJSON event at the flag-set point', () => {
+    writeFileSync(join(repoPath, 'packages/a/src/foo.js'), 'fixed by A\n');
+
+    const outA = join(tmpDir, 'a.json');
+    const outB = join(tmpDir, 'b.json');
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-A-001', description: 'fixed it' }],
+      files_changed: ['packages/a/src/foo.js'],
+    }));
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b',
+      summary: 'no work',
+      fixes: [{ finding_id: 'F-B-001', description: 'fixed it' }],
+      files_changed: [],
+    }));
+
+    const { lines } = captureStderrLines(() => collect({
+      runId: RUN_ID,
+      dbPath,
+      outputs: { 'domain-a': outA, 'domain-b': outB },
+    }));
+
+    const events = ndjsonEvents(lines).filter(e => e.stage === 'ownership_probe_degraded');
+    assert.ok(events.length >= 1,
+      'collect must emit a stage=ownership_probe_degraded NDJSON event when an agent probe is narrowed');
+    const ev = events.find(e => e.domain === 'domain-a') || events[0];
+    assert.ok(ev.correlation_id && /^coord-/.test(ev.correlation_id),
+      'the event must carry a coord- correlation id like the sibling coordination events');
+    assert.equal(ev.domain, 'domain-a', 'the event must name the degraded domain');
+    assert.equal(ev.runId, RUN_ID, 'the event must name the run');
+    assert.equal(ev.isolated, false, 'the event must record that the wave was non-isolated');
+  });
+
+  it('renders a per-agent [degraded] line for every degraded agent (real collect report)', () => {
+    writeFileSync(join(repoPath, 'packages/a/src/foo.js'), 'fixed by A\n');
+    writeFileSync(join(repoPath, 'packages/b/src/baz.js'), 'fixed by B\n');
+
+    const outA = join(tmpDir, 'a.json');
+    const outB = join(tmpDir, 'b.json');
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-A-001', description: 'fixed it' }],
+      files_changed: ['packages/a/src/foo.js'],
+    }));
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b',
+      summary: 'fixed own file',
+      fixes: [{ finding_id: 'F-B-001', description: 'fixed it' }],
+      files_changed: ['packages/b/src/baz.js'],
+    }));
+
+    const report = collect({
+      runId: RUN_ID,
+      dbPath,
+      outputs: { 'domain-a': outA, 'domain-b': outB },
+    });
+
+    const rendered = renderProbeDegradedAgents(report).join('\n');
+    assert.match(rendered, /\[degraded\]/,
+      'a degraded agent must render a [degraded] marker the operator can scan');
+    assert.match(rendered, /domain-a/, 'the render must name degraded domain-a');
+    assert.match(rendered, /domain-b/, 'the render must name degraded domain-b');
+    assert.match(rendered, /--isolate/,
+      'the degraded line must point the operator at --isolate for full attribution');
+  });
+
+  it('renders a [degraded] line independent of the multi_domain banner gate (single degraded agent)', () => {
+    // The wave-level banner in cmdCollect fires ONLY when multi_domain is true
+    // (≥2 degraded domains). A report whose ONLY degraded agent is a single
+    // domain leaves the banner silent — the per-agent render is then the SOLE
+    // operator surface. Crafted directly so the single-degraded-domain case is
+    // exercised regardless of the unconditional per-agent degradation path in
+    // collect.js. Reverting renderProbeDegradedAgents to a no-op turns this red.
+    const singleDegraded = {
+      ownership_probe_degraded: { isolated: false, domains: ['domain-a'], multi_domain: false },
+      agents: [
+        { domain: 'domain-a', status: 'complete', ownership_probe_degraded: { isolated: false, reason: 'x' } },
+        { domain: 'domain-b', status: 'complete' },
+      ],
+    };
+    const lines = renderProbeDegradedAgents(singleDegraded);
+    assert.equal(lines.length, 1,
+      'exactly the one degraded agent must render — and it must render even though multi_domain is false');
+    assert.match(lines[0], /\[degraded\] domain-a/);
+    assert.match(lines[0], /--isolate/);
+  });
+
+  it('renders NO per-agent degraded line when nothing is degraded', () => {
+    // No agent carries the degraded flag → zero lines. Without this guard a
+    // render that always fires would pass the assertions above vacuously.
+    const cleanReport = { agents: [{ domain: 'domain-a', status: 'complete' }] };
+    assert.deepEqual(renderProbeDegradedAgents(cleanReport), [],
+      'a report with no degraded agent must render zero degraded lines');
   });
 });
 

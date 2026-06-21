@@ -26,6 +26,7 @@
  *   - verify/index.js:                schema:, policy:, steps[<id>]:,
  *                                     provenance:, repo:,
  *                                     submission-contains-verifier-field:,
+ *                                     submission-malformed:,
  *                                     VALIDATOR_FAULT_<NAME>:
  *   - validators/schema-version.js:   CONTRACT_SCHEMA_TOO_NEW:,
  *                                     CONTRACT_SCHEMA_TOO_OLD:
@@ -69,6 +70,10 @@ const LITERAL_PREFIXES = [
   },
   { match: 'CONTRACT_SCHEMA_TOO_NEW:', prefix: 'CONTRACT_SCHEMA_TOO_NEW:', class: 'submission-bad' },
   { match: 'CONTRACT_SCHEMA_TOO_OLD:', prefix: 'CONTRACT_SCHEMA_TOO_OLD:', class: 'submission-bad' },
+  // operational — a null/non-object submission is a malfunctioning dispatcher
+  // (verify-B-003), not a submitter who sent a bad-but-shaped payload. Page ops;
+  // do NOT bounce it back to the submitter.
+  { match: 'submission-malformed:', prefix: 'submission-malformed:', class: 'operational' },
   // ingest
   { match: 'scenario-load:', prefix: 'scenario-load:', class: 'ingest' },
 ];
@@ -124,7 +129,8 @@ export function parseRejectionReason(reason) {
     }
   }
 
-  // 4. Unrecognized — log + surface raw (includes the prefix-less
-  //    'submission is null or not an object' reason).
+  // 4. Unrecognized — log + surface raw. (The null/non-object submission reason
+  //    now carries the typed `submission-malformed:` prefix → 'operational', so it
+  //    no longer falls through here; see verify-B-003.)
   return { class: 'unknown', prefix: null, detail: reason };
 }
