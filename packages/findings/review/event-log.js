@@ -1,27 +1,41 @@
 /**
  * Append-only review event log.
  *
- * Events are stored as YAML arrays in reviews/<YYYY>/<date>-finding-review-log.yaml
+ * Events are stored ONE PER FILE under reviews/<YYYY>/<YYYY-MM-DD>/<event-id>.yaml
+ * (the same sharded-immutable-file pattern the records/ store uses). This
+ * replaced an earlier "daily YAML array, read-modify-rename under a file lock"
+ * design: a Phase-9 50-fork race detector proved that NO lock FILE is reliably
+ * exclusive on NTFS under heavy concurrent create churn — two appenders could
+ * both win the lock, both read N events, both rename, and one clobber the
+ * other's event (~1/3 of saturated runs, every child still exiting 0). A
+ * shared mutable array file cannot be made safe under concurrency on that fs.
+ * One immutable file per event removes the shared mutable state entirely: each
+ * append writes a uniquely-named file, so concurrent appends CANNOT collide or
+ * lose an event, and no lock is needed for correctness. `getAllEventsWithSkips`
+ * already globs reviews/ recursively and merges per-file events.
  */
 
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { mkdirSync, existsSync, openSync, writeSync, closeSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import yaml from 'js-yaml';
 
-import { withFileLock } from '../lib/file-lock.js';
-import { renameWithRetry } from '../lib/rename-with-retry.js';
 import { loadYamlDir } from '../lib/safe-yaml-load.js';
 
 let _eventCounter = 0;
 
 /**
- * Generate a unique event ID.
+ * Generate a unique event ID. Includes a random suffix so the id is unique
+ * ACROSS processes (the `_eventCounter` is per-process, so two forks would
+ * otherwise mint the same `rev-<ts>-<seq>`); this id also names the per-event
+ * file, so cross-process uniqueness keeps two concurrent appends from picking
+ * the same filename.
  */
 export function generateEventId() {
   const ts = Date.now().toString(36);
   const seq = (++_eventCounter).toString(36).padStart(4, '0');
-  return `rev-${ts}-${seq}`;
+  const rand = randomBytes(4).toString('hex');
+  return `rev-${ts}-${seq}-${rand}`;
 }
 
 /**
@@ -71,82 +85,52 @@ export function getLogPath(rootDir, date = new Date()) {
 }
 
 /**
- * Append an event to the review log.
+ * Directory holding one date-sharded set of per-event files:
+ * reviews/<YYYY>/<YYYY-MM-DD>/. Each appended event is its own file inside.
+ */
+export function getEventDir(rootDir, date = new Date()) {
+  const year = String(date.getFullYear());
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return resolve(rootDir, 'reviews', year, `${year}-${month}-${day}`);
+}
+
+/**
+ * Append a review event by writing it to its OWN immutable file
+ * (reviews/<YYYY>/<YYYY-MM-DD>/<event-id>.yaml). See the module header for why
+ * this replaced the daily-array-under-a-lock design: no shared mutable file
+ * means concurrent appends physically cannot collide or lose an event, so no
+ * lock is needed for correctness — the Phase-9 50-fork race detector that lost
+ * an event ~1/3 of saturated runs is structurally impossible here.
  *
- * Atomicity: writes the new event list to a unique temp file then renames it
- * over the canonical log file. `rename` is atomic on POSIX and Windows, so a
- * concurrent reader sees either the old contents or the new contents — never
- * a half-written file. This also makes the operation crash-safe: a Ctrl+C
- * between read and write leaves the original log intact.
+ * Crash-safety: a single `openSync(path, 'wx')` + write of one event is atomic
+ * at the file granularity — a crash mid-write leaves a complete event file or
+ * none, never a torn shared array. The filename is the (cross-process-unique)
+ * event id, so two concurrent appends never target the same path.
  *
- * Concurrency: serialized at the choke point via `withFileLock` on the daily
- * log file (F-PIPELINE-011 / W3-PIPE-001 — Pattern #4 choke-point fix). The
- * read-then-write window is closed by holding a directory-mutex (`<logPath>.lock`)
- * across the read → push → rename sequence. Two concurrent `appendEvent` calls
- * to the SAME daily log serialize against each other; calls to DIFFERENT daily
- * logs (e.g. across a midnight boundary) do not contend. The lock is reclaimed
- * if the holder process dies — see `lib/file-lock.js` for the full design
- * rationale (why a lock dir, why not `O_APPEND`, stale recovery semantics,
- * single-machine scope).
+ * @param {string} rootDir
+ * @param {object} event - a `createEvent()` result.
+ * @returns {string} the path of the event file written.
  */
 export function appendEvent(rootDir, event) {
-  const logPath = getLogPath(rootDir);
-  const dir = dirname(logPath);
+  const dir = getEventDir(rootDir);
   mkdirSync(dir, { recursive: true });
 
-  // FAILS-then-PASSES proof gate (W3-PIPE-001):
-  // Set DISABLE_APPEND_LOCK=1 in the env to bypass the lock for the explicit
-  // purpose of demonstrating the race-detection test fails without the fix.
-  // Wave-30 receipt documents the proof: with the lock, the multi-process
-  // test passes 50/50 forks across 3 iterations, 20 consecutive test runs.
-  // With the lock disabled, the test reliably fails (rename collisions on
-  // unprotected concurrent rebuilds, dropped events).
-  if (process.env.DISABLE_APPEND_LOCK) {
-    let events = [];
-    if (existsSync(logPath)) {
-      const raw = readFileSync(logPath, 'utf-8');
-      events = yaml.load(raw) || [];
-      if (!Array.isArray(events)) events = [events];
-    }
-    events.push(event);
-    const tmpSuffix = randomBytes(4).toString('hex');
-    const tmpPath = `${logPath}.${tmpSuffix}.tmp`;
-    writeFileSync(tmpPath, yaml.dump(events, { lineWidth: 120, noRefs: true }), 'utf-8');
-    // Windows EPERM/EBUSY on rename can fire transiently when AV or
-    // Search Indexer holds a handle to the freshly written temp. Retry.
-    renameWithRetry(tmpPath, logPath);
-    return logPath;
+  const eventId = event.review_event_id || generateEventId();
+  const eventPath = resolve(dir, `${eventId}.yaml`);
+  const body = yaml.dump(event, { lineWidth: 120, noRefs: true });
+
+  // 'wx' = O_EXCL exclusive-create: asserts the unique id has not collided
+  // (it carries a random suffix, so it won't) rather than relying on it. No
+  // temp+rename is needed — there is no shared file to atomically replace; one
+  // event per file is already all-or-nothing.
+  const fd = openSync(eventPath, 'wx');
+  try {
+    writeSync(fd, body);
+  } finally {
+    closeSync(fd);
   }
-
-  return withFileLock(logPath, () => {
-    let events = [];
-    // Read-or-empty without an `existsSync` precheck: the readFileSync call
-    // either returns the bytes or throws ENOENT. Avoiding `existsSync` here
-    // closes a Windows-specific TOCTOU window where the dirent cache could
-    // report `existsSync(logPath) === false` immediately after a sibling
-    // process renamed a fresh file into place — which would cause us to
-    // start with `events = []` and silently OVERWRITE the sibling's events.
-    // The lock alone wasn't enough; the existsSync gate was the bug.
-    try {
-      const raw = readFileSync(logPath, 'utf-8');
-      const parsed = yaml.load(raw);
-      if (parsed) events = Array.isArray(parsed) ? parsed : [parsed];
-    } catch (err) {
-      if (!err || err.code !== 'ENOENT') throw err;
-    }
-
-    events.push(event);
-
-    // Atomic write: temp file → rename. Same pattern persist.js + rebuild-indexes.js use.
-    const tmpSuffix = randomBytes(4).toString('hex');
-    const tmpPath = `${logPath}.${tmpSuffix}.tmp`;
-    writeFileSync(tmpPath, yaml.dump(events, { lineWidth: 120, noRefs: true }), 'utf-8');
-    // renameWithRetry: tolerate the Windows EPERM/EBUSY transient handle race
-    // even though we hold the per-file lock — antivirus/Search Indexer can
-    // still grab a handle on the temp during the rename window.
-    renameWithRetry(tmpPath, logPath);
-    return logPath;
-  });
+  return eventPath;
 }
 
 /**

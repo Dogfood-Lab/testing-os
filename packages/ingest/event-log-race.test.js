@@ -7,21 +7,24 @@
  *   events, both pushed, both renamed — second rename wins, dropping the
  *   first appender's event.
  *
- *   Pattern #4 (choke-point fix): close the read-then-write window at the
- *   one site where YAML is read, mutated, and rewritten. Implemented via
- *   `withFileLock` (mkdir-based directory mutex) in `findings/lib/file-lock.js`,
- *   wired into `appendEvent` in `findings/review/event-log.js`.
+ *   FIX EVOLUTION (Phase-9, this session): the original fix was a file lock
+ *   (`withFileLock`) serializing the read-modify-rewrite. A 50-fork detector
+ *   then proved NO lock FILE is reliably exclusive on NTFS under heavy
+ *   concurrent create churn — two appenders both won the lock, both read N,
+ *   both rewrote, and one clobbered the other (~1/3 of saturated runs, every
+ *   child still exiting 0). The robust fix removes the shared mutable file
+ *   entirely: `appendEvent` now writes ONE IMMUTABLE FILE PER EVENT
+ *   (reviews/<YYYY>/<YYYY-MM-DD>/<id>.yaml — the records/-store pattern), so
+ *   concurrent appends physically cannot collide or lose an event and no lock
+ *   is needed for correctness. This test still asserts the invariant (50
+ *   concurrent appends → 50 events, zero loss); the lock-mutex contract tests
+ *   below continue to pin `withFileLock` itself, which other callers still use.
  *
  * Lives under `packages/ingest/` because the ingest pipeline owns the
  * concurrency-stress regression catalog (mirrors wave22 / wave28 placement).
  * The code under test is in findings — that's expected: this test pins
  * cross-package behavior at the pipeline-integration boundary, same way
  * `wave22-log-stage-discipline.test.js` reaches into dogfood-swarm.
- *
- * 2-step FAILS-then-PASSES proof: this test was written BEFORE wiring the
- * lock into appendEvent. Run #1 (lock removed): asserts fail with dropped
- * events under 50-way concurrent appends. Run #2 (lock wired): all 50
- * events land. Documented in the wave-30 receipt.
  */
 
 import { describe, it, before, after, beforeEach } from 'node:test';
@@ -105,17 +108,14 @@ function teardownTestRoot() {
 }
 
 /**
- * Read the events array from the daily log file directly. Uses `getLogPath`
- * (rather than walking the reviews/ tree via `getAllEvents`) so the assertion
- * is unambiguous about WHICH file we expect to be intact.
+ * Read every persisted review event back through the public reader. The event
+ * log is now ONE IMMUTABLE FILE PER EVENT (reviews/<YYYY>/<YYYY-MM-DD>/<id>.yaml),
+ * so there is no single "daily log file" to inspect — `getAllEvents` globs the
+ * reviews/ tree and merges the per-event files. (Kept the function name for the
+ * call sites below.)
  */
 function readDailyLog(rootDir) {
-  const logPath = getLogPath(rootDir);
-  if (!existsSync(logPath)) return [];
-  const raw = readFileSync(logPath, 'utf-8');
-  const arr = yaml.load(raw);
-  if (!arr) return [];
-  return Array.isArray(arr) ? arr : [arr];
+  return getAllEvents(rootDir);
 }
 
 // ─────────────────────────────────────────────────────────────────────

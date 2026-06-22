@@ -524,13 +524,15 @@ describe('Event log', () => {
 
   it('appends events to date-sharded log', () => {
     const event = createEvent({ findingId: 'dfind-log-test', actor: 'test', action: 'review', fromStatus: 'candidate', toStatus: 'reviewed' });
-    const logPath = appendEvent(TEST_ROOT, event);
-    assert.ok(existsSync(logPath));
-
-    const raw = readFileSync(logPath, 'utf-8');
-    const data = yaml.load(raw);
-    assert.ok(Array.isArray(data));
-    assert.ok(data.some(e => e.finding_id === 'dfind-log-test'));
+    const eventPath = appendEvent(TEST_ROOT, event);
+    // One immutable file per event (reviews/<YYYY>/<YYYY-MM-DD>/<id>.yaml): the
+    // returned path is the single-event file; the event reads back through the
+    // public reader.
+    assert.ok(existsSync(eventPath));
+    const single = yaml.load(readFileSync(eventPath, 'utf-8'));
+    assert.equal(single.finding_id, 'dfind-log-test');
+    const all = getAllEvents(TEST_ROOT);
+    assert.ok(all.some(e => e.finding_id === 'dfind-log-test'));
   });
 
   it('getAllEvents returns all events', () => {
