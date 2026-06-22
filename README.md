@@ -20,7 +20,7 @@
 *Protocols, evidence stores, and learning loops for AI-assisted software.*
 
 <!-- version:start -->
-**v1.4.0** — current release. See [CHANGELOG.md](CHANGELOG.md) for what shipped.
+**v1.5.0** — current release. See [CHANGELOG.md](CHANGELOG.md) for what shipped.
 <!-- version:end -->
 
 📖 **[Read the handbook →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -45,17 +45,21 @@ npm install -g @dogfood-lab/dogfood-swarm
 swarm --help
 ```
 
-The operator's guide, CLI reference, schema reference, and integration recipes live in the **[handbook](https://dogfood-lab.github.io/testing-os/handbook/)**. Per-version detail is in [CHANGELOG.md](CHANGELOG.md).
+Want your own repo's test evidence recorded here? The **[`examples/` starter kit](examples/)** gets you dispatching in five minutes (`npx @dogfood-lab/report` builds the submission; `dogfood-init` scaffolds the workflow). The operator's guide, CLI reference, schema reference, and integration recipes live in the **[handbook](https://dogfood-lab.github.io/testing-os/handbook/)**. Per-version detail is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Threat Model
 
-testing-os processes dogfood submissions dispatched via `repository_dispatch` from trusted GitHub repos under `mcp-tool-shop-org/*` and `dogfood-lab/*`. The verifier requires GitHub Actions provenance — claimed run IDs are confirmed via the GitHub API, and submissions with malformed shapes, missing references, or invalid policy claims are rejected.
+testing-os processes dogfood submissions dispatched via `repository_dispatch` from trusted GitHub repos under `mcp-tool-shop-org/*` and `dogfood-lab/*`. The verifier requires CI provenance — claimed run IDs are confirmed via the provider's API, and submissions with malformed shapes, missing references, or invalid policy claims are rejected.
+
+**Provenance is the attestation.** For a `github` submission the verifier confirms the claimed GitHub Actions run actually exists (GitHub API) and binds the submission's `repo` and `commit_sha` to that confirmed run — a live, keyless check rooted in GitHub's own OIDC identity, so a record cannot attest to a run or commit that did not happen. **GitLab CI** is supported opt-in (`source.provider: gitlab`); a GitLab submission is the one case the verifier calls a non-GitHub host (`gitlab.com/api`), and only for `gitlab` submissions.
+
+**Record integrity is tamper-EVIDENT, not tamper-proof.** Every persisted record carries an `integrity` block (`submission_digest` + `prev_digest`) forming an append-only hash chain that `dogfood ingest --verify-chain` validates fully offline — detecting out-of-band tampering, disk corruption, and partial restores. It does **not** defend against the ingest credential itself, which can rewrite both a record and the chain; closing that needs an anchor outside the writer's control. An **optional, off-by-default XRPL anchor** (`dogfood ingest --anchor-*`) witnesses the chain head to the public XRP Ledger, making any truncation or rewrite below an anchored point detectable — the second disclosed non-GitHub call, and only when an operator enables it.
 
 **What testing-os touches:** the submission JSON in each `repository_dispatch` payload; `policies/`, `fixtures/`, `records/`, and `indexes/` in this repo; outbound calls to `api.github.com` for provenance verification.
 
 **What testing-os does NOT touch:** consumer source code, secrets in consumer repos beyond the dispatch envelope, or anything outside this repo's working tree.
 
-**Permissions required:** the receiver workflow runs with `contents: write` scoped to this repo only. Provenance verification uses the workflow's default `GITHUB_TOKEN` for read-only Actions API calls. **No telemetry, no third-party services, no analytics — this codebase neither phones home nor exposes a network surface beyond GitHub.**
+**Network surface.** By default the only egress is `api.github.com` (read-only provenance). The two exceptions are both opt-in and disclosed above: a GitLab-provider submission (`gitlab.com/api`), and an operator-enabled XRPL anchor run. **No telemetry, no analytics — this codebase never phones home; absent those two opt-in paths it exposes no network surface beyond GitHub.** The receiver workflow runs with `contents: write` scoped to this repo only.
 
 ## Packages
 
@@ -83,8 +87,9 @@ testing-os/
 ├── records/                   # Submission landing pad (ingest.yml writes here)
 ├── fixtures/                  # Test/example fixtures
 ├── docs/                      # Contract docs + architecture notes
+├── examples/                  # Copy-paste consumer starter kit (dogfood.yml + scenario + policy)
 ├── scripts/                   # Repo-level utilities (sync-version, build)
-└── .github/workflows/         # ci.yml, ingest.yml, pages.yml
+└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml
 ```
 
 ## Local Development
@@ -104,7 +109,7 @@ Requires Node ≥ 22. CI matrix runs Node 22 + 24 on `ubuntu-latest`; locally va
 
 ## Versioning
 
-All `@dogfood-lab/*` packages bump together — one number across the monorepo. Six packages publish to npm under `@dogfood-lab` at v1.4.0 in lockstep (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); the seventh, `@dogfood-lab/portfolio`, stays internal. The version line near the top of this README is auto-stamped from `package.json` via [`scripts/sync-version.mjs`](scripts/sync-version.mjs) on every `npm run build`.
+All `@dogfood-lab/*` packages bump together — one number across the monorepo. Six packages publish to npm under `@dogfood-lab` at v1.5.0 in lockstep (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); the seventh, `@dogfood-lab/portfolio`, stays internal. The version line near the top of this README is auto-stamped from `package.json` via [`scripts/sync-version.mjs`](scripts/sync-version.mjs) on every `npm run build`.
 
 ## License
 

@@ -2,6 +2,25 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] — 2026-06-21
+
+**A full dogfood-swarm pass: health hardening, record integrity, and consumer onboarding.** testing-os ran its own 10-phase swarm protocol on itself again — every finding cross-validated by a five-vendor cloud jury (Qwen / DeepSeek / Moonshot / Z.ai / OpenAI-OSS), every fix test-first. Lockstep minor bump across all seven `@dogfood-lab/*` packages. No breaking changes — new fields are optional and new providers/commands are opt-in.
+
+### New capabilities
+
+- **Record integrity (tamper-evident).** Every persisted record now carries an `integrity` block (`submission_digest` + `prev_digest`) forming an append-only hash chain; `dogfood ingest --verify-chain` validates it fully offline. An **optional, off-by-default XRPL anchor** (`dogfood ingest --anchor-compute|--anchor-post|--anchor-verify`) witnesses the chain head to the public XRP Ledger, making truncation or rewrite below an anchored point detectable. See the README threat model for the honest ceiling (tamper-evident, not tamper-proof) and why the existing GitHub OIDC run-binding — not a per-submission signature — is the attestation.
+- **GitLab CI provenance (opt-in).** A submission may declare `source.provider: gitlab`; the verifier confirms the GitLab pipeline/job via the GitLab API and binds the commit, mirroring the GitHub anti-forgery guard. GitHub remains the default and only-by-default network surface.
+- **Consumer onboarding.** A copy-paste [`examples/` starter kit](examples/) (a `dogfood.yml` workflow with a loud `DOGFOOD_TOKEN` preflight, a scenario template, and a starter policy) plus a `dogfood-init` scaffolder on `@dogfood-lab/report`. `@dogfood-lab/report` and `@dogfood-lab/verify` now ship working bins (`dogfood-report`, plus `verify --explain` to dry-run a submission and classify each rejection as submission-bad vs operational).
+- **Consumable intelligence + read API.** `findings advise --json` emits the advice bundle as machine-readable JSON; the portfolio's per-surface trends and shields.io badges are now served as committed read-API artifacts (`indexes/trends.json`, `indexes/badges/`); `@dogfood-lab/schemas` exports per-payload TypeScript interfaces (Submission, ScenarioResult, Record, Finding).
+
+### Health pass
+
+- **Security / correctness.** A verified record can no longer attest to a commit its CI run never executed — `submission.ref.commit_sha` is now bound mandatorily to the confirmed run head. Operational provenance faults (expired token, rate limit, 5xx) are distinguished from a genuinely-absent run, so an outage no longer bounces to submitters as "fix your payload". A write-side path-traversal guard now matches the read side. A transiently-unreadable `records/` root no longer overwrites the read-side indexes with empty content.
+- **Concurrency.** The review event log moved from a shared daily YAML array (read-modify-rewrite under a file lock) to one immutable file per event — no shared mutable file, so concurrent appends cannot lose an event. (A 50-fork detector proved no lock *file* is reliably exclusive on NTFS under saturation; the sharded-file design removes the dependence on it entirely.)
+- **Observability + honesty.** `swarm collect` surfaces and persists the non-isolated ownership-probe degradation; lookup paths now name torn/unreadable files instead of a bare not-found; the doc-drift gate now counts the real command map; the release workflow fails loud on an empty CHANGELOG section; the Dependabot lockfile-drift gate no longer false-fails dependency PRs. Three package READMEs were rewritten to match their shipped APIs.
+
+This entry is the user-facing summary; full per-wave detail lives in the swarm record.
+
 ## [1.4.0] — 2026-06-13
 
 **Dogfood swarm: a full health pass + a four-wave feature pass.** testing-os ran its own 10-phase dogfood-swarm protocol on itself — a health pass (bug/security → proactive → humanization → visual) that closed ~55 verified findings at 0 critical / 0 high, then a feature pass that closed the intelligence layer's learning loop and added migration, trend, and ergonomics capabilities. Lockstep minor bump across all seven `@dogfood-lab/*` packages. No breaking changes.
