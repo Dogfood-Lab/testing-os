@@ -20,7 +20,7 @@
 *AIによる支援を受けたソフトウェアのためのプロトコル、証拠ストア、および学習ループ。*
 
 <!-- version:start -->
-**v1.4.0** — 現在のリリース版。変更点は[CHANGELOG.md](CHANGELOG.md)を参照してください。
+**v1.5.0** — 現在のリリース。変更点は[CHANGELOG.md](CHANGELOG.md)を参照してください。
 <!-- version:end -->
 
 📖 **[ハンドブックを読む →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -45,17 +45,21 @@ npm install -g @dogfood-lab/dogfood-swarm
 swarm --help
 ```
 
-オペレーターガイド、CLIリファレンス、スキーマリファレンス、および統合レシピは、**[handbook](https://dogfood-lab.github.io/testing-os/handbook/)** にあります。バージョンごとの詳細については、[CHANGELOG.md](CHANGELOG.md)を参照してください。
+独自のリポジトリのテスト結果をここに記録したいですか？ **[`examples/`スターターキット](examples/)** を使用すると、5分で設定が完了します（`npx @dogfood-lab/report` で提出物をビルドし、`dogfood-init` でワークフローを構築します）。オペレーターガイド、CLIリファレンス、スキーマリファレンス、および統合レシピは、**[ハンドブック](https://dogfood-lab.github.io/testing-os/handbook/)** にあります。バージョンごとの詳細については、[CHANGELOG.md](CHANGELOG.md) を参照してください。
 
 ## 脅威モデル
 
 testing-osは、`mcp-tool-shop-org/*`および`dogfood-lab/*`の下にある信頼できるGitHubリポジトリから`repository_dispatch`を介してディスパッチされたdogfoodの送信を処理します。検証者はGitHub Actionsのプロビナンスを必要とします。主張された実行IDはGitHub APIを介して確認され、形状が不正、参照が欠落している、またはポリシーの主張が無効な送信は拒否されます。
 
+**プロビナンスは証明です。** `github` への提出の場合、検証者は、主張されている GitHub Actions の実行が実際に存在すること（GitHub API）を確認し、提出物の `repo` と `commit_sha` をその確認された実行に紐付けます。これは、GitHub 自体の OIDC ID に基づくライブのキーレスチェックであり、記録は実際に行われなかった実行またはコミットを証明することはできません。 **GitLab CI** はオプションでサポートされています（`source.provider: gitlab`）。GitLab への提出は、検証者が GitHub 以外のホスト（`gitlab.com/api`）にアクセスする唯一のケースであり、`gitlab` への提出の場合のみです。
+
+**記録の整合性は改ざんが「検知可能」であるだけで、「完全に防止」されるわけではありません。** 保存されたすべてのレコードには、`integrity` ブロック（`submission_digest` + `prev_digest`）が含まれており、これは追記のみを許可するハッシュチェーンを形成します。`dogfood ingest --verify-chain` を使用して、オフラインで完全に検証できます。これにより、外部からの改ざん、ディスクの破損、および部分的な復元が検出されます。ただし、これだけでは提出に使用される認証情報自体に対する保護にはなりません。認証情報はレコードとチェーンの両を書き換える可能性があるため、それを防ぐには、書き込み者の制御外にあるアンカーが必要です。 **オプションでデフォルトオフになっている XRPL アンカー**（`dogfood ingest --anchor-*`）は、チェーンの先頭をパブリックな XRP Ledger に記録し、アンカーポイントより前の任意の切り捨てまたは書き換えを検出できるようにします。これは、開示されている 2 番目の GitHub 以外の呼び出しであり、オペレーターが有効にした場合にのみ実行されます。
+
 **testing-osが扱うもの:** 各`repository_dispatch`ペイロード内の送信JSON、このリポジトリ内の`policies/`、`fixtures/`、`records/`、および`indexes/`、およびプロビナンス検証のための`api.github.com`へのアウトバウンド呼び出し。
 
 **testing-osが扱わないもの:** コンシューマーのソースコード、コンシューマーリポジトリ内のディスパッチエンベロープを超えたシークレット、またはこのリポジトリのワーキングツリー外のすべてのもの。
 
-**必要な権限:** レシーバーワークフローは、このリポジトリに限定された`contents: write`で実行されます。プロビナンス検証は、ワークフローのデフォルトの`GITHUB_TOKEN`を使用して、読み取り専用のActions API呼び出しを行います。**テレメトリ、サードパーティサービス、分析はありません。このコードベースは、ホームに電話をかけたり、GitHubを超えてネットワークインターフェイスを公開したりしません。**
+**ネットワークの露出範囲。** デフォルトでは、唯一のエグレスは `api.github.com`（読み取り専用のプロビナンス）です。例外は2つだけで、どちらもオプションであり、上記で説明されています。GitLab プロバイダーへの提出（`gitlab.com/api`）、およびオペレーターが有効にした XRPL アンカーの実行です。 **テレメトリや分析は行いません。このコードベースは外部に情報を送信しません。上記の2つのオプションパスがない場合、GitHub 以外のネットワークへの露出はありません。** 受信ワークフローは、このリポジトリのみを対象として `contents: write` のスコープで実行されます。
 
 ## パッケージ
 
@@ -83,8 +87,9 @@ testing-os/
 ├── records/                   # Submission landing pad (ingest.yml writes here)
 ├── fixtures/                  # Test/example fixtures
 ├── docs/                      # Contract docs + architecture notes
+├── examples/                  # Copy-paste consumer starter kit (dogfood.yml + scenario + policy)
 ├── scripts/                   # Repo-level utilities (sync-version, build)
-└── .github/workflows/         # ci.yml, ingest.yml, pages.yml
+└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml
 ```
 
 ## ローカル開発
@@ -104,7 +109,7 @@ Node 22以上が必要です。CIマトリックスでは、`ubuntu-latest`上�
 
 ## バージョン管理
 
-すべての`@dogfood-lab/*`パッケージはまとめて更新されます。つまり、モノリポジトリ全体でバージョン番号が1つだけ上がります。6つのパッケージ（`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`）がv1.4.0としてnpmに公開され、7番目のパッケージである`@dogfood-lab/portfolio`は内部利用のみとなります。このREADMEファイルの先頭付近にあるバージョン番号は、`package.json`から[`scripts/sync-version.mjs`](scripts/sync-version.mjs)を通じて自動的に更新されます。これは、`npm run build`を実行するたびに実行されます。
+すべての `@dogfood-lab/*` パッケージはまとめてバージョンアップします。モノレポ全体で1つの番号がインクリメントされます。6つのパッケージが v1.5.0 で npm に公開されます（`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`）。7番目の `@dogfood-lab/portfolio` は内部で使用されます。この README の上部近くにあるバージョン行は、すべての `npm run build` 時に [`scripts/sync-version.mjs`](scripts/sync-version.mjs) を介して `package.json` から自動的にタイムスタンプが設定されます。
 
 ## ライセンス
 

@@ -20,7 +20,7 @@
 *Protocolos, repositórios de evidências e ciclos de aprendizado para software assistido por IA.*
 
 <!-- version:start -->
-**v1.4.0** — versão atual. Consulte [CHANGELOG.md](CHANGELOG.md) para ver as alterações incluídas.
+**v1.5.0** — versão atual. Consulte [CHANGELOG.md](CHANGELOG.md) para ver o que foi incluído nesta versão.
 <!-- version:end -->
 
 📖 **[Leia o manual →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -45,17 +45,21 @@ npm install -g @dogfood-lab/dogfood-swarm
 swarm --help
 ```
 
-O guia do operador, a referência da interface de linha de comando (CLI), a referência do esquema e as instruções de integração estão disponíveis em **[handbook](https://dogfood-lab.github.io/testing-os/handbook/)**. Os detalhes específicos de cada versão podem ser encontrados em [CHANGELOG.md](CHANGELOG.md).
+Gostaria de registrar os resultados dos testes do seu próprio repositório aqui? O **[`kit inicial examples/`](examples/)** permite que você comece em cinco minutos (`npx @dogfood-lab/report` gera o envio; `dogfood-init` cria a estrutura do fluxo de trabalho). O guia do operador, a referência da CLI, a referência do esquema e os exemplos de integração estão disponíveis no **[manual](https://dogfood-lab.github.io/testing-os/handbook/)**. Os detalhes por versão estão em [CHANGELOG.md](CHANGELOG.md).
 
 ## Modelo de ameaças
 
 testing-os processa envios do Dogfood enviados por meio de `repository_dispatch` de repositórios confiáveis do GitHub sob `mcp-tool-shop-org/*` e `dogfood-lab/*`. O verificador requer a proveniência do GitHub Actions — os IDs de execução reivindicados são confirmados por meio da API do GitHub, e os envios com formas malformadas, referências ausentes ou reivindicações de política inválidas são rejeitados.
 
+**A proveniência é a comprovação.** Para um envio do `github`, o verificador confirma que a execução do GitHub Actions alegada realmente existe (API do GitHub) e associa o `repo` e o `commit_sha` do envio àquela execução confirmada — uma verificação ativa e sem necessidade de chaves, baseada na própria identidade OIDC do GitHub, para que um registro não possa atestar uma execução ou commit que não ocorreu. O **GitLab CI** é suportado como opção (`source.provider: gitlab`); um envio do GitLab é o único caso em que o verificador chama um host diferente do GitHub (`gitlab.com/api`) e apenas para envios do `gitlab`.
+
+**A integridade do registro é evidente contra adulterações, mas não à prova de adulterações.** Cada registro persistido contém um bloco de `integridade` (`submission_digest` + `prev_digest`), formando uma cadeia hash que permite apenas adições e que o comando `dogfood ingest --verify-chain` valida completamente offline — detectando adulterações externas, corrupção do disco e restaurações parciais. Ele **não** protege contra as credenciais de envio em si, que podem reescrever tanto um registro quanto a cadeia; para evitar isso, é necessária uma âncora fora do controle do escritor. Uma **âncora XRPL opcional, desativada por padrão** (`dogfood ingest --anchor-*`), testemunha o cabeçalho da cadeia no XRP Ledger público, tornando qualquer truncamento ou reescrita abaixo de um ponto ancorado detectável — a segunda chamada não GitHub divulgada e apenas quando um operador a habilita.
+
 **O que testing-os acessa:** o JSON de envio em cada carga útil `repository_dispatch`; `policies/`, `fixtures/`, `records/` e `indexes/` neste repositório; chamadas de saída para `api.github.com` para verificação de proveniência.
 
 **O que testing-os NÃO acessa:** código-fonte do consumidor, segredos nos repositórios do consumidor além do envelope de envio ou qualquer coisa fora da árvore de trabalho deste repositório.
 
-**Permissões necessárias:** o fluxo de trabalho do receptor é executado com `contents: write` restrito a este repositório. A verificação de proveniência usa o `GITHUB_TOKEN` padrão do fluxo de trabalho para chamadas de API de Ações somente leitura. **Sem telemetria, sem serviços de terceiros, sem análises — este código-base não envia informações para casa nem expõe uma superfície de rede além do GitHub.**
+**Superfície de rede.** Por padrão, a única saída é `api.github.com` (proveniência somente leitura). As duas exceções são opcionais e foram divulgadas acima: um envio do provedor GitLab (`gitlab.com/api`) e uma âncora XRPL habilitada pelo operador. **Sem telemetria, sem análise — este código-fonte nunca se conecta a nenhum servidor; na ausência desses dois caminhos opcionais, ele não expõe nenhuma superfície de rede além do GitHub.** O fluxo de trabalho do receptor é executado com permissões `contents: write` restritas apenas a este repositório.
 
 ## Pacotes
 
@@ -83,8 +87,9 @@ testing-os/
 ├── records/                   # Submission landing pad (ingest.yml writes here)
 ├── fixtures/                  # Test/example fixtures
 ├── docs/                      # Contract docs + architecture notes
+├── examples/                  # Copy-paste consumer starter kit (dogfood.yml + scenario + policy)
 ├── scripts/                   # Repo-level utilities (sync-version, build)
-└── .github/workflows/         # ci.yml, ingest.yml, pages.yml
+└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml
 ```
 
 ## Desenvolvimento local
@@ -104,7 +109,7 @@ Requer Node ≥ 22. A matriz de CI executa o Node 22 e 24 no `ubuntu-latest`; va
 
 ## Controle de versão
 
-Todos os pacotes `@dogfood-lab/*` são atualizados em conjunto, com um único número de versão para todo o monorepositorio. Seis pacotes são publicados no npm sob o nome `@dogfood-lab` na versão v1.4.0, de forma sincronizada (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); o sétimo, `@dogfood-lab/portfolio`, permanece interno. A linha da versão, no início deste arquivo README, é atualizada automaticamente a partir do arquivo `package.json` por meio de [`scripts/sync-version.mjs`](scripts/sync-version.mjs) em cada execução de `npm run build`.
+Todos os pacotes `@dogfood-lab/*` são atualizados em conjunto — um único número em todo o monorepositorio. Seis pacotes são publicados no npm sob `@dogfood-lab` na versão v1.5.0, de forma sincronizada (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); o sétimo, `@dogfood-lab/portfolio`, permanece interno. A linha da versão perto do topo deste README é gerada automaticamente a partir de `package.json` por meio de [`scripts/sync-version.mjs`](scripts/sync-version.mjs) em cada execução de `npm run build`.
 
 ## Licença
 

@@ -17,6 +17,25 @@ testing-os is the sole write authority for dogfood evidence. Other systems consu
 | **role-os** | Advice bundles | Consumes inherited guidance for bootstrap/review contexts |
 | **org audit** | Portfolio JSON | Includes dogfood status in audit posture |
 
+## Onboarding your repo
+
+The fastest path is the [`examples/` starter kit](https://github.com/dogfood-lab/testing-os/tree/main/examples): copy `dogfood.yml` into your repo, add a `DOGFOOD_TOKEN` secret (a fine-grained PAT with `contents: write` on `dogfood-lab/testing-os`), and push. The workflow's preflight fails loud if the token is missing — the one setup step everyone forgets. Three CLIs back it:
+
+- **`npx @dogfood-lab/report`** (`dogfood-report`) — builds the submission envelope from your scenario results and the standard `GITHUB_*` env vars.
+- **`dogfood-init`** — scaffolds the workflow + scenario template into your repo and prints the token setup.
+- **`npx @dogfood-lab/verify --file <submission> --explain`** — dry-runs a submission against the contract before you dispatch, classifying any rejection as *submission-bad* (your fix) vs *operational* (ours).
+
+### Provenance providers
+
+Provenance confirms your CI run actually happened and binds your `repo` + `commit_sha` to it — a record cannot attest to a run that did not occur.
+
+- **GitHub Actions** (default) — `source.provider: github`, confirmed via the GitHub API.
+- **GitLab CI** (opt-in) — `source.provider: gitlab`, confirmed via the GitLab API with a GitLab token (`GITLAB_TOKEN` / `CI_JOB_TOKEN`). This is the only case the verifier calls a non-GitHub host.
+
+### Record integrity
+
+Every persisted record carries an `integrity` hash chain (`submission_digest` + `prev_digest`). `dogfood ingest --verify-chain` validates it fully offline; an optional, off-by-default XRPL anchor (`dogfood ingest --anchor-compute|--anchor-post|--anchor-verify`) witnesses the chain head externally so truncation or rewrite below an anchored point is detectable. The integrity model — tamper-evident by default, tamper-proof only with the anchor — is documented in the [README threat model](https://github.com/dogfood-lab/testing-os#threat-model).
+
 ## shipcheck Gate F
 
 shipcheck reads `indexes/latest-by-repo.json` from the GitHub raw CDN and evaluates:
@@ -71,10 +90,11 @@ The [intelligence layer](../intelligence-layer/) adds a second consumption path 
 Future projects query for inherited guidance:
 
 ```bash
-node packages/findings/cli.js advise --surface mcp-server
+node packages/findings/cli.js advise --surface mcp-server          # human-readable
+node packages/findings/cli.js advise --surface mcp-server --json    # machine-readable
 ```
 
-Returns starter checks, evidence expectations, likely failure classes, relevant doctrine, and supporting lineage.
+Returns starter checks, evidence expectations, likely failure classes, relevant doctrine, and supporting lineage. `--json` emits the advice bundle as pure JSON to stdout (no formatting, pipeable) for programmatic consumers like shipcheck and repo-knowledge.
 
 ### Sync Export
 

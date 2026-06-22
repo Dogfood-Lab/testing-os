@@ -20,7 +20,7 @@
 *用于人工智能辅助软件的协议、证据存储和学习循环。*
 
 <!-- version:start -->
-**v1.4.0** — 当前版本。请参阅 [CHANGELOG.md](CHANGELOG.md)，了解本次更新的内容。
+**v1.5.0** — 当前版本。请参阅 [CHANGELOG.md](CHANGELOG.md)，了解已发布的内容。
 <!-- version:end -->
 
 📖 **[阅读手册 →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -45,17 +45,21 @@ npm install -g @dogfood-lab/dogfood-swarm
 swarm --help
 ```
 
-操作指南、命令行界面参考、模式参考和集成示例都位于 **[手册](https://dogfood-lab.github.io/testing-os/handbook/)** 中。每个版本的详细信息请参阅 [CHANGELOG.md](CHANGELOG.md)。
+您是否希望将您自己的代码仓库的测试证据记录在此处？ **[`examples/` 启动工具包](examples/)** 可让您在五分钟内开始使用（`npx @dogfood-lab/report` 用于构建提交内容；`dogfood-init` 用于搭建工作流程）。操作指南、CLI 参考、模式参考和集成示例都位于 **[手册](https://dogfood-lab.github.io/testing-os/handbook/)** 中。每个版本的详细信息请参阅 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 威胁模型
 
 testing-os 处理通过 `repository_dispatch` 从受信任的 GitHub 仓库（`mcp-tool-shop-org/*` 和 `dogfood-lab/*`）发送的 dogfood 提交。验证器需要 GitHub Actions 溯源——声明的运行 ID 通过 GitHub API 进行确认，并且具有格式错误、缺少引用或无效策略声明的提交将被拒绝。
 
+**溯源即证明。** 对于 GitHub 提交，验证程序会确认所声称的 GitHub Actions 运行确实存在（GitHub API），并将提交的 `repo` 和 `commit_sha` 与该已确认的运行绑定在一起——这是一种实时的、无需密钥的检查，其根源在于 GitHub 自身的 OIDC 身份，因此记录不能证明未发生过的运行或提交。支持 GitLab CI（可选；`source.provider: gitlab`）；GitLab 提交是验证程序调用非 GitHub 主机（`gitlab.com/api`）的唯一情况，并且仅针对 `gitlab` 提交。
+
+**记录完整性具有防篡改能力，但并非完全防篡改。** 每个持久化的记录都包含一个 `integrity` 块（`submission_digest` + `prev_digest`），形成一个只能追加的哈希链，`dogfood ingest --verify-chain` 可以完全离线地验证该哈希链——检测外部篡改、磁盘损坏和部分恢复。它**不能**防止对提交凭据本身的攻击，因为它可以重写记录和链；要解决这个问题，需要使用写入者无法控制的锚点。一个**可选的、默认关闭的 XRPL 锚点**（`dogfood ingest --anchor-*`）会见证链头到公共 XRP 分账本，从而可以检测出任何低于已锚定点的截断或重写——这是第二个公开的非 GitHub 调用，并且仅当操作员启用时才会发生。
+
 **testing-os 涉及的内容：**每个 `repository_dispatch` 有效负载中的提交 JSON；此仓库中的 `policies/`、`fixtures/`、`records/` 和 `indexes/`；到 `api.github.com` 的传出调用，用于进行溯源验证。
 
 **testing-os 不涉及的内容：**消费者源代码、消费者仓库中的秘密（超出发送范围），或任何超出此仓库工作树的内容。
 
-**所需的权限：**接收器工作流仅在此仓库中运行，范围为 `contents: write`。溯源验证使用工作流的默认 `GITHUB_TOKEN` 进行只读 Actions API 调用。**没有遥测、没有第三方服务、没有分析——此代码库既不会“回家报告”，也不会暴露超出 GitHub 的网络接口。**
+**网络接口。** 默认情况下，唯一的外部连接是 `api.github.com`（只读溯源）。上述两种情况都是可选的：GitLab 提供商提交（`gitlab.com/api`）和由操作员启用的 XRPL 锚点运行。**没有遥测数据，也没有分析——此代码库绝不会自动向外部发送数据；如果没有这两个可选路径，它就不会暴露任何超出 GitHub 的网络接口。**接收工作流程的权限设置为 `contents: write`，并且仅限于此代码仓库。
 
 ## 包
 
@@ -83,8 +87,9 @@ testing-os/
 ├── records/                   # Submission landing pad (ingest.yml writes here)
 ├── fixtures/                  # Test/example fixtures
 ├── docs/                      # Contract docs + architecture notes
+├── examples/                  # Copy-paste consumer starter kit (dogfood.yml + scenario + policy)
 ├── scripts/                   # Repo-level utilities (sync-version, build)
-└── .github/workflows/         # ci.yml, ingest.yml, pages.yml
+└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml
 ```
 
 ## 本地开发
@@ -104,7 +109,7 @@ npm run verify      # build + test (canonical pre-commit check)
 
 ## 版本控制
 
-所有以 `@dogfood-lab/*` 开头的软件包的版本号同步更新——整个代码仓库的版本号都统一加一。六个软件包以 v1.4.0 的版本发布到 npm，它们分别是：`schemas`、`verify`、`report`、`ingest`、`findings` 和 `dogfood-swarm`；第七个软件包 `@dogfood-lab/portfolio` 仍然是内部使用的。本 README 文件顶部的版本号行是通过在每次执行 `npm run build` 时，从 `package.json` 中自动提取并更新的，具体脚本为 [`scripts/sync-version.mjs`](scripts/sync-version.mjs)。
+所有 `@dogfood-lab/*` 包都一起更新——整个单体仓库使用一个版本号。六个包以 v1.5.0 的形式发布到 npm 下的 `@dogfood-lab` 中（`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`）；第七个包 `@dogfood-lab/portfolio` 仍然是内部使用的。此 README 文件顶部的版本行通过 [`scripts/sync-version.mjs`](scripts/sync-version.mjs) 从 `package.json` 中自动提取，并在每次执行 `npm run build` 时进行更新。
 
 ## 许可证
 
