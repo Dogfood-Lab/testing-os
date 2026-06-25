@@ -18,7 +18,7 @@
   "dependencies": {
     "@dogfood-lab/findings": "*",
     "@dogfood-lab/schemas": "*",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^5.1.0"
   },
   "engines": {
     "node": ">=22"
