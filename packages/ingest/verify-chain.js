@@ -39,10 +39,11 @@
  */
 
 import { existsSync, readFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, relative, sep } from 'node:path';
 
 import { submissionDigest, GENESIS_DIGEST } from './lib/integrity.js';
 import { readChainManifest } from './lib/chain-manifest.js';
+import { findJsonFiles } from './rebuild-indexes.js';
 
 /**
  * @typedef {object} ChainBreak
@@ -52,108 +53,218 @@ import { readChainManifest } from './lib/chain-manifest.js';
  */
 
 /**
+ * @typedef {object} ChainOrphan
+ * @property {string|null} run_id - The orphan record's run_id (from its
+ *   integrity block or its body), if known.
+ * @property {number|null} seq - The orphan record's self-claimed integrity.seq.
+ * @property {string} path - Repo-relative, forward-slashed path to the orphan file.
+ * @property {string} reason - Operator-legible description of why it is an orphan.
+ */
+
+/**
  * @typedef {object} ChainVerifyResult
- * @property {boolean} ok - True when the whole chain verifies.
+ * @property {boolean} ok - True when the whole chain verifies (and, when
+ *   collectOrphans is set, no orphan records exist).
  * @property {number} count - Number of entries verified (0 for an empty chain).
  * @property {string} head_digest - submission_digest of the last entry, or
  *   GENESIS_DIGEST for an empty chain.
  * @property {ChainBreak|null} break - First break, or null when ok.
+ * @property {ChainBreak[]} [breaks] - All independent breaks (only present when
+ *   `collectAllBreaks` is set). The first element equals `break`.
+ * @property {ChainOrphan[]} [orphans] - Records on disk but absent from the
+ *   ledger (only present when `collectOrphans` is set).
  */
 
 /**
  * Verify the integrity chain at `<repoRoot>/indexes/integrity/chain.jsonl`.
  *
  * @param {string} repoRoot - Absolute path to the testing-os repo root.
+ * @param {object} [opts]
+ * @param {boolean} [opts.collectAllBreaks=false] - INGEST-PROACT-004: continue
+ *   past the FIRST break and return a `breaks[]` array of every
+ *   per-record-independent break (digest-mismatch, missing-file). The default
+ *   (false) stops at the first break — the fail-fast CI gate semantics. A
+ *   structural break (non-monotonic seq, broken prev-link) still stops the
+ *   walk even under this flag, because everything after it is unverifiable
+ *   relative to a now-untrustworthy chain order.
+ * @param {boolean} [opts.collectOrphans=false] - INGEST-PROACT-001: after the
+ *   chain walk, reconcile the on-disk records against the ledger and return an
+ *   `orphans[]` array of any record file whose seq/run_id is absent from the
+ *   ledger (a torn write between record-write and ledger-append). An orphan
+ *   makes the result `ok: false` — the audit DETECTS the orphan instead of
+ *   silently passing while a real record lives outside the tamper-evident chain.
  * @returns {ChainVerifyResult}
  */
-export function verifyChain(repoRoot) {
+export function verifyChain(repoRoot, opts = {}) {
+  const collectAllBreaks = opts.collectAllBreaks === true;
+  const collectOrphans = opts.collectOrphans === true;
+
   let entries;
   try {
     entries = readChainManifest(repoRoot);
   } catch (err) {
-    // A corrupt (non-JSON) manifest line is itself a tamper signal.
+    // A corrupt (non-JSON) manifest line is itself a tamper signal. We cannot
+    // trust the ledger at all here, so orphan reconciliation is not meaningful.
+    const brk = { seq: -1, run_id: null, reason: err.message };
     return {
       ok: false,
       count: 0,
       head_digest: GENESIS_DIGEST,
-      break: { seq: -1, run_id: null, reason: err.message },
+      break: brk,
+      ...(collectAllBreaks ? { breaks: [brk] } : {}),
+      ...(collectOrphans ? { orphans: [] } : {}),
     };
   }
 
-  if (entries.length === 0) {
-    // An empty chain is trivially valid: genesis with no entries.
-    return { ok: true, count: 0, head_digest: GENESIS_DIGEST, break: null };
-  }
+  const headDigest = entries.length === 0
+    ? GENESIS_DIGEST
+    : (entries[entries.length - 1].submission_digest ?? GENESIS_DIGEST);
 
+  const breaks = [];
   let prevDigest = GENESIS_DIGEST;
 
   for (let i = 0; i < entries.length; i++) {
     const entry = entries[i];
     const seq = entry.seq;
     const runId = entry.run_id ?? null;
+    const record = (reason) => breaks.push({ seq, run_id: runId, reason });
 
-    const fail = (reason) => ({
-      ok: false,
-      count: entries.length,
-      head_digest: entries[entries.length - 1].submission_digest ?? GENESIS_DIGEST,
-      break: { seq, run_id: runId, reason },
-    });
-
-    // (3) Monotonic seq: 0,1,2,…
+    // (3) Monotonic seq and (2) chain-link are STRUCTURAL: a break here means
+    // the chain order itself is untrustworthy, so everything downstream is
+    // unverifiable relative to it. Record the break and stop — even under
+    // collectAllBreaks — rather than emitting a cascade of meaningless
+    // downstream prev-link errors.
     if (seq !== i) {
-      return fail(`seq is not monotonic: expected ${i}, found ${seq}`);
+      record(`seq is not monotonic: expected ${i}, found ${seq}`);
+      break;
     }
-
-    // (2) Chain link: this entry's prev_digest must equal the previous entry's
-    // submission_digest (GENESIS for the first entry).
     if (entry.prev_digest !== prevDigest) {
-      return fail(
-        `broken prev_digest link: expected ${prevDigest}, found ${entry.prev_digest}`
-      );
+      record(`broken prev_digest link: expected ${prevDigest}, found ${entry.prev_digest}`);
+      break;
     }
 
-    // (1) Load the record and recompute its digest.
+    // (1) Per-record-INDEPENDENT checks: missing-file and digest-mismatch.
+    // Each is judged on this record alone, so under collectAllBreaks we record
+    // the break and CONTINUE to surface the full corruption scope. Under the
+    // default we record the first and stop.
     const recordPath = join(repoRoot, entry.path);
     if (!existsSync(recordPath)) {
-      return fail(`record file missing at ${entry.path} (could not read to recompute digest)`);
+      record(`record file missing at ${entry.path} (could not read to recompute digest)`);
+      if (!collectAllBreaks) break;
+      prevDigest = entry.submission_digest;
+      continue;
     }
 
-    let record;
+    let parsed;
     try {
-      record = JSON.parse(readFileSync(recordPath, 'utf-8'));
+      parsed = JSON.parse(readFileSync(recordPath, 'utf-8'));
     } catch (err) {
-      return fail(`record file at ${entry.path} is not valid JSON: ${err.message}`);
+      record(`record file at ${entry.path} is not valid JSON: ${err.message}`);
+      if (!collectAllBreaks) break;
+      prevDigest = entry.submission_digest;
+      continue;
     }
 
-    const recomputed = submissionDigest(record);
-
-    // The recomputed digest must equal the ledger's claim.
+    const recomputed = submissionDigest(parsed);
     if (recomputed !== entry.submission_digest) {
-      return fail(
+      record(
         `digest mismatch: recomputed ${recomputed} but manifest claims ${entry.submission_digest} ` +
         `— record at ${entry.path} was modified after persist`
       );
+      if (!collectAllBreaks) break;
+      prevDigest = entry.submission_digest;
+      continue;
     }
 
-    // …AND the record's own self-certified digest.
-    const selfDigest = record.integrity?.submission_digest;
+    const selfDigest = parsed.integrity?.submission_digest;
     if (selfDigest !== recomputed) {
-      return fail(
+      record(
         `record self-digest mismatch: record.integrity.submission_digest is ` +
         `${selfDigest ?? '(absent)'} but recomputed ${recomputed} — record at ${entry.path} ` +
         `was modified after persist`
       );
+      if (!collectAllBreaks) break;
+      prevDigest = entry.submission_digest;
+      continue;
     }
 
     prevDigest = entry.submission_digest;
   }
 
+  const orphans = collectOrphans ? collectOrphanRecords(repoRoot, entries) : null;
+
+  const ok = breaks.length === 0 && (orphans === null || orphans.length === 0);
   return {
-    ok: true,
+    ok,
     count: entries.length,
-    head_digest: entries[entries.length - 1].submission_digest,
-    break: null,
+    head_digest: headDigest,
+    break: breaks.length > 0 ? breaks[0] : null,
+    ...(collectAllBreaks ? { breaks } : {}),
+    ...(collectOrphans ? { orphans } : {}),
   };
+}
+
+/**
+ * INGEST-PROACT-001 — reconcile on-disk records against the ledger.
+ *
+ * Walks every `*.json` under `records/` (accepted AND `_rejected/`) and flags
+ * any record file whose `(run_id, seq)` identity is absent from the ledger.
+ * Such a file is an ORPHAN: persist wrote the record but the ledger append did
+ * not happen (a crash in the torn window between the two steps), so the record
+ * exists OUTSIDE the tamper-evident chain and the plain chain-walk is blind to
+ * it. The chain-manifest's own ledger lines are NOT under `records/`, so they
+ * are never mistaken for orphans.
+ *
+ * @param {string} repoRoot
+ * @param {Array<object>} entries - The ledger entries (already read).
+ * @returns {ChainOrphan[]}
+ */
+function collectOrphanRecords(repoRoot, entries) {
+  // Index the ledger by run_id and by repo-relative path so a record matches if
+  // EITHER identity is present — a record is ledgered as long as its line exists.
+  const ledgerRunIds = new Set();
+  const ledgerPaths = new Set();
+  for (const e of entries) {
+    if (e.run_id) ledgerRunIds.add(e.run_id);
+    if (e.path) ledgerPaths.add(e.path);
+  }
+
+  const orphans = [];
+  const recordsDir = join(repoRoot, 'records');
+  for (const absPath of findJsonFiles(recordsDir)) {
+    const relPath = relative(repoRoot, absPath).split(sep).join('/');
+    if (ledgerPaths.has(relPath)) continue;
+
+    let record;
+    try {
+      record = JSON.parse(readFileSync(absPath, 'utf-8'));
+    } catch {
+      // A record file we cannot even parse, that is also absent from the ledger,
+      // is still an orphan — report it with what little identity we have.
+      orphans.push({
+        run_id: null,
+        seq: null,
+        path: relPath,
+        reason: `record file present on disk but absent from the ledger, and not valid JSON`,
+      });
+      continue;
+    }
+
+    const runId = record.run_id ?? null;
+    if (runId && ledgerRunIds.has(runId)) continue;
+
+    orphans.push({
+      run_id: runId,
+      seq: record.integrity?.seq ?? null,
+      path: relPath,
+      reason:
+        `record present on disk but absent from the ledger — a torn persist ` +
+        `(record written, ledger append missed). Re-run ingest for this record ` +
+        `or rebuild the chain to admit it into the tamper-evident ledger.`,
+    });
+  }
+
+  return orphans;
 }
 
 /**
@@ -165,14 +276,41 @@ export function verifyChain(repoRoot) {
  */
 export function formatChainResult(result) {
   if (result.ok) {
-    return [
+    const lines = [
       `integrity chain OK: ${result.count} record(s) verified`,
       `head digest: ${result.head_digest}`,
     ];
+    if (Array.isArray(result.orphans)) {
+      lines.push(`reconciliation: 0 orphan record(s) on disk`);
+    }
+    return lines;
   }
-  const b = result.break;
-  return [
-    `integrity chain BROKEN at seq ${b.seq}${b.run_id ? ` (run_id: ${b.run_id})` : ''}`,
-    `reason: ${b.reason}`,
-  ];
+
+  const lines = [];
+
+  // INGEST-PROACT-004: when collectAllBreaks populated breaks[], list every
+  // independent break so the operator sees the full corruption scope in one
+  // pass. Otherwise report the single first break (the CI-gate default).
+  const allBreaks = Array.isArray(result.breaks) ? result.breaks : (result.break ? [result.break] : []);
+  if (allBreaks.length > 1) {
+    lines.push(`integrity chain BROKEN: ${allBreaks.length} break(s) found`);
+    for (const b of allBreaks) {
+      lines.push(`  - seq ${b.seq}${b.run_id ? ` (run_id: ${b.run_id})` : ''}: ${b.reason}`);
+    }
+  } else if (allBreaks.length === 1) {
+    const b = allBreaks[0];
+    lines.push(`integrity chain BROKEN at seq ${b.seq}${b.run_id ? ` (run_id: ${b.run_id})` : ''}`);
+    lines.push(`reason: ${b.reason}`);
+  }
+
+  // INGEST-PROACT-001: an orphan makes the result not-ok even with zero chain
+  // breaks — name each orphan file + run_id and the recovery action.
+  if (Array.isArray(result.orphans) && result.orphans.length > 0) {
+    lines.push(`reconciliation: ${result.orphans.length} orphan record(s) on disk but absent from the ledger`);
+    for (const o of result.orphans) {
+      lines.push(`  - ${o.path}${o.run_id ? ` (run_id: ${o.run_id})` : ''}: ${o.reason}`);
+    }
+  }
+
+  return lines;
 }

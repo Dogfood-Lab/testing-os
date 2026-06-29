@@ -105,6 +105,7 @@ import {
   TERMINAL_STATUSES as WAVE_TERMINAL_STATUSES,
 } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
+import { mintCorrelationId } from '../lib/correlation-id.js';
 
 const REDRIVE_TARGET_STATUS = 'dispatched';
 
@@ -568,10 +569,4 @@ export function formatRedrive(report) {
   }
 
   return out;
-}
-
-function mintCorrelationId() {
-  const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 6);
-  return `coord-${ts}-${rand}`;
 }

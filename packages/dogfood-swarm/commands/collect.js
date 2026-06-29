@@ -30,7 +30,7 @@ import {
 import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { getActualTouchedFiles, diffReportedVsActual } from '../lib/git-touched-files.js';
-import { randomBytes } from 'node:crypto';
+import { mintCorrelationId } from '../lib/correlation-id.js';
 
 /**
  * The deterministic per-domain output filename the dispatch layout promises an
@@ -233,18 +233,6 @@ const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'sta
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
 
 /**
- * Mint a synthetic correlation_id for a coordination stage (FT-PIPELINE-004
- * pattern). The ingest pipeline uses `ing-<base36-ts>-<rand4>`; coordination
- * stages here use `coord-<base36-ts>-<rand4>` so a single grep tells the
- * operator which side of the contract emitted the event.
- */
-function mintCorrelationId() {
-  const ts = Date.now().toString(36);
-  const rand = randomBytes(2).toString('hex');
-  return `coord-${ts}-${rand}`;
-}
-
-/**
  * @param {object} opts
  * @param {string} opts.runId
  * @param {string} opts.dbPath
@@ -339,6 +327,26 @@ export function collect(opts) {
     ownership_probe_degraded: null,
     summary: null,
   };
+
+  // DS-PROAC-03: bracket the multi-agent collection with a lifecycle NDJSON
+  // pair matching verify_start/verify_complete (verify.js) and wave_dispatched
+  // (dispatch.js). collect iterates every agent_run, validates each output, runs
+  // ownership, and dedups findings — a long, multi-item operation whose only
+  // prior breadcrumbs were per-failure events with no "began / finished with
+  // these counts" anchor. One correlation_id ties the start, the per-agent
+  // failure events, and the complete together for a single grep. collect_complete
+  // is emitted before every return below so a degraded run SAYS it degraded
+  // (invalid/violation counts) rather than scrolling past silently.
+  const collectCorrelationId = mintCorrelationId();
+  logStage('collect_start', {
+    component: 'dogfood-swarm',
+    correlation_id: collectCorrelationId,
+    runId: opts.runId,
+    waveId: wave.id,
+    waveNumber: wave.wave_number,
+    phase: wave.phase,
+    agentCount: agentRuns.length,
+  });
 
   const allFindings = [];
 
@@ -789,6 +797,28 @@ export function collect(opts) {
 
   // Generate summary
   report.summary = buildSummary(db, opts.runId, wave, report);
+
+  // DS-PROAC-03: completion half of the lifecycle pair. Shares the start's
+  // correlation_id and reports the outcome counts so a degraded run is loud:
+  // `accepted` is agents whose status ended `complete`; `invalid` and
+  // `violations` mirror report.validation_errors / report.violations (the two
+  // failure classes that flip the wave to `failed`). An operator greps the one
+  // correlation_id and reads accepted/invalid/violations without parsing stdout.
+  const acceptedCount = report.agents.filter(a => a.status === 'complete').length;
+  logStage('collect_complete', {
+    component: 'dogfood-swarm',
+    correlation_id: collectCorrelationId,
+    runId: opts.runId,
+    waveId: wave.id,
+    waveNumber: wave.wave_number,
+    phase: wave.phase,
+    agentCount: report.agents.length,
+    accepted: acceptedCount,
+    invalid: report.validation_errors.length,
+    violations: report.violations.length,
+    waveStatus: report.waveStatusAfter,
+    serial_verify_required: report.serial_verify_required,
+  });
 
   return report;
 }

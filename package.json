@@ -16,6 +16,7 @@
     "test": "npm test --workspaces --if-present",
     "test:vitest": "vitest run --passWithNoTests",
     "test:scripts": "node --test \"scripts/*.test.mjs\"",
+    "test:floor": "node --test scripts/stageC-check-test-floor.test.mjs",
     "verify": "npm run sync-version:check && npm run check-doc-drift && npm run check-regression-pins && npm run build && npm run test:scripts && npm run test",
     "sync-version": "node scripts/sync-version.mjs",
     "sync-version:check": "node scripts/sync-version.mjs --check",

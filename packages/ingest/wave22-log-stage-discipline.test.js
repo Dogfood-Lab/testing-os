@@ -45,8 +45,14 @@ function listJsFiles(root) {
   const out = [];
   const skip = new Set([
     'node_modules', 'dist', 'build', 'coverage',
-    '.git', '.cache', '__test_root__',
+    '.git', '.cache', '__test_root__', '.swarm',
   ]);
+  // Test fixtures stage copies of source (run.js etc.) into per-test roots
+  // named `__test_root_<suffix>__` (d1b001, d2b005_global, verify_only, …),
+  // and `node --test` runs test files concurrently — so the sweep can walk a
+  // sibling test's fixture mid-flight. Those copies are NOT source siblings;
+  // skip every `__test_root*` variant by prefix, not just the bare name. The
+  // `.swarm` worktree dir is likewise transient runtime state, never source.
   function walk(dir) {
     let entries;
     try {
@@ -55,7 +61,7 @@ function listJsFiles(root) {
       return;
     }
     for (const name of entries) {
-      if (skip.has(name)) continue;
+      if (skip.has(name) || name.startsWith('__test_root')) continue;
       const full = join(dir, name);
       let st;
       try {

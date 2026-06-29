@@ -30,6 +30,31 @@ function deepMerge(target, source) {
 }
 
 /**
+ * Global reject-rule ids the build can account for. Two groups:
+ *   - HANDLED HERE — enforced by the switch below.
+ *   - ENFORCED ELSEWHERE — owned by another validator or by verify() itself
+ *     (the switch's `default` arm intentionally no-ops them).
+ *
+ * PROACT-VERIFY-002: any `severity: reject` rule whose id is OUTSIDE this set is
+ * an operator-added gate the build does not enforce. Silently no-op'ing it (the
+ * old `default: break`) meant the rule looked active in global-policy.yaml but
+ * never ran. We now surface an actionable diagnostic instead. Keep this set in
+ * sync when a new reject rule gains real enforcement.
+ */
+const KNOWN_REJECT_RULE_IDS = new Set([
+  // handled by the switch in validatePolicy
+  'scenario-minimum',
+  'attested-if-human',
+  'blocked-needs-reason',
+  // enforced by other validators or by verify() itself (default-arm no-op is correct)
+  'schema-valid',
+  'provenance-confirmed',
+  'step-results-present',
+  'step-verdict-consistent',
+  'no-verdict-upgrade',
+]);
+
+/**
  * Resolve the effective surface policy for a given product surface.
  * Repo policy overrides global defaults per surface.
  *
@@ -95,8 +120,20 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
         break;
 
       // schema-valid, provenance-confirmed, step-results-present, step-verdict-consistent,
-      // no-verdict-upgrade are enforced by other validators or the main verify() function
+      // no-verdict-upgrade are enforced by other validators or the main verify() function.
+      // PROACT-VERIFY-002: a reject rule the build neither handles here NOR enforces
+      // elsewhere would otherwise pass SILENTLY — the operator's new gate never runs.
+      // Reject the submission with a diagnostic naming the unenforced rule so the gap
+      // is visible instead of failing open.
       default:
+        if (!KNOWN_REJECT_RULE_IDS.has(rule.id)) {
+          // No `policy:` prefix here — index.js prepends it to every policy
+          // error (mirrors the `[rule.id]` / `surface[...]` messages above).
+          errors.push(
+            `rule "${rule.id}" is declared severity:reject but has no enforcement in this build — ` +
+              `add an enforcement arm in validators/policy.js or register it in KNOWN_REJECT_RULE_IDS`
+          );
+        }
         break;
     }
   }

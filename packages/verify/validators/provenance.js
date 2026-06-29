@@ -32,6 +32,66 @@ export const GITHUB_PROVENANCE_TIMEOUT_MS = 30000;
 export const GITLAB_PROVENANCE_TIMEOUT_MS = 30000;
 
 /**
+ * Default RETRY budget for a transient provider fault (HTTP 429 rate-limit or a
+ * 5xx provider outage). PROACT-VERIFY-001: a single 429/5xx during a momentary
+ * blip used to fail the whole submission as an operational incident even though
+ * one retry would have confirmed the run. We retry a BOUNDED number of times
+ * with exponential backoff (honoring `Retry-After` when the provider sends it),
+ * then THROW on exhaustion so a genuinely-down provider still surfaces as an
+ * operational signal — never a false 'confirmed'. 404 is NOT retried (the run is
+ * genuinely absent, a single immediate rejection).
+ *
+ * `retries` is the number of ADDITIONAL attempts after the first, so the default
+ * 2 means up to 3 total requests. It is an opts field (like `timeoutMs`) so it
+ * stays test-injectable and the offline stub path is unaffected.
+ */
+export const PROVENANCE_RETRIES = 2;
+
+/**
+ * Base backoff between retry attempts, in ms. Attempt N waits
+ * `PROVENANCE_BACKOFF_MS * 2^(N-1)` (250 → 500 → …), unless the provider sent a
+ * `Retry-After` header, which takes precedence. Injectable via opts so tests run
+ * without real delay.
+ */
+export const PROVENANCE_BACKOFF_MS = 250;
+
+/** HTTP statuses worth retrying: 429 rate-limit + the 5xx provider-outage band. */
+function isRetryableStatus(status) {
+  return status === 429 || (status >= 500 && status <= 599);
+}
+
+/**
+ * Resolve the wait before the next attempt. A `Retry-After` header (delay in
+ * seconds, or an HTTP-date) is honored when present and parseable; otherwise
+ * fall back to exponential backoff. `attempt` is 1-based (1 = wait before the
+ * 2nd request).
+ *
+ * @param {Response} resp - The non-ok response carrying a possible Retry-After.
+ * @param {number} attempt - 1-based retry index.
+ * @param {number} backoffMs - Base backoff.
+ * @returns {number} Milliseconds to wait (never negative).
+ */
+function nextBackoffMs(resp, attempt, backoffMs) {
+  const header = resp?.headers?.get?.('retry-after');
+  if (header != null && header !== '') {
+    const asSeconds = Number(header);
+    if (Number.isFinite(asSeconds) && asSeconds >= 0) {
+      return Math.round(asSeconds * 1000);
+    }
+    const asDate = Date.parse(header);
+    if (!Number.isNaN(asDate)) {
+      return Math.max(0, asDate - Date.now());
+    }
+  }
+  return backoffMs * 2 ** (attempt - 1);
+}
+
+/** Default sleep: a real timer. Injectable via `opts.sleepImpl` for tests. */
+function defaultSleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
  * Stub provenance adapter. Always confirms.
  * Use in tests and local development.
  */
@@ -62,6 +122,9 @@ export const rejectingProvenance = {
 export function githubProvenance(token, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? GITHUB_PROVENANCE_TIMEOUT_MS;
   const fetchImpl = opts.fetchImpl ?? fetch;
+  const retries = opts.retries ?? PROVENANCE_RETRIES;
+  const backoffMs = opts.backoffMs ?? PROVENANCE_BACKOFF_MS;
+  const sleep = opts.sleepImpl ?? defaultSleep;
   return {
     /**
      * @param {object} source - submission.source (provider-scoped run claim)
@@ -96,54 +159,57 @@ export function githubProvenance(token, opts = {}) {
 
       const apiUrl = `https://api.github.com/repos/${owner}/${repo}/actions/runs/${provider_run_id}`;
 
-      // Per-request timeout. Without this, a hung GitHub API call (rate-limit
-      // throttle, regional outage, slow connection) blocks ingest indefinitely.
-      // AbortController fires AbortError on timeout — we re-throw with a clear
-      // message so the verifier records it in rejection_reasons instead of
-      // silently treating it as 'provenance returned false.'
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-
+      // PROACT-VERIFY-001: bounded retry over transient provider faults (429
+      // rate-limit, 5xx outage). Each attempt carries its own per-request
+      // AbortController timeout — without it a hung GitHub API call blocks ingest
+      // indefinitely. We retry up to `retries` extra times with exponential
+      // backoff (honoring Retry-After), then THROW on exhaustion so a
+      // genuinely-down provider surfaces as an operational signal — never a
+      // false 'confirmed'. 404 is NOT retried (run genuinely absent). The
+      // earlier non-retry behavior (single 429/5xx → immediate throw) failed a
+      // submission on a momentary blip that one retry would have confirmed.
       let run;
-      try {
-        const resp = await fetchImpl(apiUrl, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-            Accept: 'application/vnd.github+json',
-            'X-GitHub-Api-Version': '2022-11-28'
-          },
-          signal: controller.signal
-        });
+      for (let attempt = 0; ; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-        if (!resp.ok) {
-          // verify-A-002: only 404 means the run is genuinely absent — a real
-          // submission-bad rejection. Every other non-2xx is an OPERATIONAL
-          // signal (401/403 expired/insufficient token, 429 rate limit, 5xx
-          // GitHub outage). Collapsing those into `return false` made the
-          // verifier record 'source run could not be confirmed' and routing
-          // bounced an ops incident to submitters. Throw so the existing catch
-          // in index.js records it as a provenance verification failure
-          // (operational), mirroring the timeout fix above.
-          if (resp.status === 404) return false;
-          throw new Error(`provenance: GitHub API returned ${resp.status}`);
+        let resp;
+        try {
+          resp = await fetchImpl(apiUrl, {
+            headers: {
+              Authorization: `Bearer ${token}`,
+              Accept: 'application/vnd.github+json',
+              'X-GitHub-Api-Version': '2022-11-28'
+            },
+            signal: controller.signal
+          });
+        } catch (err) {
+          if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+            throw new Error(`provenance: GitHub API timeout after ${timeoutMs}ms`);
+          }
+          // Genuine transport error (DNS, connection refused) — no run to
+          // confirm. Reserve `return false` for this case (mirrors GitLab).
+          return false;
+        } finally {
+          clearTimeout(timer);
         }
 
-        run = await resp.json();
-      } catch (err) {
-        if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
-          throw new Error(`provenance: GitHub API timeout after ${timeoutMs}ms`);
+        if (resp.ok) {
+          run = await resp.json();
+          break;
         }
-        // verify-A-002: operational signals we raised ourselves (non-2xx HTTP)
-        // already carry the 'provenance:' prefix — re-throw them so they reach
-        // index.js as a verification failure rather than being swallowed into
-        // 'return false'. Reserve `return false` for genuine transport errors
-        // (DNS, connection refused) where there is no run to confirm.
-        if (err && typeof err.message === 'string' && err.message.startsWith('provenance:')) {
-          throw err;
+
+        // verify-A-002: only 404 means the run is genuinely absent — a real
+        // submission-bad rejection, never retried. 429/5xx are transient
+        // OPERATIONAL signals: retry within budget. 401/403 (expired/insufficient
+        // token) are NOT transient — throw immediately. On exhausted retries the
+        // last 429/5xx throws so a real outage still surfaces (operational).
+        if (resp.status === 404) return false;
+        if (isRetryableStatus(resp.status) && attempt < retries) {
+          await sleep(nextBackoffMs(resp, attempt + 1, backoffMs));
+          continue;
         }
-        return false;
-      } finally {
-        clearTimeout(timer);
+        throw new Error(`provenance: GitHub API returned ${resp.status}`);
       }
 
       if (run.id !== Number(provider_run_id)) return false;
@@ -211,6 +277,9 @@ export function gitlabProvenance(token, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? GITLAB_PROVENANCE_TIMEOUT_MS;
   const fetchImpl = opts.fetchImpl ?? fetch;
   const apiBase = (opts.apiBase ?? 'https://gitlab.com').replace(/\/+$/, '');
+  const retries = opts.retries ?? PROVENANCE_RETRIES;
+  const backoffMs = opts.backoffMs ?? PROVENANCE_BACKOFF_MS;
+  const sleep = opts.sleepImpl ?? defaultSleep;
   return {
     /**
      * @param {object} source - submission.source (provider-scoped run claim)
@@ -252,46 +321,50 @@ export function gitlabProvenance(token, opts = {}) {
         ? `${apiBase}/api/v4/projects/${projectId}/jobs/${provider_run_id}`
         : `${apiBase}/api/v4/projects/${projectId}/pipelines/${provider_run_id}`;
 
-      // Per-request timeout — identical discipline to githubProvenance. Without
-      // it a hung gitlab.com/api call blocks ingest until the surrounding runner
-      // times out. AbortError → re-thrown with a clear 'provenance:' message so
-      // the verifier records it instead of silently returning false.
-      const controller = new AbortController();
-      const timer = setTimeout(() => controller.abort(), timeoutMs);
-
+      // PROACT-VERIFY-001: bounded retry over transient provider faults — same
+      // discipline as githubProvenance. Each attempt carries its own per-request
+      // AbortController timeout. 429/5xx retry within budget (exponential backoff,
+      // honoring Retry-After), then THROW on exhaustion so a real outage still
+      // surfaces as operational — never a false 'confirmed'. 404 is a single
+      // immediate rejection; 401/403 throw immediately (not transient).
       let run;
-      try {
-        const resp = await fetchImpl(endpoint, {
-          headers: {
-            'PRIVATE-TOKEN': token,
-            Accept: 'application/json'
-          },
-          signal: controller.signal
-        });
+      for (let attempt = 0; ; attempt++) {
+        const controller = new AbortController();
+        const timer = setTimeout(() => controller.abort(), timeoutMs);
 
-        if (!resp.ok) {
-          // Mirror verify-A-002: only 404 means the pipeline/job is genuinely
-          // absent (submission-bad). 401/403/429/5xx are OPERATIONAL — throw so
-          // the catch in index.js records a 'provenance:' verification failure
-          // (paged to ops) instead of bouncing an outage to the submitter.
-          if (resp.status === 404) return false;
-          throw new Error(`provenance: GitLab API returned ${resp.status}`);
+        let resp;
+        try {
+          resp = await fetchImpl(endpoint, {
+            headers: {
+              'PRIVATE-TOKEN': token,
+              Accept: 'application/json'
+            },
+            signal: controller.signal
+          });
+        } catch (err) {
+          if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+            throw new Error(`provenance: GitLab API timeout after ${timeoutMs}ms`);
+          }
+          // Genuine transport error (DNS, connection refused) — no run to confirm.
+          return false;
+        } finally {
+          clearTimeout(timer);
         }
 
-        run = await resp.json();
-      } catch (err) {
-        if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
-          throw new Error(`provenance: GitLab API timeout after ${timeoutMs}ms`);
+        if (resp.ok) {
+          run = await resp.json();
+          break;
         }
-        // Operational signals we raised ourselves already carry the
-        // 'provenance:' prefix — re-throw. Reserve `return false` for genuine
-        // transport errors (DNS, connection refused) where there is no run.
-        if (err && typeof err.message === 'string' && err.message.startsWith('provenance:')) {
-          throw err;
+
+        // Mirror verify-A-002: 404 = pipeline/job genuinely absent (submission-bad,
+        // never retried). 429/5xx = transient operational fault, retry within
+        // budget. 401/403 = non-transient operational, throw immediately.
+        if (resp.status === 404) return false;
+        if (isRetryableStatus(resp.status) && attempt < retries) {
+          await sleep(nextBackoffMs(resp, attempt + 1, backoffMs));
+          continue;
         }
-        return false;
-      } finally {
-        clearTimeout(timer);
+        throw new Error(`provenance: GitLab API returned ${resp.status}`);
       }
 
       // id in the response must match the claimed run id.

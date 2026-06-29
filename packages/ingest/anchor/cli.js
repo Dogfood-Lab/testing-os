@@ -109,6 +109,36 @@ export async function handleAnchorPost(repoRoot, opts = {}) {
         event: { stage: 'error', failed_stage: 'anchor_post', engine_result: receipt.engine_result },
       };
     }
+
+    // INGEST-PROACT-002: the anchor LANDED on-chain (receipt.ok) but writing the
+    // receipt back into the local manifest failed. This is NOT a failure of the
+    // anchor — the on-chain fact is final. Surface a loud WARNING and exit 0 so
+    // the operator does not re-post (which would double-spend the fee). The event
+    // still carries tx_hash so the on-chain fact survives a log grep, and the
+    // recovery path (re-run --anchor-post to repair the manifest idempotently) is
+    // named in the message.
+    if (receipt.record_failed) {
+      return {
+        ok: true,
+        exitCode: 0,
+        lines: [
+          `anchor-post: anchor LANDED on-chain (tx ${receipt.tx_hash}) on ${receipt.network}`,
+          `  ledger_index: ${receipt.ledger_index ?? '(unavailable)'}`,
+          `  WARNING: recording the receipt locally FAILED: ${receipt.record_failed.error}`,
+          `  The on-chain anchor is final — do NOT re-post (it would spend another fee).`,
+          `  Recover: re-run --anchor-post to repair the manifest idempotently, or re-fetch`,
+          `  tx ${receipt.tx_hash} and run --anchor-verify --anchor-tx <file>.`,
+        ],
+        event: {
+          stage: 'anchor_post_record_failed',
+          anchor_seq: receipt.anchor_seq,
+          tx_hash: receipt.tx_hash,
+          ledger_index: receipt.ledger_index,
+          record_error: receipt.record_failed.error,
+        },
+      };
+    }
+
     return {
       ok: true,
       exitCode: 0,

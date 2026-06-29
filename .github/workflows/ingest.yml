@@ -67,8 +67,17 @@ jobs:
           # skipping 'Read result' + 'Commit' and silently dropping the
           # _rejected evidence the system exists to accumulate. `tee`'s own exit
           # is masked by PIPESTATUS so a write hiccup can't hide node's code.
+          # PB-CI-003: capture run.js's STDERR to a file as well. run.js emits
+          # its staleness signal (a "failed_stage":"rebuild_indexes" NDJSON
+          # event + a "may be stale" console.error) on STDERR when a record
+          # persists but the index rebuild throws — it still returns
+          # written:true/accepted, so the stdout result JSON (captured by tee
+          # below) carries NO staleness field. Without capturing stderr the
+          # degraded run is invisible. `2> >(tee ...)` is a process
+          # substitution, not a pipeline element, so PIPESTATUS of the
+          # echo|node|tee pipeline is unchanged.
           set +e
-          echo "$SUBMISSION_PAYLOAD" | node packages/ingest/run.js --provenance=github | tee /tmp/ingest-result.json
+          echo "$SUBMISSION_PAYLOAD" | node packages/ingest/run.js --provenance=github 2> >(tee /tmp/ingest-stderr.log >&2) | tee /tmp/ingest-result.json
           rc=${PIPESTATUS[1]}
           set -e
           if [ "$rc" -ge 2 ]; then
@@ -93,8 +102,10 @@ jobs:
           # d6-infra-B001: same rejected-exit decouple as the repository_dispatch
           # leg. run.js exits 1 on a rejected submission (the _rejected record is
           # written and must still be committed); only exit >=2 is a real fault.
+          # PB-CI-003: capture run.js STDERR (same rationale as the
+          # repository_dispatch leg) so a stale-index degraded run is detectable.
           set +e
-          node packages/ingest/run.js --provenance=github --file "$SUBMISSION_FILE" | tee /tmp/ingest-result.json
+          node packages/ingest/run.js --provenance=github --file "$SUBMISSION_FILE" 2> >(tee /tmp/ingest-stderr.log >&2) | tee /tmp/ingest-result.json
           rc=${PIPESTATUS[0]}
           set -e
           if [ "$rc" -ge 2 ]; then
@@ -194,6 +205,31 @@ jobs:
           done
           echo "::error::All 3 push attempts failed for run ${RUN_ID} (no rebase conflict — likely sustained GitHub-API issue or branch protection)"
           exit 1
+
+      - name: Warn on stale indexes (degraded run)
+        # PB-CI-003: a partial/degraded run must SAY it degraded. run.js
+        # persists the record but leaves indexes/ STALE if the index rebuild
+        # throws — and still reports written:true/accepted, so the run goes
+        # green and the workflow commits a record against a stale index tree
+        # with no operator signal. The signal lives only on run.js's stderr
+        # (captured above): a structured "failed_stage":"rebuild_indexes"
+        # NDJSON event and a "may be stale" console.error. Scan for it and
+        # surface a ::warning:: so the stale-index commit shows on the run
+        # summary — mirroring the push-retry ::warning:: discipline. Always
+        # runs (the record persists on both accepted and rejected paths).
+        # run.js is owned by another agent and is NOT edited; this is a
+        # workflow-side annotation from the signal run.js already emits.
+        if: always()
+        run: |
+          if [ -f /tmp/ingest-stderr.log ] && \
+             grep -Eq '"failed_stage"[[:space:]]*:[[:space:]]*"rebuild_indexes"|may be stale' /tmp/ingest-stderr.log; then
+            echo "::warning::indexes/ may be STALE — packages/ingest/run.js persisted the record but the index rebuild failed (it still reported success). The committed record is correct; indexes/ will be rebuilt on the next ingest. To force a rebuild now, re-fire any ingest. See the run.js \"failed_stage\":\"rebuild_indexes\" event below."
+            echo "### Stale index warning" >> "$GITHUB_STEP_SUMMARY"
+            echo "The record was persisted but the index rebuild failed; indexes/ may be stale until the next ingest. Relevant run.js stderr:" >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+            grep -E '"failed_stage"[[:space:]]*:[[:space:]]*"rebuild_indexes"|may be stale|recovery' /tmp/ingest-stderr.log >> "$GITHUB_STEP_SUMMARY" || true
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Summary
         if: always()

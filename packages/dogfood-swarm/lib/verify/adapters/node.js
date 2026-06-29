@@ -31,7 +31,16 @@ function probe(repoPath) {
       evidence.hasBuild = !!pkg.scripts?.build;
       evidence.name = pkg.name;
       if (evidence.hasTest) score += 20;
-    } catch { /* corrupt or oversized package.json */ }
+    } catch (e) {
+      // DS-PROAC-02: the swallow stays non-fatal (a corrupt/oversized
+      // package.json must not abort the probe), but it must not be SILENT.
+      // A present-but-unparseable manifest otherwise reports the identical
+      // `reason` as a healthy repo, leaving the operator to chase a phantom
+      // misclassification instead of the actual broken manifest. Record a
+      // non-silent evidence flag + the error kind so `reason` can name it.
+      evidence.manifestUnreadable = true;
+      evidence.manifestUnreadableKind = e.code || e.name || 'ParseError';
+    }
   }
 
   const tsconfigPath = join(repoPath, 'tsconfig.json');
@@ -50,9 +59,11 @@ function probe(repoPath) {
     evidence.linter = true;
   }
 
-  const reason = score > 0
-    ? `Node/TS project (${evidence.name || 'unnamed'}, ${evidence.scripts?.length || 0} scripts)`
-    : 'No package.json found';
+  const reason = evidence.manifestUnreadable
+    ? `package.json present but unparseable (${evidence.manifestUnreadableKind}) — fix the manifest to verify this repo`
+    : score > 0
+      ? `Node/TS project (${evidence.name || 'unnamed'}, ${evidence.scripts?.length || 0} scripts)`
+      : 'No package.json found';
 
   return { score: Math.min(score, 100), reason, evidence };
 }

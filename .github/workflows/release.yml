@@ -88,6 +88,39 @@ jobs:
             exit 1
           fi
 
+      - name: Verify every publishable package version matches the tag (lockstep)
+        run: |
+          # PB-CI-002: lockstep versioning means EVERY publishable
+          # packages/*/package.json must equal TAG_VERSION, not just the root.
+          # The root-only check above can pass while a botched per-package bump
+          # leaves one workspace at a stale version — which would then publish
+          # the wrong version with a green workflow. ci.yml's sync-version gate
+          # would catch this, but ci.yml does not trigger on tag pushes, so the
+          # guarantee must be re-asserted here at release time. The check
+          # reads only NON-private packages (the 6 that release.yml ships;
+          # `private:true` portfolio is workspace-internal and never published).
+          TAG_VERSION="${PUBLISH_TAG#v}"
+          node -e '
+            const { readdirSync, readFileSync, existsSync } = require("node:fs");
+            const { join } = require("node:path");
+            const tag = process.argv[1];
+            let bad = 0;
+            for (const e of readdirSync("packages", { withFileTypes: true })) {
+              if (!e.isDirectory()) continue;
+              const p = join("packages", e.name, "package.json");
+              if (!existsSync(p)) continue;
+              const pkg = JSON.parse(readFileSync(p, "utf8"));
+              if (pkg.private === true) continue;
+              if (pkg.version !== tag) {
+                console.log(`::error file=${p}::publishable package ${pkg.name} is at version ${pkg.version} but the release tag is ${tag} — lockstep versions drifted. Fix the bump (npm run sync-version) and re-tag.`);
+                bad++;
+              } else {
+                console.log(`ok: ${pkg.name}@${pkg.version}`);
+              }
+            }
+            if (bad > 0) process.exit(1);
+          ' "${TAG_VERSION}"
+
       - run: npm ci
 
       - name: Verify (full pre-publish gate)
@@ -120,10 +153,97 @@ jobs:
           head -30 /tmp/release-notes.md
           echo "--- (end preview) ---"
 
-      - name: Publish 6 public packages to npm with provenance
-        run: npm publish --workspaces --access public --provenance
+      # COMPENSATOR (workflow-standards NAMED_COMPENSATORS — irreversible call,
+      # no skip allowed): `npm publish` cannot be un-published. There is NO
+      # automated undo. Recovery for a wrong/partial publish is manual:
+      #   - `npm deprecate <name>@<version> "reason"` to warn consumers, and/or
+      #   - finish the remaining packages by re-firing this workflow (the
+      #     per-package existence check below makes the re-fire a clean no-op
+      #     for already-live packages and publishes only the rest).
+      # Owner: release captain (Mike / mcp-tool-shop). A wrong version that is
+      # already live is bumped+re-released, never force-overwritten.
+      - name: Publish public packages to npm (idempotent + resilient)
         env:
           NPM_CONFIG_PROVENANCE: true
+        run: |
+          # PB-CI-001: publish each publishable workspace individually so a
+          # re-fire after a PARTIAL publish (npm 5xx / network blip between two
+          # packages) is a clean no-op for already-live packages and finishes
+          # the rest — instead of `npm publish --workspaces` aborting the whole
+          # step with EPUBLISHCONFLICT on the first already-live package.
+          #
+          # For each package:
+          #   1. `npm view <name>@<version> version` → if it returns the
+          #      version, the package is already live: skip (idempotency).
+          #   2. otherwise publish, wrapped in a 3-attempt retry with 10s/20s
+          #      backoff on transient failure (mirrors the ingest.yml push loop).
+          #
+          # Private packages (portfolio) are excluded by reading the same
+          # non-private filter the version guard uses.
+          mapfile -t PKGS < <(node -e '
+            const { readdirSync, readFileSync, existsSync } = require("node:fs");
+            const { join } = require("node:path");
+            for (const e of readdirSync("packages", { withFileTypes: true })) {
+              if (!e.isDirectory()) continue;
+              const p = join("packages", e.name, "package.json");
+              if (!existsSync(p)) continue;
+              const pkg = JSON.parse(readFileSync(p, "utf8"));
+              if (pkg.private === true) continue;
+              process.stdout.write(`${pkg.name}\t${pkg.version}\n`);
+            }
+          ')
+
+          if [ "${#PKGS[@]}" -eq 0 ]; then
+            echo "::error::No publishable packages found under packages/ — nothing to publish. Expected 6 non-private @dogfood-lab/* packages."
+            exit 1
+          fi
+
+          published=0
+          skipped=0
+          for entry in "${PKGS[@]}"; do
+            name="${entry%%$'\t'*}"
+            version="${entry##*$'\t'}"
+
+            if npm view "${name}@${version}" version >/dev/null 2>&1; then
+              echo "::notice::${name}@${version} already live on npm — skipping (idempotent re-fire)."
+              skipped=$((skipped + 1))
+              continue
+            fi
+
+            ok=0
+            for attempt in 1 2 3; do
+              if npm publish -w "${name}" --access public --provenance; then
+                echo "::notice::Published ${name}@${version} on attempt ${attempt}."
+                ok=1
+                published=$((published + 1))
+                break
+              fi
+              # A publish failure may be a race: the package became live between
+              # the existence check and the publish (concurrent re-fire). Re-check
+              # before retrying so we don't burn attempts on EPUBLISHCONFLICT.
+              if npm view "${name}@${version}" version >/dev/null 2>&1; then
+                echo "::notice::${name}@${version} became live during publish (concurrent re-fire) — treating as success."
+                ok=1
+                skipped=$((skipped + 1))
+                break
+              fi
+              if [ "${attempt}" -lt 3 ]; then
+                wait_s=$((attempt * 10))
+                echo "::warning::Publish attempt ${attempt} failed for ${name}@${version} — sleeping ${wait_s}s before retry (transient npm/network issue)."
+                sleep "${wait_s}"
+              fi
+            done
+
+            if [ "${ok}" -ne 1 ]; then
+              # Fail loud and NAME the package + recovery. Earlier packages in
+              # this run are already live and irreversible — a re-fire will skip
+              # them (existence check) and resume from here.
+              echo "::error::Failed to publish ${name}@${version} after 3 attempts. Already-published packages this run are LIVE and irreversible (compensator: npm deprecate / re-fire to finish). Re-run this workflow to resume — the existence check skips live packages and publishes only the remainder."
+              exit 1
+            fi
+          done
+
+          echo "::notice::Publish summary: ${published} published, ${skipped} already-live/skipped, $(( ${#PKGS[@]} )) total publishable packages."
 
       - name: Create GitHub Release
         env:

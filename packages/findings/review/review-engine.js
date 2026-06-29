@@ -233,6 +233,33 @@ export function performMerge(rootDir, params) {
   const canonical = canonicalResult.data;
   const nonCanonical = sources.filter(s => s.data.finding_id !== canonicalId);
 
+  // FIND-PROAC-001 — fail-closed BEFORE the canonical write. Each non-canonical
+  // source is superseded downstream via `performAction`, whose F-FIND-001
+  // write-side gate re-validates the source and can refuse. Pre-amend,
+  // `performMerge` wrote the canonical (stamping `lineage.merged_from = [X]`)
+  // and only THEN looped the supersedes, ignoring each `sourceResult.success`.
+  // A schema-invalid source X would then leave the canonical asserting it
+  // merged from X while X was never actually superseded — a lineage lie reported
+  // as `{ success: true }`. Validate every source up front; if any is invalid,
+  // refuse the whole merge naming the offending id(s) + reason so the operator
+  // can fix the source before retrying, and the canonical never records a
+  // merged_from for a source that was never superseded. Matches the canonical
+  // gate below and the singleton writers.
+  const invalidSources = [];
+  for (const s of sources) {
+    const v = validateFinding(s.data);
+    if (!v.valid) {
+      const summary = v.errors.map(e => `${e.path || '/'} ${e.message}`).join('; ');
+      invalidSources.push(`${s.data.finding_id} (${summary})`);
+    }
+  }
+  if (invalidSources.length > 0) {
+    return {
+      success: false,
+      error: `Refused: ${invalidSources.length} source finding(s) could not be superseded — fix and re-merge: ${invalidSources.join('; ')}`
+    };
+  }
+
   // Merge evidence and source_record_ids into canonical
   const mergedRecordIds = new Set(canonical.source_record_ids || []);
   const mergedEvidence = [...(canonical.evidence || [])];
@@ -298,7 +325,12 @@ export function performMerge(rootDir, params) {
 
   // Mark source findings as rejected/superseded. Each supersede flows through
   // performAction, so the F-FIND-001 schema gate covers these re-writes too.
+  // Sources were pre-validated above (FIND-PROAC-001), so a supersede failure
+  // here is unexpected — but never assume success. Collect any failed supersede
+  // so a partial merge is reported AS partial rather than as a clean success
+  // with a lineage that overstates what actually happened.
   const events = [];
+  const failedSupersedes = [];
   for (const s of nonCanonical) {
     const sourceResult = performAction(rootDir, {
       findingId: s.data.finding_id,
@@ -308,9 +340,21 @@ export function performMerge(rootDir, params) {
       supersededBy: canonicalId
     });
     if (sourceResult.event) events.push(sourceResult.event);
+    if (!sourceResult.success) {
+      failedSupersedes.push(`${s.data.finding_id}: ${sourceResult.error}`);
+    }
   }
 
   events.push(mergeEvent);
+
+  if (failedSupersedes.length > 0) {
+    return {
+      success: false,
+      error: `Partial merge: canonical ${canonicalId} was written but ${failedSupersedes.length} source(s) could not be superseded: ${failedSupersedes.join('; ')}`,
+      canonical,
+      events
+    };
+  }
 
   return { success: true, canonical, events };
 }

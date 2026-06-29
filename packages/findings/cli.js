@@ -31,10 +31,15 @@ import {
   getRuleById,
   dedupeAgainstExisting,
   loadRecordById,
-  loadRecordsForRepo,
-  loadAllRecords,
   writeFindings
 } from './derive/index.js';
+// FIND-PROAC-002 — the *WithSkips loaders are not re-exported by derive/index.js
+// (it only re-exports the legacy array-shape variants); import them from the
+// concrete module via the package's ./derive/* subpath export.
+import {
+  loadRecordsForRepoWithSkips,
+  loadAllRecordsWithSkips
+} from './derive/load-records.js';
 import {
   performAction,
   performMerge,
@@ -74,7 +79,12 @@ import {
 } from './advise/index.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const ROOT = resolve(__dirname, '../..');
+// FINDINGS_REPO_ROOT lets tests (and out-of-tree operators) point the CLI at an
+// alternate data root without touching the real testing-os tree. Mirrors
+// verify/cli.js VERIFY_REPO_ROOT. Defaults to the monorepo root.
+const ROOT = process.env.FINDINGS_REPO_ROOT
+  ? resolve(process.env.FINDINGS_REPO_ROOT)
+  : resolve(__dirname, '../..');
 
 function parseArgs(argv) {
   const args = argv.slice(2);
@@ -451,8 +461,13 @@ Filters (for list):
     const all = flags.all;
     const write = flags.write;
 
-    // Load records based on scope
+    // Load records based on scope. FIND-PROAC-002 — use the *WithSkips loaders
+    // so torn/unreadable record files surface as a structured skip instead of
+    // silently shrinking the dataset. A derive run over a partially-readable
+    // tree is degraded, not clean: it is reported as such (named files + a
+    // prominent skip-count line on stderr) and exits non-zero below.
     let entries = [];
+    let skippedRecords = [];
     if (recordId) {
       const entry = loadRecordById(ROOT, recordId);
       if (!entry) {
@@ -461,20 +476,38 @@ Filters (for list):
       }
       entries = [entry];
     } else if (repoKey) {
-      entries = loadRecordsForRepo(ROOT, repoKey);
-      if (entries.length === 0) {
+      const loaded = loadRecordsForRepoWithSkips(ROOT, repoKey);
+      entries = loaded.entries;
+      skippedRecords = loaded.skipped;
+      if (entries.length === 0 && skippedRecords.length === 0) {
         console.error(`No records found for repo: ${repoKey}`);
         process.exit(1);
       }
     } else if (all) {
-      entries = loadAllRecords(ROOT);
-      if (entries.length === 0) {
+      const loaded = loadAllRecordsWithSkips(ROOT);
+      entries = loaded.entries;
+      skippedRecords = loaded.skipped;
+      if (entries.length === 0 && skippedRecords.length === 0) {
         console.error('No records found.');
         process.exit(1);
       }
     } else {
       console.error('Specify --record <run_id>, --repo <org/repo>, or --all');
       process.exit(2);
+    }
+
+    // FIND-PROAC-002 — surface torn/unreadable records loudly and refuse to
+    // report a clean run. Mirrors the ruleErrors block below (and the
+    // synthesis derive skip branches): name each file so it appears in CI logs,
+    // print a prominent count, exit non-zero. A torn record means the operator
+    // is deriving from an incomplete dataset — that must never look green.
+    if (skippedRecords.length > 0) {
+      console.error(`${skippedRecords.length} record(s) skipped (torn/unreadable):`);
+      for (const s of skippedRecords) {
+        console.error(`  ${relative(ROOT, s.path)} — ${s.error}`);
+      }
+      console.error('Refusing to report a clean derive run over an incomplete record set. Fix or remove the torn record(s) above and re-run.');
+      process.exit(1);
     }
 
     // Derive

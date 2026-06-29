@@ -253,9 +253,24 @@ function extractTestCount(stdout) {
   const jestMatch = stdout.match(/Tests:\s+(\d+)\s+passed/);
   if (jestMatch) return parseInt(jestMatch[1], 10);
 
-  // pytest: "42 passed"
-  const pytestMatch = stdout.match(/(\d+)\s+passed/);
-  if (pytestMatch) return parseInt(pytestMatch[1], 10);
+  // pytest: the session-summary line, e.g. "===== 42 passed, 1 skipped in
+  // 4.21s =====". DS-PROAC-04: a bare /(\d+)\s+passed/ grabbed the FIRST
+  // "<n> passed" anywhere in the log — a progress line or a captured-stdout
+  // echo from the code under test could win and report a wrong test_count.
+  // Anchor on the summary line the way the other three patterns anchor on
+  // their markers: require `passed` to share its line with the summary's
+  // companion tokens (`in <time>`, or a `failed`/`skipped`/`error`/`xfailed`
+  // tally), and prefer the LAST such line — pytest prints the summary last.
+  const pytestSummary = /^.*?(\d+)\s+passed.*?(?:\bin\s+[\d.]+s|\b\d+\s+(?:failed|skipped|error|errors|xfailed|xpassed|warning|warnings|deselected))\b.*$/gim;
+  let pytestLast = null;
+  for (const m of stdout.matchAll(pytestSummary)) pytestLast = m;
+  if (pytestLast) return parseInt(pytestLast[1], 10);
+  // Fallback for a bare "N passed" with no companion tokens (a minimal run):
+  // still prefer the LAST occurrence so a stray earlier number cannot win.
+  const pytestBareAll = [...stdout.matchAll(/(\d+)\s+passed/g)];
+  if (pytestBareAll.length) {
+    return parseInt(pytestBareAll[pytestBareAll.length - 1][1], 10);
+  }
 
   // cargo test: "test result: ok. 42 passed"
   const cargoMatch = stdout.match(/test result: \w+\.\s+(\d+)\s+passed/);

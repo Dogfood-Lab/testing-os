@@ -202,6 +202,25 @@ export function localScenarioFetcher(repoRoot) {
 export const GITHUB_SCENARIO_FETCH_TIMEOUT_MS = 30000;
 
 /**
+ * Default number of fetch attempts (INGEST-PROACT-003). A transient GitHub-API
+ * fault (5xx, 429, network blip) should not turn a loadable scenario into a hard
+ * rejection; a small bounded retry rides out the hiccup. Kept small — three
+ * attempts is enough to clear a momentary throttle without amplifying a real
+ * outage into a multi-minute stall (the AbortController timeout still bounds each
+ * attempt, and a 404/invalid-id is never retried).
+ */
+export const GITHUB_SCENARIO_FETCH_ATTEMPTS = 3;
+
+/** Initial backoff before the first retry (ms); doubles per attempt, capped. */
+const RETRY_BASE_MS = 250;
+const RETRY_MAX_MS = 2000;
+
+/** Default async backoff. Injectable (`opts.sleepImpl`) so tests run instantly. */
+function defaultSleep(ms) {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+/**
  * GitHub scenario fetcher. Loads scenario definitions from a source repo
  * via the GitHub API at a specific commit SHA.
  *
@@ -219,15 +238,25 @@ export const GITHUB_SCENARIO_FETCH_TIMEOUT_MS = 30000;
  * Both surfaces honour the per-request AbortController timeout
  * (`GITHUB_SCENARIO_FETCH_TIMEOUT_MS`, overridable via `opts.timeoutMs`).
  *
+ * INGEST-PROACT-003: each call makes up to `opts.attempts`
+ * (`GITHUB_SCENARIO_FETCH_ATTEMPTS`) tries with exponential backoff, retrying
+ * ONLY the transient classes — request timeout, HTTP 5xx, HTTP 429, and network
+ * rejects. A 404 (`not_found`), an `invalid_id`, and a `parse_error` are
+ * DEFINITIVE answers and are returned immediately without a retry (mirrors the
+ * EPERM/EBUSY-only discipline in `lib/rename-with-retry.js`). The backoff sleep
+ * is injectable (`opts.sleepImpl`) so tests do not actually wait.
+ *
  * @param {string} token - GitHub PAT
  * @param {string} repoSlug - e.g. "mcp-tool-shop-org/shipcheck"
  * @param {string} commitSha - Commit to fetch scenarios from
- * @param {{ timeoutMs?: number, fetchImpl?: typeof fetch }} [opts]
+ * @param {{ timeoutMs?: number, fetchImpl?: typeof fetch, attempts?: number, sleepImpl?: (ms: number) => Promise<void> }} [opts]
  * @returns {{ fetch(scenarioId: string): Promise<object|null>, fetchWithReason(scenarioId: string): Promise<{ scenario: object|null, reason?: string }> }}
  */
 export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
   const timeoutMs = opts.timeoutMs ?? GITHUB_SCENARIO_FETCH_TIMEOUT_MS;
   const fetchImpl = opts.fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
+  const attempts = opts.attempts ?? GITHUB_SCENARIO_FETCH_ATTEMPTS;
+  const sleep = opts.sleepImpl ?? defaultSleep;
 
   const [org, repo] = repoSlug.split('/');
   // commitSha is interpolated into the authenticated (Bearer-token) GitHub API
@@ -245,10 +274,9 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
     };
   }
 
-  async function fetchWithReason(scenarioId) {
-    if (!/^[\w-]+$/.test(scenarioId)) {
-      return { scenario: null, reason: 'invalid_id' };
-    }
+  // One bounded attempt. Returns `{ scenario, reason, retryable }`; the loop
+  // below decides whether to retry on `retryable`.
+  async function attemptOnce(scenarioId) {
     const path = `dogfood/scenarios/${scenarioId}.yaml`;
     const url = `https://api.github.com/repos/${repoSlug}/contents/${path}?ref=${commitSha}`;
 
@@ -270,16 +298,20 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
         signal: controller.signal
       });
       if (!resp.ok) {
-        return { scenario: null, reason: 'not_found' };
+        // A 5xx server error or a 429 rate-limit is transient — retry. Any
+        // other non-ok (notably 404) is a definitive answer; do not retry.
+        const retryable = resp.status >= 500 || resp.status === 429;
+        return { scenario: null, reason: 'not_found', retryable };
       }
       text = await resp.text();
     } catch (err) {
       if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
-        return { scenario: null, reason: 'timeout' };
+        // A timed-out request may succeed on a retry.
+        return { scenario: null, reason: 'timeout', retryable: true };
       }
-      // Network reject, DNS failure, etc. — surface as not_found for
-      // back-compat with the legacy null contract.
-      return { scenario: null, reason: 'not_found' };
+      // Network reject, DNS failure, etc. — transient; surface as not_found
+      // for back-compat with the legacy null contract, but allow a retry.
+      return { scenario: null, reason: 'not_found', retryable: true };
     } finally {
       clearTimeout(timer);
     }
@@ -287,12 +319,28 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
     try {
       const scenario = yaml.load(text);
       if (!scenario || typeof scenario !== 'object') {
-        return { scenario: null, reason: 'parse_error' };
+        return { scenario: null, reason: 'parse_error', retryable: false };
       }
       return { scenario };
     } catch {
-      return { scenario: null, reason: 'parse_error' };
+      return { scenario: null, reason: 'parse_error', retryable: false };
     }
+  }
+
+  async function fetchWithReason(scenarioId) {
+    if (!/^[\w-]+$/.test(scenarioId)) {
+      return { scenario: null, reason: 'invalid_id' };
+    }
+
+    let last;
+    for (let i = 0; i < attempts; i++) {
+      last = await attemptOnce(scenarioId);
+      if (last.scenario || !last.retryable || i === attempts - 1) break;
+      await sleep(Math.min(RETRY_BASE_MS * (1 << i), RETRY_MAX_MS));
+    }
+    // Strip the internal `retryable` flag from the public contract.
+    const { retryable: _drop, ...result } = last;
+    return result;
   }
 
   return {

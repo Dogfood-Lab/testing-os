@@ -41,7 +41,14 @@ function probe(repoPath) {
         if (nameMatch) evidence.name = nameMatch[1];
         evidence.isWorkspace = content.includes('[workspace]');
       }
-    } catch { /* */ }
+    } catch (e) {
+      // DS-PROAC-02: mirror the node sibling — a present-but-unreadable
+      // Cargo.toml must produce a non-silent signal (evidence flag + named
+      // reason), not the same `reason` a healthy crate gets. The swallow
+      // stays non-fatal; it just stops being silent.
+      evidence.manifestUnreadable = true;
+      evidence.manifestUnreadableKind = e.code || e.name || 'ReadError';
+    }
   }
 
   if (existsSync(join(repoPath, 'src'))) {
@@ -59,9 +66,11 @@ function probe(repoPath) {
     score += 10;
   }
 
-  const reason = score > 0
-    ? `Rust project (${evidence.name || 'unnamed'}${evidence.isWorkspace ? ', workspace' : ''})`
-    : 'No Cargo.toml found';
+  const reason = evidence.manifestUnreadable
+    ? `Cargo.toml present but unreadable (${evidence.manifestUnreadableKind}) — fix the manifest to verify this repo`
+    : score > 0
+      ? `Rust project (${evidence.name || 'unnamed'}${evidence.isWorkspace ? ', workspace' : ''})`
+      : 'No Cargo.toml found';
 
   return { score: Math.min(score, 100), reason, evidence };
 }

@@ -42,6 +42,19 @@ import { join, extname } from 'node:path';
 import yaml from 'js-yaml';
 
 /**
+ * Generous defensive size cap for a single YAML/JSON document (FIND-PROAC-003).
+ *
+ * The contract files in this repo (records, findings, patterns, policies) are
+ * kilobytes, not megabytes — a multi-MB file is either corrupt or hostile, and
+ * handing it to an unbounded `yaml.load` is a silent resource cliff for every
+ * loader in the silent-loader family that delegates here. 8 MB is far above any
+ * legitimate contract document while still bounding a pathological parse. A file
+ * over the cap degrades to a structured skip (the same `{ data, error }` shape
+ * as a parse error) instead of risking the process.
+ */
+export const MAX_YAML_BYTES = 8 * 1024 * 1024;
+
+/**
  * Parse a YAML file. Returns `{ data, error }` — never throws for parse or
  * read failures.
  *
@@ -49,6 +62,21 @@ import yaml from 'js-yaml';
  * @returns {{ data: unknown, error: string | null }}
  */
 export function loadYamlFile(filePath) {
+  // FIND-PROAC-003 — bound the parse before reading. A multi-MB YAML file is
+  // corrupt or hostile; degrade to a structured skip naming the size rather
+  // than driving an unbounded yaml.load. `stat` failures fall through to the
+  // read path so a missing file still reports the familiar "Read error: …".
+  try {
+    const { size } = statSync(filePath);
+    if (size > MAX_YAML_BYTES) {
+      return {
+        data: null,
+        error: `YAML too large: ${size} bytes exceeds ${MAX_YAML_BYTES}-byte cap (corrupt or hostile file — skipped)`
+      };
+    }
+  } catch {
+    // Defer to readFileSync for the structured error.
+  }
   let raw;
   try {
     raw = readFileSync(filePath, 'utf-8');
@@ -71,6 +99,20 @@ export function loadYamlFile(filePath) {
  * @returns {{ data: unknown, error: string | null }}
  */
 export function loadJsonFile(filePath) {
+  // FIND-PROAC-003 — same defensive size cap as loadYamlFile. Record files are
+  // JSON and travel through here; an over-cap file degrades to a structured skip
+  // naming the size instead of an unbounded JSON.parse.
+  try {
+    const { size } = statSync(filePath);
+    if (size > MAX_YAML_BYTES) {
+      return {
+        data: null,
+        error: `JSON too large: ${size} bytes exceeds ${MAX_YAML_BYTES}-byte cap (corrupt or hostile file — skipped)`
+      };
+    }
+  } catch {
+    // Defer to readFileSync for the structured error.
+  }
   let raw;
   try {
     raw = readFileSync(filePath, 'utf-8');

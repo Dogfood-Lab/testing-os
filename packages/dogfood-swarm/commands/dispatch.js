@@ -14,7 +14,6 @@
 
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
 import { getDomains, aredomainsFrozen, freezeDomains, takeDomainSnapshot } from '../lib/domains.js';
@@ -25,20 +24,10 @@ import { findingsForDomain } from '../lib/findings-filter.js';
 import { transitionAgent } from '../lib/state-machine.js';
 import { IsolationError, DispatchPreconditionError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
+import { mintCorrelationId } from '../lib/correlation-id.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
-
-/**
- * Mint a synthetic correlation_id for a coordination stage. Mirrors the
- * `coord-<base36-ts>-<rand4>` pattern used in commands/collect.js — a single
- * grep across stderr ties the dispatch failure to the resume / receipt path.
- */
-function mintCorrelationId() {
-  const ts = Date.now().toString(36);
-  const rand = randomBytes(2).toString('hex');
-  return `coord-${ts}-${rand}`;
-}
 
 /**
  * D3B-003 (Wave A2 Stage C): emit a structured NDJSON event for a

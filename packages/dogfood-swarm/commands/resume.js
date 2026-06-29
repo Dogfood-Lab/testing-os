@@ -27,23 +27,10 @@ import {
 } from '../lib/state-machine.js';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { logStage } from '../lib/log-stage.js';
-
-/**
- * Mint a synthetic correlation_id for a coordination stage (FT-PIPELINE-004
- * pattern; mirrors the local helper in dispatch.js / collect.js / verify.js /
- * rewind.js / redrive.js / revalidate.js — mintCorrelationId is a per-file
- * LOCAL function, not a shared export). A single grep of `coord-<ts>-<rand>`
- * across coordination-command stderr ties the event back to its origin.
- */
-function mintCorrelationId() {
-  const ts = Date.now().toString(36);
-  const rand = randomBytes(2).toString('hex');
-  return `coord-${ts}-${rand}`;
-}
+import { mintCorrelationId } from '../lib/correlation-id.js';
 
 /**
  * @param {object} opts

@@ -254,7 +254,38 @@ export function generatePortfolio(index, policies, { logger = console } = {}) {
 
   // Process index entries
   for (const [repo, surfaces] of Object.entries(index)) {
+    // PORT-DEGRADE-001 (Stage C humanization) — a per-repo value that is not a
+    // plain object (e.g. "org/repo": null, or a string from a hand-edit slip)
+    // would throw a raw TypeError at the inner Object.entries(surfaces). Degrade
+    // to a skip + a named warn — the same one-bad-entry tolerance loadPolicies
+    // and computeTrends already use — so the report still generates for the
+    // healthy rows and the operator learns WHICH repo's index entry is malformed.
+    if (surfaces === null || typeof surfaces !== 'object' || Array.isArray(surfaces)) {
+      if (logger && typeof logger.warn === 'function') {
+        logger.warn(
+          `portfolio: skipping malformed index entry for ${repo}: expected a ` +
+          `surface->record object, got ${Array.isArray(surfaces) ? 'an array' : typeof surfaces} ` +
+          `(other repos still included; re-run any ingest to rebuild indexes/)`
+        );
+      }
+      continue;
+    }
+
     for (const [surface, record] of Object.entries(surfaces)) {
+      // PORT-DEGRADE-001 — likewise a per-surface value that is not a plain
+      // object would crash at record.finished_at / record.verified below. Skip
+      // it with a warn naming repo+surface; the healthy sibling surfaces survive.
+      if (record === null || typeof record !== 'object' || Array.isArray(record)) {
+        if (logger && typeof logger.warn === 'function') {
+          logger.warn(
+            `portfolio: skipping malformed record for ${repo}/${surface}: expected a ` +
+            `record object, got ${Array.isArray(record) ? 'an array' : typeof record} ` +
+            `(other surfaces still included; re-run any ingest to rebuild indexes/)`
+          );
+        }
+        continue;
+      }
+
       surfacesSeen.add(surface);
 
       const policy = policies[repo];
@@ -372,6 +403,29 @@ function main() {
     const reason = err && err.message ? err.message : String(err);
     console.error(
       `Index is corrupt or truncated: ${INDEX_PATH}: ${reason}`
+    );
+    console.error(
+      'Recovery: re-run any ingest to trigger a full rebuild of indexes/ (the rebuild is idempotent — it scans records/ end-to-end).'
+    );
+    process.exit(1);
+  }
+
+  // PORT-DEGRADE-001 (Stage C humanization) — a SHAPE guard joins the B002
+  // syntax guard above. latest-by-repo.json is contractually a `{ repo:
+  // { surface: record } }` map; a valid-JSON-but-wrong-shape top level (null,
+  // an array, a bare string/number — a hand-edit slip or a half-written file
+  // that happened to parse) reached Object.entries(index) in generatePortfolio
+  // and threw a raw `TypeError: Cannot convert undefined or null to object`
+  // (or, for an array, walked index-keyed garbage). The operator could not tell
+  // the INDEX was the problem, not their command. Treat it exactly like the
+  // corrupt-index branch: name the file + the idempotent recovery action, fail
+  // CLOSED. (Per-entry wrong shapes — one repo whose value is malformed — are
+  // handled inside generatePortfolio as a degrade-to-skip + named warn, so a
+  // single bad row never sinks the whole report.)
+  if (index === null || typeof index !== 'object' || Array.isArray(index)) {
+    console.error(
+      `Index is corrupt or truncated: ${INDEX_PATH}: expected a JSON object ` +
+      `mapping repo -> surface -> record, got ${Array.isArray(index) ? 'an array' : typeof index}.`
     );
     console.error(
       'Recovery: re-run any ingest to trigger a full rebuild of indexes/ (the rebuild is idempotent — it scans records/ end-to-end).'

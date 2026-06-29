@@ -41,7 +41,14 @@ function probe(repoPath) {
         evidence.hasMypy = content.includes('mypy');
         if (evidence.hasPytest) score += 20;
       }
-    } catch { /* */ }
+    } catch (e) {
+      // DS-PROAC-02: mirror the node sibling — a present-but-unreadable
+      // pyproject.toml must produce a non-silent signal (evidence flag +
+      // named reason), not the same `reason` a healthy project gets. The
+      // swallow stays non-fatal; it just stops being silent.
+      evidence.manifestUnreadable = true;
+      evidence.manifestUnreadableKind = e.code || e.name || 'ReadError';
+    }
   }
 
   if (existsSync(join(repoPath, 'setup.py'))) {
@@ -71,9 +78,11 @@ function probe(repoPath) {
     evidence.venv = true;
   }
 
-  const reason = score > 0
-    ? `Python project (${[evidence.pyprojectToml && 'pyproject', evidence.setupPy && 'setup.py'].filter(Boolean).join(', ')})`
-    : 'No Python project markers found';
+  const reason = evidence.manifestUnreadable
+    ? `pyproject.toml present but unreadable (${evidence.manifestUnreadableKind}) — fix the manifest to verify this repo`
+    : score > 0
+      ? `Python project (${[evidence.pyprojectToml && 'pyproject', evidence.setupPy && 'setup.py'].filter(Boolean).join(', ')})`
+      : 'No Python project markers found';
 
   return { score: Math.min(score, 100), reason, evidence };
 }

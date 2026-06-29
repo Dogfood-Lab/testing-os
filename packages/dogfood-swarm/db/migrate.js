@@ -31,6 +31,43 @@
 
 import { SCHEMA_VERSION, MIGRATIONS_MANIFEST } from './schema.js';
 
+/**
+ * PH-DS-03: fail-closed integrity gate on the migration manifest vs the build
+ * SCHEMA_VERSION. The runner stamps the KV schema_version to SCHEMA_VERSION at
+ * the end of every real run (migrateDb below); if a future edit appends a
+ * migration with a higher target_version but forgets to bump SCHEMA_VERSION,
+ * the DB would be marked at the stale build version while the manifest claims a
+ * newer one — a silent skew the downstream openDb schema-too-new guard cannot
+ * catch (it only protects against a DB newer than the build, never a build whose
+ * own manifest out-runs its declared version). The reverse — SCHEMA_VERSION
+ * bumped but no matching migration — is just as wrong (a phantom version). We
+ * fail closed on BOTH directions, mirroring openDb's fail-closed posture, with
+ * an error naming both numbers and the recovery action.
+ *
+ * Exported so the regression test can pin both branches with injected values.
+ *
+ * @param {Array<{target_version:number}>} manifest
+ * @param {number} schemaVersion
+ */
+export function assertManifestVersionInvariant(manifest, schemaVersion) {
+  const max = manifest.length === 0
+    ? 0
+    : Math.max(...manifest.map((m) => m.target_version));
+  if (max !== schemaVersion) {
+    throw new Error(
+      `db/migrate: manifest max target_version ${max} != build SCHEMA_VERSION ${schemaVersion}. ` +
+      (max > schemaVersion
+        ? `bump SCHEMA_VERSION to ${max} in db/schema.js so the migration that reaches v${max} is reflected in the version the runner stamps.`
+        : `a SCHEMA_VERSION of ${schemaVersion} has no migration that reaches it — add the missing migration to MIGRATIONS_MANIFEST (target_version ${schemaVersion}) or lower SCHEMA_VERSION to ${max}.`),
+    );
+  }
+}
+
+// Module-load fail-closed check: importing the runner against a skewed
+// manifest/version pair is itself a defect — surface it the instant the module
+// is loaded rather than at the first migrateDb call deep in a dispatch.
+assertManifestVersionInvariant(MIGRATIONS_MANIFEST, SCHEMA_VERSION);
+
 const LEDGER_DDL = `
   CREATE TABLE IF NOT EXISTS migrations_ledger (
     migration_id   TEXT    PRIMARY KEY,

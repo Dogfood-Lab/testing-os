@@ -297,14 +297,31 @@ export async function postAnchor(repoRoot, opts = {}) {
 
   // (4) Record the on-chain facts back into the anchor manifest. Injected in
   //     tests; in production it patches the manifest file in place.
+  //
+  //     INGEST-PROACT-002: the anchor has ALREADY LANDED on-chain at this point
+  //     (receipt.ok) — an irreversible, fee-paid, citable fact. If recordPost
+  //     throws (disk full, EPERM, the manifest deleted between compute and post),
+  //     the on-chain landing MUST NOT be reported as a failure: a false failure
+  //     invites a re-post that double-spends the fee against a divergent state.
+  //     We keep receipt.ok true and attach a distinct `record_failed` outcome so
+  //     the caller surfaces a loud WARNING (exit 0, not exit 2) naming the
+  //     tx_hash and the idempotent recovery path. The on-chain fact survives on
+  //     the receipt regardless of whether the local manifest patch succeeded.
   if (receipt.ok && typeof opts.deps?.recordPost === 'function') {
-    opts.deps.recordPost(manifest.anchor_seq, {
-      tx_hash: receipt.tx_hash,
-      ledger_index: receipt.ledger_index,
-      close_time_iso: receipt.close_time_iso,
-      wallet_address: receipt.wallet_address,
-      network,
-    });
+    try {
+      opts.deps.recordPost(manifest.anchor_seq, {
+        tx_hash: receipt.tx_hash,
+        ledger_index: receipt.ledger_index,
+        close_time_iso: receipt.close_time_iso,
+        wallet_address: receipt.wallet_address,
+        network,
+      });
+    } catch (err) {
+      receipt.record_failed = {
+        error: err && err.message ? err.message : String(err),
+        code: err && err.code ? err.code : null,
+      };
+    }
   }
 
   return receipt;

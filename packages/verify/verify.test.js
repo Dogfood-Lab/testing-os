@@ -844,6 +844,7 @@ describe('githubProvenance distinguishes ops failures from missing runs (verify-
     it(`throws an operational error on HTTP ${status} (not a submission-bad false)`, async () => {
       const adapter = githubProvenance('token', {
         timeoutMs: 1000,
+        retries: 0,
         fetchImpl: fetchWithStatus(status)
       });
       await assert.rejects(
@@ -864,5 +865,121 @@ describe('githubProvenance distinguishes ops failures from missing runs (verify-
     });
     const ok = await adapter.confirm(source);
     assert.equal(ok, false, '404 means the run does not exist — a real rejection, not an outage');
+  });
+});
+
+// ── githubProvenance bounded retry over transient faults (PROACT-VERIFY-001) ──
+//
+// MEDIUM/resilience: a single 429 rate-limit or 5xx provider blip used to fail
+// the whole submission as an operational incident, even though one retry would
+// have confirmed the run. The adapter now retries 429/5xx a BOUNDED number of
+// times (opts.retries, default 2) with exponential backoff (honoring
+// Retry-After), and still THROWS on exhaustion so a genuinely-down provider
+// surfaces as operational — never a false 'confirmed'. 404 is NOT retried.
+
+describe('githubProvenance bounded retry (PROACT-VERIFY-001)', () => {
+  const RUN_HEAD = 'a'.repeat(40);
+  const source = {
+    provider: 'github',
+    provider_run_id: '12345',
+    run_url: 'https://github.com/owner/repo/actions/runs/12345',
+    commit_sha: RUN_HEAD,
+    repo: 'owner/repo'
+  };
+  const completedRun = {
+    id: 12345,
+    status: 'completed',
+    head_sha: RUN_HEAD,
+    repository: { full_name: 'owner/repo' }
+  };
+
+  // A fetch impl that returns the given statuses in order, then a 200 with body.
+  function fetchSequence(statuses, body) {
+    let i = 0;
+    return async () => {
+      if (i < statuses.length) {
+        const status = statuses[i++];
+        return { ok: false, status, headers: { get: () => null }, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => body };
+    };
+  }
+
+  it('retries a 429 then confirms on the following 200 (retry worked)', async () => {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      if (calls === 1) {
+        return { ok: false, status: 429, headers: { get: () => null }, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => completedRun };
+    };
+    const adapter = githubProvenance('token', {
+      timeoutMs: 1000,
+      backoffMs: 1,
+      fetchImpl
+    });
+    const ok = await adapter.confirm(source, { refCommitSha: RUN_HEAD });
+    assert.equal(ok, true, '429-then-200 must confirm — the retry succeeded');
+    assert.equal(calls, 2, 'expected exactly one retry (2 total requests)');
+  });
+
+  it('honors Retry-After (numeric seconds) before the retry', async () => {
+    let calls = 0;
+    const waited = [];
+    const fetchImpl = async () => {
+      calls++;
+      if (calls === 1) {
+        return { ok: false, status: 503, headers: { get: h => (h === 'retry-after' ? '2' : null) }, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => completedRun };
+    };
+    const adapter = githubProvenance('token', {
+      timeoutMs: 1000,
+      sleepImpl: ms => { waited.push(ms); return Promise.resolve(); },
+      fetchImpl
+    });
+    const ok = await adapter.confirm(source, { refCommitSha: RUN_HEAD });
+    assert.equal(ok, true);
+    assert.deepEqual(waited, [2000], 'Retry-After: 2 must drive a 2000ms wait');
+  });
+
+  it('THROWS on exhausted 5xx retries (a genuinely-down provider still surfaces)', async () => {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      return { ok: false, status: 500, headers: { get: () => null }, json: async () => ({}) };
+    };
+    const adapter = githubProvenance('token', {
+      timeoutMs: 1000,
+      retries: 2,
+      backoffMs: 1,
+      fetchImpl
+    });
+    await assert.rejects(
+      adapter.confirm(source),
+      err => {
+        assert.match(err.message, /provenance: GitHub API returned 500/);
+        return true;
+      }
+    );
+    assert.equal(calls, 3, 'expected 1 initial + 2 retries = 3 requests before throwing');
+  });
+
+  it('does NOT retry a 404 (run genuinely absent → single immediate false)', async () => {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      return { ok: false, status: 404, headers: { get: () => null }, json: async () => ({}) };
+    };
+    const adapter = githubProvenance('token', {
+      timeoutMs: 1000,
+      retries: 2,
+      backoffMs: 1,
+      fetchImpl
+    });
+    const ok = await adapter.confirm(source);
+    assert.equal(ok, false);
+    assert.equal(calls, 1, '404 must not be retried');
   });
 });

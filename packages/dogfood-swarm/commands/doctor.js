@@ -23,6 +23,17 @@
  *                                 against a too-new DB; doctor reads the version
  *                                 READ-ONLY (never throws) and reports it as a
  *                                 hard FAIL with the "upgrade the tool" hint.
+ *   (4) git-available           — git is on PATH (`git --version`). WARN-class,
+ *                                 NOT a hard FAIL: the core SQLite control plane
+ *                                 runs without git, but two features degrade
+ *                                 silently when it is absent — the independent
+ *                                 ownership-attribution probe (collect.js →
+ *                                 lib/git-touched-files.js: git status / git diff)
+ *                                 reports ownership_probe_degraded on every wave,
+ *                                 and --isolate per-agent worktrees (lib/
+ *                                 worktree.js → git worktree) fail opaquely at
+ *                                 dispatch. doctor surfaces the dependency up
+ *                                 front (DS-PROAC-01).
  *
  * Deliberately ABSENT (verified against source, not invented):
  *   - No DOGFOOD_TOKEN check — that env var does not exist anywhere in the
@@ -41,6 +52,7 @@ import Database from 'better-sqlite3';
 import {
   existsSync, mkdtempSync, openSync, closeSync, linkSync, rmSync,
 } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { SCHEMA_VERSION } from '../db/schema.js';
@@ -184,6 +196,36 @@ function checkSchemaVersion(dbPath) {
 }
 
 /**
+ * Check (4): git is on PATH. WARN-class — a missing git does NOT gate the exit
+ * code (the SQLite control plane runs without it), but the operator must know
+ * that the independent ownership-attribution probe and --isolate worktrees will
+ * degrade. Probes with `git --version` (argv-array, no shell). DS-PROAC-01.
+ *
+ * @returns {{ id, status, message, hint? }}
+ */
+function checkGitAvailable() {
+  let version;
+  try {
+    version = execFileSync('git', ['--version'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim();
+  } catch (e) {
+    return {
+      id: 'git-available',
+      status: 'warn',
+      message: `git is not available on PATH (${e.code || e.message})`,
+      hint: 'install git: the ownership-attribution probe (collect) degrades to self-report and --isolate per-agent worktrees fail without it; the SQLite control plane still works',
+    };
+  }
+  return {
+    id: 'git-available',
+    status: 'pass',
+    message: `${version} on PATH — ownership-attribution probe + --isolate worktrees available`,
+  };
+}
+
+/**
  * Run every preflight check and roll up an overall verdict + exit code.
  *
  * @param {object} opts
@@ -196,6 +238,7 @@ export function runDoctor(opts) {
     checkNodeVersion(),
     checkControlPlaneWritable(cpDir),
     checkSchemaVersion(opts.dbPath),
+    checkGitAvailable(),
   ];
 
   const anyFail = checks.some(c => c.status === 'fail');

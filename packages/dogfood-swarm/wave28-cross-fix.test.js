@@ -299,27 +299,32 @@ describe('W2-BACK-006 — coordination logStage callsites mint a correlation_id'
       'isolate_failed logStage must include correlation_id');
   });
 
-  it('mintCorrelationId helpers in collect.js and dispatch.js produce coord-<base36-ts>-<hex4> ids', () => {
-    // F-W1-TEST-008: previous shape asserted a synthetic regex against itself
-    // (a tautology). Read the actual source of both helpers and assert that
-    // (a) each emits the same `coord-<base36-ts>-<rand>` shape, (b) the
-    // random suffix is `randomBytes(2).toString('hex')` (4 hex chars), and
-    // (c) the timestamp is `Date.now().toString(36)`. This catches any
-    // regression that drops the base36 timestamp or changes the rand width.
-    const sources = ['commands/collect.js', 'commands/dispatch.js'].map((rel) => ({
-      rel,
-      src: readFileSync(join(__dirname, rel), 'utf-8'),
-    }));
-    for (const { rel, src } of sources) {
-      const mintMatch = src.match(
-        /function mintCorrelationId\s*\(\)\s*\{([\s\S]*?)return\s+`coord-\$\{([^}]+)\}-\$\{([^}]+)\}`/
-      );
-      assert.ok(mintMatch, `${rel}: mintCorrelationId helper not found in expected shape`);
-      const body = mintMatch[1];
-      assert.match(body, /Date\.now\(\)\.toString\(36\)/,
-        `${rel}: timestamp must be Date.now().toString(36)`);
-      assert.match(body, /randomBytes\(2\)\.toString\('hex'\)/,
-        `${rel}: random suffix must be randomBytes(2).toString('hex') (4 hex chars)`);
+  it('the shared mintCorrelationId helper produces coord-<base36-ts>-<hex4> ids, and the coordination commands import it (not inline copies)', () => {
+    // F-W1-TEST-008 / PH-DS-02: mintCorrelationId was extracted into the
+    // single shared leaf lib/correlation-id.js (it had drifted — rewind/redrive
+    // used Math.random, the others randomBytes). The shape contract now lives
+    // in the ONE helper; assert it there, and assert every coordination command
+    // imports it rather than re-defining a (re-driftable) inline copy.
+    const helperSrc = readFileSync(join(__dirname, 'lib/correlation-id.js'), 'utf-8');
+    const mintMatch = helperSrc.match(
+      /function mintCorrelationId\s*\(\)\s*\{([\s\S]*?)return\s+`coord-\$\{([^}]+)\}-\$\{([^}]+)\}`/
+    );
+    assert.ok(mintMatch, 'lib/correlation-id.js: mintCorrelationId helper not found in expected shape');
+    const body = mintMatch[1];
+    assert.match(body, /Date\.now\(\)\.toString\(36\)/,
+      'timestamp must be Date.now().toString(36)');
+    assert.match(body, /randomBytes\(2\)\.toString\('hex'\)/,
+      "random suffix must be randomBytes(2).toString('hex') (4 hex chars)");
+
+    // No coordination command may re-define mintCorrelationId inline; each must
+    // import the shared helper (guards against the drift PH-DS-02 just removed).
+    for (const rel of ['commands/collect.js', 'commands/dispatch.js', 'commands/resume.js',
+      'commands/rewind.js', 'commands/redrive.js']) {
+      const src = readFileSync(join(__dirname, rel), 'utf-8');
+      assert.doesNotMatch(src, /function mintCorrelationId\s*\(/,
+        `${rel}: must not re-define mintCorrelationId inline — import it from ../lib/correlation-id.js`);
+      assert.match(src, /import\s*\{[^}]*\bmintCorrelationId\b[^}]*\}\s*from\s*['"]\.\.\/lib\/correlation-id\.js['"]/,
+        `${rel}: must import mintCorrelationId from the shared ../lib/correlation-id.js helper`);
     }
   });
 });

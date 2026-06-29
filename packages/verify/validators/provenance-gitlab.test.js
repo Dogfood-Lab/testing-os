@@ -212,6 +212,7 @@ describe('gitlabProvenance distinguishes ops failures from missing runs', () => 
     it(`throws an operational error on HTTP ${status} (not a submission-bad false)`, async () => {
       const adapter = gitlabProvenance('token', {
         timeoutMs: 1000,
+        retries: 0,
         fetchImpl: fetchWithStatus(status)
       });
       await assert.rejects(
@@ -296,5 +297,79 @@ describe('gitlabProvenance input guards', () => {
       run_url: 'https://gitlab.com/acme/widget/-/merge_requests/1'
     });
     assert.equal(ok, false);
+  });
+});
+
+// ── Bounded retry over transient faults (PROACT-VERIFY-001, mirrors GitHub) ──
+//
+// MEDIUM/resilience: a single 429/5xx blip used to fail the submission as an
+// operational incident. The adapter now retries 429/5xx within a bounded budget
+// (opts.retries, default 2) with exponential backoff (honoring Retry-After), and
+// still THROWS on exhaustion so a genuinely-down provider surfaces as
+// operational — never a false 'confirmed'. 404 is NOT retried.
+
+describe('gitlabProvenance bounded retry (PROACT-VERIFY-001)', () => {
+  it('retries a 429 then confirms on the following 200 (retry worked)', async () => {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      if (calls === 1) {
+        return { ok: false, status: 429, headers: { get: () => null }, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => mockPipeline() };
+    };
+    const adapter = gitlabProvenance('token', { timeoutMs: 1000, backoffMs: 1, fetchImpl });
+    const ok = await adapter.confirm(pipelineSource(), { refCommitSha: RUN_HEAD });
+    assert.equal(ok, true, '429-then-200 must confirm — the retry succeeded');
+    assert.equal(calls, 2, 'expected exactly one retry (2 total requests)');
+  });
+
+  it('honors Retry-After (numeric seconds) before the retry', async () => {
+    let calls = 0;
+    const waited = [];
+    const fetchImpl = async () => {
+      calls++;
+      if (calls === 1) {
+        return { ok: false, status: 503, headers: { get: h => (h === 'retry-after' ? '2' : null) }, json: async () => ({}) };
+      }
+      return { ok: true, status: 200, json: async () => mockPipeline() };
+    };
+    const adapter = gitlabProvenance('token', {
+      timeoutMs: 1000,
+      sleepImpl: ms => { waited.push(ms); return Promise.resolve(); },
+      fetchImpl
+    });
+    const ok = await adapter.confirm(pipelineSource(), { refCommitSha: RUN_HEAD });
+    assert.equal(ok, true);
+    assert.deepEqual(waited, [2000], 'Retry-After: 2 must drive a 2000ms wait');
+  });
+
+  it('THROWS on exhausted 5xx retries (a genuinely-down provider still surfaces)', async () => {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      return { ok: false, status: 500, headers: { get: () => null }, json: async () => ({}) };
+    };
+    const adapter = gitlabProvenance('token', { timeoutMs: 1000, retries: 2, backoffMs: 1, fetchImpl });
+    await assert.rejects(
+      adapter.confirm(pipelineSource(), { refCommitSha: RUN_HEAD }),
+      err => {
+        assert.match(err.message, /provenance: GitLab API returned 500/);
+        return true;
+      }
+    );
+    assert.equal(calls, 3, 'expected 1 initial + 2 retries = 3 requests before throwing');
+  });
+
+  it('does NOT retry a 404 (run genuinely absent → single immediate false)', async () => {
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      return { ok: false, status: 404, headers: { get: () => null }, json: async () => ({}) };
+    };
+    const adapter = gitlabProvenance('token', { timeoutMs: 1000, retries: 2, backoffMs: 1, fetchImpl });
+    const ok = await adapter.confirm(pipelineSource(), { refCommitSha: RUN_HEAD });
+    assert.equal(ok, false);
+    assert.equal(calls, 1, '404 must not be retried');
   });
 });

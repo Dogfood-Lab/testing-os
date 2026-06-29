@@ -76,6 +76,7 @@ import { transitionAgent, TERMINAL_STATUSES as AGENT_TERMINAL_STATUSES } from '.
 import { transitionWave, TERMINAL_STATUSES as WAVE_TERMINAL_STATUSES } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
 import { removeWorktree } from '../lib/worktree.js';
+import { mintCorrelationId } from '../lib/correlation-id.js';
 
 const REWIND_TARGET_STATUS = 'aborted_for_rewind';
 
@@ -524,6 +525,12 @@ export function rewind(opts) {
  * Human-readable plan summary. Used both for the dry-run preview and the
  * post-apply confirmation. Keeps the operator's reading shape constant
  * across dry-run and apply.
+ *
+ * PH-DS-02: mintCorrelationId is now the shared lib/correlation-id.js leaf —
+ * rewind no longer carries a local Math.random copy whose 4-char base36 tail
+ * drifted from the randomBytes(2) hex tail the other coordination commands
+ * emit. The forensic anchor an operator greps is now byte-format-identical
+ * across dispatch/collect/resume/rewind/redrive.
  */
 function formatPlanSummary(report) {
   const verb = report.apply ? 'Rewind (APPLIED)' : 'Rewind (DRY-RUN)';
@@ -585,12 +592,6 @@ export function formatRewind(report) {
   }
 
   return out;
-}
-
-function mintCorrelationId() {
-  const ts = Date.now().toString(36);
-  const rand = Math.random().toString(36).slice(2, 6);
-  return `coord-${ts}-${rand}`;
 }
 
 /**

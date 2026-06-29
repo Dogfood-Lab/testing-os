@@ -39,6 +39,7 @@ import yaml from 'js-yaml';
 
 import { verify } from './index.js';
 import { stubProvenance } from './validators/provenance.js';
+import { SUPPORTED_SCHEMA_VERSIONS } from '@dogfood-lab/schemas';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = resolve(__dirname, 'fixtures');
@@ -137,5 +138,40 @@ describe('F1-CONTRACTS-001 — schema_version VALUE gate (CONTRACT_SCHEMA_* pref
       record.verification.rejection_reasons.some(r => /^CONTRACT_SCHEMA_/.test(r)),
       'CONTRACT_SCHEMA_* must be greppable in the persisted rejection_reasons'
     );
+  });
+});
+
+// ── PROACT-VERIFY-003 — record / recordSubmission version alignment ──
+//
+// LOW/resilience: index.js stamps the PERSISTED record's schema_version from
+// SUPPORTED_SCHEMA_VERSIONS.record.current, but gates the INCOMING submission's
+// version against the 'recordSubmission' entry (validateSchemaVersion(...,
+// 'recordSubmission')). The two are read from different keys. If a future
+// lockstep bump moves one major without the other, the verifier would accept a
+// submission at the recordSubmission major yet persist a record stamped with a
+// DIFFERENT record major — a silent contract skew across the trust boundary.
+//
+// Rather than refactor the two reads into one (each is correct at its own call
+// site), this assertion pins the two entries to the SAME {minMajor, maxMajor}
+// and current major, so an asymmetric bump goes RED here at the seam.
+
+describe('PROACT-VERIFY-003 — record and recordSubmission schema versions stay aligned', () => {
+  it('record and recordSubmission share {minMajor, maxMajor} and current major', () => {
+    const rec = SUPPORTED_SCHEMA_VERSIONS.record;
+    const sub = SUPPORTED_SCHEMA_VERSIONS.recordSubmission;
+
+    assert.ok(rec, 'SUPPORTED_SCHEMA_VERSIONS.record must exist');
+    assert.ok(sub, 'SUPPORTED_SCHEMA_VERSIONS.recordSubmission must exist');
+
+    assert.equal(rec.minMajor, sub.minMajor,
+      'record.minMajor must equal recordSubmission.minMajor — the gate and the stamp must agree');
+    assert.equal(rec.maxMajor, sub.maxMajor,
+      'record.maxMajor must equal recordSubmission.maxMajor — the gate and the stamp must agree');
+
+    const recMajor = Number(String(rec.current).split('.')[0]);
+    const subMajor = Number(String(sub.current).split('.')[0]);
+    assert.equal(recMajor, subMajor,
+      'record.current and recordSubmission.current must share the same major — ' +
+      'index.js stamps record.current but gates the submission against recordSubmission');
   });
 });

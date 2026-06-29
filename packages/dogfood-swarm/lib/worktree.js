@@ -145,18 +145,43 @@ export function mergeWorktree(repoPath, branch) {
 /**
  * Remove a worktree and optionally delete its branch.
  *
+ * PH-DS-01: completion-path parity with rewind.js's --apply teardown. The
+ * `git worktree remove --force` can silently fail (the path is occupied by a
+ * plain non-worktree directory, is locked, or git no longer tracks it). The
+ * prior bare-catch reported success regardless — a survivor was indistinguishable
+ * from a clean removal. We now re-check existsSync AFTER the remove attempt and
+ * emit a `worktree_cleanup_failed` breadcrumb naming the surviving path so the
+ * operator can `git worktree prune` + remove it manually, and return a
+ * structured { removed, stranded } so callers (cleanupAllWorktrees) can count
+ * survivors instead of trusting a silent best-effort. Mirrors rewind.js's
+ * rewind_worktree_cleanup_failed recheck verbatim (different stage name so the
+ * two paths are greppable apart).
+ *
  * @param {string} repoPath
  * @param {string} worktreePath
  * @param {string} [branch] — if provided, also delete the branch
+ * @returns {{ removed: boolean, stranded: boolean }}
  */
 export function removeWorktree(repoPath, worktreePath, branch) {
   try {
     gitArgs(repoPath, ['worktree', 'remove', worktreePath, '--force']);
-  } catch { /* already removed */ }
+  } catch { /* fall through to the existsSync recheck below */ }
 
   if (branch) {
     try { gitArgs(repoPath, ['branch', '-D', branch]); } catch { /* already deleted */ }
   }
+
+  if (existsSync(worktreePath)) {
+    logStage('worktree_cleanup_failed', {
+      component: 'dogfood-swarm',
+      repoPath,
+      worktreePath,
+      branch: branch || null,
+      reason: 'worktree path still present after `git worktree remove --force`',
+    });
+    return { removed: false, stranded: true };
+  }
+  return { removed: true, stranded: false };
 }
 
 /**
@@ -188,11 +213,24 @@ export function listWorktrees(repoPath) {
 
 /**
  * Clean up all swarm worktrees for a repo.
+ *
+ * PH-DS-01: returns a structured { removed, stranded, total } summary so the
+ * caller and the operator can see how many worktrees survived the sweep, rather
+ * than the prior bare count that conflated "swept" with "actually removed". Each
+ * survivor already emitted a `worktree_cleanup_failed` breadcrumb inside
+ * removeWorktree; this rolls the per-worktree outcomes into a wave-level count.
+ *
+ * @param {string} repoPath
+ * @returns {{ removed: number, stranded: number, total: number }}
  */
 export function cleanupAllWorktrees(repoPath) {
   const worktrees = listWorktrees(repoPath);
+  let removed = 0;
+  let stranded = 0;
   for (const wt of worktrees) {
-    removeWorktree(repoPath, wt.path, wt.branch);
+    const outcome = removeWorktree(repoPath, wt.path, wt.branch);
+    if (outcome.stranded) stranded++;
+    else removed++;
   }
   // Prune stale worktree references. sm-p-003: best-effort, but a swallowed
   // prune failure left no breadcrumb at all; log it so a stuck prune is
@@ -206,7 +244,7 @@ export function cleanupAllWorktrees(repoPath) {
       err: e.message,
     });
   }
-  return worktrees.length;
+  return { removed, stranded, total: worktrees.length };
 }
 
 // ── Internal ──
