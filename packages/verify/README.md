@@ -83,7 +83,7 @@ Provenance fields (`github_run_id`, `github_workflow_ref`) are required when `pr
 
 ### Prefix taxonomy
 
-The verifier emits two prefix classes:
+The verifier emits rejection-reason strings under stable prefixes, each mapping to one of four routing classes:
 
 Discrimination happens by **class**, surfaced by `parseRejectionReason` (below). Every prefix maps to one of four classes: **submission-bad** (the submitter fixes the payload), **operational** (the verifier/tooling faulted), **ingest** (an ingest-side load fault), or **unknown** (unrecognized prefix).
 
@@ -94,7 +94,7 @@ Discrimination happens by **class**, surfaced by `parseRejectionReason` (below).
 | `schema:` | `validators/schema.js` | JSON Schema check on the submission/record envelope failed. The rest of the string carries the AJV path + message. |
 | `policy:` | `validators/policy.js` | Per-repo policy gate failed (forbidden tags, missing required fields, surface evidence/CI requirements, etc.). |
 | `steps[<id>]:` | `validators/steps.js` | Step-level contract check failed on a specific step id (gate accumulation, ordering, evidence shape). |
-| `provenance:` | `validators/provenance.js` | The GitHub run-id confirmation could not match the submitted commit/repo at the GitHub API. |
+| `provenance:` | `validators/provenance.js` | The run was genuinely **absent / not confirmable** — a 404 from the provider API, or the run head did not match the submitted commit/repo. The submitter's payload points at a run that does not exist or does not bind. (Operational provider faults — 429/5xx/401/403 — are NOT this class; see `provenance-fault:` below.) |
 | `repo:` | `index.js` cross-field guard | `submission.repo` does not match the owner/repo encoded in `source.run_url` (anti-forgery guard). Emitted as `repo:mismatch: …`. |
 | `submission-contains-verifier-field:` | `index.js` | The submission carried a verifier-owned field (`policy_version`, `verification`, or an object `overall_verdict`) it must not author. |
 | `CONTRACT_SCHEMA_TOO_NEW:` | `validators/schema-version.js` | The submission's `schema_version` declares a MAJOR **above** what this build supports (see `SUPPORTED_SCHEMA_VERSIONS` in `@dogfood-lab/schemas`). This build cannot understand a future contract — **the operator must upgrade testing-os**, but the routing class stays submission-bad (the payload as-shipped cannot be accepted by THIS build). |
@@ -109,6 +109,7 @@ Discrimination happens by **class**, surfaced by `parseRejectionReason` (below).
 | `VALIDATOR_FAULT_STEPS:` | `runValidator('steps', …)` catch | Internal exception inside the steps validator. |
 | `VALIDATOR_FAULT_CONTRACT_SCHEMA_VERSION:` | `runValidator('contract_schema_version', …)` catch | The version gate was called with an unknown contract key (a programmer error at the call site, not a submission fault). |
 | `submission-malformed:` | `index.js` null/non-object early-return | The submission itself was `null` or not an object — a malfunctioning **dispatcher** sent garbage, not a submitter who authored a bad-but-shaped payload. Page ops / inspect the dispatch pipeline; do NOT bounce it to a submitter. |
+| `provenance-fault:` | `index.js` provenance catch | The provenance adapter THREW an operational error confirming the run — a provider **429 rate-limit, 5xx outage, or 401/403 token** fault (`validators/provenance.js` throws these on purpose for non-404 responses). The submitter's payload is fine; the verifier could not reach a verdict. Page ops / retry; do NOT bounce it to a submitter. Distinct from the submission-bad `provenance:` (genuine absence/404). |
 
 Any future `VALIDATOR_FAULT_<NEW>:` prefix is classified `operational` by family — `parseRejectionReason` matches the `VALIDATOR_FAULT_` head, so a new validator class needs no parser edit. The `submission-malformed:` prefix is matched literally (it is not part of the `VALIDATOR_FAULT_` family).
 

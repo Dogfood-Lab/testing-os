@@ -22,6 +22,7 @@ import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { FINDING_GATED_PHASES } from '../lib/advance.js';
+import { isOpenFinding } from '../lib/finding-status.js';
 
 /**
  * Build a receipt object from DB truth.
@@ -108,7 +109,7 @@ export function buildReceipt(opts) {
   for (const f of allFindings) {
     findingsBySeverity[f.severity] = (findingsBySeverity[f.severity] || 0) + 1;
     findingsByStatus[f.status] = (findingsByStatus[f.status] || 0) + 1;
-    if (f.status !== 'fixed' && f.status !== 'rejected') {
+    if (isOpenFinding(f.status)) {
       openBySeverity[f.severity] = (openBySeverity[f.severity] || 0) + 1;
     }
   }
@@ -368,7 +369,10 @@ export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta
   const wavePart = `Wave: ${waveDelta.waveNew} new (${waveDelta.waveNewCrit} CRIT + ${waveDelta.waveNewHigh} HIGH)`;
   const runPart = `Run total: ${openBySeverity.CRITICAL} CRIT + ${openBySeverity.HIGH} HIGH open (fixed: ${waveDelta.totalFixed})`;
 
-  // All complete — check OPEN severity (fixed/rejected findings are not blockers).
+  // All complete — check OPEN severity. The CLOSED set (fixed/rejected/deferred)
+  // is owned by lib/finding-status.js and applied where openBySeverity is
+  // computed (buildReceipt above, via isOpenFinding), so a deferred CRITICAL/HIGH
+  // is not counted as a blocker — matching lib/advance.js#checkFindingSeverity.
   // Gate on the same FINDING_GATED_PHASES set lib/advance.js enforces, so the
   // receipt's recommendation can never say ADVANCE while `swarm advance` blocks
   // — that mismatch surfaced in health-audit-b/c and stage-d-audit, which are

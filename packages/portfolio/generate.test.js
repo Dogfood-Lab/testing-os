@@ -422,6 +422,38 @@ describe('loadPolicies multi-org enumeration (F-721047-004)', () => {
     }
   });
 
+  it('enumerates org subdirs even when a stray .yaml sits at the root (F-PORT-001)', () => {
+    const root = mkdtempSync(join(tmpdir(), 'portfolio-mixed-root-'));
+    try {
+      // A real org subdir with a policy...
+      const orgA = join(root, 'mcp-tool-shop-org');
+      mkdirSync(orgA, { recursive: true });
+      writeFileSync(join(orgA, 'shipcheck.yaml'), [
+        'repo: mcp-tool-shop-org/shipcheck',
+        'enforcement:',
+        '  mode: required',
+        'surfaces:',
+        '  cli:',
+        '    required_scenarios: [self-gate-real-repo]',
+        '    max_age_days: 14',
+        '    warn_age_days: 7',
+        ''
+      ].join('\n'));
+
+      // ...plus a stray yaml dropped at the policies/repos/ root (e.g. a
+      // misplaced README sibling or an accidental editor save). Pre-fix this
+      // single root file flipped shape detection to single-org mode and the
+      // org subdir's policies were silently dropped while coverage looked fine.
+      writeFileSync(join(root, '_stray.yaml'), 'note: not a policy\n');
+
+      const policies = loadPolicies(root);
+      assert.ok(policies['mcp-tool-shop-org/shipcheck'],
+        'org subdir policies must still load when a stray root yaml is present');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it('still works for a single-org dir (legacy callers)', () => {
     const root = mkdtempSync(join(tmpdir(), 'portfolio-single-'));
     try {

@@ -92,7 +92,6 @@
  *      ground-truth check.
  */
 
-import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 
 import { openDb } from '../db/connection.js';

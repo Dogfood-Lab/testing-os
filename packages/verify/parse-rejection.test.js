@@ -36,6 +36,21 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
     ['policy: forbidden tag "wip"', 'submission-bad', 'policy:'],
     ['steps[step-1]: gate accumulation violated', 'submission-bad', 'steps[<id>]:'],
     ['provenance: source run could not be confirmed', 'submission-bad', 'provenance:'],
+
+    // operational — a provider-side provenance FAULT (429 rate-limit, 5xx outage,
+    // 401/403 token). verify-A-002 makes the adapter THROW these; index.js catches
+    // the throw and emits the distinct `provenance-fault:` prefix so the incident
+    // pages ops instead of bouncing back to the submitter as 'submission-bad'.
+    [
+      'provenance-fault: verification failed: provenance: GitHub API returned 429',
+      'operational',
+      'provenance-fault:',
+    ],
+    [
+      'provenance-fault: verification failed: provenance: GitLab API returned 503',
+      'operational',
+      'provenance-fault:',
+    ],
     [
       'repo:mismatch: submission.repo (a/b) does not match source.run_url repo (c/d)',
       'submission-bad',
@@ -112,6 +127,23 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
     assert.equal(parsed.class, 'unknown');
     assert.equal(parsed.prefix, null);
     assert.equal(parsed.detail, 'gremlins: something weird happened');
+  });
+
+  it('splits provenance into submission-bad (absence) vs operational (provider fault) [F-VERIFY-001]', () => {
+    // The not-confirmed case — the run is genuinely absent (404/transport) — stays
+    // submission-bad: the submitter must point at a real run and resubmit.
+    const notConfirmed = parseRejectionReason('provenance: source run could not be confirmed');
+    assert.equal(notConfirmed.class, 'submission-bad');
+    assert.equal(notConfirmed.prefix, 'provenance:');
+
+    // The provider-FAULT case — the adapter threw on a 429/5xx/401/403 — is
+    // operational: page ops, do NOT bounce an outage back to the submitter.
+    const fault = parseRejectionReason(
+      'provenance-fault: verification failed: provenance: GitHub API returned 503'
+    );
+    assert.equal(fault.class, 'operational');
+    assert.equal(fault.prefix, 'provenance-fault:');
+    assert.equal(fault.detail, 'verification failed: provenance: GitHub API returned 503');
   });
 
   it('classifies the null/non-object submission reason as operational (verify-B-003)', () => {

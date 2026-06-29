@@ -166,6 +166,10 @@ export function validateFeatureOutput(output) {
   } else {
     for (let i = 0; i < output.features.length; i++) {
       const f = output.features[i];
+      if (!f || typeof f !== 'object') {
+        errors.push(`features[${i}]: must be an object`);
+        continue;
+      }
       if (!f.id) errors.push(`features[${i}]: missing "id"`);
       if (!f.priority || !SEVERITY_ENUM.includes(f.priority)) {
         errors.push(`features[${i}]: invalid "priority"`);
@@ -206,7 +210,12 @@ export function validateAmendOutput(output) {
     errors.push('"fixes" must be an array');
   } else {
     for (let i = 0; i < output.fixes.length; i++) {
-      if (!output.fixes[i].finding_id) errors.push(`fixes[${i}]: missing "finding_id"`);
+      const fix = output.fixes[i];
+      if (!fix || typeof fix !== 'object') {
+        errors.push(`fixes[${i}]: must be an object`);
+        continue;
+      }
+      if (!fix.finding_id) errors.push(`fixes[${i}]: missing "finding_id"`);
     }
   }
 

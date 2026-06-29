@@ -291,14 +291,15 @@ function sleepSync(ms) {
 
 /**
  * Run `fn` while holding an exclusive lock on `targetPath`. The lock is a
- * sibling directory at `<targetPath>.lock` — see file header for the
- * full design rationale.
+ * sibling lock FILE at `<targetPath>.lock`, created via `O_EXCL` / `linkSync`
+ * compare-and-swap — see file header for the full design rationale (and why a
+ * lock file beats the earlier lock-directory design).
  *
  * The lock is per-target, so two unrelated `appendEvent` calls writing to
  * different daily log files do NOT serialize against each other.
  *
  * @template T
- * @param {string} targetPath - The file being mutated; the lock dir is `<targetPath>.lock`.
+ * @param {string} targetPath - The file being mutated; the lock file is `<targetPath>.lock`.
  * @param {() => T} fn - The critical section. Runs synchronously.
  * @param {{
  *   timeoutMs?: number,

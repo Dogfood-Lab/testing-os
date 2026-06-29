@@ -174,6 +174,47 @@ describe('policy validation', () => {
     assert.ok(result.errors.some(e => e.includes('execution_mode')));
   });
 
+  it('enforces min_evidence_count PER scenario, not aggregated across scenarios [F-VERIFY-002]', () => {
+    // The policy.schema.json description for min_evidence_count documents the
+    // contract; the verifier enforces it per scenario. This pins per-scenario
+    // semantics with a submission that PASSES under an aggregate reading but
+    // FAILS per scenario: scenario A has 0 evidence, scenario B has 4. The total
+    // (4) clears a min of 2 — so an aggregate interpretation would accept — while
+    // scenario A (0 < 2) must reject under the real per-scenario rule.
+    const policy = {
+      policy_version: '1.0.0',
+      defaults: {
+        evidence_requirements: { required_kinds: [], min_evidence_count: 2 }
+      }
+    };
+    const submission = {
+      scenario_results: [
+        { scenario_id: 'sc-a', product_surface: 'cli', execution_mode: 'bot', evidence: [] },
+        {
+          scenario_id: 'sc-b',
+          product_surface: 'cli',
+          execution_mode: 'bot',
+          evidence: [
+            { kind: 'log' }, { kind: 'log' }, { kind: 'log' }, { kind: 'log' }
+          ]
+        }
+      ]
+    };
+
+    const result = validatePolicy(submission, { globalPolicy: policy, repoPolicy: null });
+    assert.equal(result.valid, false, 'scenario A has 0 of 2 required evidence items — must reject per scenario');
+    assert.ok(
+      result.errors.some(e => e.includes('requires 2 evidence items, got 0')),
+      `expected a per-scenario evidence error for scenario A, got: ${JSON.stringify(result.errors)}`
+    );
+    // Scenario B (4 ≥ 2) individually satisfies the requirement — the rejection
+    // is attributable to A alone, which is the per-scenario signature.
+    assert.ok(
+      !result.errors.some(e => e.includes('got 4')),
+      'scenario B satisfies the requirement on its own and must not error'
+    );
+  });
+
   it('rejects failing CI tests when tests_must_pass is true', () => {
     const bad = structuredClone(pilot0);
     bad.ci_checks = [{ id: 'unit-tests', kind: 'test', status: 'fail', value: 20 }];
@@ -298,6 +339,43 @@ describe('full verifier pipeline (pilot 0)', () => {
     assert.equal(record.overall_verdict.verified, 'fail');
     assert.equal(record.overall_verdict.downgraded, true);
     assert.ok(record.verification.rejection_reasons.some(r => r.includes('provenance')));
+  });
+
+  it('classifies a thrown provenance fault as operational, not submission-bad [F-VERIFY-001]', async () => {
+    // verify-A-002: the real adapters THROW on operational provider faults
+    // (429 rate-limit, 5xx outage, 401/403 token). End-to-end, the verifier must
+    // record that as a `provenance-fault:` reason so routing pages ops — NOT as a
+    // `provenance:` reason the submitter is told to fix. A thrown fault must also
+    // NOT additionally append the submission-bad 'source run could not be
+    // confirmed' reason for the same failure.
+    const faultingProvenance = {
+      async confirm() {
+        throw new Error('provenance: GitHub API returned 503');
+      }
+    };
+    const record = await verify(pilot0, {
+      globalPolicy,
+      repoPolicy,
+      provenance: faultingProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.status, 'rejected');
+    assert.equal(record.verification.provenance_confirmed, false);
+
+    const provReasons = record.verification.rejection_reasons.filter(r => r.startsWith('provenance'));
+    assert.equal(
+      provReasons.length, 1,
+      `expected exactly one provenance reason, got ${JSON.stringify(provReasons)}`
+    );
+    const [reason] = provReasons;
+    assert.equal(parseRejectionReason(reason).class, 'operational',
+      `thrown provenance fault must classify operational, got: ${reason}`);
+    // The submission-bad not-confirmed reason must NOT also be present for a fault.
+    assert.ok(
+      !record.verification.rejection_reasons.includes('provenance: source run could not be confirmed'),
+      'a thrown fault must not also bounce a submission-bad not-confirmed reason'
+    );
   });
 
   it('rejects when submission contains verifier-owned fields', async () => {

@@ -182,6 +182,24 @@ describe('walkSourceFiles', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  it('always skips dot-prefixed dirs, even ones absent from skipDirs (F-PORT-002)', () => {
+    // Pins the real rule the dead `&& !skipDirs.has(...)` clause obscured:
+    // there is no opt-in for dot-dirs. A custom skipDirs that does NOT list a
+    // dot-dir does not bring it back into the walk — dot-dirs are unconditional.
+    const root = makeFixture({
+      'src/a.js': '// F-100000-001',
+      '.custom/b.js': '// F-200000-002',
+    });
+    try {
+      const files = walkSourceFiles(root, { skipDirs: new Set(['node_modules']) });
+      const names = files.map(f => f.split(/[\\/]/).pop());
+      assert.deepEqual(names, ['a.js'],
+        '.custom is dot-prefixed so it is skipped regardless of skipDirs membership');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('parseRegressionPins — positive cases', () => {

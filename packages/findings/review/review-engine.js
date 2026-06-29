@@ -11,7 +11,7 @@ import yaml from 'js-yaml';
 
 import { validateTransition, ACTION_TARGET_STATUS, REASON_REQUIRED, REQUIRES_ACCEPTED, REQUIRES_CLOSED } from './transitions.js';
 import { createEvent, appendEvent } from './event-log.js';
-import { parseFinding } from '../validate.js';
+import { parseFinding, validateFinding } from '../validate.js';
 import { findById, loadFindings } from '../reader.js';
 import { atomicWriteFileSync } from '../lib/atomic-write.js';
 
@@ -113,10 +113,12 @@ export function performAction(rootDir, params) {
   //   - `merge` and `supersede` auto-default to `'merged_into_canonical'`
   //     since lineage already carries `superseded_by` / `merged_from`.
   //   - For `action === 'reject'`, the engine does NOT invent a default —
-  //     defaulting would erase operator intent. The schema enforces that
-  //     the field is set; an operator who forgets sees a validation error
-  //     downstream and learns to pass one. (This is the intentional
-  //     test-and-tell path in h4-engine-auto-reject-reason.test.js.)
+  //     defaulting would erase operator intent. F-FIND-001 supersedes the
+  //     earlier "test-and-tell" path: rather than persisting a finding with
+  //     no reject_reason and letting the operator discover it downstream, the
+  //     write-side schema gate below refuses the write at the point of action,
+  //     so the operator gets a structured error and the canonical store never
+  //     holds a malformed finding. (See h4-engine-auto-reject-reason.test.js.)
   let effectiveRejectReason = params.rejectReason;
   if (!effectiveRejectReason && toStatus === 'rejected' && (action === 'merge' || action === 'supersede')) {
     effectiveRejectReason = 'merged_into_canonical';
@@ -165,12 +167,30 @@ export function performAction(rootDir, params) {
     notes: params.notes
   });
 
-  // Persist: update finding artifact
-  const clean = JSON.parse(JSON.stringify(finding));
-  atomicWriteFileSync(filePath, yaml.dump(clean, { lineWidth: 120, noRefs: true }));
+  // F-FIND-001 — schema gate BEFORE the filesystem touch. Every sibling
+  // finding writer (derive writeFinding, synthesis writePattern/...) validates
+  // first so no path can persist a malformed finding; the review engine was the
+  // last on-disk finding writer missing the gate. An operator edit with a
+  // typo'd enum or an unknown field is refused here instead of silently
+  // corrupting the canonical store. Return-shaped (not thrown) to match this
+  // function's `{ success, error }` contract.
+  const validation = validateFinding(finding);
+  if (!validation.valid) {
+    const summary = validation.errors.map(e => `${e.path || '/'} ${e.message}`).join('; ');
+    return { success: false, error: `Refused: edit would persist a schema-invalid finding: ${summary}` };
+  }
 
-  // Persist: append event to log
+  const clean = JSON.parse(JSON.stringify(finding));
+  const body = yaml.dump(clean, { lineWidth: 120, noRefs: true });
+
+  // F-FIND-002 — append the audit event BEFORE the artifact write. The trail is
+  // append-only and the package advertises a complete one; the unsafe
+  // asymmetry is a persisted state change with no event. Appending first means
+  // an append failure aborts before the artifact lands (no silent desync); the
+  // only residual asymmetry is an event with no state change, which the
+  // append-only reader tolerates and an operator can reconcile.
   appendEvent(rootDir, event);
+  atomicWriteFileSync(filePath, body);
 
   return { success: true, finding, event };
 }
@@ -249,11 +269,35 @@ export function performMerge(rootDir, params) {
     decision_reason: reason
   };
 
-  // Write canonical
-  const cleanCanonical = JSON.parse(JSON.stringify(canonical));
-  atomicWriteFileSync(canonicalResult.path, yaml.dump(cleanCanonical, { lineWidth: 120, noRefs: true }));
+  // F-FIND-001 — schema gate the canonical BEFORE any write. The merge mutates
+  // source_record_ids / evidence / lineage / review; a malformed result must
+  // never reach disk. Matches the singleton writers and `performAction`.
+  const validation = validateFinding(canonical);
+  if (!validation.valid) {
+    const summary = validation.errors.map(e => `${e.path || '/'} ${e.message}`).join('; ');
+    return { success: false, error: `Refused: merge would persist a schema-invalid canonical: ${summary}` };
+  }
 
-  // Mark source findings as rejected/superseded
+  const cleanCanonical = JSON.parse(JSON.stringify(canonical));
+  const canonicalBody = yaml.dump(cleanCanonical, { lineWidth: 120, noRefs: true });
+
+  // F-FIND-002 — append the canonical merge event BEFORE the canonical write
+  // (same ordering rationale as performAction). An append failure aborts before
+  // the canonical or any source mutation lands.
+  const mergeEvent = createEvent({
+    findingId: canonicalId,
+    actor,
+    action: 'merge',
+    fromStatus: canonical.status,
+    toStatus: canonical.status,
+    reason,
+    mergedFromIds: nonCanonical.map(s => s.data.finding_id)
+  });
+  appendEvent(rootDir, mergeEvent);
+  atomicWriteFileSync(canonicalResult.path, canonicalBody);
+
+  // Mark source findings as rejected/superseded. Each supersede flows through
+  // performAction, so the F-FIND-001 schema gate covers these re-writes too.
   const events = [];
   for (const s of nonCanonical) {
     const sourceResult = performAction(rootDir, {
@@ -266,17 +310,6 @@ export function performMerge(rootDir, params) {
     if (sourceResult.event) events.push(sourceResult.event);
   }
 
-  // Log merge event for canonical
-  const mergeEvent = createEvent({
-    findingId: canonicalId,
-    actor,
-    action: 'merge',
-    fromStatus: canonical.status,
-    toStatus: canonical.status,
-    reason,
-    mergedFromIds: nonCanonical.map(s => s.data.finding_id)
-  });
-  appendEvent(rootDir, mergeEvent);
   events.push(mergeEvent);
 
   return { success: true, canonical, events };

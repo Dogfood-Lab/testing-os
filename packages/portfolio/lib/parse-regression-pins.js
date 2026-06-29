@@ -142,9 +142,9 @@ export function walkSourceFiles(rootDir, { extensions = DEFAULT_SOURCE_EXTENSION
       const fullPath = join(dir, entry.name);
       if (entry.isDirectory()) {
         if (skipDirs.has(entry.name)) continue;
-        // Hide-dot convention: skip .claude/.vscode/.idea etc. unless the
-        // caller explicitly opted them in via a custom skipDirs.
-        if (entry.name.startsWith('.') && !skipDirs.has(entry.name)) continue;
+        // Dot-prefixed dirs (.claude/.vscode/.idea/.git/…) are always skipped;
+        // there is no opt-in via skipDirs — that set only ever adds skips.
+        if (entry.name.startsWith('.')) continue;
         stack.push(fullPath);
         continue;
       }

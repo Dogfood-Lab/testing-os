@@ -356,6 +356,21 @@ export function renderVerifyFixedDelta(model, format, stream) {
   return renderVerifyFixedMarkdown(model);
 }
 
+// The "offending" set is verb-dependent. verify-fixed's offending basis is
+// `regressed + claimedButStillPresent` (a fix claim that didn't hold). But
+// verify-approved inverts the semantic: an approved anchor *should* still be
+// present, so its offending basis is drift = `verified + regressed` — and it
+// overrides thresholdExceeded/exitCode on that basis in approvalExitCode().
+// Deriving offending from the verb keeps the human-facing count and headline
+// aligned with the exit code the command actually returns.
+function verifyOffending(model) {
+  const s = model.summary;
+  if (model.verb === 'verify-approved') {
+    return { count: s.verified + s.regressed, label: 'verified + regressed' };
+  }
+  return { count: s.regressed + s.claimedButStillPresent, label: 'regressed + claimed' };
+}
+
 export function renderVerifyFixedJson(model) {
   // The delta model IS the JSON contract — outputs agent's
   // parse-regression-pins.js consumer reads this directly. Stringify
@@ -378,9 +393,9 @@ export function renderVerifyFixedMarkdown(model) {
   lines.push('');
 
   if (model.threshold > 0 || model.thresholdExceeded) {
-    const offending = s.regressed + s.claimedButStillPresent;
+    const offending = verifyOffending(model);
     const verdict = model.thresholdExceeded ? 'EXCEEDED' : 'within threshold';
-    lines.push(`**Threshold:** ${model.threshold} | offending (regressed + claimed): ${offending} — ${verdict}`);
+    lines.push(`**Threshold:** ${model.threshold} | offending (${offending.label}): ${offending.count} — ${verdict}`);
     lines.push('');
   }
 
@@ -420,9 +435,9 @@ export function renderVerifyFixedText(model) {
   );
 
   if (model.threshold > 0 || model.thresholdExceeded) {
-    const offending = s.regressed + s.claimedButStillPresent;
+    const offending = verifyOffending(model);
     const verdict = model.thresholdExceeded ? 'EXCEEDED' : 'within threshold';
-    lines.push(`Threshold: ${model.threshold} | offending (regressed + claimed): ${offending} — ${verdict}`);
+    lines.push(`Threshold: ${model.threshold} | offending (${offending.label}): ${offending.count} — ${verdict}`);
   }
   lines.push('');
 
@@ -472,17 +487,39 @@ function buildVerifyFixedHeadline(model, emph) {
   if (s.total === 0) {
     return `${emph}No fixed findings to verify${emph}`;
   }
+  if (model.verb === 'verify-approved') {
+    return buildVerifyApprovedHeadline(model, emph);
+  }
   if (model.exitCode === 2) {
     return `${emph}Verify pipeline broken${emph} — every fixed finding is unverifiable; human review required`;
   }
+  const offending = verifyOffending(model).count;
   if (model.thresholdExceeded) {
-    const offending = s.regressed + s.claimedButStillPresent;
     return `${emph}${offending} fix claim(s) failed verification${emph} (threshold ${model.threshold})`;
   }
-  if (s.regressed + s.claimedButStillPresent > 0) {
-    return `${emph}${s.regressed + s.claimedButStillPresent} fix claim(s) failed verification${emph} (within threshold ${model.threshold})`;
+  if (offending > 0) {
+    return `${emph}${offending} fix claim(s) failed verification${emph} (within threshold ${model.threshold})`;
   }
   return `${emph}All ${s.verified} fix claim(s) verified${emph}`;
+}
+
+// verify-approved is a pre-amend anchor gate, not a fix-claim verifier, so
+// its headline speaks in anchor-drift terms: "approval still points at a
+// real anchor" vs "anchor drifted before the fix was dispatched". The
+// offending set is drift = verified + regressed (see verifyOffending).
+function buildVerifyApprovedHeadline(model, emph) {
+  const s = model.summary;
+  if (model.exitCode === 2) {
+    return `${emph}Approval anchor broken${emph} — at least one approved finding is unverifiable; amend dispatch blocked`;
+  }
+  const drifted = verifyOffending(model).count;
+  if (model.thresholdExceeded) {
+    return `${emph}${drifted} approval anchor(s) drifted${emph} (threshold ${model.threshold})`;
+  }
+  if (drifted > 0) {
+    return `${emph}${drifted} approval anchor(s) drifted${emph} (within threshold ${model.threshold})`;
+  }
+  return `${emph}All ${s.total} approval anchor(s) intact${emph}`;
 }
 
 function sortVerifyFindings(findings) {

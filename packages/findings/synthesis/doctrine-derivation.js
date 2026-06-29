@@ -8,10 +8,7 @@
  *   - Statement must be rule-like, not advisory
  */
 
-import { readFileSync, readdirSync, existsSync } from 'node:fs';
-import { resolve, join } from 'node:path';
-import yaml from 'js-yaml';
-import { loadAcceptedPatterns, loadAcceptedPatternsWithSkips } from './recommendation-derivation.js';
+import { loadAcceptedPatternsWithSkips } from './recommendation-derivation.js';
 
 /**
  * Derive doctrine from strong accepted patterns.

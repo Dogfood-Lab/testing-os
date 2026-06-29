@@ -167,11 +167,13 @@ export function loadPolicies(policiesDir) {
 
   const entries = readdirSync(policiesDir, { withFileTypes: true });
   const subDirs = entries.filter(e => e.isDirectory());
-  const yamlFiles = entries.filter(e => e.isFile() && e.name.endsWith('.yaml'));
 
-  // Multi-org root: enumerate every org subdir. yamlFiles at the root are
-  // ignored in this mode because policies are by contract scoped to an org.
-  if (subDirs.length > 0 && yamlFiles.length === 0) {
+  // Multi-org root: the presence of ANY org subdir defines the shape. A stray
+  // yaml at the root (misplaced file, accidental save) must not flip this back
+  // to single-org mode — doing so silently drops every org subdir's policies
+  // while coverage still reports healthy. Root-level yamls are by contract not
+  // policies (policies are scoped to an org dir), so they are ignored here.
+  if (subDirs.length > 0) {
     for (const dir of subDirs) {
       const orgDir = join(policiesDir, dir.name);
       Object.assign(policies, loadPoliciesFromOrgDir(orgDir));
@@ -179,7 +181,7 @@ export function loadPolicies(policiesDir) {
     return policies;
   }
 
-  // Single-org dir (legacy shape): walk yaml files directly.
+  // Single-org dir (legacy shape): no subdirs, walk yaml files directly.
   return loadPoliciesFromOrgDir(policiesDir);
 }
 

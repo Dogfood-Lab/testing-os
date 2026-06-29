@@ -33,6 +33,12 @@ on:
       - 'CLAUDE.md'
       - 'HANDOFF.md'
       - 'swarms/__schema-fixtures__/**'
+      # F-CI-001: live-run wave outputs. The agent-output-schema conformance
+      # gate exists to catch the fixes_applied-vs-fixes drift on real wave
+      # outputs, but a push touching ONLY these files triggered no CI run, so a
+      # schema-nonconformant agent output could land on main green-by-absence.
+      # Mirror the __schema-fixtures__ coverage above for the live-run tree.
+      - 'swarms/swarm-*/wave-*/outputs/**'
   pull_request:
     paths:
       - 'packages/**'
@@ -52,6 +58,8 @@ on:
       - 'CLAUDE.md'
       - 'HANDOFF.md'
       - 'swarms/__schema-fixtures__/**'
+      # F-CI-001: live-run wave outputs (see push block above).
+      - 'swarms/swarm-*/wave-*/outputs/**'
   workflow_dispatch:
 
 concurrency:

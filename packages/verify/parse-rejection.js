@@ -24,7 +24,9 @@
  * The prefix vocabulary below is enumerated from the ACTUAL emitters — it is
  * NOT invented:
  *   - verify/index.js:                schema:, policy:, steps[<id>]:,
- *                                     provenance:, repo:,
+ *                                     provenance: (run absent → submission-bad),
+ *                                     provenance-fault: (provider 429/5xx/401/403
+ *                                       → operational), repo:,
  *                                     submission-contains-verifier-field:,
  *                                     submission-malformed:,
  *                                     VALIDATOR_FAULT_<NAME>:
@@ -61,6 +63,14 @@ const LITERAL_PREFIXES = [
   // submission-bad
   { match: 'schema:', prefix: 'schema:', class: 'submission-bad' },
   { match: 'policy:', prefix: 'policy:', class: 'submission-bad' },
+  // operational — a provider-side provenance FAULT (429/5xx/401/403). The
+  // adapter THROWS these (verify-A-002); index.js catches the throw and emits
+  // this distinct `provenance-fault:` prefix so the incident pages ops. Ordered
+  // before the bare `provenance:` literal — it is a distinct token, but keeping
+  // the longer, more-specific match first preserves the most-specific-first
+  // invariant the array is sorted by. The genuine not-confirmed case
+  // (`provenance: source run could not be confirmed`) stays submission-bad below.
+  { match: 'provenance-fault:', prefix: 'provenance-fault:', class: 'operational' },
   { match: 'provenance:', prefix: 'provenance:', class: 'submission-bad' },
   { match: 'repo:', prefix: 'repo:', class: 'submission-bad' },
   {

@@ -12,6 +12,7 @@ import { isBlocked, isInFlight, getTimeoutPolicy } from '../lib/state-machine.js
 import { getWaveTransitionHistory, BLOCKED_STATUSES } from '../lib/wave-state-machine.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { FINDING_GATED_PHASES, PHASE_MAP } from '../lib/advance.js';
+import { isOpenFinding } from '../lib/finding-status.js';
 
 /**
  * @param {object} opts
@@ -62,7 +63,7 @@ export function status(opts) {
   for (const f of allFindings) {
     findingsBySeverity[f.severity] = (findingsBySeverity[f.severity] || 0) + 1;
     findingsByStatus[f.status] = (findingsByStatus[f.status] || 0) + 1;
-    if (f.status !== 'fixed' && f.status !== 'rejected') {
+    if (isOpenFinding(f.status)) {
       openBySeverity[f.severity] = (openBySeverity[f.severity] || 0) + 1;
     }
   }

@@ -75,7 +75,7 @@ Scenario IDs that must have a recent accepted record. "Recent" is defined by `fr
 ### evidence_requirements
 
 - `required_kinds` — evidence types that must be present (screenshot, log, etc.)
-- `min_evidence_count` — minimum total evidence items
+- `min_evidence_count` — minimum evidence items **per scenario** (enforced against each `scenario_result` independently, not summed across scenarios)
 
 ## Integration with Shipcheck
 

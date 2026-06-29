@@ -209,9 +209,15 @@ export async function verify(submission, options) {
         refCommitSha: submission.ref?.commit_sha
       });
     } catch (err) {
-      reasons.push(`provenance: verification failed: ${err.message}`);
+      // verify-A-002: the adapter THROWS on operational provider faults
+      // (429 rate-limit, 5xx outage, 401/403 token) and returns false only for
+      // a genuinely-absent run (404/transport). Emit a DISTINCT `provenance-fault:`
+      // prefix here so parseRejectionReason routes the incident to ops instead of
+      // bouncing an outage back to the submitter as submission-bad. The not-confirmed
+      // case below keeps the bare `provenance:` prefix (still submission-bad).
+      reasons.push(`provenance-fault: verification failed: ${err.message}`);
     }
-    if (!provenanceConfirmed && !reasons.some(r => r.startsWith('provenance:'))) {
+    if (!provenanceConfirmed && !reasons.some(r => r.startsWith('provenance'))) {
       reasons.push('provenance: source run could not be confirmed');
     }
   }

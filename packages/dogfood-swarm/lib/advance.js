@@ -33,6 +33,7 @@ import { transitionWave } from './wave-state-machine.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from './queries/latest-agent-runs.js';
 import { cleanupAllWorktrees } from './worktree.js';
 import { logStage } from './log-stage.js';
+import { CLOSED_FINDING_STATUSES_SQL } from './finding-status.js';
 
 /**
  * Phase progression map.
@@ -471,7 +472,7 @@ function checkFindingSeverity(db, runId, phase) {
 
   const open = db.prepare(`
     SELECT severity, COUNT(*) as cnt FROM findings
-    WHERE run_id = ? AND status NOT IN ('fixed', 'rejected', 'deferred')
+    WHERE run_id = ? AND status NOT IN (${CLOSED_FINDING_STATUSES_SQL})
     GROUP BY severity
   `).all(runId);
 

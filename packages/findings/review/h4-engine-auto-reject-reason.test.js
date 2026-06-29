@@ -132,12 +132,20 @@ describe('H4 engine — auto-populate review.reject_reason on supersede/merge', 
     assert.equal(result.finding.review.reject_reason, 'duplicate', 'operator-supplied rejectReason wins');
   });
 
-  it('reject still requires operator-supplied rejectReason (no silent default)', () => {
+  it('reject without operator-supplied rejectReason is refused (no silent default, no malformed persist)', () => {
     // The H4 fix is "auto-populate when reasonable defaults exist." For
-    // explicit reject, defaulting would erase the operator's intent —
-    // they should pass insufficient_evidence / noise / etc. The engine
-    // should still NOT invent one in that case.
-    writeFindingTo(TEST_ROOT, makeFinding({ status: 'candidate' }));
+    // explicit reject, defaulting would erase the operator's intent — they
+    // should pass insufficient_evidence / noise / etc. The engine still does
+    // NOT invent one.
+    //
+    // F-FIND-001 supersedes the original "test-and-tell" path: previously the
+    // engine returned success and persisted a finding whose `review.reject_reason`
+    // was undefined, leaving a schema-invalid finding on disk for the operator
+    // to discover downstream. The write-side schema gate now refuses that write
+    // outright — the engine neither invents a default NOR persists corruption;
+    // the operator gets a structured error at the point of action.
+    const path = writeFindingTo(TEST_ROOT, makeFinding({ status: 'candidate' }));
+    const before = readFileSync(path, 'utf-8');
 
     const result = performAction(TEST_ROOT, {
       findingId: 'dfind-h4-engine-test',
@@ -147,18 +155,11 @@ describe('H4 engine — auto-populate review.reject_reason on supersede/merge', 
       // rejectReason intentionally omitted
     });
 
-    assert.ok(result.success, result.error);
-    assert.equal(result.finding.status, 'rejected');
-    // No silent default — the engine populates undefined here, and the
-    // resulting persisted finding would fail H4 schema validation. The
-    // operator must learn to pass rejectReason. (We assert by the absence
-    // of reject_reason; the schema enforcement is in findings.test.js's
-    // separate H4 case.)
-    assert.equal(
-      result.finding.review.reject_reason,
-      undefined,
-      'explicit reject without rejectReason still leaves the field undefined; operator must supply one'
-    );
+    assert.equal(result.success, false, 'reject without rejectReason must be refused, not silently persisted');
+    assert.match(result.error, /reject_reason/, 'error names the missing structured field');
+
+    const after = readFileSync(path, 'utf-8');
+    assert.equal(after, before, 'no malformed finding lands on disk when the reject is refused');
   });
 
   it('performMerge marks non-canonical sources rejected with reject_reason="merged_into_canonical"', () => {

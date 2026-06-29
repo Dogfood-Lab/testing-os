@@ -40,6 +40,11 @@ const REQUIRED_PATHS = [
   'CLAUDE.md',
   'HANDOFF.md',
   'swarms/__schema-fixtures__/**',
+  // F-CI-001: live-run wave outputs. The agent-output-schema conformance gate
+  // is meant to catch the fixes_applied-vs-fixes drift on real wave outputs at
+  // push time, but a push touching ONLY these files ran no CI — green-by-absence.
+  // Gated in both legs exactly like __schema-fixtures__ above.
+  'swarms/swarm-*/wave-*/outputs/**',
 ];
 
 /**

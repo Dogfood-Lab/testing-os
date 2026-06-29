@@ -225,7 +225,7 @@
             "min_evidence_count": {
               "type": "integer",
               "minimum": 0,
-              "description": "Minimum number of evidence items across all scenarios."
+              "description": "Minimum number of evidence items required PER scenario. The verifier enforces this against each scenario_result independently, not as a sum across all scenarios."
             }
           }
         }

@@ -574,7 +574,13 @@ if (isMain) {
         arg = arg.slice(0, eq);
       }
     }
-    const hasValue = inlineValue !== null || args[i + 1] !== undefined;
+    // A space-form value is the NEXT token only when it is not itself a flag —
+    // otherwise `--flag --next` would swallow `--next` as `--flag`'s value and
+    // silently drop it. A `--`-prefixed next token means this flag has no value,
+    // so it falls through to its "requires a value" path (for `--provenance`,
+    // the downstream "--provenance flag is required" error).
+    const nextIsValue = args[i + 1] !== undefined && !args[i + 1].startsWith('--');
+    const hasValue = inlineValue !== null || nextIsValue;
     const takeValue = () => (inlineValue !== null ? inlineValue : args[++i]);
 
     if (arg === '--provenance' && hasValue) {

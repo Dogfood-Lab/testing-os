@@ -222,10 +222,22 @@ export async function postAnchor(repoRoot, opts = {}) {
   // (1) Ensure there is a manifest to post. Re-running compute is idempotent
   //     (append-only). If nothing new is pending, post the LAST anchor manifest
   //     so a re-post after a transient network failure still binds the same root.
-  const computed = computeAnchor(repoRoot, { mode, network });
+  //
+  //     Thread the LAST anchor's algo into the recompute. compute defaults to the
+  //     v2 algo, so a chain previously anchored with the v1 (historical-
+  //     reproduction) algo would otherwise be recomputed as v2 — re-posting that
+  //     anchor would either bind a divergent v2 root or collide append-only with
+  //     the stored v1 manifest. Reproducing the SAME algo keeps a re-post
+  //     idempotent and binds the root the operator actually anchored.
+  const lastAnchor = readLastAnchor(repoRoot);
+  const computed = computeAnchor(repoRoot, {
+    mode,
+    network,
+    ...(lastAnchor?.algo ? { algo: lastAnchor.algo } : {}),
+  });
   let manifest;
   if (computed.empty) {
-    manifest = readLastAnchor(repoRoot);
+    manifest = lastAnchor;
     if (!manifest) {
       const e = new Error(`nothing to anchor: ${computed.reason}`);
       e.code = 'ANCHOR_NOTHING_TO_POST';

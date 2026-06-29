@@ -230,7 +230,15 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
   const fetchImpl = opts.fetchImpl ?? ((url, init) => globalThis.fetch(url, init));
 
   const [org, repo] = repoSlug.split('/');
-  if (!org || !repo || isUnsafeSegment(org) || isUnsafeSegment(repo)) {
+  // commitSha is interpolated into the authenticated (Bearer-token) GitHub API
+  // URL's `?ref=` — a shape guard (lowercase-hex, 7–40 chars) refuses anything
+  // that could re-target the ref or inject query params, matching how org/repo
+  // and scenarioId are guarded below. encodeURIComponent alone would NOT reject
+  // a re-targeted ref (e.g. a branch name), so the shape guard is the floor.
+  if (
+    !org || !repo || isUnsafeSegment(org) || isUnsafeSegment(repo) ||
+    typeof commitSha !== 'string' || !/^[0-9a-f]{7,40}$/.test(commitSha)
+  ) {
     return {
       async fetch() { return null; },
       async fetchWithReason() { return { scenario: null, reason: 'invalid_id' }; }
