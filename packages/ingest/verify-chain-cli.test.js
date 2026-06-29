@@ -21,6 +21,7 @@ import { tmpdir } from 'node:os';
 import { spawnSync } from 'node:child_process';
 
 import { writeRecord } from './persist.js';
+import { chainManifestPath } from './lib/chain-manifest.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RUN_JS = resolve(__dirname, 'run.js');
@@ -72,10 +73,10 @@ function buildRecord(id) {
  * Run `run.js --verify-chain` as a subprocess against a sandbox root. No
  * --provenance, no stdin payload — the command must not require either. We still
  * pass empty stdin so the child never blocks waiting for it (proving the early
- * dispatch).
+ * dispatch). `extraArgs` carries the modifier flags (`--reconcile`, `--all`).
  */
-function runVerifyChain(root) {
-  return spawnSync(process.execPath, [RUN_JS, '--verify-chain'], {
+function runVerifyChain(root, extraArgs = []) {
+  return spawnSync(process.execPath, [RUN_JS, '--verify-chain', ...extraArgs], {
     input: '',
     encoding: 'utf-8',
     env: {
@@ -84,6 +85,18 @@ function runVerifyChain(root) {
       CI: '', GITHUB_ACTIONS: '', GITHUB_TOKEN: '', GH_TOKEN: '',
     },
   });
+}
+
+/**
+ * Truncate the sandbox chain ledger to its first `keep` lines, orphaning every
+ * record whose ledger line was dropped (the record file stays on disk). This is
+ * the torn-persist shape INGEST-PROACT-001 / --reconcile detects: the record was
+ * written but its ledger append went missing.
+ */
+function truncateChainTo(root, keep) {
+  const path = chainManifestPath(root);
+  const lines = readFileSync(path, 'utf-8').split('\n').filter((l) => l.trim().length > 0);
+  writeFileSync(path, lines.slice(0, keep).join('\n') + '\n', 'utf-8');
 }
 
 afterEach(() => {
@@ -123,5 +136,35 @@ describe('--verify-chain CLI', () => {
     assert.equal(child.status, 1, `expected exit 1, got ${child.status}; stdout: ${child.stdout}`);
     assert.match(child.stderr, /integrity chain BROKEN at seq 1/);
     assert.match(child.stderr, /cli-tamper-b/);
+  });
+});
+
+describe('--verify-chain --reconcile (orphan reconciliation)', () => {
+  it('exits 1 and prints the orphan when a record is absent from the ledger', () => {
+    const root = makeSandboxRoot();
+    writeRecord(buildRecord('cli-orphan-a'), root);
+    writeRecord(buildRecord('cli-orphan-b'), root);
+    writeRecord(buildRecord('cli-orphan-c'), root);
+
+    // Torn persist: the third record's file is on disk but its ledger line never
+    // landed. Drop it by truncating chain.jsonl to the first two lines.
+    truncateChainTo(root, 2);
+
+    const child = runVerifyChain(root, ['--reconcile']);
+    assert.equal(child.status, 1, `expected exit 1, got ${child.status}; stdout: ${child.stdout}`);
+    assert.match(child.stderr, /reconciliation: 1 orphan record\(s\)/);
+    assert.match(child.stderr, /cli-orphan-c/);
+  });
+
+  it('exits 0 without --reconcile — the chain walk alone is blind to the orphan', () => {
+    const root = makeSandboxRoot();
+    writeRecord(buildRecord('cli-orphan-a'), root);
+    writeRecord(buildRecord('cli-orphan-b'), root);
+    writeRecord(buildRecord('cli-orphan-c'), root);
+    truncateChainTo(root, 2);
+
+    const child = runVerifyChain(root);
+    assert.equal(child.status, 0, `expected exit 0, got ${child.status}; stderr: ${child.stderr}`);
+    assert.match(child.stdout, /integrity chain OK: 2 record\(s\) verified/);
   });
 });

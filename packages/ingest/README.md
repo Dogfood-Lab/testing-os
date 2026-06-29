@@ -59,6 +59,12 @@ Flags:
 - `--provenance=stub` — accept the claimed provenance without an API call. **Test/dev only — refused in CI.**
 - `--verify-only` — verify and report, write nothing.
 
+Standalone audit verb (no submission, no stdin, no `--provenance` — fully offline):
+
+- `--verify-chain` — verify the append-only tamper-evident ledger at `indexes/integrity/chain.jsonl`: every record's recomputed digest matches both the ledger's claim and the record's self-claim, the `prev_digest` links are intact, and `seq` is monotonic. Exits `0` when the chain verifies, `1` on the first break (operator-legible output, no raw stack traces).
+  - `--reconcile` — also walk `records/` and flag any record file whose `run_id`/`seq` is absent from the ledger (a torn persist that wrote the record but missed the ledger append). An orphan makes the audit exit `1` even with zero chain breaks.
+  - `--all` — continue past the first per-record-independent break (digest-mismatch, missing-file) and report every break in one pass. A structural break (non-monotonic `seq`, broken `prev_digest`) still stops the walk. The default stops at the first break — the fail-fast CI gate.
+
 Exit codes:
 
 - `0` — the record was accepted (and, without `--verify-only`, persisted).

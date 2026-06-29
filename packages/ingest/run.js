@@ -544,6 +544,13 @@ if (isMain) {
   let provenanceMode = null;
   let verifyOnlyFlag = false;
   let verifyChainFlag = false;
+  // --verify-chain modifiers (only meaningful alongside it):
+  //   --reconcile → collectOrphans (INGEST-PROACT-001): also flag on-disk records
+  //     absent from the ledger (a torn persist). Makes the audit fail on orphans.
+  //   --all → collectAllBreaks (INGEST-PROACT-004): continue past the first
+  //     per-record-independent break and report every break in one pass.
+  let reconcileFlag = false;
+  let allBreaksFlag = false;
   // Anchor verbs (optional, off-by-default, operator-run). --anchor-compute and
   // --anchor-verify are fully offline (never import xrpl); --anchor-post lazily
   // loads the optional xrpl package and needs XRPL_SEED.
@@ -616,6 +623,14 @@ if (isMain) {
       // indexes/integrity/chain.jsonl, fully offline. No submission, no stdin,
       // no provenance — a standalone audit command.
       verifyChainFlag = true;
+    } else if (arg === '--reconcile') {
+      // Modifier for --verify-chain: also reconcile on-disk records against the
+      // ledger and fail on any orphan (INGEST-PROACT-001).
+      reconcileFlag = true;
+    } else if (arg === '--all') {
+      // Modifier for --verify-chain: report every per-record-independent break
+      // instead of stopping at the first (INGEST-PROACT-004).
+      allBreaksFlag = true;
     } else if (arg === '--anchor-compute') {
       // Optional XRPL anchor: compute + write the next anchor manifest. Offline.
       anchorComputeFlag = true;
@@ -654,14 +669,22 @@ if (isMain) {
   // stdin or demand a --provenance flag. Exit 0 when the chain verifies, 1 on
   // the first break (operator-legible output, no raw stack traces).
   if (verifyChainFlag) {
-    const result = verifyChain(repoRoot);
+    const result = verifyChain(repoRoot, {
+      collectOrphans: reconcileFlag,
+      collectAllBreaks: allBreaksFlag,
+    });
     logStage(result.ok ? 'verify_chain_complete' : 'error', {
       correlation_id: synthCorrelationId(),
       ...(result.ok ? {} : { failed_stage: 'verify_chain' }),
       verified: result.count,
       head_digest: result.head_digest,
       chain_ok: result.ok,
-      ...(result.break ? { break_seq: result.break.seq, break_reason: result.break.reason } : {})
+      ...(result.break ? { break_seq: result.break.seq, break_reason: result.break.reason } : {}),
+      // INGEST-PROACT-004 / -001: surface the full corruption scope when the
+      // operator asked for it, so a grep of the NDJSON shows how many breaks and
+      // orphans were found, not just the first break.
+      ...(Array.isArray(result.breaks) ? { break_count: result.breaks.length } : {}),
+      ...(Array.isArray(result.orphans) ? { orphan_count: result.orphans.length } : {})
     });
     const lines = formatChainResult(result);
     if (result.ok) {
