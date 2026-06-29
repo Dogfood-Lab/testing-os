@@ -389,8 +389,8 @@ The `verification.rejection_reasons[]` entries above are stable **prefixed strin
 
 - **Class:** `parseRejectionReason(reason)` — `packages/verify/parse-rejection.js` (re-exported from the package root `index.js`).
 - **Returns:** `{ class, prefix, detail }` where `class` is one of:
-  - **`submission-bad`** — the submitter fixes the payload (`schema:`, `policy:`, `steps[<id>]:`, `provenance:`, `repo:`, `submission-contains-verifier-field:`, `CONTRACT_SCHEMA_TOO_NEW:`, `CONTRACT_SCHEMA_TOO_OLD:`).
-  - **`operational`** — the verifier/tooling faulted; page ops, do NOT bounce to the submitter (the `VALIDATOR_FAULT_*` family above, matched by prefix family so a future fault class needs no parser edit).
+  - **`submission-bad`** — the submitter fixes the payload (`schema:`, `policy:`, `steps[<id>]:`, `provenance:`, `repo:`, `submission-contains-verifier-field:`, `CONTRACT_SCHEMA_TOO_NEW:`, `CONTRACT_SCHEMA_TOO_OLD:`). Here `provenance:` is the genuine-absence case only — a 404 / not-confirmable run, i.e. the submitted run does not exist or does not bind.
+  - **`operational`** — the verifier/tooling faulted; page ops, do NOT bounce to the submitter (the `VALIDATOR_FAULT_*` family above, matched by prefix family so a future fault class needs no parser edit; plus `provenance-fault:` for a provider 429/5xx/401/403 fault confirming the run, and `submission-malformed:` for a null/non-object payload from a malfunctioning dispatcher).
   - **`ingest`** — an ingest-side load fault (`scenario-load:`).
   - **`unknown`** — unrecognized prefix (including the prefix-less null-submission reason); log + surface raw.
 - **Usage:**

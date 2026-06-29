@@ -50,7 +50,7 @@ describe('verify --explain on a known-good submission', () => {
     const { io, stdout } = makeIo();
     const code = await run(['--file', goodFile, '--explain'], io);
     assert.equal(code, 0, `expected exit 0, got ${code}\n${stdout()}`);
-    assert.match(stdout(), /VERDICT: accepted/);
+    assert.match(stdout(), /VERDICT: ACCEPTED/);
     assert.match(stdout(), /No rejection reasons/);
   });
 
@@ -58,7 +58,7 @@ describe('verify --explain on a known-good submission', () => {
     const { io, stdout } = makeIo();
     const code = await run(['--file', goodFile], io);
     assert.equal(code, 0);
-    assert.match(stdout(), /VERDICT: accepted/);
+    assert.match(stdout(), /VERDICT: ACCEPTED/);
   });
 });
 
@@ -73,7 +73,7 @@ describe('verify --explain on a known-bad submission', () => {
     const code = await run(['--payload', JSON.stringify(bad), '--explain'], io);
 
     assert.equal(code, 1, `expected exit 1 (rejected), got ${code}\n${stdout()}`);
-    assert.match(stdout(), /VERDICT: rejected/);
+    assert.match(stdout(), /VERDICT: REJECTED/);
     assert.match(stdout(), /REJECTION REASONS/);
     // The class label proves parseRejectionReason classification reached output —
     // the consumer is told this is THEIR payload to fix.
@@ -86,7 +86,7 @@ describe('verify --explain on a known-bad submission', () => {
     const { io, stdout } = makeIo();
     const code = await run(['--payload', 'null', '--explain'], io);
     assert.equal(code, 1);
-    assert.match(stdout(), /VERDICT: rejected/);
+    assert.match(stdout(), /VERDICT: REJECTED/);
     assert.match(stdout(), /OPERATIONAL/);
   });
 });
@@ -214,8 +214,32 @@ describe('renderExplain / buildJsonResult helpers', () => {
 
   it('renderExplain shows accepted with no reasons', () => {
     const text = renderExplain(acceptedRecord);
-    assert.match(text, /VERDICT: accepted/);
+    assert.match(text, /VERDICT: ACCEPTED/);
     assert.match(text, /No rejection reasons/);
+  });
+
+  it('renderExplain uppercases the verdict word, matching sibling banners', () => {
+    const accepted = renderExplain(acceptedRecord);
+    assert.match(accepted, /VERDICT: ACCEPTED/);
+    assert.doesNotMatch(accepted, /VERDICT: accepted/);
+
+    const rejectedRecord = {
+      run_id: 'r3',
+      verification: {
+        status: 'rejected',
+        schema_valid: true,
+        policy_valid: false,
+        provenance_confirmed: true,
+        rejection_reasons: ['policy: evidence requirement not met']
+      }
+    };
+    const rejected = renderExplain(rejectedRecord);
+    assert.match(rejected, /VERDICT: REJECTED/);
+    assert.doesNotMatch(rejected, /VERDICT: rejected/);
+  });
+
+  it('buildJsonResult keeps status as the lowercase enum, not the rendered word', () => {
+    assert.equal(buildJsonResult(acceptedRecord).status, 'accepted');
   });
 
   it('buildJsonResult classifies each reason and carries raw', () => {

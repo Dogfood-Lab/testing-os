@@ -316,7 +316,10 @@ export function renderExplain(record) {
   const accepted = v.status === 'accepted';
   const lines = [];
 
-  lines.push(accepted ? 'VERDICT: accepted' : 'VERDICT: rejected');
+  // Uppercase the rendered state word to match the sibling verdict banners
+  // (findings-render.js). This is display-only; the underlying enum
+  // (v.status, --json output) stays lowercase.
+  lines.push(`VERDICT: ${(v.status || (accepted ? 'accepted' : 'rejected')).toUpperCase()}`);
   lines.push('');
   lines.push(`  schema_valid:         ${v.schema_valid}`);
   lines.push(`  policy_valid:         ${v.policy_valid}`);

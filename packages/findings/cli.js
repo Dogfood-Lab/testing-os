@@ -394,11 +394,22 @@ Filters (for list):
       }
     }
 
-    // Validate all findings + optionally fixtures
+    // Validate all findings + optionally fixtures.
+    // Verdict-first (D-OUT-001): lead with a one-line VALIDATION header so the
+    // operator knows the scope before the per-file stream scrolls, and close
+    // with a prominent VERDICT line — matching every other verdict surface in
+    // the repo (swarm findings-digest, swarm status, verify --explain).
     let failed = 0;
     let passed = 0;
 
     const realFindings = loadFindings(ROOT);
+    const fixtureCount = all
+      ? loadFindings(ROOT, { fixtures: true, fixtureKind: 'valid' }).length +
+        loadFindings(ROOT, { fixtures: true, fixtureKind: 'invalid' }).length
+      : 0;
+    const checkedCount = realFindings.length + fixtureCount;
+    console.log(`VALIDATION: ${checkedCount} findings checked`);
+
     for (const f of realFindings) {
       if (f.valid) {
         console.log(`PASS: ${relative(ROOT, f.path)}`);
@@ -452,6 +463,7 @@ Filters (for list):
     }
 
     console.log(`\n${passed} passed, ${failed} failed`);
+    console.log(failed > 0 ? `VERDICT: FAIL (${failed} failed)` : 'VERDICT: PASS');
     process.exit(failed > 0 ? 1 : 0);
   }
 

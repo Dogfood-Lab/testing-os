@@ -1142,8 +1142,14 @@ function cmdVerifyFixed(args) {
   });
 
   console.log(result.output);
-  console.log('');
-  console.log(`Delta written to: ${result.deltaPath}`);
+  // DSW-D-001: under --format=json the output IS the JSON contract — emit it
+  // pure (mirror cmdStatus/cmdRuns, which return after the JSON). The human
+  // `Delta written to:` footer would corrupt `... --format=json | jq`. The
+  // delta path still goes to the operator on the text/TTY path below.
+  if (format !== 'json') {
+    console.log('');
+    console.log(`Delta written to: ${result.deltaPath}`);
+  }
 
   // Exit with the 3-way state: 0 clean / 1 threshold exceeded /
   // 2 pipeline broken. The CLI seam preserves this signal so CI gates
@@ -1166,8 +1172,10 @@ function cmdVerifyRecurring(args) {
     format,
   });
   console.log(result.output);
-  console.log('');
-  console.log(`Delta written to: ${result.deltaPath}`);
+  if (format !== 'json') {
+    console.log('');
+    console.log(`Delta written to: ${result.deltaPath}`);
+  }
   process.exit(result.exitCode);
 }
 
@@ -1186,8 +1194,10 @@ function cmdVerifyUnverified(args) {
     format,
   });
   console.log(result.output);
-  console.log('');
-  console.log(`Delta written to: ${result.deltaPath}`);
+  if (format !== 'json') {
+    console.log('');
+    console.log(`Delta written to: ${result.deltaPath}`);
+  }
   process.exit(result.exitCode);
 }
 
@@ -1206,8 +1216,10 @@ function cmdVerifyApproved(args) {
     format,
   });
   console.log(result.output);
-  console.log('');
-  console.log(`Delta written to: ${result.deltaPath}`);
+  if (format !== 'json') {
+    console.log('');
+    console.log(`Delta written to: ${result.deltaPath}`);
+  }
   // Exit code 2 on broken anchor blocks subsequent amend dispatch — the
   // CLI seam carries the signal so a CI step can gate dispatch on it.
   process.exit(result.exitCode);
