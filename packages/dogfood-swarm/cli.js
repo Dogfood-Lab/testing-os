@@ -222,7 +222,14 @@ function getDbPath() {
 }
 
 function getOutputDir(runId) {
-  return join(DEFAULT_SWARM_DIR, runId);
+  // Delta/output JSON lives alongside the ACTIVE control plane, not the
+  // build-relative default: dirname(getDbPath()) is the swarms dir for the DB
+  // in use. Hardcoding DEFAULT_SWARM_DIR meant a run against a custom SWARM_DB
+  // (a relocated control plane, or a test temp DB) wrote its delta files into
+  // THIS repo's swarms/ tree — polluting the canonical backing store and
+  // leaking test artifacts. Default behavior is unchanged: with no SWARM_DB,
+  // getDbPath() is DEFAULT_DB_PATH and dirname() is DEFAULT_SWARM_DIR.
+  return join(dirname(getDbPath()), runId);
 }
 
 /**
