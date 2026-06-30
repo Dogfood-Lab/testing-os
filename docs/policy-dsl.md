@@ -42,7 +42,10 @@ A global rule is **non-overridable**: a repo policy cannot weaken it (see
 
 ### Surface custom rules — `surfaces.<surface>.custom_rules[]`
 
-Repo policies (and the global `defaults`) may attach per-scenario_result predicates to a surface:
+Repo policies attach per-scenario_result predicates to a surface. `custom_rules` live **only** under
+`surfaces.<surface>` — they are forbidden under the global `defaults` (the schema rejects them there), because a
+declarative rule authored globally belongs in `global_rules` (which fail *operationally*, not submission-bad).
+This keeps the origin classification unambiguous: every `custom_rules` fault is repo-origin (submission-bad).
 
 ```yaml
 surfaces:
@@ -139,8 +142,16 @@ operators are meant for (`attested_by`, `actor`, tags) this is the intuitive "pr
 `field` is a restricted path into the data the predicate evaluates over.
 
 - **Dotted keys**: `source.actor`, `ref.commit_sha`, `execution_mode`.
-- **`[]` segment**: "any element." `scenario_results[].tags` means "the `tags` of any scenario_result." For a
-  `reject` predicate, a single matching element trips the rule.
+- **`[]` segment**: "any element" — **existential**. `scenario_results[].tags` selects the `tags` of every
+  scenario_result, and the leaf is true when **any** selected element satisfies the operator. A `[]` path over an
+  **empty or absent** array selects *no* elements, so the leaf is **false for every operator** (nothing matches).
+  **Footgun (read this):** a *negative* operator over a `[]` path is therefore a latent fail-open for a reject
+  rule. `evidence[].kind not_contains log` means "*some* evidence item's kind lacks 'log'", **not** "the evidence
+  lacks a log item" — and over an empty `evidence` it is false (does not fire). To say **"reject if no element
+  satisfies P"** use the fail-closed idiom **`{ not: { any: [ <P> ] } }`**, which over an empty collection is
+  `not(false)` = true (fires). Example — "reject web proof with no log evidence":
+  `when: { not: { any: [ { field: "evidence[].kind", op: contains, value: log } ] } }`. (A future `policy-lint`
+  verb, VERIFY-F3, will warn on a bare negative operator over a `[]` path.)
 - **Banned segments**: `__proto__`, `constructor`, `prototype` are rejected at policy-load time (schema `pattern`)
   **and** never traversed by the evaluator (every segment is read via a null-prototype-hardened accessor). This
   extends the existing `deepMerge` prototype-pollution guard from YAML keys to field-path reads.
@@ -204,12 +215,21 @@ The whole value of VERIFY-F1 is a **safe** declarative engine. The non-negotiabl
 1. **No dynamic execution.** No `eval`, `Function`, `vm`, dynamic `require`/`import`, or template-string
    interpolation into any executor. The evaluator is a pure interpreter over the structured tree.
 2. **No unbounded iteration / no logic bombs.** The only iteration is `[]` over a submission array
-   (`scenario_results`, `step_results`, `tags`, `evidence`) that the submission schema already bounds. There is
-   no loop or recursion primitive in the DSL.
-3. **Bounded combinator depth.** Nesting is capped at **depth 5** (`all`/`any`/`not`/`implies` count toward
-   depth). A deeper predicate is a `policy-config:` fault refused at compile — the engine never recurses past the
-   cap. This is the DoS-prevention floor and is enforced in the evaluator (where the recursion happens), with the
-   schema bounding shape.
+   (`scenario_results`, `step_results`, `tags`, `evidence`) whose size the submission schema bounds with
+   `maxItems` (scenario_results ≤ 1000, evidence ≤ 100, tags ≤ 100, step_results ≤ 500, ci_checks ≤ 200). There
+   is no loop or recursion primitive in the DSL.
+3. **Bounded work: depth, width, and fan-out.** Three caps, because depth alone does not bound a *wide* or
+   *fanning* predicate:
+   - **Depth** — combinator nesting capped at **5** (`all`/`any`/`not`/`implies` count toward depth).
+   - **Width** — `all`/`any` arrays capped at **64** children (schema `maxItems`).
+   - **Node budget** — a single evaluation may visit at most **10,000** predicate nodes; beyond that the engine
+     throws a `node_budget` fault (bounds the multiplicative wide-tree case the depth cap alone permits).
+   - **Fan-out budget** — a `[]` selection may produce at most **500,000** values; beyond that the engine throws
+     a `fanout_budget` fault (and the engine flattens with an explicit loop, never `push(...spread)`, so a large
+     array cannot blow the call stack).
+   Every cap is generous relative to any hand-authored policy and exists only to refuse a pathological/hostile
+   predicate as a classified fault — the engine never spins or OOMs. The engine runs synchronously inside the
+   ingest pipeline, so an unbounded tree-walk would block the event loop; these budgets are the DoS floor.
 4. **Prototype-pollution-safe field reads** (banned segments + null-prototype accessor, above).
 5. **No regex** in v1.7.0 (above).
 6. **Fail-closed.** A malformed predicate is a rejection, never a silent skip and never an uncaught throw
@@ -226,7 +246,7 @@ exact problem — never a silent pass, never an LLM paraphrase (arXiv:2409.18661
 | Fault | Where caught | Origin → class |
 |-------|--------------|----------------|
 | Structural (unknown `op`, malformed node, banned path segment, `additionalProperties`) | **load** (`validatePayload('policy', …)` against the recursive predicate `$def`) | global → **operational** (`loadGlobalPolicy` throws, fail-loud); repo → **submission-bad** (`loadRepoPolicy` returns `__torn` → `policy: repo policy unreadable`). |
-| Semantic, eval-time (`gt` against a non-number, over-depth, unknown leading field) | **eval** (inside `validatePolicy`) | global rule → **operational** — the engine's `PredicateError` propagates out of `validatePolicy` → `runValidator` synthesizes `VALIDATOR_FAULT_POLICY:` (the existing operational channel; a broken *global* policy is an ops incident, exactly like `loadGlobalPolicy`'s throw). repo custom rule → **submission-bad** — the fault is caught and recorded as a `policy-config:` reason. |
+| Semantic, eval-time (`gt` against a non-number, unknown leading field, over-depth, `node_budget`, `fanout_budget`) | **eval** (inside `validatePolicy`) | global rule → **operational** — the engine's `PredicateError` propagates out of `validatePolicy` → `runValidator` synthesizes `VALIDATOR_FAULT_POLICY:` (the existing operational channel; a broken *global* policy is an ops incident, exactly like `loadGlobalPolicy`'s throw). repo custom rule → **submission-bad** — the fault is caught and recorded as a `policy-config:` reason. |
 
 Most malformed predicates are **structural** and are caught at load with the correct origin classification for
 free — that is why the predicate `$def` is tight. The new `policy-config:` prefix is reserved for the **residual

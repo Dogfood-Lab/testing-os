@@ -110,3 +110,21 @@ describe('VERIFY-F1 differential-equivalence gate: declarative attested-if-human
     assert.match(errors[1], /scenario "s4"/);
   });
 });
+
+describe('VERIFY-F1 byte-identity scope: the one input class where the engine intentionally diverges', () => {
+  // Phase 3, LOW finding: when scenario_id is null/undefined/absent, the OLD switch
+  // arm rendered the literal "null"/"undefined" (template-literal coercion) while the
+  // engine renders "" (renderTemplate maps null/undefined -> empty). This is the only
+  // divergence, and it is UNREACHABLE in production: scenario_id is a REQUIRED string in
+  // dogfood-record-submission.schema.json and policy runs only after schema validation
+  // (verify/index.js), so a null/absent scenario_id is rejected before the rule evaluates.
+  // The empty-string render is the intentional, better behavior; the byte-identity claim
+  // holds for every SCHEMA-VALID input. This test pins the engine behavior explicitly so
+  // the divergence is documented, not latent.
+  it('renders an absent scenario_id as an empty slot (verdict still correct), diverging from the old "undefined"', () => {
+    const submission = { scenario_results: [{ product_surface: 'cli', execution_mode: 'human', verdict: 'pass' }] };
+    const { valid, errors } = declarativeErrors(submission);
+    assert.equal(valid, false, 'verdict matches the oracle: human + unattested rejects');
+    assert.deepEqual(errors, ['[attested-if-human] scenario "": execution_mode is "human" but attested_by is missing']);
+  });
+});

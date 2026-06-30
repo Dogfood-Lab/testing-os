@@ -199,3 +199,45 @@ describe('VERIFY-F1 predicate engine — reason templating', () => {
     assert.equal(buildReason(rule, sr()), '[r] x=');
   });
 });
+
+describe('VERIFY-F1 predicate engine — array `[]` existential semantics (Phase 3, the empty-selection contract)', () => {
+  it('a `[]` path over an empty/absent array selects no elements, so EVERY operator is false (existential)', () => {
+    const empty = { scenario_results: [] };
+    assert.equal(evaluatePredicate({ field: 'scenario_results[].verdict', op: 'equals', value: 'fail' }, empty, 'submission'), false);
+    // The documented footgun: a NEGATIVE operator over `[]` is ALSO false on an empty
+    // selection — it is existential ("some element matches"), NOT "the collection lacks X".
+    assert.equal(evaluatePredicate({ field: 'scenario_results[].verdict', op: 'not_equals', value: 'pass' }, empty, 'submission'), false);
+    assert.equal(evaluatePredicate({ field: 'scenario_results[].attested_by', op: 'not_exists' }, empty, 'submission'), false);
+  });
+
+  it('the fail-CLOSED absence idiom is not(any(...)) — it fires on an empty/absent collection', () => {
+    // "reject if NO scenario_result is attested" — the correct phrasing for an absence
+    // check, which over an empty collection evaluates not(false) => true (fires).
+    const absence = { not: { any: [{ field: 'scenario_results[].attested_by', op: 'exists' }] } };
+    assert.equal(evaluatePredicate(absence, { scenario_results: [] }, 'submission'), true, 'fires on empty (fail-closed)');
+    assert.equal(evaluatePredicate(absence, { scenario_results: [{ attested_by: 'alice' }] }, 'submission'), false, 'does not fire when present');
+  });
+});
+
+describe('VERIFY-F1 predicate engine — work budgets (Phase 3 DoS guards)', () => {
+  it('a predicate exceeding the node-visit budget throws node_budget', () => {
+    // A balanced `all` of width 11, 4 combinator levels deep (within the depth cap of 5):
+    // 11^4 = 14641 leaf evals > PREDICATE_MAX_NODES (10000). Every leaf is true, so `every`
+    // never short-circuits and the full tree is visited.
+    const wide = (d) => d === 0 ? { field: 'execution_mode', op: 'exists' } : { all: Array.from({ length: 11 }, () => wide(d - 1)) };
+    assert.throws(
+      () => evalSr(wide(4), sr()),
+      (e) => e instanceof PredicateError && e.code === 'node_budget'
+    );
+  });
+
+  it('a `[]` selection exceeding the frontier budget throws fanout_budget', () => {
+    // Direct engine call (bypasses the schema's maxItems gate, which would reject this
+    // submission first in production). PREDICATE_MAX_FRONTIER is 500000.
+    const huge = { scenario_results: Array.from({ length: 510000 }, () => 0) };
+    assert.throws(
+      () => evaluatePredicate({ field: 'scenario_results[].tags', op: 'contains', value: 'x' }, huge, 'submission'),
+      (e) => e instanceof PredicateError && e.code === 'fanout_budget'
+    );
+  });
+});

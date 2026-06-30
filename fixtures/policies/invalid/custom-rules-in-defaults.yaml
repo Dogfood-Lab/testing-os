@@ -1,0 +1,12 @@
+# VERIFY-F1 invalid fixture (Phase 3) — custom_rules belong only under
+# surfaces.<surface>, never under global `defaults`. Placing them in defaults would
+# make a global-origin predicate fault classify as submission-bad (origin
+# misclassification). The schema forbids it (defaults: custom_rules false), so this
+# must fail validatePayload('policy', …) at load. See docs/policy-dsl.md.
+policy_version: "1.0.0"
+
+defaults:
+  custom_rules:
+    - id: misplaced
+      severity: reject
+      when: { field: attested_by, op: exists }

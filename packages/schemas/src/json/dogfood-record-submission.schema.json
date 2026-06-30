@@ -100,7 +100,8 @@
 
     "ci_checks": {
       "type": "array",
-      "description": "Machine-evaluated CI results. Optional — not all dogfood runs include CI.",
+      "maxItems": 200,
+      "description": "Machine-evaluated CI results. Optional — not all dogfood runs include CI. Capped at 200 (resource guard; a real run reports a handful of checks).",
       "items": {
         "type": "object",
         "required": ["id", "kind", "status"],
@@ -130,7 +131,8 @@
     "scenario_results": {
       "type": "array",
       "minItems": 1,
-      "description": "Dogfood evidence. At least one scenario required.",
+      "maxItems": 1000,
+      "description": "Dogfood evidence. At least one scenario required. Capped at 1000 (resource guard for the policy engine, which evaluates per-scenario rules synchronously; a real run reports far fewer).",
       "items": {
         "type": "object",
         "required": ["scenario_id", "product_surface", "execution_mode", "verdict", "step_results"],
@@ -167,13 +169,15 @@
           },
           "tags": {
             "type": "array",
+            "maxItems": 100,
             "items": { "type": "string" },
-            "description": "Free-form scenario tags (e.g. 'smoke', 'release', 'wip', 'flaky', 'skip-ci'). Optional. Policy may gate on these via a surface's evidence_requirements.forbidden_tags / required_tags."
+            "description": "Free-form scenario tags (e.g. 'smoke', 'release', 'wip', 'flaky', 'skip-ci'). Optional. Capped at 100 (resource guard). Policy may gate on these via a surface's evidence_requirements.forbidden_tags / required_tags."
           },
           "step_results": {
             "type": "array",
             "minItems": 1,
-            "description": "Per-step execution results. Bridges scenario steps to record evidence.",
+            "maxItems": 500,
+            "description": "Per-step execution results. Bridges scenario steps to record evidence. Capped at 500 (resource guard).",
             "items": {
               "type": "object",
               "required": ["step_id", "status"],
@@ -194,6 +198,7 @@
           },
           "evidence": {
             "type": "array",
+            "maxItems": 100,
             "items": {
               "type": "object",
               "required": ["kind", "url"],

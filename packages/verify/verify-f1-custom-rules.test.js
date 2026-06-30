@@ -131,3 +131,22 @@ describe('VERIFY-F1 fault routing splits by predicate origin', () => {
     assert.equal(parsed.prefix, 'policy:');
   });
 });
+
+describe('VERIFY-F1 fail-closed absence checks use not(any(...)) (Phase 3)', () => {
+  it('an absence rule phrased as not(any(...)) rejects a scenario with NO log evidence', () => {
+    // The fail-CLOSED way to say "web proof must include a log evidence item". A naive
+    // `evidence[].kind not_contains log` would fail OPEN on empty evidence (existential
+    // vacuous truth — see docs/policy-dsl.md); not(any(... contains log)) fires on empty.
+    const repoPolicy = repoWith([
+      { id: 'require-log-evidence', severity: 'reject',
+        description: 'web proof must include a log evidence item',
+        when: { not: { any: [{ field: 'evidence[].kind', op: 'contains', value: 'log' }] } } },
+    ]);
+    const noEvidence = validatePolicy(submissionWith(webSr({ evidence: [] })), { globalPolicy: globalEmpty, repoPolicy });
+    assert.equal(noEvidence.valid, false, 'no-evidence scenario is rejected (fail-closed)');
+    assert.ok(noEvidence.errors.some(e => e.includes('require-log-evidence')));
+
+    const hasLog = validatePolicy(submissionWith(webSr({ evidence: [{ kind: 'log', url: 'https://x/y' }] })), { globalPolicy: globalEmpty, repoPolicy });
+    assert.equal(hasLog.valid, true, 'a scenario with a log evidence item passes');
+  });
+});

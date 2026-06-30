@@ -54,7 +54,8 @@
 
     "defaults": {
       "$ref": "#/$defs/surface_policy",
-      "description": "Default surface policy. Used when a surface has no explicit policy."
+      "description": "Default surface policy. Used when a surface has no explicit policy. VERIFY-F1: `custom_rules` is NOT permitted here — it is a repo-surface concern only. Global, non-overridable declarative rules belong in `global_rules` (which fail operationally, not submission-bad). Allowing custom_rules under defaults would make a global-origin predicate fault classify as submission-bad.",
+      "properties": { "custom_rules": false }
     },
 
     "global_rules": {
@@ -338,7 +339,8 @@
         "all": {
           "type": "array",
           "minItems": 1,
-          "description": "Logical AND. True when every child predicate is true.",
+          "maxItems": 64,
+          "description": "Logical AND. True when every child predicate is true. Width capped at 64 (DoS guard; the evaluator additionally enforces a node-visit budget).",
           "items": { "$ref": "#/$defs/predicate" }
         }
       }
@@ -352,7 +354,8 @@
         "any": {
           "type": "array",
           "minItems": 1,
-          "description": "Logical OR. True when at least one child predicate is true.",
+          "maxItems": 64,
+          "description": "Logical OR. True when at least one child predicate is true. Width capped at 64 (DoS guard; the evaluator additionally enforces a node-visit budget).",
           "items": { "$ref": "#/$defs/predicate" }
         }
       }

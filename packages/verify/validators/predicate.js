@@ -26,6 +26,17 @@ import { readFileSync } from 'node:fs';
 /** Combinator nesting cap. A predicate nested deeper is a `max_depth` fault. */
 export const PREDICATE_MAX_DEPTH = 5;
 
+/**
+ * Total-work budgets (VERIFY-F1 Phase 3 hardening — the depth cap bounds NESTING
+ * but not WIDTH or array fan-out). The engine runs synchronously inside the ingest
+ * pipeline, so an unbounded tree-walk would block the event loop. Both budgets are
+ * generous relative to any real policy (a hand-authored rule is a handful of nodes
+ * over a handful of elements) and exist only to refuse a pathological / hostile
+ * predicate as a classified `policy-config:` fault rather than letting it spin.
+ */
+export const PREDICATE_MAX_NODES = 10_000;       // visited predicate nodes per evaluation
+export const PREDICATE_MAX_FRONTIER = 500_000;   // selected values from a `[]` fan-out
+
 /** Field-path segments that must never be traversed (prototype-pollution guard). */
 const POISON_SEGMENTS = new Set(['__proto__', 'constructor', 'prototype']);
 
@@ -101,7 +112,20 @@ function resolvePath(root, segments) {
   for (const seg of segments) {
     if (seg === '[]') {
       const next = [];
-      for (const v of frontier) if (Array.isArray(v)) next.push(...v);
+      for (const v of frontier) {
+        if (!Array.isArray(v)) continue;
+        // Explicit element loop, NOT `next.push(...v)` — the spread form blows the
+        // call stack on a large array (RangeError) before any budget check fires.
+        for (const el of v) {
+          if (next.length >= PREDICATE_MAX_FRONTIER) {
+            throw new PredicateError(
+              'fanout_budget',
+              `field path selection exceeds the limit of ${PREDICATE_MAX_FRONTIER} elements`
+            );
+          }
+          next.push(el);
+        }
+      }
       frontier = next;
     } else {
       frontier = frontier.map(v => safeGet(v, seg));
@@ -194,11 +218,22 @@ function evalLeaf(node, root, scope) {
  * @param {object} node - The predicate tree.
  * @param {object} root - The data to evaluate against.
  * @param {'submission'|'scenario_result'} scope - Field-resolution scope.
- * @param {number} [depth] - Internal recursion guard. Do not pass.
  * @returns {boolean} True when the (violation) predicate matches.
- * @throws {PredicateError} On a semantic fault (unknown field, type mismatch, depth).
+ * @throws {PredicateError} On a semantic fault (unknown field, type mismatch, depth, budget).
  */
-export function evaluatePredicate(node, root, scope, depth = 1) {
+export function evaluatePredicate(node, root, scope) {
+  // The budget is per-evaluation (one call over one root). It bounds the WIDTH a
+  // single predicate can consume, complementing the per-node depth cap.
+  return evalNode(node, root, scope, 1, { nodes: 0 });
+}
+
+function evalNode(node, root, scope, depth, budget) {
+  if (++budget.nodes > PREDICATE_MAX_NODES) {
+    throw new PredicateError(
+      'node_budget',
+      `predicate exceeds the evaluation budget of ${PREDICATE_MAX_NODES} nodes`
+    );
+  }
   if (isCombinator(node)) {
     if (depth > PREDICATE_MAX_DEPTH) {
       throw new PredicateError(
@@ -206,14 +241,14 @@ export function evaluatePredicate(node, root, scope, depth = 1) {
         `predicate nests deeper than the limit of ${PREDICATE_MAX_DEPTH} combinator levels`
       );
     }
-    if (Array.isArray(node.all)) return node.all.every(c => evaluatePredicate(c, root, scope, depth + 1));
-    if (Array.isArray(node.any)) return node.any.some(c => evaluatePredicate(c, root, scope, depth + 1));
-    if (node.not != null) return !evaluatePredicate(node.not, root, scope, depth + 1);
+    if (Array.isArray(node.all)) return node.all.every(c => evalNode(c, root, scope, depth + 1, budget));
+    if (Array.isArray(node.any)) return node.any.some(c => evalNode(c, root, scope, depth + 1, budget));
+    if (node.not != null) return !evalNode(node.not, root, scope, depth + 1, budget);
     // implies: [antecedent, consequent] is the VIOLATION all(antecedent, not(consequent))
     // — it matches the inputs that BREAK the implication antecedent => consequent.
     const [antecedent, consequent] = node.implies;
-    return evaluatePredicate(antecedent, root, scope, depth + 1)
-      && !evaluatePredicate(consequent, root, scope, depth + 1);
+    return evalNode(antecedent, root, scope, depth + 1, budget)
+      && !evalNode(consequent, root, scope, depth + 1, budget);
   }
   return evalLeaf(node, root, scope);
 }
