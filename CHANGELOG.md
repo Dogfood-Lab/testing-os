@@ -2,6 +2,26 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] — 2026-06-29
+
+**A full dogfood-swarm pass: a four-stage health pass, then an honesty + capability feature pass.** testing-os ran its own 10-phase swarm protocol on itself again — 7 domain auditors per wave, an adversarial Opus jury, and a cross-family cloud jury (DeepSeek / GLM / Kimi) cross-validating every HIGH; every fix test-first. Lockstep minor bump across all seven `@dogfood-lab/*` packages. No breaking changes — new schema fields are optional and new verbs/flags are opt-in.
+
+### Health pass (A→B→C→D, 41 findings, 0 critical / 0 high at close)
+
+- **Bug / security (Stage A).** The review engine's `performAction` / `performMerge` now schema-validate a finding **before** the on-disk write — an operator edit with a typo'd enum or unknown field can no longer silently corrupt the canonical store (every sibling writer already gated; these two were the gap). Operational provenance faults (provider 429 / 5xx / 401 / 403) now emit a distinct `provenance-fault:` reason classified **operational** — an outage pages ops instead of bouncing a clean submission back to the submitter as "fix your payload" (the v1.5.0 adapter fix is now honored end-to-end by the classifier).
+- **Proactive + humanization (Stages B/C, 22 findings).** `performMerge` pre-validates every source before writing the canonical (no torn lineage on a schema-invalid source); `findings derive` names torn/unreadable records instead of silently under-deriving with a green exit; `--verify-chain` gains orphan reconciliation (`--reconcile`) + report-all-breaks (`--all`); the anchor post path surfaces a distinct WARNING with the on-chain tx hash when a mainnet anchor lands but the local receipt write fails (no double-post); provenance adapters retry transient 429/5xx with backoff; a wrong-shape committed index degrades to a structured error instead of a raw `TypeError`. Plus a shared `correlation-id` leaf helper, a migration-version invariant, a `swarm doctor` git-availability check, and a `collect` lifecycle log pair.
+- **Output polish (Stage D).** `swarm verify-*` `--format=json` no longer leaks a human "Delta written to:" footer (the JSON now pipes cleanly to `jq`); `findings validate` is verdict-first; `verify --explain` uppercases the verdict word to match the house banner style. `getOutputDir` now tracks the active control plane (`SWARM_DB`) instead of the build dir — a relocated control plane (or a test) no longer writes deltas into the canonical `swarms/` tree.
+
+### Feature pass (honesty fixes + new capabilities)
+
+- **Honesty fixes (false shipped-doc claims, now real).** The README's "forbidden tags" policy gate is **implemented** — scenario tags are threaded into the submission + record schema (optional) and `forbidden_tags` / `required_tags` policy rules now actually reject. The shields.io status badges + `trends.json` are **served** — `ingest.yml` regenerates and commits `indexes/badges/` + `indexes/trends.json` after each accepted submission, so the documented raw-URL endpoints are live (they used to 404); a fleet-wide `_aggregate.json` rollup pill was added.
+- **`swarm clean <run-id>`** — a dry-run-by-default recovery verb to list and reclaim stranded `--isolate` worktrees + branches for a run (the 24th `swarm` verb), closing the lifecycle for runs that don't promote to `complete`.
+- **`dogfood-report --status --repo <org/repo>`** — consumer-side confirmation that a dispatched submission was recorded / accepted / fresh, read from the public served index (no auth); exits non-zero on rejected/absent so a consumer CI fails loud instead of going green on a silent non-record. Wired into the scaffolded `dogfood.yml`. **`dogfood-init --check`** adds an onboarding preflight doctor (token / scenario file / slug / workflow trigger / policy).
+- **Accepted-with-warning channel.** `severity: warn` / `severity: info` policy rules now surface on `verification.warnings` instead of being silently dropped.
+- **Operator ergonomics.** `swarm dispatch --dry-run` previews a wave's shape with zero side effects; `--format=json` lands on `swarm advance --check-only` / `receipt` / `history`; `findings list/show/history/queue` + synthesis list/show gain `--json`; `findings list --grep` adds free-text search over title/summary/doctrine.
+
+Deferred (logged backlog): a declarative custom-policy-rule engine (VERIFY-F1) and the remaining medium/low ergonomics. This entry is the user-facing summary; full per-wave detail lives in the swarm record.
+
 ## [1.5.0] — 2026-06-21
 
 **A full dogfood-swarm pass: health hardening, record integrity, and consumer onboarding.** testing-os ran its own 10-phase swarm protocol on itself again — every finding cross-validated by a five-vendor cloud jury (Qwen / DeepSeek / Moonshot / Z.ai / OpenAI-OSS), every fix test-first. Lockstep minor bump across all seven `@dogfood-lab/*` packages. No breaking changes — new fields are optional and new providers/commands are opt-in.

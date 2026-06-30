@@ -20,7 +20,7 @@
 *用于人工智能辅助软件的协议、证据存储和学习循环。*
 
 <!-- version:start -->
-**v1.5.0** — 当前版本。请参阅 [CHANGELOG.md](CHANGELOG.md)，了解已发布的内容。
+**v1.6.0** — 当前版本。请参阅 [CHANGELOG.md](CHANGELOG.md)，了解已发布的内容。
 <!-- version:end -->
 
 📖 **[阅读手册 →](https://dogfood-lab.github.io/testing-os/handbook/)**

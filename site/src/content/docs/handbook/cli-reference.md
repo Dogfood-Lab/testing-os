@@ -52,11 +52,15 @@ Usage: swarm dispatch <run-id> <phase>
                       [--auto-freeze]
                       [--isolate]
                       [--skip-verify]
+                      [--dry-run]        # alias --preview
 
 Example:
   $ swarm dispatch <run-id> health-audit-a
   $ swarm dispatch <run-id> health-amend-b --skip-verify
+  $ swarm dispatch <run-id> feature-execute --dry-run
 ```
+
+`--dry-run` (alias `--preview`) previews the wave shape with **zero side effects** — which domains become agents, the prompt paths that would be written, the per-domain approved-finding routing (on amend phases), and (under `--isolate`) the worktrees that would be created — without opening the wave-build transaction or touching the working tree.
 
 Phases: `health-audit-a/b/c`, `health-amend-a/b/c`, `stage-d-audit`, `stage-d-amend`, `feature-audit`, `feature-execute`.
 
@@ -179,11 +183,14 @@ Export a durable wave receipt — JSON + Markdown — to `swarms/<run-id>/wave-<
 
 ```text
 Usage: swarm receipt <run-id> [wave-number]
+                    [--format=text|json]
 
 Example:
   $ swarm receipt r-2026-05-20-001        # latest wave
   $ swarm receipt r-2026-05-20-001 3      # wave 3
 ```
+
+`--format=json` emits the receipt object to stdout (pure JSON) for an automation harness, alongside the durable on-disk export.
 
 ## swarm advance
 
@@ -194,6 +201,7 @@ Usage: swarm advance <run-id>
                      [--check-only]
                      [--history]
                      [--override --reason "..."]
+                     [--format=text|json]
 
 Example:
   $ swarm advance <run-id> --check-only
@@ -231,6 +239,21 @@ Example:
 ```
 
 For resuming a **failed** wave (not just incomplete agents), see [`swarm redrive`](../recovery/#swarm-redrive) — same wave_id, completed work preserved.
+
+## swarm clean
+
+Reclaim the stranded `--isolate` worktrees + `swarm/<run>/...` branches a run left behind. The forward journey only auto-cleans worktrees when a run promotes all the way to phase `complete` (`swarm advance`) or when you `swarm rewind --apply`; a run you stop after `collect` — or any single-purpose audit run that never promotes — leaves its per-agent worktrees on disk. `swarm clean` is the operator-facing reclaim for exactly that case, run-scoped by the run's branch prefix so it never sweeps a sibling run.
+
+Like the [Three R's recovery verbs](../recovery/), it is **dry-run by default** — it lists what it *would* remove (with the `{removed, stranded, total}` rollup) and only acts with `--apply`. Supports `--format=json`.
+
+```text
+Usage: swarm clean <run-id> [--apply] [--format=text|json]
+       # default: dry-run preview; --apply actually removes
+
+Example:
+  $ swarm clean <run>          # preview stranded worktrees
+  $ swarm clean <run> --apply  # remove them + branches
+```
 
 ## swarm approve
 

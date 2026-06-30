@@ -20,7 +20,7 @@
 *Protocoles, référentiels de preuves et boucles d’apprentissage pour les logiciels assistés par l’IA.*
 
 <!-- version:start -->
-**v1.5.0** — version actuelle. Consultez le fichier [CHANGELOG.md](CHANGELOG.md) pour connaître les nouveautés.
+**v1.6.0** — version actuelle. Consultez le fichier [CHANGELOG.md](CHANGELOG.md) pour connaître les nouveautés.
 <!-- version:end -->
 
 📖 **[Consultez le manuel →](https://dogfood-lab.github.io/testing-os/handbook/)**

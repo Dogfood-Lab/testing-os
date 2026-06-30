@@ -20,7 +20,7 @@
 *AIによる支援を受けたソフトウェアのためのプロトコル、証拠ストア、および学習ループ。*
 
 <!-- version:start -->
-**v1.5.0** — 現在のリリース。変更点は[CHANGELOG.md](CHANGELOG.md)を参照してください。
+**v1.6.0** — 現在のリリース。変更点は[CHANGELOG.md](CHANGELOG.md)を参照してください。
 <!-- version:end -->
 
 📖 **[ハンドブックを読む →](https://dogfood-lab.github.io/testing-os/handbook/)**

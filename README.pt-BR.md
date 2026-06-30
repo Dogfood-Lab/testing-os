@@ -20,7 +20,7 @@
 *Protocolos, repositórios de evidências e ciclos de aprendizado para software assistido por IA.*
 
 <!-- version:start -->
-**v1.5.0** — versão atual. Consulte [CHANGELOG.md](CHANGELOG.md) para ver o que foi incluído nesta versão.
+**v1.6.0** — versão atual. Consulte [CHANGELOG.md](CHANGELOG.md) para ver o que foi incluído nesta versão.
 <!-- version:end -->
 
 📖 **[Leia o manual →](https://dogfood-lab.github.io/testing-os/handbook/)**

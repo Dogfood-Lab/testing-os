@@ -19,11 +19,12 @@ testing-os is the sole write authority for dogfood evidence. Other systems consu
 
 ## Onboarding your repo
 
-The fastest path is the [`examples/` starter kit](https://github.com/dogfood-lab/testing-os/tree/main/examples): copy `dogfood.yml` into your repo, add a `DOGFOOD_TOKEN` secret (a fine-grained PAT with `contents: write` on `dogfood-lab/testing-os`), and push. The workflow's preflight fails loud if the token is missing — the one setup step everyone forgets. Three CLIs back it:
+The fastest path is the [`examples/` starter kit](https://github.com/dogfood-lab/testing-os/tree/main/examples): copy `dogfood.yml` into your repo, add a `DOGFOOD_TOKEN` secret (a fine-grained PAT with `contents: write` on `dogfood-lab/testing-os`), and push. The workflow's preflight fails loud if the token is missing — the one setup step everyone forgets. The CLIs that back it:
 
 - **`npx @dogfood-lab/report`** (`dogfood-report`) — builds the submission envelope from your scenario results and the standard `GITHUB_*` env vars.
-- **`dogfood-init`** — scaffolds the workflow + scenario template into your repo and prints the token setup.
+- **`dogfood-init`** — scaffolds the workflow + scenario template into your repo and prints the token setup. **`dogfood-init --check`** runs an onboarding preflight doctor (token / scenario file / repo slug / workflow trigger / upstream policy) so you find the gaps before the first real dispatch instead of after.
 - **`npx @dogfood-lab/verify --file <submission> --explain`** — dry-runs a submission against the contract before you dispatch, classifying any rejection as *submission-bad* (your fix) vs *operational* (ours).
+- **`dogfood-report --status --repo <org/repo>`** — closes the loop *after* dispatch. Because ingest runs asynchronously in the receiver repo, your workflow goes green the instant the dispatch returns — even if the submission is later rejected. This command reads the public served index (no auth) and tells you whether your latest run was recorded, accepted (or rejected, with the reason), and fresh; it exits non-zero on rejected/absent so a CI step fails loud instead of green-on-silent-non-record. The scaffolded `dogfood.yml` runs it best-effort after dispatch.
 
 ### Provenance providers
 
