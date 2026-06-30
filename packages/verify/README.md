@@ -62,6 +62,28 @@ import { validateSchema } from '@dogfood-lab/verify/validators/schema.js';
 import { validateProvenance } from '@dogfood-lab/verify/validators/provenance.js';
 ```
 
+## CLI (`dogfood-verify`)
+
+The package ships a `dogfood-verify` bin with two verbs.
+
+**Verify** a submission (local dry-run / explain — never writes):
+
+```bash
+dogfood-verify --file submission.json --explain   # human verdict, reasons classified by who-fixes-it
+dogfood-verify --file submission.json --json       # machine-readable
+# exit: 0 accepted · 1 rejected · 2 operator error
+```
+
+**Lint** a policy file (VERIFY-F3, author-time — no submission needed):
+
+```bash
+dogfood-verify lint policies/repos/<org>/<repo>.yaml        # or global-policy.yaml
+dogfood-verify lint policies/global-policy.yaml --json      # for CI
+# exit: 0 clean or warnings-only · 1 errors · 2 operator error
+```
+
+`lint` runs the structural schema gate **plus** the data-independent predicate checks (`unknown_field`, `max_depth`, `node_budget`) over every `when` predicate, and emits an **advisory** warning on the `[]` footgun (a negative operator over a `[]` path fails open) with the fail-closed `not(any(...))` rewrite as a suggestion — never auto-applied, never a hard error. It is the `opa check` analogue. It **cannot** statically catch a `type_mismatch` or a fan-out overrun (both are data-dependent) and says so. Full contract + coverage boundary: [`docs/policy-lint.md`](https://github.com/dogfood-lab/testing-os/blob/main/docs/policy-lint.md).
+
 ## Submission envelope
 
 The full envelope shape is defined by `@dogfood-lab/schemas` (`dogfood-record-submission.schema.json`). Minimum required fields:

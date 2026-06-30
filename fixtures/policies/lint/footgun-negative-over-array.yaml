@@ -1,0 +1,17 @@
+# VERIFY-F3 lint fixture — the `[]` footgun. This policy is SCHEMA-VALID (the
+# schema cannot catch this); only the lint's advisory heuristic flags it. The
+# rule intends "reject web proof whose evidence has no log item" but the bare
+# `not_contains` over `evidence[]` fails OPEN on an empty/absent evidence array
+# (existential vacuous truth). policy-lint WARNS (never errors) and suggests the
+# fail-closed rewrite { not: { any: [ { field: "evidence[].kind", op: contains,
+# value: log } ] } }. See docs/policy-lint.md.
+policy_version: "1.0.0"
+repo: dogfood-lab/example-footgun
+
+surfaces:
+  web:
+    custom_rules:
+      - id: needs-log-evidence
+        severity: reject
+        description: "web proof must include a log evidence item"
+        when: { field: "evidence[].kind", op: not_contains, value: log }

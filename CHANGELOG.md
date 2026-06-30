@@ -2,6 +2,30 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.8.0] — 2026-06-30
+
+**VERIFY-F3: `policy-lint` — an author-time static check for policy files.** VERIFY-F1 (v1.7.0) validated predicates at policy *load* and at *eval* (against a real submission); an operator editing a policy only learned a rule was malformed when a submission hit it — and for a repo predicate, not until their CI dispatched. `dogfood-verify lint <policy-file>` closes that loop: load the YAML, run the structural gate + the data-independent predicate checks over every `when`, batch-report every fault — no submission needed. It is the `opa check` analogue this engine's docs already promised. Lockstep minor bump across all seven `@dogfood-lab/*` packages.
+
+### The lint verb
+
+- **`dogfood-verify lint <policy-file> [--json]`** — a new subcommand on the existing bin (the verify path is unchanged). Exit codes mirror the verify path: `0` clean or warnings-only, `1` errors, `2` operator error.
+- **Three passes:** (1) the structural schema gate (`validatePayload('policy', …)` — unknown op, malformed/banned field, mixed node, arity, `custom_rules`-under-`defaults`); (2) a static predicate walk for the schema-*inexpressible* semantic faults — an **unknown leading field**, combinator **over-depth**, and a **node-budget** overrun — reusing the engine's own `KNOWN_FIELDS` and depth/node constants so author-time and runtime can never disagree about a limit; (3) the **`[]`-footgun advisory**.
+- **Honest coverage boundary (the VERIFY-F2 over-claim lesson).** A `type_mismatch` (a numeric op over a non-number) and a `fanout_budget` overrun are **data-dependent** and cannot be caught statically. The lint says so in its own output — a clean lint means "no static fault and no footgun," not "this policy can never produce a `policy-config:` rejection."
+
+### The `[]`-footgun warning (advisory)
+
+- A negative operator (`not_equals` / `not_in` / `not_contains` / `not_exists`) over a `[]` path fails **open** on an empty/absent array. The lint **warns** (never errors, never auto-applies), names the rule + field, and prints the fail-closed `{ not: { any: [ <positive> ] } }` rewrite as a suggestion the author confirms. It is advisory because legitimate existential-negatives exist (`scenario_results[].verdict not_equals pass`) and because the rewrite changes semantics, not just the empty-case — a human decides intent (deterministic, AST-derived diagnostics; never an LLM paraphrase).
+- **Suppression by negation parity.** A leaf inverted an *even* number of times still fails open (flagged); an *odd* number fails closed (suppressed), counting both `not` combinators and the `implies` consequent.
+
+### Cross-family adversarial hardening
+
+The footgun heuristic was pressure-tested by a cross-family Ollama jury (DeepSeek-V4-Pro / GLM-5.2 / MiniMax-M3, refute-by-default, reasoning-stripped), which **improved** it: the jury converged on a real false-negative — `not(not(X))` over `[]` fails open but the original "any `not` ancestor suppresses" rule wrongly silenced it — and a false-positive (a negative-op `implies`-consequent fails closed but was flagged). Both were fixed by switching to negation parity; the jury's two over-reaching suggestions (flag *every* op; make it a hard error) were checked against the engine and rejected. The jury's findings are pinned as regression tests.
+
+### Wiring + docs
+
+- **No 5th workflow.** The lint runs over the live `policies/**` tree via `scripts/lint-policies.test.mjs` (part of `test:scripts`, which runs in both `npm run verify` and CI). `ci.yml` now triggers on `policies/**` so a policy-only edit fires the gate. All 15 shipped policy files lint clean.
+- New contract spec [`docs/policy-lint.md`](docs/policy-lint.md); the deferred-companion notes in [`docs/policy-dsl.md`](docs/policy-dsl.md) and the [handbook policy-DSL page](https://dogfood-lab.github.io/testing-os/handbook/policy-dsl/) now point at the shipped verb; `@dogfood-lab/verify` README gains a CLI section.
+
 ## [1.7.0] — 2026-06-30
 
 **VERIFY-F1: a declarative, no-eval policy-rule engine.** An operator can now add a verification gate by writing a bounded predicate in YAML — field-selector + operator + value, composed with `all` / `any` / `not` / `implies` — instead of opening a PR into the verifier. The engine is additive and backward-compatible (a rule with no `when` is enforced exactly as before). The one tightening: a set of generous `maxItems` resource caps on submission arrays (see Safety). Lockstep minor bump across all seven `@dogfood-lab/*` packages.

@@ -1,0 +1,15 @@
+# VERIFY-F3 lint fixture — an unknown leading field. The path matches the schema
+# `field` pattern (so the structural gate passes), but `nonexistent_field` is not
+# a known scenario_result field, which the engine treats as an `unknown_field`
+# eval-time fault. The static lint walk catches it WITHOUT a submission — this is
+# the lint's core value-add over the schema gate. policy-lint ERRORS (exit 1).
+policy_version: "1.0.0"
+repo: dogfood-lab/example-unknown-field
+
+surfaces:
+  web:
+    custom_rules:
+      - id: bogus-field-rule
+        severity: reject
+        description: "references a field that does not exist on a scenario_result"
+        when: { field: nonexistent_field, op: equals, value: x }

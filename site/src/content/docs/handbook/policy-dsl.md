@@ -84,7 +84,9 @@ when:
 ```
 
 `not(any(...))` fires on an empty collection; a bare `not_contains` over `[]`
-would not.
+would not. The `dogfood-verify lint` verb (below) **warns** when it spots a bare
+negative operator over a `[]` path, so you catch this at authoring time rather
+than when a real submission slips through.
 
 ## Scope and reasons
 
@@ -129,3 +131,24 @@ An eval-time semantic fault in a **repo** custom rule (a type mismatch, an
 unknown field) is a `policy-config:` rejection — the repo fixes its rule. The
 same fault in the **global** policy is operational (it pages ops; the studio
 fixes its config). See the [error codes](../error-codes/).
+
+## Lint a policy before you ship it (`dogfood-verify lint`)
+
+You don't have to wait for a submission to find a malformed rule. As of v1.8.0:
+
+```bash
+dogfood-verify lint policies/repos/<org>/<repo>.yaml
+```
+
+It runs the structural gate **plus** the data-independent predicate checks
+(unknown leading field, combinator over-depth, node budget) over every `when`
+predicate and batch-reports each fault — no submission needed. It also emits an
+**advisory** warning on the `[]` footgun above (and suggests the fail-closed
+rewrite; it never auto-applies it). Exit codes: `0` clean or warnings-only, `1`
+errors, `2` bad invocation. Add `--json` for CI.
+
+Be aware of the boundary: static lint **cannot** catch a `type_mismatch` (a
+numeric op over a non-number) or a fan-out overrun — those depend on submission
+data. The lint says so; run `dogfood-verify --file <submission> --explain` to
+exercise that path. Full reference:
+[`docs/policy-lint.md`](https://github.com/dogfood-lab/testing-os/blob/main/docs/policy-lint.md).

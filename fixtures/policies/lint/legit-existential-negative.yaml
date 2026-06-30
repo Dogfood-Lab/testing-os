@@ -1,0 +1,14 @@
+# VERIFY-F3 lint fixture — a LEGITIMATE existential-negative. Same shape as the
+# footgun (a negative op over a `[]` path), but here the author genuinely means
+# "reject if ANY scenario_result isn't pass." The lint cannot read intent, so it
+# WARNS exactly as it does for the footgun — and that is correct: the warning is
+# ADVISORY, the author confirms intent. This fixture pins that a legit
+# existential-negative still only WARNS (exit 0), never blocks. See docs/policy-lint.md.
+policy_version: "1.0.0"
+
+global_rules:
+  - id: all-scenarios-must-pass
+    description: "reject the submission if any scenario_result verdict is not pass"
+    severity: reject
+    scope: submission
+    when: { field: "scenario_results[].verdict", op: not_equals, value: pass }

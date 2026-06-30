@@ -1,0 +1,23 @@
+# VERIFY-F3 lint fixture — a CLEAN policy: schema-valid, no unknown fields, no
+# footgun. It includes the fail-closed idiom `{ not: { any: [ <positive> ] } }`
+# (a `[]` path but a POSITIVE op inside a `not` — the recommended way to say
+# "reject if no element satisfies P", which the footgun heuristic correctly does
+# NOT flag) alongside a plain positive rule. policy-lint reports no findings (exit 0).
+policy_version: "1.0.0"
+repo: dogfood-lab/example-clean
+
+surfaces:
+  web:
+    custom_rules:
+      - id: actor-allowlist
+        severity: reject
+        description: "web proof must come from an allowlisted actor"
+        when: { field: attested_by, op: in, value: [ci-bot, release-bot] }
+
+      - id: needs-log-evidence-failclosed
+        severity: reject
+        description: "reject web proof with no log evidence (fail-closed idiom)"
+        when:
+          not:
+            any:
+              - { field: "evidence[].kind", op: contains, value: log }

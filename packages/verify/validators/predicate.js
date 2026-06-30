@@ -134,16 +134,30 @@ function resolvePath(root, segments) {
   return frontier;
 }
 
-/** Validate the leading field segment against the scope's known-field set. */
-function checkLeadingField(field, scope) {
+/**
+ * Decide whether a field's LEADING segment is unknown for a scope, returning the
+ * fault rather than throwing it. Factored out so the eval path ({@link checkLeadingField},
+ * fail-on-first) and the lint path ({@link lintPredicate}, batch-collect) share one
+ * source of truth — a divergence between author-time and runtime diagnostics is
+ * impossible by construction. Data-INDEPENDENT (the known-field set is derived from
+ * the schema), so it is exactly the kind of check the lint can run without a submission.
+ */
+function leadingFieldFault(field, scope) {
   const leading = String(field).split('.')[0].replace('[]', '');
   const known = KNOWN_FIELDS[scope];
   if (known && !known.has(leading)) {
-    throw new PredicateError(
+    return new PredicateError(
       'unknown_field',
       `field "${field}" references unknown leading field "${leading}" (known ${scope} fields: ${[...known].join(', ')})`
     );
   }
+  return null;
+}
+
+/** Validate the leading field segment against the scope's known-field set (eval path: throws). */
+function checkLeadingField(field, scope) {
+  const fault = leadingFieldFault(field, scope);
+  if (fault) throw fault;
 }
 
 /** Apply one operator to a single resolved value + comparand. */
@@ -286,4 +300,150 @@ export function buildReason(rule, root) {
     ? renderTemplate(rule.reason_template, root)
     : (rule.description ?? '');
   return `[${rule.id}] ${body}`;
+}
+
+/* ───────────────────────── Static analysis (VERIFY-F3 policy-lint) ─────────────────────────
+ *
+ * The two functions below analyze a predicate AST WITHOUT a submission. They are the reusable
+ * leaf the `policy-lint` verb (and any future eager-validation path) builds on. Co-located here,
+ * not in a separate module, so they reuse this file's private engine internals (KNOWN_FIELDS via
+ * leadingFieldFault, isCombinator, the depth/node-budget constants) without exporting the guts —
+ * predicate.js owns *everything about a predicate node*: eval AND static analysis.
+ *
+ * Coverage boundary (the VERIFY-F2 over-claim lesson — see docs/policy-lint.md):
+ *   - DATA-INDEPENDENT, caught here: unknown leading field, combinator over-depth, node budget.
+ *   - STRUCTURAL (unknown op, banned/malformed segment, arity): caught earlier by the schema gate
+ *     (`validatePayload('policy', …)`), so lintPredicate does not re-report them.
+ *   - DATA-DEPENDENT, NOT catchable statically: `type_mismatch` (a numeric op over a non-number)
+ *     and `fanout_budget` (a `[]` selection size) — both need a real submission. The lint says so.
+ */
+
+/** A static lint finding: a machine `code` (mirrors {@link PredicateError} codes) + an operator message. */
+
+/**
+ * Statically lint a predicate tree against one scope, batch-collecting the data-independent
+ * semantic faults the schema cannot express. Unlike {@link evaluatePredicate} this NEVER throws —
+ * a lint reports every fault rather than failing on the first — and it is DEFENSIVE: a malformed
+ * node (already flagged by the schema gate) is skipped, not crashed on. The walk mirrors the
+ * evaluator's own depth + node accounting (same constants), so a lint verdict agrees with what the
+ * engine would do at eval time, and the walk is itself bounded (it cannot become a DoS on a
+ * pathological policy file).
+ *
+ * @param {unknown} node - The predicate tree (any value; non-objects are skipped).
+ * @param {'submission'|'scenario_result'} scope - Field-resolution scope.
+ * @returns {{ code: string, field?: string, message: string }[]}
+ */
+export function lintPredicate(node, scope) {
+  const findings = [];
+  walkLint(node, scope, 1, { nodes: 0, depthReported: false, budgetReported: false }, findings);
+  return findings;
+}
+
+function walkLint(node, scope, depth, state, findings) {
+  if (state.budgetReported) return;
+  if (++state.nodes > PREDICATE_MAX_NODES) {
+    if (!state.budgetReported) {
+      state.budgetReported = true;
+      findings.push({
+        code: 'node_budget',
+        message: `predicate exceeds the evaluation budget of ${PREDICATE_MAX_NODES} nodes`,
+      });
+    }
+    return;
+  }
+  if (node === null || typeof node !== 'object') return;
+
+  if (isCombinator(node)) {
+    if (depth > PREDICATE_MAX_DEPTH) {
+      // Mirror the evaluator, which throws when a combinator is reached past the cap; report once
+      // and stop descending this branch (siblings are still walked — batch reporting).
+      if (!state.depthReported) {
+        state.depthReported = true;
+        findings.push({
+          code: 'max_depth',
+          message: `predicate nests deeper than the limit of ${PREDICATE_MAX_DEPTH} combinator levels`,
+        });
+      }
+      return;
+    }
+    const children =
+      Array.isArray(node.all) ? node.all :
+      Array.isArray(node.any) ? node.any :
+      node.not != null ? [node.not] :
+      Array.isArray(node.implies) ? node.implies : [];
+    for (const child of children) walkLint(child, scope, depth + 1, state, findings);
+    return;
+  }
+
+  // Leaf: the only data-independent semantic check is the unknown leading field. The op set and
+  // path shape are schema-gated; a numeric-op type mismatch is data-dependent (not checkable here).
+  if (typeof node.field === 'string') {
+    const fault = leadingFieldFault(node.field, scope);
+    if (fault) findings.push({ code: fault.code, field: node.field, message: fault.message });
+  }
+}
+
+/** Negative operators that fail OPEN over an empty/absent `[]` selection (the footgun). */
+const NEGATIVE_OPS = new Set(['not_equals', 'not_in', 'not_contains', 'not_exists']);
+
+/** The positive counterpart used in the fail-closed `not(any(...))` rewrite suggestion. */
+const POSITIVE_OF = { not_equals: 'equals', not_in: 'in', not_contains: 'contains', not_exists: 'exists' };
+
+/** Build the deterministic, AST-derived fail-closed rewrite suggestion for a footgun leaf. */
+function footgunSuggestion(field, op) {
+  const pos = POSITIVE_OF[op] || 'contains';
+  const valuePart = pos === 'exists' ? ' ' : ', value: … ';
+  return `if you meant "reject when no element satisfies it", use the fail-closed idiom ` +
+    `{ not: { any: [ { field: "${field}", op: ${pos}${valuePart}} ] } }`;
+}
+
+/**
+ * Find `[]`-footgun leaves: a NEGATIVE operator over a `[]` field path, which fails OPEN on an
+ * empty/absent array (existential vacuous truth — see docs/policy-lint.md). ADVISORY only: there
+ * are legitimate existential-negatives, so the caller surfaces these as warnings the author
+ * confirms, never as hard errors, and never auto-applies the rewrite.
+ *
+ * Suppression by negation PARITY, not a bare "is there a `not` above me" flag. A leaf inverted an
+ * EVEN number of times (0, 2, …) still fails open and is flagged; an ODD number of inversions makes
+ * it fail CLOSED, so it is suppressed. Two sources of inversion are counted: a `not` combinator,
+ * and the CONSEQUENT (second element) of an `implies` (since `implies:[A,C]` desugars to the
+ * violation `all(A, not(C))`). This refinement came from the VERIFY-F3 cross-family adversarial
+ * jury (deepseek-v4-pro / glm-5.2 / minimax-m3, 2026-06-30), which converged on two real defects in
+ * the original boolean rule: `not(not(X))` over `[]` fails open but was suppressed (false negative),
+ * and a negative-op consequent of `implies` fails closed but was flagged (false positive). Parity
+ * fixes both. Scope stays NEGATIVE-ops-only and ADVISORY (the jury's "flag every op" and "make it a
+ * hard error" suggestions were rejected — the former floods noise on the normal `contains` idiom,
+ * the latter blocks legitimate existential-negatives). False positives remain acceptable by design;
+ * a false negative (a silent production fail-open) is the expensive failure, so it errs toward warning.
+ *
+ * @param {unknown} node - The predicate tree.
+ * @returns {{ field: string, op: string, suggestion: string }[]}
+ */
+export function findEmptyArrayFootguns(node) {
+  const guns = [];
+  walkFootgun(node, false, { nodes: 0 }, guns);
+  return guns;
+}
+
+function walkFootgun(node, inverted, state, guns) {
+  if (node === null || typeof node !== 'object') return;
+  if (++state.nodes > PREDICATE_MAX_NODES) return; // bounded; lintPredicate reports node_budget
+
+  if (isCombinator(node)) {
+    if (Array.isArray(node.all)) { for (const c of node.all) walkFootgun(c, inverted, state, guns); return; }
+    if (Array.isArray(node.any)) { for (const c of node.any) walkFootgun(c, inverted, state, guns); return; }
+    if (node.not != null) { walkFootgun(node.not, !inverted, state, guns); return; }
+    if (Array.isArray(node.implies)) {
+      // implies:[A, C] === all(A, not(C)) — only the consequent (index 1) flips parity.
+      node.implies.forEach((c, i) => walkFootgun(c, i === 1 ? !inverted : inverted, state, guns));
+      return;
+    }
+    return;
+  }
+
+  if (!inverted &&
+      typeof node.op === 'string' && NEGATIVE_OPS.has(node.op) &&
+      typeof node.field === 'string' && node.field.includes('[]')) {
+    guns.push({ field: node.field, op: node.op, suggestion: footgunSuggestion(node.field, node.op) });
+  }
 }

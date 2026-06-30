@@ -39,6 +39,7 @@ import yaml from 'js-yaml';
 
 import { verify, parseRejectionReason } from './index.js';
 import { stubProvenance, provenanceForProvider } from './validators/provenance.js';
+import { runLint } from './cli-lint.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -440,8 +441,27 @@ export async function run(argv, io = {}) {
   return record.verification?.status === 'accepted' ? 0 : 1;
 }
 
+/**
+ * Top-level dispatcher. The bin has two verbs:
+ *   - `dogfood-verify lint <policy-file>` → the author-time policy lint (VERIFY-F3, cli-lint.js).
+ *   - `dogfood-verify <flags>`            → the verify dry-run/explain (the original `run` path).
+ *
+ * Dispatching on `argv[0] === 'lint'` is a purely additive change: that token previously hit the
+ * verify parser's default arm and threw `unknown argument: lint`. The verify path is unchanged.
+ *
+ * @param {string[]} argv - process.argv.slice(2)
+ * @param {object} [io] - injected stdout/stderr/repoRoot for testing
+ * @returns {Promise<number>} exit code
+ */
+export async function main(argv, io = {}) {
+  if (argv[0] === 'lint') {
+    return runLint(argv.slice(1), io);
+  }
+  return run(argv, io);
+}
+
 // --- CLI entrypoint ---
 const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(__dirname, 'cli.js');
 if (isMain) {
-  run(process.argv.slice(2)).then((code) => process.exit(code));
+  main(process.argv.slice(2)).then((code) => process.exit(code));
 }

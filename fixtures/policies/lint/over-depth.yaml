@@ -1,0 +1,23 @@
+# VERIFY-F3 lint fixture — combinator nesting past the depth cap. JSON Schema
+# cannot bound recursion depth, so the recursive `predicate` $def accepts this;
+# only the evaluator caps nesting at PREDICATE_MAX_DEPTH (5). The static lint walk
+# replays the same depth accounting and reports `max_depth` WITHOUT a submission.
+# Six nested combinators (root all at depth 1 … innermost all at depth 6 > 5).
+# policy-lint ERRORS (exit 1).
+policy_version: "1.0.0"
+repo: dogfood-lab/example-over-depth
+
+surfaces:
+  web:
+    custom_rules:
+      - id: too-deep
+        severity: reject
+        description: "nested past the depth cap"
+        when:
+          all:
+            - all:
+                - all:
+                    - all:
+                        - all:
+                            - all:
+                                - { field: verdict, op: equals, value: fail }

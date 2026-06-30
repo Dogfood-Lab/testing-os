@@ -17,6 +17,10 @@ on:
       - 'site/**'
       - 'swarms/PROTOCOL.md'
       - 'scripts/**'
+      # VERIFY-F3: policy files are gated by scripts/lint-policies.test.mjs (run via
+      # test:scripts). A policy-only edit must trigger CI so the lint runs on the exact
+      # files it guards — mirrors the d6-infra-001 honesty-surface trigger reasoning below.
+      - 'policies/**'
       # d6-infra-001: the honesty surfaces the doc-drift gates exist to
       # protect. sync-version:check reads README.md; the R9
       # source-of-truth-cross-ref handler cross-checks SHIP_GATE.md /
@@ -51,6 +55,8 @@ on:
       - 'site/**'
       - 'swarms/PROTOCOL.md'
       - 'scripts/**'
+      # VERIFY-F3: policy files gated by scripts/lint-policies.test.mjs (see push block above).
+      - 'policies/**'
       # d6-infra-001: honesty surfaces + schema fixtures (see push block above).
       - 'README.md'
       - 'SHIP_GATE.md'

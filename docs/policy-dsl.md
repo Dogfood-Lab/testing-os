@@ -150,8 +150,9 @@ operators are meant for (`attested_by`, `actor`, tags) this is the intuitive "pr
   lacks a log item" — and over an empty `evidence` it is false (does not fire). To say **"reject if no element
   satisfies P"** use the fail-closed idiom **`{ not: { any: [ <P> ] } }`**, which over an empty collection is
   `not(false)` = true (fires). Example — "reject web proof with no log evidence":
-  `when: { not: { any: [ { field: "evidence[].kind", op: contains, value: log } ] } }`. (A future `policy-lint`
-  verb, VERIFY-F3, will warn on a bare negative operator over a `[]` path.)
+  `when: { not: { any: [ { field: "evidence[].kind", op: contains, value: log } ] } }`. (The `policy-lint`
+  verb — VERIFY-F3, shipped v1.8.0 — warns on a bare negative operator over a `[]` path; see
+  [`policy-lint.md`](policy-lint.md).)
 - **Banned segments**: `__proto__`, `constructor`, `prototype` are rejected at policy-load time (schema `pattern`)
   **and** never traversed by the evaluator (every segment is read via a null-prototype-hardened accessor). This
   extends the existing `deepMerge` prototype-pollution guard from YAML keys to field-path reads.
@@ -256,9 +257,11 @@ field that depends on runtime data). The matching **global**-rule fault reuses t
 class (submission-bad) in `packages/verify/parse-rejection.js`, and the global/operational split stays consistent
 with the shipped `loadGlobalPolicy`-throws / `loadRepoPolicy`-`__torn` architecture.
 
-A companion **`policy-lint`** verb (VERIFY-F3, a deferred MEDIUM) is the natural author-time home: load the policy
-YAML, run the load-time gate over every predicate, batch-report every fault without needing a submission. Wired
-into CI on `policies/**`, it is the `opa check` analogue. v1.7.0 designs toward it; it is not in scope.
+The companion **`policy-lint`** verb (VERIFY-F3) **shipped in v1.8.0** — the author-time home: load the policy
+YAML, run the structural gate + the data-independent predicate checks over every predicate, and batch-report every
+fault (plus the advisory `[]`-footgun warning) without needing a submission. It is the `opa check` analogue, run as
+`dogfood-verify lint <policy-file>` and wired into CI on `policies/**`. Full contract + the coverage boundary
+(what static lint can and cannot catch): [`policy-lint.md`](policy-lint.md).
 
 ## The forced proof — `attested-if-human`
 
