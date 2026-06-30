@@ -37,11 +37,17 @@ import { githubScenarioFetcher, loadScenarios } from './load-context.js';
 // blocks to keep the namespace clean for sibling tests.
 // ─────────────────────────────────────────────────────────────────
 
-function withMockFetch(mock, fn) {
+async function withMockFetch(mock, fn) {
   const original = globalThis.fetch;
   globalThis.fetch = mock;
   try {
-    return fn();
+    // MUST await: `githubScenarioFetcher` reads `globalThis.fetch` at call
+    // time (the documented test seam), once per retry attempt. Returning the
+    // pending promise without awaiting let `finally` restore the real fetch
+    // synchronously — so the INGEST-PROACT-003 retry's 2nd+ attempt then hit
+    // the real api.github.com with a fake token (404 -> not_found), an
+    // intermittent flake. Awaiting keeps the mock installed for every attempt.
+    return await fn();
   } finally {
     globalThis.fetch = original;
   }
@@ -62,9 +68,11 @@ describe('D1B-004 — githubScenarioFetcher AbortController + typed reason', () 
     });
 
     await withMockFetch(hangingFetch, async () => {
-      // Pass an artificially short timeout to keep the test runtime
-      // bounded — the production default is 30s.
-      const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'deadbeef', { timeoutMs: 50 });
+      // Pass an artificially short timeout to keep the test runtime bounded
+      // (production default is 30s) and attempts:1 so this case isolates the
+      // single-attempt timeout classification — the retry path is covered in
+      // f-ingest-003-scenario-fetch-retry.test.js.
+      const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'deadbeef', { timeoutMs: 50, attempts: 1 });
       const result = await fetcher.fetchWithReason('sanity');
       assert.equal(result.scenario, null);
       assert.equal(result.reason, 'timeout',
@@ -146,7 +154,7 @@ describe('D1B-004 — githubScenarioFetcher AbortController + typed reason', () 
     });
 
     await withMockFetch(timeoutFetch, async () => {
-      const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'deadbeef', { timeoutMs: 50 });
+      const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'deadbeef', { timeoutMs: 50, attempts: 1 });
       const submission = {
         scenario_results: [{ scenario_id: 'sanity', product_surface: 'cli' }]
       };
