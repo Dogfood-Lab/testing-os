@@ -51,6 +51,11 @@ For a given record with `repo: org/foo` and `product_surface: desktop`:
 | `blocked-needs-reason` | Blocked verdict requires blocking_reason | reject |
 | `no-verdict-upgrade` | Verifier never upgrades proposed verdict | reject |
 
+> As of v1.7.0, **`attested-if-human` is enforced declaratively** — it is the first built-in migrated to the
+> VERIFY-F1 engine (a `when` predicate in `global-policy.yaml`), proven byte-identical to its old hardcoded form
+> by a differential-equivalence release gate. The other seven rules remain code-enforced. See
+> [`policy-dsl.md`](policy-dsl.md).
+
 ## Surface Policy Fields
 
 ### required_scenarios
@@ -76,6 +81,18 @@ Scenario IDs that must have a recent accepted record. "Recent" is defined by `fr
 
 - `required_kinds` — evidence types that must be present (screenshot, log, etc.)
 - `min_evidence_count` — minimum evidence items **per scenario** (enforced against each `scenario_result` independently, not summed across scenarios)
+- `forbidden_tags` — scenario tags that REJECT a `scenario_result` on this surface (e.g. `wip`, `flaky`, `skip-ci`). Enforced per scenario_result.
+- `required_tags` — scenario tags that EVERY `scenario_result` on this surface must carry (a tagless scenario fails). Enforced per scenario_result.
+
+### custom_rules (declarative — VERIFY-F1)
+
+Beyond the fixed fields above, a surface may carry `custom_rules[]` — declarative,
+**no-eval** predicates an operator authors directly in YAML (field-selector + operator + value, composed with
+`all`/`any`/`not`/`implies`), with no code change. They cover actor allowlists, field-value constraints, and
+forbidden scenario/tag combinations. `custom_rules` are additive-only (they can `reject`/`warn`/`info`, never
+grant an exception), so a repo policy can never weaken a global gate. Full reference — operators, the safety
+model, the `not(any(...))` absence idiom, and the diagnostics taxonomy — is in
+[`policy-dsl.md`](policy-dsl.md) and the [handbook policy-DSL page](https://dogfood-lab.github.io/testing-os/handbook/policy-dsl/).
 
 ## Integration with Shipcheck
 

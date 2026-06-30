@@ -92,7 +92,8 @@ Discrimination happens by **class**, surfaced by `parseRejectionReason` (below).
 | Prefix | Source | Meaning |
 |---|---|---|
 | `schema:` | `validators/schema.js` | JSON Schema check on the submission/record envelope failed. The rest of the string carries the AJV path + message. |
-| `policy:` | `validators/policy.js` | Per-repo policy gate failed (forbidden tags, missing required fields, surface evidence/CI requirements, etc.). |
+| `policy:` | `validators/policy.js` | Per-repo policy gate failed (forbidden tags, missing required fields, surface evidence/CI requirements, or a declarative `when`/`custom_rules` predicate matched — see the [policy DSL](https://dogfood-lab.github.io/testing-os/handbook/policy-dsl/)). |
+| `policy-config:` | `validators/policy.js` | **VERIFY-F1.** A REPO custom-rule predicate hit an eval-time semantic fault the schema could not catch — an unknown leading field, a numeric operator against a non-number, or a depth/width/fan-out budget. The repo authored the bad rule, so the fix is the submitter's. (A malformed GLOBAL predicate is `VALIDATOR_FAULT_POLICY:` operational instead — see below.) |
 | `steps[<id>]:` | `validators/steps.js` | Step-level contract check failed on a specific step id (gate accumulation, ordering, evidence shape). |
 | `provenance:` | `validators/provenance.js` | The run was genuinely **absent / not confirmable** — a 404 from the provider API, or the run head did not match the submitted commit/repo. The submitter's payload points at a run that does not exist or does not bind. (Operational provider faults — 429/5xx/401/403 — are NOT this class; see `provenance-fault:` below.) |
 | `repo:` | `index.js` cross-field guard | `submission.repo` does not match the owner/repo encoded in `source.run_url` (anti-forgery guard). Emitted as `repo:mismatch: …`. |
@@ -105,7 +106,7 @@ Discrimination happens by **class**, surfaced by `parseRejectionReason` (below).
 | Prefix | Source | Meaning |
 |---|---|---|
 | `VALIDATOR_FAULT_SCHEMA:` | `runValidator('schema', …)` catch | Internal exception inside the schema validator. The rest of the string carries the thrown `.message`. |
-| `VALIDATOR_FAULT_POLICY:` | `runValidator('policy', …)` catch | Internal exception inside the policy validator. |
+| `VALIDATOR_FAULT_POLICY:` | `runValidator('policy', …)` catch | Internal exception inside the policy validator — including a **GLOBAL** declarative-rule predicate fault (VERIFY-F1): a broken `policies/global-policy.yaml` is an ops incident (the studio's own config), so its predicate fault throws here rather than bouncing to the submitter. The repo-authored counterpart is `policy-config:` submission-bad. |
 | `VALIDATOR_FAULT_STEPS:` | `runValidator('steps', …)` catch | Internal exception inside the steps validator. |
 | `VALIDATOR_FAULT_CONTRACT_SCHEMA_VERSION:` | `runValidator('contract_schema_version', …)` catch | The version gate was called with an unknown contract key (a programmer error at the call site, not a submission fault). |
 | `submission-malformed:` | `index.js` null/non-object early-return | The submission itself was `null` or not an object — a malfunctioning **dispatcher** sent garbage, not a submitter who authored a bad-but-shaped payload. Page ops / inspect the dispatch pipeline; do NOT bounce it to a submitter. |

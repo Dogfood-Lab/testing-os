@@ -3,35 +3,60 @@
 # A repo policy declares what "verified" means for YOUR repo: which surfaces you
 # dogfood, how fresh evidence must be, and which gates are enforced vs advisory.
 # It lives in the testing-os repo at policies/repos/<org>/<repo>.yaml — open a PR
-# to add yours, or start from this file. Validate it before it goes live with the
-# verify CLI: `npx @dogfood-lab/verify --file <a submission> --explain`.
+# to add yours, or start from this file. Validate it against a real submission
+# with: `npx @dogfood-lab/verify --file <a submission> --explain`.
 #
-# The global rules below (schema-valid, provenance-confirmed, scenario-minimum,
-# step-results-present, step-verdict-consistent, attested-if-human) are enforced
-# for every repo and are documented here for reference — you do not re-declare
-# them; you tune the defaults and add repo-specific rules.
+# The eight GLOBAL rules (schema-valid, provenance-confirmed, scenario-minimum,
+# step-results-present, step-verdict-consistent, attested-if-human,
+# blocked-needs-reason, no-verdict-upgrade) are enforced for every repo and are
+# NOT re-declared here — they are non-overridable. You configure per-surface
+# requirements and add repo-specific custom rules.
 
+repo: dogfood-lab/your-repo
 policy_version: "1.0.0"
 
-defaults:
-  freshness:
-    # Evidence older than max_age_days reads as "stale" in the indexes;
-    # warn_age_days is the soft warning band before that.
-    max_age_days: 30
-    warn_age_days: 14
-  execution_mode_policy:
-    # Who may produce evidence: bot (CI), human (attested), or mixed.
-    allowed: [bot, human, mixed]
-  ci_requirements:
-    coverage_min: null          # e.g. 80 to require >=80% coverage evidence
-    tests_must_pass: true
-  evidence_requirements:
-    required_kinds: []           # e.g. [log, screenshot] to require both
-    min_evidence_count: 1
+surfaces:
+  # Per-surface policy. Repeat the block under each product_surface you dogfood
+  # (cli, desktop, web, api, mcp-server, npm-package, plugin, library).
+  web:
+    required_scenarios: []          # scenario IDs that must have a fresh record
+    freshness:
+      max_age_days: 30              # older than this reads as "stale" in indexes
+      warn_age_days: 14             # soft-warning band before stale
+    execution_mode_policy:
+      allowed: [human, mixed]       # web proof needs a human; bot-only is not enough
+    ci_requirements:
+      coverage_min: null            # e.g. 80 to require >=80% coverage evidence
+      tests_must_pass: true
+    evidence_requirements:
+      required_kinds: [screenshot]  # e.g. [log, screenshot] to require both
+      min_evidence_count: 1         # per scenario_result, not summed
+      forbidden_tags: [wip, flaky]  # a scenario tagged wip/flaky is rejected
+      required_tags: []             # tags EVERY scenario must carry (e.g. [release])
 
-# Repo-specific rules (optional). Each has an id, a description, and a severity:
-#   reject  — a violation fails verification (the submission is rejected)
-#   warn    — recorded but does not fail
-# Global rules (schema-valid, provenance-confirmed, scenario-minimum, ...) are
-# always on; these are additive.
-rules: []
+    # Declarative custom rules (VERIFY-F1) — no-eval predicates you author here,
+    # no code change. Each `when` describes the VIOLATION (the rule fires when it
+    # is true). reject | warn | info; additive-only (cannot weaken a global gate).
+    # Full reference: https://dogfood-lab.github.io/testing-os/handbook/policy-dsl/
+    custom_rules:
+      # Actor allowlist: reject web proof from a non-allowlisted attester.
+      - id: actor-allowlist
+        severity: reject
+        description: "web proof must come from an allowlisted actor"
+        when:
+          field: attested_by
+          op: not_in
+          value: [ci-bot, release-bot]
+
+      # Absence check, phrased fail-CLOSED with not(any): reject web proof that
+      # carries no log evidence. (A bare `evidence[].kind not_contains log` would
+      # fail OPEN on an empty evidence array — see the policy-DSL docs.)
+      - id: require-log-evidence
+        severity: reject
+        description: "web proof must include a log evidence item"
+        when:
+          not:
+            any:
+              - field: evidence[].kind
+                op: contains
+                value: log

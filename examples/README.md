@@ -8,7 +8,7 @@ template — copy it into your repo and fill in the blanks.
 |------|------------|
 | [`dogfood.yml`](dogfood.yml) | The GitHub Actions workflow that packages a run and dispatches it. Copy to `.github/workflows/dogfood.yml` in **your** repo. |
 | [`scenario-results.example.json`](scenario-results.example.json) | The shape your test output must take — an array of `scenario_result` objects. |
-| [`policy.example.yaml`](policy.example.yaml) | A starter repo policy. Open a PR to add yours at `policies/repos/<org>/<repo>.yaml`. |
+| [`policy.example.yaml`](policy.example.yaml) | A starter repo policy — per-surface requirements plus declarative [custom rules](https://dogfood-lab.github.io/testing-os/handbook/policy-dsl/) (VERIFY-F1). Open a PR to add yours at `policies/repos/<org>/<repo>.yaml`. |
 
 ## The five minutes
 

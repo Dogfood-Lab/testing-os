@@ -82,9 +82,10 @@ Key fields:
 - `surfaces.<surface>.freshness.warn_age_days` -- freshness warning threshold
 - `surfaces.<surface>.execution_mode_policy.allowed` -- allowed execution modes
 - `surfaces.<surface>.ci_requirements` -- `coverage_min`, `tests_must_pass`
-- `surfaces.<surface>.evidence_requirements` -- `required_kinds`, `min_evidence_count`
+- `surfaces.<surface>.evidence_requirements` -- `required_kinds`, `min_evidence_count`, `forbidden_tags`, `required_tags`
+- `surfaces.<surface>.custom_rules` -- declarative, no-eval predicate rules (VERIFY-F1); see the [policy DSL](../policy-dsl/)
 
-Global policy at `policies/global-policy.yaml` sets org-wide defaults including stale thresholds (critical: 60d, warning: 30d, healthy: 14d) and 8 global validation rules that apply to every submission.
+Global policy at `policies/global-policy.yaml` sets org-wide defaults including stale thresholds (critical: 60d, warning: 30d, healthy: 14d) and 8 global validation rules that apply to every submission. One of them, `attested-if-human`, is enforced declaratively via the [policy DSL](../policy-dsl/) as of v1.7.0 (the rest stay code-enforced).
 
 ## Intelligence Layer Contracts
 
