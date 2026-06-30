@@ -154,6 +154,10 @@ for (const r of result.rejection_reasons) {
 
 Persistence note: every entry above is round-tripped verbatim through `verification.rejection_reasons` in the persisted-record JSON; the schema enforces `array of string` so any consumer of the audit-DB ground truth sees the same prefix vocabulary.
 
+### Warnings channel (accepted-with-warning)
+
+Not every policy signal is a rejection. A policy rule declared `severity: warn` produces a `policy: <id>: <message>` entry on `verification.warnings` (an optional `array of string` on the persisted record) **without** flipping the verdict to `rejected` — the submission is accepted and recorded, the warning rides alongside it. (`severity: info` rules are logged only and never persisted; `severity: reject` rules go to `rejection_reasons` as above.) Consumers that want advisory signals read `verification.warnings`; the routing decision (`parseRejectionReason`) only concerns `rejection_reasons`. A clean accepted submission carries no `warnings` key at all.
+
 ## Docs
 
 📖 Full handbook: **<https://dogfood-lab.github.io/testing-os/handbook/>**

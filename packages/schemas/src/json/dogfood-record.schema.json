@@ -173,6 +173,11 @@
             "type": "string",
             "description": "Required when verdict is blocked. Verifier enforces."
           },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Free-form scenario tags (e.g. 'smoke', 'release', 'wip', 'flaky', 'skip-ci'). Carried verbatim from the submission. Policy gates on these via a surface's evidence_requirements.forbidden_tags / required_tags."
+          },
           "step_results": {
             "type": "array",
             "minItems": 1,
@@ -281,6 +286,11 @@
           "type": "array",
           "items": { "type": "string" },
           "description": "Machine-readable reasons for rejection. Empty if accepted."
+        },
+        "warnings": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Accepted-with-warning notes from warn-severity policy rules. A populated warnings array does NOT imply rejection — the record was accepted. Optional and backward-compatible: records written before this channel existed have no warnings block. Mirrors the rejection_reasons shape (one machine-readable string per matched warn-rule)."
         },
         "provenance_remediation": {
           "type": "object",

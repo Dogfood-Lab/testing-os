@@ -56,7 +56,10 @@ jobs:
       - name: Build scenario results
         run: |
           # e.g. node scripts/to-dogfood-scenarios.mjs > scenario-results.json
-          cp examples/scenario-results.example.json scenario-results.json
+          # dogfood-init scaffolds scenario-results.example.json into your repo
+          # ROOT; this starter copies it so the workflow runs end-to-end on the
+          # first push. Replace it with your real test-output transform.
+          cp scenario-results.example.json scenario-results.json
 
       # Build the submission envelope. dogfood-report reads repo / commit /
       # run-id / run-url / actor from the standard GITHUB_* env vars, so you only
@@ -80,3 +83,15 @@ jobs:
             '{event_type: "dogfood_submission", client_payload: {submission: $s[0]}}' \
             | gh api repos/dogfood-lab/testing-os/dispatches --input -
           echo "Dispatched. Watch ingest: https://github.com/dogfood-lab/testing-os/actions/workflows/ingest.yml"
+
+      # Confirm the dispatch actually landed. The dispatch above is fire-and-forget:
+      # the receiver ingests ASYNCHRONOUSLY, so this step is BEST-EFFORT — a fresh
+      # record may not be served yet when it runs, hence `continue-on-error`. It
+      # reads the receiver's PUBLIC served index (no auth) and reports whether THIS
+      # repo's latest run is recorded, accepted, and fresh. Promote it to a hard
+      # gate (drop continue-on-error) once your cadence makes a same-run record
+      # reliably present — then a silent non-record turns your CI red.
+      - name: Confirm dispatch landed (best-effort)
+        continue-on-error: true
+        run: |
+          npx --yes @dogfood-lab/report --status --repo "${GITHUB_REPOSITORY}"

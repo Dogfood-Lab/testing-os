@@ -244,6 +244,28 @@ export function computeFreshnessDays(finishedAt) {
   return Math.floor((Date.now() - ts) / 86400000);
 }
 
+// --- Deterministic serialization for the served read-API artifacts ---
+//
+// badge-serving-loop-incomplete — indexes/trends.json is regenerated and
+// committed at ingest time, so its bytes must be STABLE across runs and
+// machines: a churned key order produces a noisy, misleading diff. The trend
+// object's repo keys come from computeTrends' records/ walk (readdirSync order,
+// which is filesystem-dependent and NOT guaranteed sorted), so we sort keys
+// recursively at the serialization boundary — the same "normalize once, at the
+// boundary" discipline compute-trends.js applies to path separators. Arrays
+// (the per-surface `history`) keep their order: it is the chronological order
+// computeTrends already establishes deterministically, and reordering it would
+// destroy meaning. Only plain-object keys are sorted.
+function sortKeysDeep(value) {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (value && typeof value === 'object') {
+    const out = {};
+    for (const key of Object.keys(value).sort()) out[key] = sortKeysDeep(value[key]);
+    return out;
+  }
+  return value;
+}
+
 // --- Main generation ---
 
 export function generatePortfolio(index, policies, { logger = console } = {}) {
@@ -374,7 +396,8 @@ function main() {
           '                    history, regression/recovery flags, and windowed pass-rate',
           '                    are still merged into the report under the "trends" key)',
           '  --no-badges       Skip writing indexes/badges/<org>--<repo>--<surface>.json',
-          '                    shields.io endpoint files',
+          '                    shields.io endpoint files (plus the _aggregate.json',
+          '                    fleet-wide rollup pill)',
           '  -h, --help        Show this help',
         ].join('\n')
       );
@@ -456,7 +479,8 @@ function main() {
   if (emitTrends) {
     const trendsDir = join(TRENDS_OUTPUT, '..');
     if (!existsSync(trendsDir)) mkdirSync(trendsDir, { recursive: true });
-    atomicWriteFileSync(TRENDS_OUTPUT, JSON.stringify(trends, null, 2) + '\n');
+    // Sort keys so the committed served artifact diffs minimally on regenerate.
+    atomicWriteFileSync(TRENDS_OUTPUT, JSON.stringify(sortKeysDeep(trends), null, 2) + '\n');
   }
 
   // F5-04 — emit one shields.io endpoint JSON per repo+surface so any repo
@@ -466,8 +490,14 @@ function main() {
   if (emitBadges) {
     const badges = generateBadges(index);
     if (!existsSync(BADGES_DIR)) mkdirSync(BADGES_DIR, { recursive: true });
-    for (const [filename, endpoint] of Object.entries(badges)) {
-      atomicWriteFileSync(join(BADGES_DIR, filename), JSON.stringify(endpoint, null, 2) + '\n');
+    // Fan out in sorted filename order so the write sequence is stable across
+    // runs — each endpoint file's bytes are already deterministic, this keeps
+    // the per-file content sorted too (schemaVersion/label/message/color).
+    for (const filename of Object.keys(badges).sort()) {
+      atomicWriteFileSync(
+        join(BADGES_DIR, filename),
+        JSON.stringify(sortKeysDeep(badges[filename]), null, 2) + '\n',
+      );
       badgeCount++;
     }
   }

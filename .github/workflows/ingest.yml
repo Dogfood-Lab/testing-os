@@ -141,6 +141,18 @@ jobs:
             echo "written=$WRITTEN" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Regenerate served badges + trends
+        # badge-serving (feature pass): indexes/badges/*.json (shields.io
+        # endpoints) + indexes/trends.json are COMMITTED served artifacts that
+        # consumers embed as live README badges, but the ingest run.js only
+        # rebuilds latest-by-repo / failing / stale. Regenerate the portfolio's
+        # served artifacts here so the documented raw-URL endpoints stay live;
+        # the commit step below (`git add indexes/`) picks them up. The
+        # generator is deterministic (sorted keys, atomic temp+rename) so an
+        # unchanged fleet produces no diff and the commit-step no-op guard fires.
+        if: steps.result.outputs.written == 'true'
+        run: node packages/portfolio/generate.js
+
       - name: Commit records and indexes
         # F-FA-001 (Phase 10 Step 1): push-retry loop with exponential
         # backoff + per-attempt structured telemetry. Pre-amend the

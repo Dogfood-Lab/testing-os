@@ -33,6 +33,23 @@
 
 const DEFAULT_WINDOW_DAYS = 30;
 
+// badge-serving-loop-incomplete — the org-wide rollup pill. Leading underscore
+// keeps it unambiguous against every per-repo+surface filename (those always
+// contain '--' joining a sanitized org/repo/surface; sanitizeSegment can never
+// emit a leading underscore from a real repo path), and it sorts to the front
+// of a directory listing so an operator scanning indexes/badges/ sees the fleet
+// summary first. Exported so consumers and tests reference one source of truth
+// for the served path instead of hardcoding the string.
+export const AGGREGATE_BADGE_FILENAME = '_aggregate.json';
+
+// Status precedence, worst-first. The aggregate reports the WORST status across
+// the fleet because a single green pill that hides a red surface is the exact
+// lie the per-surface staleness rule already guards against — escalated one
+// level up. fail > stale > pass: a known failure is the most actionable signal,
+// staleness is the next (a pass we can't prove is fresh), pass is the floor.
+const STATUS_RANK = { fail: 2, stale: 1, pass: 0 };
+const STATUS_COLOR = { fail: 'red', stale: 'orange', pass: 'brightgreen' };
+
 /**
  * Collapse any filesystem-hostile run of characters to a single '-'. Used for
  * each filename segment so org/repo slashes, colons, and spaces can't produce
@@ -76,44 +93,65 @@ function badgeFilename(repo, surface) {
  * @returns {Object<string, { schemaVersion: 1, label: 'dogfood', message: string, color: string }>}
  *   keyed by sanitized filename.
  */
+/**
+ * Reduce one record to its badge status: 'pass' | 'fail' | 'stale'. Shared by
+ * the per-surface pills and the aggregate rollup so the two cannot drift on what
+ * "passing" means.
+ *
+ * @param {{ verified?: string, finished_at?: string }} record
+ * @param {number} now
+ * @param {number} windowMs
+ * @returns {'pass'|'fail'|'stale'}
+ */
+function recordStatus(record, now, windowMs) {
+  const verified = record?.verified;
+  const finishedMs = record?.finished_at != null ? new Date(record.finished_at).getTime() : NaN;
+  // Unparseable timestamp => cannot prove freshness => treat as stale.
+  const isStale = !Number.isFinite(finishedMs) || (now - finishedMs) > windowMs;
+
+  // A known failure is always reported as fail — never masked by staleness.
+  if (verified === 'fail') return 'fail';
+  if (isStale) return 'stale';
+  if (verified === 'pass') return 'pass';
+  // Any non-pass/non-fail verdict on a fresh record (e.g. an unexpected verdict
+  // value): surface it conservatively rather than claim 'pass'.
+  return 'stale';
+}
+
 export function generateBadges(index, options = {}) {
   const { windowDays = DEFAULT_WINDOW_DAYS, now = Date.now() } = options;
   const windowMs = windowDays * 86400000;
 
   const badges = {};
+  let worst = null;
+  let surfaceCount = 0;
   for (const [repo, surfaces] of Object.entries(index || {})) {
     for (const [surface, record] of Object.entries(surfaces || {})) {
-      const verified = record?.verified;
-      const finishedMs = record?.finished_at != null ? new Date(record.finished_at).getTime() : NaN;
-      // Unparseable timestamp => cannot prove freshness => treat as stale.
-      const isStale = !Number.isFinite(finishedMs) || (now - finishedMs) > windowMs;
-
-      let message;
-      let color;
-      if (verified === 'fail') {
-        // A known failure is always reported as fail — never masked by staleness.
-        message = 'fail';
-        color = 'red';
-      } else if (isStale) {
-        message = 'stale';
-        color = 'orange';
-      } else if (verified === 'pass') {
-        message = 'pass';
-        color = 'brightgreen';
-      } else {
-        // Any non-pass/non-fail verdict on a fresh record (e.g. an unexpected
-        // verdict value): surface it conservatively rather than claim 'pass'.
-        message = 'stale';
-        color = 'orange';
-      }
+      const status = recordStatus(record, now, windowMs);
+      surfaceCount++;
+      if (worst === null || STATUS_RANK[status] > STATUS_RANK[worst]) worst = status;
 
       badges[badgeFilename(repo, surface)] = {
         schemaVersion: 1,
         label: 'dogfood',
-        message,
-        color,
+        message: status,
+        color: STATUS_COLOR[status],
       };
     }
+  }
+
+  // badge-serving-loop-incomplete — one fleet-wide pill alongside the per-surface
+  // ones, so a README can embed a single "is everything green" badge. Only when
+  // the fleet is non-empty: an empty index has no status to roll up, and an
+  // aggregate that read 'pass' over zero surfaces would assert health we never
+  // measured.
+  if (surfaceCount > 0 && worst !== null) {
+    badges[AGGREGATE_BADGE_FILENAME] = {
+      schemaVersion: 1,
+      label: 'dogfood',
+      message: worst,
+      color: STATUS_COLOR[worst],
+    };
   }
 
   return badges;

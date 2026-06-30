@@ -8,4 +8,4 @@
  */
 
 export { parseFinding, validateFinding, validateFindingFile } from './validate.js';
-export { discoverFindings, discoverFixtures, loadFindings, findById, filterFindings, findDuplicates } from './reader.js';
+export { discoverFindings, discoverFixtures, loadFindings, findById, filterFindings, findDuplicates, matchesText } from './reader.js';

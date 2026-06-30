@@ -40,10 +40,13 @@ import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
 
+import { buildSubmission, precheckSubmission } from '@dogfood-lab/report';
+
 const __dirname = resolve(fileURLToPath(import.meta.url), '..');
 const TEMPLATES_DIR = resolve(__dirname, 'templates');
 
 const EXIT_OK = 0;
+const EXIT_DOCTOR_FAIL = 1;
 const EXIT_USAGE = 2;
 
 // The receiver repo. This is NOT the consumer's slug and must never be
@@ -69,10 +72,16 @@ Options:
   --slug <org/repo>   Use this slug for the run-url example instead of auto-detecting.
   --force             Overwrite an existing .github/workflows/dogfood.yml.
                       Without it, init REFUSES to clobber your workflow (exit 2).
+  --check             Don't scaffold — AUDIT the onboarding end-to-end and print a
+                      structured checklist (DOGFOOD_TOKEN, scenario-results parse +
+                      precheck, repo slug, workflow trigger wiring, upstream policy).
+                      Exits non-zero ONLY on a hard FAIL; a WARN exits 0.
   -h, --help          Show this help and exit 0.
 
 Exit codes:
-  0  scaffolded successfully.
+  0  scaffolded successfully — OR --check found no hard failures (warns allowed).
+  1  --check found a hard failure (missing DOGFOOD_TOKEN, malformed/precheck-
+     failing scenario-results.json).
   2  operator error: target workflow exists without --force, bad flag, or
      unreadable bundled template.
 `;
@@ -93,8 +102,8 @@ function emitError(code, message, hint) {
  * to exit 2 in one place. Mirrors cli.js's parser.
  */
 function parseArgs(argv) {
-  const booleans = new Set(['--force', '-h', '--help']);
-  const known = new Set(['--dir', '--slug', '--force', '-h', '--help']);
+  const booleans = new Set(['--force', '--check', '-h', '--help']);
+  const known = new Set(['--dir', '--slug', '--force', '--check', '-h', '--help']);
   const flags = {};
 
   for (let i = 0; i < argv.length; i++) {
@@ -246,6 +255,242 @@ function nextSteps({ workflowPath, slug, slugDetected }) {
   ].join('\n');
 }
 
+/**
+ * Check: the DOGFOOD_TOKEN secret is present in the environment.
+ *
+ * This is the #1 silent-failure mode — the dispatch authenticates with it, and
+ * without it a run can go green having recorded nothing. A hard FAIL: a setup
+ * with no token cannot dogfood. (In a consumer's own dev shell the var is
+ * usually absent — that is the WARN-vs-FAIL judgment call the audit settled as
+ * FAIL, because --check is meant to be run in the CI env where the secret IS
+ * expected to be present.)
+ *
+ * @param {Record<string,string|undefined>} env
+ * @returns {{id,status,message,hint?}}
+ */
+function checkDogfoodToken(env) {
+  if (env.DOGFOOD_TOKEN && env.DOGFOOD_TOKEN.trim()) {
+    return { id: 'dogfood-token', status: 'pass', message: 'DOGFOOD_TOKEN is set' };
+  }
+  return {
+    id: 'dogfood-token',
+    status: 'fail',
+    message: 'DOGFOOD_TOKEN is not set in this environment',
+    hint: `mint a fine-grained PAT with contents:write on ${RECEIVER_REPO} and add it as the DOGFOOD_TOKEN secret (Settings → Secrets and variables → Actions). Run --check inside the workflow where the secret is exposed.`,
+  };
+}
+
+/**
+ * Check: scenario-results.json exists, parses, builds, and PRECHECKS clean.
+ *
+ * Absent ⇒ WARN (a consumer often generates it during the CI run, so its
+ * absence in a dev shell is normal). Present-but-broken ⇒ FAIL: a malformed or
+ * precheck-failing file WILL be rejected by the receiver, so it must fail the
+ * preflight loudly here rather than after a wasted dispatch. Reuses the exact
+ * buildSubmission + precheckSubmission path the dispatch step runs.
+ *
+ * @param {string} dir
+ * @param {string|null} slug
+ * @returns {{id,status,message,hint?}}
+ */
+function checkScenarioResults(dir, slug) {
+  const path = join(dir, 'scenario-results.json');
+  if (!existsSync(path)) {
+    return {
+      id: 'scenario-results',
+      status: 'warn',
+      message: 'no scenario-results.json yet (the workflow builds it during the run)',
+      hint: 'if you produce it ahead of time, drop scenario-results.json here so --check can validate it.',
+    };
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf-8'));
+  } catch (err) {
+    return {
+      id: 'scenario-results',
+      status: 'fail',
+      message: `scenario-results.json does not parse as JSON: ${err && err.message ? err.message : err}`,
+      hint: 'fix the JSON — the receiver rejects an unparseable submission.',
+    };
+  }
+
+  const scenarioResults = Array.isArray(parsed) ? parsed : [parsed];
+  let submission;
+  try {
+    // Supply synthetic-but-valid CI source metadata. At dispatch time these come
+    // from the GITHUB_* env; here we only want precheck to exercise the part the
+    // consumer actually controls pre-push — the scenario_results contract — so a
+    // run-time-only field never masquerades as a scenario-results problem.
+    const probeRepo = slug || 'your-org/your-repo';
+    submission = buildSubmission({
+      repo: probeRepo,
+      commitSha: 'a'.repeat(40),
+      workflow: 'dogfood.yml',
+      providerRunId: '0',
+      runUrl: `https://github.com/${probeRepo}/actions/runs/0`,
+      scenarioResults,
+      startedAt: new Date().toISOString(),
+      finishedAt: new Date().toISOString(),
+      overallVerdict: 'pass',
+    });
+  } catch (err) {
+    return {
+      id: 'scenario-results',
+      status: 'fail',
+      message: `scenario-results.json could not build a submission: ${err && err.message ? err.message : err}`,
+      hint: 'check the scenario_result shape against scenario-results.example.json.',
+    };
+  }
+
+  const result = precheckSubmission(submission);
+  if (!result.valid) {
+    return {
+      id: 'scenario-results',
+      status: 'fail',
+      message: `scenario-results.json builds but fails precheck: ${result.errors.join('; ')}`,
+      hint: 'fix the listed contract violations — the receiver runs the same precheck.',
+    };
+  }
+  return {
+    id: 'scenario-results',
+    status: 'pass',
+    message: `scenario-results.json parses and prechecks clean (${scenarioResults.length} scenario${scenarioResults.length === 1 ? '' : 's'})`,
+  };
+}
+
+/**
+ * Check: a repo slug was detected/declared. WARN-class — the run-url example is
+ * only a starter and the dispatch derives the real slug from GITHUB_REPOSITORY,
+ * so an undetected slug is sub-ideal, not fatal.
+ *
+ * @param {string|null} slug
+ * @returns {{id,status,message,hint?}}
+ */
+function checkRepoSlug(slug) {
+  if (slug) {
+    return { id: 'repo-slug', status: 'pass', message: `repo slug detected: ${slug}` };
+  }
+  return {
+    id: 'repo-slug',
+    status: 'warn',
+    message: 'could not detect a repo slug (no --slug, no GITHUB_REPOSITORY, no git origin)',
+    hint: 'pass --slug <org/repo>, or run inside the repo where git origin / GITHUB_REPOSITORY resolves.',
+  };
+}
+
+/**
+ * Check: the workflow exists and its trigger has been wired off the shipped "CI"
+ * placeholder. Missing workflow ⇒ FAIL (nothing will ever dispatch). Still
+ * pointing at "CI" ⇒ WARN: it is the unedited default and likely does not match
+ * the consumer's real test workflow, but it is not provably wrong (their workflow
+ * MIGHT be named "CI"), so it does not gate the exit code.
+ *
+ * @param {string} dir
+ * @returns {{id,status,message,hint?}}
+ */
+function checkWorkflowTrigger(dir) {
+  const path = join(dir, '.github', 'workflows', 'dogfood.yml');
+  if (!existsSync(path)) {
+    return {
+      id: 'workflow-trigger',
+      status: 'fail',
+      message: 'no .github/workflows/dogfood.yml — nothing will dispatch',
+      hint: 'run dogfood-init (without --check) to scaffold the workflow first.',
+    };
+  }
+  const yml = readFileSync(path, 'utf-8');
+  if (/workflows:\s*\[\s*["']CI["']\s*\]/.test(yml)) {
+    return {
+      id: 'workflow-trigger',
+      status: 'warn',
+      message: 'the workflow_run trigger still points at the placeholder "CI"',
+      hint: 'set the workflow_run "workflows:" list to YOUR test workflow\'s name (unless it is genuinely named "CI").',
+    };
+  }
+  return {
+    id: 'workflow-trigger',
+    status: 'pass',
+    message: 'the workflow trigger has been wired off the "CI" placeholder',
+  };
+}
+
+/**
+ * Check: a starter policy file is present to PR upstream. WARN-class — the policy
+ * lives in the receiver repo, not the consumer's, so a missing local starter only
+ * means the consumer skipped the convenience copy.
+ *
+ * @param {string} dir
+ * @returns {{id,status,message,hint?}}
+ */
+function checkUpstreamPolicy(dir) {
+  if (existsSync(join(dir, 'policy.example.yaml'))) {
+    return {
+      id: 'upstream-policy',
+      status: 'pass',
+      message: `policy.example.yaml present — PR it to ${RECEIVER_REPO} at policies/repos/<org>/<repo>.yaml`,
+    };
+  }
+  return {
+    id: 'upstream-policy',
+    status: 'warn',
+    message: 'no local policy.example.yaml to seed your upstream policy PR',
+    hint: `your policy lives in ${RECEIVER_REPO} at policies/repos/<org>/<repo>.yaml; re-run dogfood-init to get a starter.`,
+  };
+}
+
+/**
+ * Audit a consumer's onboarding end-to-end and roll up an exit code. Mirrors
+ * `swarm doctor`'s contract: exit non-zero ONLY on a hard FAIL; a WARN exits 0.
+ * Slug and env are injectable so tests drive every branch deterministically.
+ *
+ * @param {object} opts
+ * @param {string} opts.dir — the onboarding directory to audit.
+ * @param {string|null} [opts.slug] — detected/declared slug (null ⇒ undetected).
+ * @param {Record<string,string|undefined>} [opts.env=process.env]
+ * @returns {{checks: Array<{id,status,message,hint?}>, overallStatus:'pass'|'warn'|'fail', exitCode:0|1}}
+ */
+export function runOnboardingDoctor(opts) {
+  const dir = resolve(opts.dir || process.cwd());
+  const env = opts.env || process.env;
+  const slug = opts.slug ?? null;
+
+  const checks = [
+    checkDogfoodToken(env),
+    checkScenarioResults(dir, slug),
+    checkRepoSlug(slug),
+    checkWorkflowTrigger(dir),
+    checkUpstreamPolicy(dir),
+  ];
+
+  const anyFail = checks.some((c) => c.status === 'fail');
+  const anyWarn = checks.some((c) => c.status === 'warn');
+  const overallStatus = anyFail ? 'fail' : anyWarn ? 'warn' : 'pass';
+  const exitCode = anyFail ? EXIT_DOCTOR_FAIL : EXIT_OK;
+  return { checks, overallStatus, exitCode };
+}
+
+const DOCTOR_SIGIL = { pass: '[PASS]', warn: '[WARN]', fail: '[FAIL]' };
+
+/**
+ * Render the onboarding doctor report as scan-first plain ASCII — matches the
+ * swarm doctor / status posture (no color, identical under CI logs).
+ *
+ * @param {ReturnType<typeof runOnboardingDoctor>} report
+ * @returns {string}
+ */
+export function formatOnboardingDoctor(report) {
+  const lines = ['dogfood-init --check — onboarding preflight', ''];
+  for (const c of report.checks) {
+    lines.push(`${DOCTOR_SIGIL[c.status] || '[????]'} ${c.id} — ${c.message}`);
+    if (c.hint && c.status !== 'pass') lines.push(`         hint: ${c.hint}`);
+  }
+  lines.push('');
+  lines.push(`Overall: ${report.overallStatus.toUpperCase()}`);
+  return lines.join('\n');
+}
+
 export function run(argv) {
   let flags;
   try {
@@ -258,6 +503,15 @@ export function run(argv) {
   if (flags['-h'] || flags['--help']) {
     process.stdout.write(USAGE);
     return EXIT_OK;
+  }
+
+  // --check audits an existing onboarding instead of scaffolding a new one.
+  if (flags['--check']) {
+    const targetDir = resolve(flags['--dir'] || process.cwd());
+    const slug = detectSlug(flags['--slug'], targetDir);
+    const report = runOnboardingDoctor({ dir: targetDir, slug, env: process.env });
+    process.stdout.write(formatOnboardingDoctor(report) + '\n');
+    return report.exitCode;
   }
 
   const targetDir = resolve(flags['--dir'] || process.cwd());

@@ -5,7 +5,7 @@ sidebar:
   order: 6.7
 ---
 
-`swarm` is the control-plane CLI shipped by `@dogfood-lab/dogfood-swarm`. The full source of truth is `packages/dogfood-swarm/cli.js`; this page is a per-verb quick-reference so you can scan all 23 verbs without `swarm --help`-ing your way through them.
+`swarm` is the control-plane CLI shipped by `@dogfood-lab/dogfood-swarm`. The full source of truth is `packages/dogfood-swarm/cli.js`; this page is a per-verb quick-reference so you can scan all 24 verbs without `swarm --help`-ing your way through them.
 
 For verbs that already have a dedicated handbook page, this page lists the synopsis and a one-line summary, then links out. Those deep-dive pages are:
 

@@ -249,6 +249,12 @@ export async function verify(submission, options) {
   // BEFORE handing the (broken) policy to `validatePolicy`, so the
   // operator sees a real "policy:" rejection in `rejection_reasons`.
   let policyValid = false;
+  // VERIFY-F4: severity:warn / severity:info policy rules surface here as an
+  // accepted-with-warning channel. Warnings NEVER enter `reasons` (which become
+  // rejection_reasons and flip status to 'rejected') — they land on
+  // verification.warnings at assembly so an operator sees the advisory without
+  // the submission being bounced.
+  const warnings = [];
   if (schemaResult.valid) {
     if (repoPolicy && repoPolicy.__torn === true) {
       const detail = repoPolicy.reason || 'repo policy YAML failed to parse';
@@ -259,6 +265,7 @@ export async function verify(submission, options) {
       if (policyRun.ok) {
         policyValid = policyRun.result.valid;
         reasons.push(...policyRun.result.errors.map(e => `policy: ${e}`));
+        warnings.push(...(policyRun.result.warnings || []).map(w => `policy: ${w}`));
       } else {
         reasons.push(policyRun.faultReason);
       }
@@ -306,7 +313,8 @@ export async function verify(submission, options) {
       provenance_confirmed: provenanceConfirmed,
       schema_valid: schemaResult.valid,
       policy_valid: policyValid,
-      rejection_reasons: reasons
+      rejection_reasons: reasons,
+      ...(warnings.length ? { warnings } : {})
     },
     ...(submission.notes ? { notes: submission.notes } : {})
   };

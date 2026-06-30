@@ -30,6 +30,12 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
 import { buildSubmission, precheckSubmission } from '@dogfood-lab/report';
+import {
+  runStatus,
+  buildStatusJSON,
+  formatStatus,
+  DEFAULT_INDEX_BASE,
+} from '@dogfood-lab/report/status.js';
 
 const EXIT_OK = 0;
 const EXIT_PRECHECK_FAILED = 1;
@@ -39,6 +45,7 @@ const USAGE = `dogfood-report — build a testing-os submission JSON from run me
 
 Usage:
   dogfood-report --scenario-file <path> [options]   > submission.json
+  dogfood-report --status --repo <org/repo> [options]   # confirm a dispatch landed
 
 Required:
   --scenario-file <path>   JSON file: an array of scenario_results (or a single
@@ -67,11 +74,28 @@ Behavior:
   --no-precheck            Skip local precheck (emit unconditionally).
   -h, --help               Show this help and exit 0.
 
+Post-dispatch confirmation (--status):
+  --status                 Confirm your latest run is RECORDED + ACCEPTED + FRESH
+                           in the receiver's public served index — no auth needed.
+                           Exits non-zero on rejected/absent/stale so a consumer
+                           CI step fails loud instead of going green on a silent
+                           non-record. Requires --repo.
+  --repo <org/repo>        The repo to confirm (also the build's required flag).
+  --surface <name>         Restrict the confirmation to one product_surface.
+  --index-base <url>       Override the served-index base. Default:
+                           ${DEFAULT_INDEX_BASE}
+  --format <text|json>     --status output format (default text).
+
 Exit codes:
-  0  submission built (and prechecked, if enabled) and emitted.
-  1  submission built but failed precheck.
+  0  submission built (and prechecked, if enabled) and emitted — OR --status
+     confirmed recorded + accepted + fresh.
+  1  submission built but failed precheck — OR --status found the run rejected,
+     unrecorded, or stale.
   2  usage error (missing/invalid flag, unreadable --scenario-file).
 `;
+
+/** The valid --status --format enum. Mirrors the swarm verbs' format guard. */
+const STATUS_FORMATS = ['text', 'json'];
 
 /**
  * Emit a structured, machine-greppable error to stderr.
@@ -93,7 +117,7 @@ function emitError(code, message, hint) {
  */
 function parseArgs(argv) {
   // Boolean flags take no value; everything else consumes the next token.
-  const booleans = new Set(['--precheck', '--no-precheck', '-h', '--help']);
+  const booleans = new Set(['--precheck', '--no-precheck', '--status', '-h', '--help']);
   const flags = {};
 
   for (let i = 0; i < argv.length; i++) {
@@ -140,6 +164,72 @@ function readScenarioResults(scenarioFile) {
   return Array.isArray(parsed) ? parsed : [parsed];
 }
 
+/**
+ * Validate the --status --format value against the shared enum, fail-loud on a
+ * bad value (matching the swarm verbs' parseFormatFlag posture).
+ */
+function statusFormat(flags) {
+  const raw = flags['--format'];
+  if (raw === undefined) return 'text';
+  if (!STATUS_FORMATS.includes(raw)) {
+    const e = new Error(`--format expects one of ${STATUS_FORMATS.join('|')}; got '${raw}'`);
+    e.code = 'BAD_ARGS';
+    e.hint = `pass one of: ${STATUS_FORMATS.join(', ')} — e.g. \`--format json\``;
+    throw e;
+  }
+  return raw;
+}
+
+/**
+ * `dogfood-report --status` — confirm a dispatch actually landed. Async because
+ * it reads the receiver's public served index over the network. Returns the exit
+ * code; never throws to the caller (every failure becomes a structured envelope +
+ * exit code so a consumer CI step gets a clean signal).
+ *
+ * @param {Record<string,string|boolean>} flags
+ * @returns {Promise<number>}
+ */
+async function runStatusCommand(flags) {
+  let format;
+  try {
+    format = statusFormat(flags);
+  } catch (err) {
+    emitError(err.code || 'BAD_ARGS', err.message, err.hint);
+    return EXIT_USAGE;
+  }
+
+  const repo = flags['--repo'] || process.env.GITHUB_REPOSITORY;
+  if (!repo) {
+    emitError(
+      'MISSING_REQUIRED_FLAG',
+      '--status requires --repo <org/repo>.',
+      'Pass --repo your-org/your-repo (or run inside Actions where GITHUB_REPOSITORY is set).'
+    );
+    return EXIT_USAGE;
+  }
+
+  let result;
+  try {
+    result = await runStatus({
+      repo,
+      surface: flags['--surface'],
+      indexBase: flags['--index-base'],
+    });
+  } catch (err) {
+    // A transport/parse failure reaching the index is NOT a green light — surface
+    // it as a structured error and fail (exit 1), never silently pass.
+    emitError(err.code || 'INDEX_UNREACHABLE', err && err.message ? err.message : String(err), err.hint);
+    return EXIT_PRECHECK_FAILED;
+  }
+
+  if (format === 'json') {
+    process.stdout.write(JSON.stringify(buildStatusJSON(result), null, 2) + '\n');
+  } else {
+    process.stdout.write(formatStatus(result) + '\n');
+  }
+  return result.exitCode;
+}
+
 export function run(argv) {
   let flags;
   try {
@@ -152,6 +242,12 @@ export function run(argv) {
   if (flags['-h'] || flags['--help']) {
     process.stdout.write(USAGE);
     return EXIT_OK;
+  }
+
+  // --status is a distinct, network-reading verb (the only async path). Route to
+  // it before the synchronous build path so the two never tangle.
+  if (flags['--status']) {
+    return runStatusCommand(flags);
   }
 
   const scenarioFile = flags['--scenario-file'];
@@ -246,7 +342,9 @@ export function run(argv) {
 }
 
 // CLI entrypoint — only runs when invoked directly, not when imported by tests.
+// run() returns a number for the synchronous build path and a Promise<number>
+// for the async --status path; await-via-Promise.resolve handles both.
 const isMain = process.argv[1]?.endsWith('cli.js');
 if (isMain) {
-  process.exit(run(process.argv.slice(2)));
+  Promise.resolve(run(process.argv.slice(2))).then((code) => process.exit(code));
 }

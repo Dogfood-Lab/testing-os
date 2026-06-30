@@ -16,7 +16,7 @@ Part of the [`testing-os`](https://github.com/dogfood-lab/testing-os) monorepo �
 
 Reads `indexes/latest-by-repo.json` + `policies/repos/` and writes an aggregated portfolio summary to `reports/dogfood-portfolio.json`. Downstream consumers — the handbook landing page, the `repo-knowledge` integration — read this aggregated view rather than walking the full `records/` tree.
 
-Alongside the report it also emits two **git-ignored runtime artifacts** (`indexes/trends.json` + `indexes/badges/`). They are regenerated on every run and are never committed — the committed deliverable is the generator code, not a snapshot.
+Alongside the report it also emits two **committed served artifacts** (`indexes/trends.json` + `indexes/badges/`). The ingest workflow regenerates them via `node packages/portfolio/generate.js` and commits them on every accepted submission, so consumers can embed a live badge pointing at a stable raw URL (see the serving note below). The generator is deterministic (sorted keys, atomic temp+rename), so an unchanged fleet produces no diff.
 
 ### Trend / regression surface (`trends`)
 
@@ -43,7 +43,13 @@ Each repo+surface gets a [shields.io endpoint](https://shields.io/badges/endpoin
 
 `message`/`color` are `pass`/`brightgreen`, `fail`/`red`, or `stale`/`orange`. A passing-but-old run (latest `finished_at` beyond the staleness window, default 30 days) or an unparseable timestamp reports `stale`; a `fail` always reports `fail` regardless of age. A repo README renders a live pill by embedding `https://img.shields.io/endpoint?url=<raw url to the badge file>`. The reusable engine is `lib/generate-badges.js#generateBadges(index, { windowDays, now })`.
 
-> **Serving note:** the badge files are git-ignored, so they are not yet reachable at a stable raw URL. Publishing them via CI (parallel to how `reports/dogfood-portfolio.json` is served) is a deferred follow-up.
+> **Serving note:** the badge + trends files are committed served artifacts. The ingest workflow runs `node packages/portfolio/generate.js` and commits `indexes/badges/` + `indexes/trends.json` after every accepted submission, so the raw URLs are live. Embed a per-repo+surface pill with:
+>
+> ```
+> https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/dogfood-lab/testing-os/main/indexes/badges/<org>--<repo>--<surface>.json
+> ```
+>
+> A fleet-wide worst-status rollup pill is served at `indexes/badges/_aggregate.json` (embed the same way). shields.io expects the `url` parameter URL-encoded.
 
 ## Usage — internal
 

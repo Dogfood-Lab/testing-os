@@ -80,16 +80,32 @@ function resolveSurfacePolicy(surface, globalPolicy, repoPolicy) {
  * @param {object} options
  * @param {object} options.globalPolicy
  * @param {object|null} options.repoPolicy
- * @returns {{ valid: boolean, errors: string[] }}
+ * @returns {{ valid: boolean, errors: string[], warnings: string[] }}
  */
 export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
   const errors = [];
+  // VERIFY-F4: warn-severity rules record an accepted-with-warning note here
+  // instead of being silently dropped. A populated warnings[] never affects
+  // `valid` — the caller (index.js) routes it to verification.warnings.
+  const warnings = [];
 
   // --- Global rules (non-overridable) ---
 
   const globalRules = globalPolicy.global_rules || [];
 
   for (const rule of globalRules) {
+    // VERIFY-F4: a global warn-rule is accepted-with-warning; an info-rule logs
+    // only. Neither may reject. Mirrors the PROACT-VERIFY-002 discipline of not
+    // dropping operator-authored rules on the floor: a declared rule that the
+    // build does nothing with is invisible to the operator who wrote it.
+    if (rule.severity === 'warn') {
+      warnings.push(`${rule.id}: ${rule.description || 'policy warning'}`);
+      continue;
+    }
+    if (rule.severity === 'info') {
+      // Logged only — info rules are intentionally non-surfacing in the record.
+      continue;
+    }
     if (rule.severity !== 'reject') continue;
 
     switch (rule.id) {
@@ -171,6 +187,33 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
           }
         }
       }
+
+      // VERIFY-F2: tag gating. forbidden_tags rejects a scenario_result carrying
+      // any listed tag; required_tags rejects one missing any listed tag (a
+      // tagless scenario fails every required_tags rule). Tags are optional on
+      // the scenario_result, so an absent `tags` array trips required_tags but
+      // never forbidden_tags.
+      const tags = new Set(sr.tags || []);
+
+      if (evidenceReqs.forbidden_tags) {
+        for (const tag of evidenceReqs.forbidden_tags) {
+          if (tags.has(tag)) {
+            errors.push(
+              `surface[${surface}]: scenario "${sr.scenario_id}" carries forbidden tag "${tag}"`
+            );
+          }
+        }
+      }
+
+      if (evidenceReqs.required_tags) {
+        for (const tag of evidenceReqs.required_tags) {
+          if (!tags.has(tag)) {
+            errors.push(
+              `surface[${surface}]: scenario "${sr.scenario_id}" is missing required tag "${tag}"`
+            );
+          }
+        }
+      }
     }
   }
 
@@ -213,5 +256,5 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
     }
   }
 
-  return { valid: errors.length === 0, errors };
+  return { valid: errors.length === 0, errors, warnings };
 }

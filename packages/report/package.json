@@ -12,7 +12,8 @@
     ".": "./build-submission.js",
     "./build-submission.js": "./build-submission.js",
     "./cli.js": "./cli.js",
-    "./init.js": "./init.js"
+    "./init.js": "./init.js",
+    "./status.js": "./status.js"
   },
   "scripts": {
     "test": "node --test"
@@ -21,6 +22,7 @@
     "build-submission.js",
     "cli.js",
     "init.js",
+    "status.js",
     "templates/",
     "README.md",
     "LICENSE"

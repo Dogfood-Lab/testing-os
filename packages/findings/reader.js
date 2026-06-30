@@ -176,10 +176,35 @@ export function findById(rootDir, findingId) {
 }
 
 /**
+ * Case-insensitive substring match of `needle` against any of `haystacks`.
+ *
+ * Plain substring, not regex: a free-text `--grep` over operator-authored prose
+ * should treat `c++`, `*.yaml`, or `node --test` as literal text, not as a
+ * pattern that throws or matches surprisingly. Non-string haystacks (a missing
+ * optional field) are skipped rather than coerced.
+ *
+ * @param {string} needle - The search term (already known non-empty by caller).
+ * @param {Array<unknown>} haystacks - Candidate text fields.
+ * @returns {boolean}
+ */
+export function matchesText(needle, haystacks) {
+  const q = needle.toLowerCase();
+  for (const h of haystacks) {
+    if (typeof h === 'string' && h.toLowerCase().includes(q)) return true;
+  }
+  return false;
+}
+
+/**
  * Filter a list of loaded findings.
  *
+ * Exact-enum filters (repo/status/surface/issueKind/transferScope) and the
+ * free-text `text` filter combine with AND semantics: a finding must satisfy
+ * every supplied filter to pass. `text` is a case-insensitive substring match
+ * over the human-facing prose fields (title, summary, doctrine_statement).
+ *
  * @param {Array<{ data: object }>} findings - Loaded findings.
- * @param {{ repo?: string, status?: string, surface?: string, issueKind?: string, transferScope?: string }} filters
+ * @param {{ repo?: string, status?: string, surface?: string, issueKind?: string, transferScope?: string, text?: string }} filters
  * @returns {Array}
  */
 export function filterFindings(findings, filters = {}) {
@@ -190,6 +215,9 @@ export function filterFindings(findings, filters = {}) {
     if (filters.surface && f.data.product_surface !== filters.surface) return false;
     if (filters.issueKind && f.data.issue_kind !== filters.issueKind) return false;
     if (filters.transferScope && f.data.transfer_scope !== filters.transferScope) return false;
+    if (filters.text && !matchesText(filters.text, [f.data.title, f.data.summary, f.data.doctrine_statement])) {
+      return false;
+    }
     return true;
   });
 }

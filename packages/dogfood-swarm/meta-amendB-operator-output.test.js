@@ -235,11 +235,14 @@ describe('cli-p-002: `swarm verify` exits non-zero unless the verdict is a clean
 describe('cli-p-001: `swarm persist --ingest` exits non-zero when ingest hard-fails', () => {
   let tempDir;
   let dbPath;
-  // Unique runId so the repo-relative output dir (`<repo>/swarms/<runId>/`,
-  // which getOutputDir() hardcodes and SWARM_DB does not redirect) cannot
-  // collide with another run, and we can clean it deterministically.
+  // getOutputDir() derives the delta path from dirname(SWARM_DB), so with
+  // SWARM_DB inside tempDir the persist artifacts land under tempDir/<runId>/
+  // and are removed by the tempDir teardown below — nothing reaches the repo
+  // swarms/ tree. (getOutputDir once hardcoded `<repo>/swarms/<runId>/` and
+  // ignored SWARM_DB, leaking into the working copy; that was closed when it
+  // started tracking the active control plane — see stageD-output-dir-tracks-db.)
+  // The unique runId remains so concurrent runs of this file cannot collide.
   const RUN_ID = `amendB-cli-p-001-${Math.random().toString(36).slice(2)}`;
-  const repoOutputDir = join(__dirname, '..', '..', 'swarms', RUN_ID);
 
   before(() => {
     tempDir = mkdtempSync(join(tmpdir(), 'amendB-persist-cli-'));
@@ -261,10 +264,11 @@ describe('cli-p-001: `swarm persist --ingest` exits non-zero when ingest hard-fa
   });
   after(() => {
     try { closeDb(dbPath); } catch { /* */ }
+    // tempDir holds both the control plane and (via getOutputDir tracking
+    // SWARM_DB) the persist artifacts — one rmSync clears the lot. No repo-tree
+    // cleanup is needed; a leak there would mean getOutputDir regressed, and
+    // silently sweeping it would hide that (stageD-output-dir-tracks-db guards it).
     rmSync(tempDir, { recursive: true, force: true });
-    // getOutputDir writes under the repo's swarms/ dir; clean the run's
-    // artifact tree so the test leaves no trace in the working copy.
-    rmSync(repoOutputDir, { recursive: true, force: true });
   });
 
   it('exit is non-zero and the reproduce line is surfaced when the ingest subprocess fails', () => {

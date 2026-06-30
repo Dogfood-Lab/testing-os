@@ -72,7 +72,7 @@ node packages/ingest/run.js --file submission.json --provenance=stub
 
 The `--provenance=stub` flag is blocked in CI environments (`CI=true` or `GITHUB_ACTIONS=true`) as a safety measure. In CI without an explicit flag, the ingestion pipeline defaults to GitHub provenance and requires `GITHUB_TOKEN`.
 
-For the full per-verb reference of every `swarm` command (init / domains / dispatch / collect / verify / advance / status / revalidate / rewind / redrive / history and the other 12 verbs), see the [swarm CLI reference](../cli-reference/). The reference is organised by verb in the order an operator typically reaches them — start with the verbs documented in this Operating Guide, then consult the reference for one-line synopses of the rest.
+For the full per-verb reference of every `swarm` command (init / domains / dispatch / collect / verify / advance / status / revalidate / rewind / redrive / history and the other 13 verbs), see the [swarm CLI reference](../cli-reference/). The reference is organised by verb in the order an operator typically reaches them — start with the verbs documented in this Operating Guide, then consult the reference for one-line synopses of the rest.
 
 ## CDN Cache Timing
 

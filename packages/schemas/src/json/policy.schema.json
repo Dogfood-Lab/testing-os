@@ -226,6 +226,16 @@
               "type": "integer",
               "minimum": 0,
               "description": "Minimum number of evidence items required PER scenario. The verifier enforces this against each scenario_result independently, not as a sum across all scenarios."
+            },
+            "forbidden_tags": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Scenario tags that REJECT a scenario_result on this surface. A scenario_result whose tags include any of these (e.g. 'wip', 'flaky', 'skip-ci') fails policy. Enforced per scenario_result independently."
+            },
+            "required_tags": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "Scenario tags that EVERY scenario_result on this surface must carry. A scenario_result missing any of these (or carrying no tags at all) fails policy. Enforced per scenario_result independently."
             }
           }
         }

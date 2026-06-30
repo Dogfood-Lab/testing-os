@@ -20,10 +20,16 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { generateBadges } from './generate-badges.js';
+import { generateBadges, AGGREGATE_BADGE_FILENAME } from './generate-badges.js';
 
 const NOW = Date.parse('2026-04-01T00:00:00Z');
 const daysBefore = (n) => new Date(NOW - n * 86400000).toISOString();
+
+// The per-surface filename tests below assert on the repo+surface pills only;
+// the org-wide aggregate (covered by serve-determinism.test.js) is a separate
+// concern, so filter it out here rather than thread it through every count.
+const surfaceKeys = (badges) =>
+  Object.keys(badges).filter((k) => k !== AGGREGATE_BADGE_FILENAME);
 
 describe('generateBadges — message + color mapping', () => {
   it('a passing, fresh surface -> message "pass", color "brightgreen"', () => {
@@ -94,7 +100,7 @@ describe('generateBadges — filenames', () => {
         cli: { verified: 'pass', verification_status: 'accepted', finished_at: daysBefore(1) },
       },
     };
-    const names = Object.keys(generateBadges(index, { now: NOW }));
+    const names = surfaceKeys(generateBadges(index, { now: NOW }));
     assert.deepEqual(names, ['mcp-tool-shop-org--shipcheck--cli.json']);
     for (const n of names) {
       assert.ok(!n.includes('\\'), `filename must be forward-slash/separator-free, got: ${n}`);
@@ -108,7 +114,7 @@ describe('generateBadges — filenames', () => {
         'cli:thing': { verified: 'pass', verification_status: 'accepted', finished_at: daysBefore(1) },
       },
     };
-    const names = Object.keys(generateBadges(index, { now: NOW }));
+    const names = surfaceKeys(generateBadges(index, { now: NOW }));
     assert.equal(names.length, 1);
     const name = names[0];
     // No path separators, no colons, no spaces — safe for any filesystem.
@@ -128,7 +134,7 @@ describe('generateBadges — filenames', () => {
       },
     };
     const badges = generateBadges(index, { now: NOW });
-    assert.equal(Object.keys(badges).length, 3);
+    assert.equal(surfaceKeys(badges).length, 3);
     assert.equal(badges['org--a--web.json'].message, 'fail');
   });
 

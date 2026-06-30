@@ -36,6 +36,7 @@ import { resume, formatResume } from './commands/resume.js';
 import { history, formatHistory } from './commands/history.js';
 import { rewind, formatRewind } from './commands/rewind.js';
 import { redrive, formatRedrive } from './commands/redrive.js';
+import { clean, formatClean } from './commands/clean.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
@@ -519,6 +520,13 @@ function cmdDispatch(args) {
   // emit `verification_skipped: true` in their output JSON. Coordinator runs
   // ONE serial verify after `swarm collect` against the cumulative tree.
   const skipVerify = args.includes('--skip-verify');
+  // --dry-run / --preview: compute the wave shape (which domains become agents,
+  // the prompt paths that WOULD be written, per-domain approved-finding routing
+  // counts for amend phases, the worktrees that WOULD be created under
+  // --isolate) with ZERO control-plane write, file write, or worktree creation.
+  // The operator's "what will this dispatch do?" preview before committing the
+  // wave. --preview is an alias so the verb reads naturally either way.
+  const dryRun = args.includes('--dry-run') || args.includes('--preview');
 
   const result = dispatch({
     runId,
@@ -528,7 +536,23 @@ function cmdDispatch(args) {
     autoFreeze,
     isolate,
     skipVerify,
+    dryRun,
   });
+
+  if (result.dryRun) {
+    console.log(`\nDISPATCH DRY-RUN — wave ${result.waveNumber} would be dispatched (${result.phase})`);
+    console.log(`Prompts would be written to: ${result.promptDir}\n`);
+    for (const a of result.agents) {
+      const wt = a.worktreePath ? ` [worktree would be: ${a.worktreePath}]` : '';
+      const findings = a.approvedFindingCount !== undefined
+        ? ` — ${a.approvedFindingCount} approved finding(s) routed`
+        : '';
+      console.log(`  ${a.domain} (${a.ownershipClass}) → ${a.promptPath}${findings}${wt}`);
+    }
+    console.log(`\nWould dispatch ${result.agents.length} agents. No control-plane write, no file write, no worktree creation.`);
+    console.log(`Re-run without --dry-run to commit the wave.`);
+    return;
+  }
 
   console.log(`\nWave ${result.waveNumber} dispatched (${result.phase})`);
   console.log(`Prompts written to: ${result.promptDir}\n`);
@@ -984,25 +1008,80 @@ function cmdRedrive(args) {
   }
 }
 
+function cmdClean(args) {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Usage: swarm clean <run-id> [--apply] [--format=text|json]');
+    console.log('');
+    console.log('Reclaim the stranded --isolate worktrees + swarm/* branches for a run.');
+    console.log('Under --isolate, dispatch creates a per-agent git worktree; recordPromotion');
+    console.log('tears them down on the run\'s terminal `complete` transition. A run abandoned,');
+    console.log('rewound, or interrupted before `complete` strands those worktrees on disk —');
+    console.log('`swarm clean` is the operator reclaim. Dry-run by default; --apply removes.');
+    console.log('');
+    console.log('Required:');
+    console.log('  <run-id>             The run whose worktrees to reclaim');
+    console.log('');
+    console.log('Optional:');
+    console.log('  --apply              Remove (default: dry-run preview)');
+    console.log('  --format=text|json   Output format (default: text)');
+    return;
+  }
+
+  const runId = args[0];
+  if (!runId || runId.startsWith('--')) {
+    console.error('Usage: swarm clean <run-id> [--apply] [--format=text|json]');
+    process.exit(1);
+  }
+
+  const format = parseFormatFlag(args);
+  const apply = args.includes('--apply');
+
+  const result = clean({ runId, dbPath: getDbPath(), apply });
+
+  if (format === 'json') {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  process.stdout.write(formatClean(result));
+
+  if (apply) {
+    console.log(`\nClean applied. ${result.removed} removed, ${result.stranded} stranded.`);
+  } else {
+    console.log('\nDry-run only — re-run with --apply to remove the worktrees.');
+  }
+}
+
 function cmdHistory(args) {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm history <wave-id>');
+    console.log('Usage: swarm history <wave-id> [--format=text|json]');
     console.log('');
     console.log('Render the full wave_state_events transition chain for <wave-id>.');
     console.log('Each row shows: from_status -> to_status, when, and the operator-');
     console.log('supplied reason text (override transitions via `swarm revalidate`');
     console.log('carry their --reason text here prefixed with `revalidate:`).');
+    console.log('--format=json emits the structured {waveId,wave,events} report.');
     return;
   }
 
   const waveIdArg = args[0];
   if (!waveIdArg) {
-    console.error('Usage: swarm history <wave-id>');
+    console.error('Usage: swarm history <wave-id> [--format=text|json]');
     process.exit(1);
   }
 
+  // --format=json emits the structured history() report ({waveId,wave,events})
+  // instead of the text table. The report is already JSON-serializable — the
+  // identity-projection seam matches the status/runs sites. parseFormatFlag
+  // enum-validates + carries the `--`-swallow guard.
+  const format = parseFormatFlag(args);
+
   try {
     const report = history({ waveId: waveIdArg, dbPath: getDbPath() });
+    if (format === 'json') {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
     console.log(formatHistory(report));
   } catch (e) {
     if (e.code === 'WAVE_NOT_FOUND' || /wave id must be/.test(e.message)) {
@@ -1235,11 +1314,21 @@ function cmdVerifyApproved(args) {
 function cmdReceipt(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm receipt <run-id> [wave-number]');
+    console.error('Usage: swarm receipt <run-id> [wave-number] [--format=json]');
     process.exit(1);
   }
 
-  const waveNumber = args[1] ? parseInt(args[1], 10) : undefined;
+  // The first positional after run-id is the wave number ONLY when numeric, so
+  // a stray `--format=json` (operator omits the wave) is parsed as a flag, not
+  // misread as the wave id — same guard as cmdFindings.
+  const waveNumber = args[1] && /^\d+$/.test(args[1]) ? parseInt(args[1], 10) : undefined;
+
+  // --format=json emits the receipt object as PURE JSON to stdout (no human
+  // footer that would corrupt `... --format=json | jq`). The export-to-disk +
+  // control-plane store still happen — those are the verb's durable artifacts
+  // and write to files/DB, not stdout, so stdout stays parseable. Mirrors the
+  // DSW-D-001 verify-* purity rule. parseFormatFlag enum-validates.
+  const format = parseFormatFlag(args);
 
   const receipt = buildReceipt({
     runId,
@@ -1254,6 +1343,11 @@ function cmdReceipt(args) {
   const db = openDb(getDbPath());
   storeReceipt(db, receipt.wave.id, jsonPath, mdPath);
 
+  if (format === 'json') {
+    console.log(JSON.stringify(receipt, null, 2));
+    return;
+  }
+
   console.log(`Receipt exported for wave ${receipt.wave.number} (${receipt.wave.phase}):`);
   console.log(`  JSON: ${jsonPath}`);
   console.log(`  MD:   ${mdPath}`);
@@ -1261,18 +1355,43 @@ function cmdReceipt(args) {
   console.log(`Recommendation: ${receipt.recommendation.action}${receipt.recommendation.reason ? ' — ' + receipt.recommendation.reason : ''}`);
 }
 
+/**
+ * Identity-projection seam for `swarm advance --check-only --format=json`.
+ * checkGates() already returns the structured
+ * {verdict,nextPhase,reason,gates[],overridable} object the text branch
+ * consumes; this names the seam (mirroring buildStatusJSON / buildRunsJSON) and
+ * pins the contract that the JSON path emits the SAME object — no divergent
+ * shape between the human and machine surfaces.
+ *
+ * @param {object} g — the object from checkGates()
+ * @returns {object}
+ */
+function buildCheckGatesJSON(g) {
+  return g;
+}
+
 function cmdAdvance(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm advance <run-id> [--override --reason "..."] [--check-only]');
+    console.error('Usage: swarm advance <run-id> [--override --reason "..."] [--check-only] [--format=json]');
     process.exit(1);
   }
 
   const db = openDb(getDbPath());
 
-  // --check-only: just show gate results
+  // --check-only: just show gate results. --format=json emits the structured
+  // checkGates() object ({verdict,nextPhase,reason,gates[],overridable}) instead
+  // of the text frame — the identity-projection seam (the object is already
+  // JSON-serializable; buildCheckGatesJSON pins that the JSON path emits the
+  // SAME object the text formatter consumes). parseFormatFlag enum-validates +
+  // carries the `--`-swallow guard, same as the status/runs sites.
   if (args.includes('--check-only')) {
+    const format = parseFormatFlag(args);
     const result = checkGates(db, runId);
+    if (format === 'json') {
+      console.log(JSON.stringify(buildCheckGatesJSON(result), null, 2));
+      return;
+    }
     console.log(`Verdict: ${result.verdict}`);
     if (result.nextPhase) console.log(`Next phase: ${result.nextPhase}`);
     if (result.reason) console.log(`Reason: ${result.reason}`);
@@ -1676,6 +1795,7 @@ const commands = {
   revalidate: cmdRevalidate,
   rewind: cmdRewind,
   redrive: cmdRedrive,
+  clean: cmdClean,
   verify: cmdVerify,
   'verify-fixed': cmdVerifyFixed,
   'verify-recurring': cmdVerifyRecurring,
@@ -1734,7 +1854,14 @@ Commands:
   init <repo-path>           Create run, detect domains
   domains <run-id> [opts]    Show, edit, freeze, unfreeze domain map
   dispatch <run-id> <phase>  Create wave + agent prompts
-                             Flags: --auto-freeze, --isolate, --skip-verify
+                             Flags: --auto-freeze, --isolate, --skip-verify,
+                             --dry-run (alias --preview)
+                             --dry-run: preview the wave shape (which domains
+                             become agents, the prompt paths that WOULD be
+                             written, amend-phase approved-finding routing
+                             counts, and under --isolate the worktrees that
+                             WOULD be created) with NO control-plane write, file
+                             write, or worktree creation.
                              --skip-verify (amend phases): append the parallel-
                              wave directive to amend prompts so agents skip
                              per-agent npm test. Coordinator runs one serial
@@ -1798,6 +1925,12 @@ Commands:
                              running (let timeout fire). Dry-run by default;
                              --apply mutates. Audit row in wave_state_events +
                              agent_state_events with redrive: reason prefix.
+  clean <run-id> [opts]      Reclaim stranded --isolate worktrees + swarm
+                             branches for a run (the residue of a run abandoned/
+                             rewound/interrupted before its complete teardown).
+                             Run-scoped (not repo-wide). Dry-run by default;
+                             --apply removes. Reports a {removed, stranded,
+                             total} rollup. --format=text|json.
   verify <run-id> [opts]     Run build verification (auto-detect or --adapter)
   verify-fixed <run-id> [opts]
                              Re-audit findings marked [fixed]; classify into
@@ -1826,8 +1959,14 @@ Commands:
                              subsequent amend dispatch. Writes delta JSON to
                              swarms/<run>/verify-approved-<wave>.json.
                              Output schema verify-approved-delta/v1.
-  receipt <run-id> [wave]    Export durable wave receipt (JSON + markdown)
-  advance <run-id> [opts]    Check gates and advance to next phase
+  receipt <run-id> [wave] [--format=json]
+                             Export durable wave receipt (JSON + markdown).
+                             --format=json emits the receipt object to stdout
+                             (pure JSON; the disk artifacts still write).
+  advance <run-id> [opts]    Check gates and advance to next phase.
+                             advance --check-only --format=json emits the
+                             checkGates() {verdict,nextPhase,reason,gates[],
+                             overridable} object for machine consumers.
   persist <run-id> [opts]    Export canonical truth to downstream systems
   status <run-id> [--format=text|json]
                              Control plane status. --format=json emits the
@@ -1835,12 +1974,14 @@ Commands:
                              findings/assessment) for machine consumers;
                              default is the text frame.
   resume <run-id>            Redispatch incomplete agents
-  history <wave-id>          Render the wave_state_events transition chain for
+  history <wave-id> [--format=text|json]
+                             Render the wave_state_events transition chain for
                              a wave. Deep audit verb for the override-and-reason
                              record written by \`swarm revalidate --apply\` (and
                              any future override-bearing transition). \`swarm
                              status\` surfaces a one-line breadcrumb pointing at
                              this verb when the wave has interesting history.
+                             --format=json emits the {waveId,wave,events} report.
   approve <run-id> [opts]    Approve findings for amend
   findings <run-id> [wave] [--format=text|markdown|json]
                              Findings digest for a wave (default: latest).

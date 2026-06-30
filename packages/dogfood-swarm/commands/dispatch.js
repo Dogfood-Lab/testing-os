@@ -79,6 +79,25 @@ Set \`verification_skipped: true\` at the top level of your output JSON to make 
 `;
 
 /**
+ * Derive the would-create worktree path + branch for a domain WITHOUT creating
+ * anything. Mirrors lib/worktree.js#createWorktree's naming byte-for-byte so
+ * the `--dry-run --isolate` preview names the exact path the apply path would
+ * write. A change to createWorktree's naming must change here.
+ *
+ * @param {string} repoPath — run.local_path
+ * @param {number} waveNumber
+ * @param {string} domainName
+ * @param {string} runId
+ * @returns {{ worktreePath: string, branch: string }}
+ */
+function previewWorktree(repoPath, waveNumber, domainName, runId) {
+  const runShort = runId.replace(/^swarm-/, '').slice(0, 12);
+  const branch = `swarm/${runShort}/w${waveNumber}-${domainName}`;
+  const worktreePath = join(repoPath, '.swarm', 'worktrees', `w${waveNumber}-${domainName}`);
+  return { worktreePath, branch };
+}
+
+/**
  * @param {object} opts
  * @param {string} opts.runId
  * @param {string} opts.phase
@@ -89,7 +108,12 @@ Set \`verification_skipped: true\` at the top level of your output JSON to make 
  * @param {boolean} [opts.skipVerify] — append the parallel-wave serial-final-
  *   verify directive to amend prompts (Item 5; tells agents not to run
  *   per-agent npm test, coordinator runs one verify at end)
- * @returns {object} — { waveId, waveNumber, agents, promptDir }
+ * @param {boolean} [opts.dryRun] — preview the wave shape (which domains become
+ *   agents, the prompt paths that WOULD be written, per-domain approved-finding
+ *   routing counts for amend phases, and the worktrees that WOULD be created
+ *   under --isolate) WITHOUT any control-plane write, file write, or worktree
+ *   creation. Returns a report with `dryRun: true` and `waveId: null`.
+ * @returns {object} — { waveId, waveNumber, agents, promptDir, dryRun? }
  *
  * Atomicity contract (D3B-002, Wave A2 Stage C):
  *   The wave-build DB writes — INSERT INTO waves, UPDATE runs SET status,
@@ -167,10 +191,16 @@ export function dispatch(opts) {
     });
   }
 
-  // Check domains are frozen (or auto-freeze)
+  // Check domains are frozen (or auto-freeze). In dry-run, --auto-freeze is a
+  // mutation, so we do NOT freeze — a dry-run against a draft map still
+  // previews the shape against the current draft domains. Only the
+  // non-auto-freeze precondition (operator forgot to freeze AND did not ask to)
+  // throws, which is the same fail-loud signal the apply path gives.
   if (!aredomainsFrozen(db, opts.runId)) {
-    if (opts.autoFreeze) {
+    if (opts.autoFreeze && !opts.dryRun) {
       freezeDomains(db, opts.runId);
+    } else if (opts.autoFreeze && opts.dryRun) {
+      // dry-run + auto-freeze: skip the mutation, proceed with draft domains.
     } else {
       emitPreconditionFailed({
         runId: opts.runId,
@@ -214,13 +244,61 @@ export function dispatch(opts) {
   ).get(opts.runId);
   const waveNumber = (lastWave?.n || 0) + 1;
 
-  // 3. Build prompt dir + classify phase + prep prior context (FS / read-side
-  // prep only — none of this writes to the DB).
-  const promptDir = join(opts.outputDir, `wave-${waveNumber}`);
-  if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
-
+  // 3. Classify phase. The prompt dir + prior context are FS/read-side prep;
+  // the dry-run branch below short-circuits before either is materialized.
   const isAudit = AUDIT_PHASES.includes(opts.phase);
   const isAmend = AMEND_PHASES.includes(opts.phase);
+
+  const promptDirPath = join(opts.outputDir, `wave-${waveNumber}`);
+
+  // 3a. Dry-run / preview: compute the wave shape with ZERO side effects — no
+  // DB write (waves/agent_runs/runs.status), no prompt files, no worktree
+  // creation. Owned + bridge domains become agents; shared is a zone, not an
+  // agent. For amend phases each agent carries its approved-finding routing
+  // count (the same findingsForDomain filter the apply path uses). Under
+  // --isolate the would-create worktree path + branch are derived
+  // deterministically from createWorktree's naming (NOT created here). This
+  // branch is the operator's "what will this dispatch do?" preview and is the
+  // reason it sits before the buildWave transaction.
+  if (opts.dryRun) {
+    const previewAgents = [];
+    for (const domain of domains) {
+      if (domain.ownership_class === 'shared') continue;
+      const agent = {
+        domain: domain.name,
+        domainId: domain.id,
+        ownershipClass: domain.ownership_class,
+        promptPath: join(promptDirPath, `${domain.name}.md`),
+        worktreePath: null,
+        worktreeBranch: null,
+      };
+      if (isAmend) {
+        agent.approvedFindingCount = findingsForDomain(db, opts.runId, domain).length;
+      }
+      if (opts.isolate) {
+        const wt = previewWorktree(run.local_path, waveNumber, domain.name, opts.runId);
+        agent.worktreePath = wt.worktreePath;
+        agent.worktreeBranch = wt.branch;
+      }
+      previewAgents.push(agent);
+    }
+    return {
+      dryRun: true,
+      waveId: null,
+      waveNumber,
+      phase: opts.phase,
+      isolate: !!opts.isolate,
+      skipVerify: !!opts.skipVerify,
+      domainSnapshotId: snapshot.snapshotId,
+      promptDir: promptDirPath,
+      agents: previewAgents,
+    };
+  }
+
+  // 3b. Build prompt dir + prep prior context (FS / read-side prep only — none
+  // of this writes to the DB).
+  const promptDir = promptDirPath;
+  if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
 
   let priorContext = '';
   if (isAudit) {

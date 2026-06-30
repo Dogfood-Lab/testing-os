@@ -165,6 +165,11 @@
             "type": "string",
             "description": "Required when verdict is blocked. Verifier enforces."
           },
+          "tags": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Free-form scenario tags (e.g. 'smoke', 'release', 'wip', 'flaky', 'skip-ci'). Optional. Policy may gate on these via a surface's evidence_requirements.forbidden_tags / required_tags."
+          },
           "step_results": {
             "type": "array",
             "minItems": 1,

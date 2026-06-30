@@ -22,7 +22,8 @@ import {
   loadFindings,
   findById,
   filterFindings,
-  findDuplicates
+  findDuplicates,
+  matchesText
 } from './index.js';
 import {
   deriveFromRecord,
@@ -186,6 +187,36 @@ function formatFindingDetail(f, rootDir) {
 }
 
 /**
+ * Emit a value as pure JSON on stdout and exit 0.
+ *
+ * The read verbs' --json contract mirrors advise/sync-export: stdout is a single
+ * JSON document with NO human preamble or trailing log line, so downstream tools
+ * (shipcheck, repo-knowledge) can pipe it without scraping the text formatter.
+ */
+function emitJson(value) {
+  console.log(JSON.stringify(value, null, 2));
+  process.exit(0);
+}
+
+/**
+ * Identity projection for a loaded finding entry.
+ *
+ * `loadFindings`/`findById` wrap each finding as { path, data, valid, errors }.
+ * The --json surface exposes the underlying finding object plus the loader's
+ * validity verdict and a repo-relative path, dropping the absolute `path` so the
+ * emitted JSON is stable across machines/checkouts. A null `data` (torn file)
+ * is preserved so a consumer sees the same skip the human stream surfaces.
+ */
+function buildFindingJSON(f, rootDir) {
+  return {
+    finding: f.data,
+    valid: f.valid,
+    errors: f.errors || [],
+    path: relative(rootDir, f.path)
+  };
+}
+
+/**
  * F2-INTEL-001 — dispatch a synthesis-artifact review subcommand.
  *
  * Mirrors the finding review dispatch (the `['accept','reject','review',
@@ -250,8 +281,8 @@ async function main() {
     console.log(`dogfood findings — finding contract spine + derivation engine
 
 Commands:
-  list                 List all findings
-  show <finding_id>    Show a single finding in detail
+  list                 List all findings (--json, --grep/--text <term>)
+  show <finding_id>    Show a single finding in detail (--json)
   validate             Validate all findings (or --file <path> for one)
   validate --all       Validate all findings + all fixtures
   derive               Derive candidate findings from records
@@ -264,8 +295,8 @@ Commands:
   merge <ids...>       Merge findings (--into <id>, --actor, --reason)
   reopen <id>          Reopen a rejected/accepted finding (--actor, --reason)
   invalidate <id>      Invalidate an accepted finding (--actor, --reason)
-  history <id>         Show review history for a finding
-  queue                Show review queue
+  history <id>         Show review history for a finding (--json)
+  queue                Show review queue (--json)
 
 Synthesis artifacts (patterns / recommendations / doctrine):
   patterns derive [--write]            Derive patterns from accepted findings
@@ -320,7 +351,16 @@ Filters (for list):
   --surface <cli|desktop|web|api|mcp-server|npm-package|plugin|library>
   --issue-kind <kind>
   --transfer-scope <scope>
-  --include-fixtures   Also list fixture findings`);
+  --grep / --text <term>   Case-insensitive substring (literal, not regex) over
+                           title / summary / doctrine_statement. ANDs with the
+                           exact-enum filters above. Also accepted by
+                           patterns/recommendations/doctrine list.
+  --include-fixtures   Also list fixture findings
+
+Structured output:
+  list, show, history, queue, and patterns/recommendations/doctrine list|show
+  accept --json to emit pure JSON (the loaded object(s)) on stdout, mirroring
+  advise --json / sync-export --json. Default human text output is unchanged.`);
     process.exit(0);
   }
 
@@ -338,8 +378,16 @@ Filters (for list):
     if (flags.surface) filters.surface = flags.surface;
     if (flags['issue-kind']) filters.issueKind = flags['issue-kind'];
     if (flags['transfer-scope']) filters.transferScope = flags['transfer-scope'];
+    // --grep / --text: free-text substring filter (case-insensitive) over the
+    // human-facing prose fields. ANDs with the exact-enum filters above.
+    const text = flags.grep || flags.text;
+    if (typeof text === 'string' && text.length > 0) filters.text = text;
 
     const filtered = filterFindings(allFindings, filters);
+
+    if (flags.json) {
+      emitJson(filtered.map(f => buildFindingJSON(f, ROOT)));
+    }
 
     if (filtered.length === 0) {
       console.log('No findings found.');
@@ -365,6 +413,10 @@ Filters (for list):
     if (!result) {
       console.error(`Finding not found: ${findingId}`);
       process.exit(1);
+    }
+
+    if (flags.json) {
+      emitJson(buildFindingJSON(result, ROOT));
     }
 
     console.log(formatFindingDetail(result, ROOT));
@@ -756,6 +808,9 @@ Filters (for list):
       process.exit(2);
     }
     const events = getEventsForFinding(ROOT, findingId);
+    if (flags.json) {
+      emitJson(events);
+    }
     if (events.length === 0) {
       console.log(`No review history for: ${findingId}`);
       process.exit(0);
@@ -776,6 +831,13 @@ Filters (for list):
 
   if (command === 'queue') {
     const queue = getReviewQueue(ROOT);
+    if (flags.json) {
+      emitJson(queue.map(item => ({
+        finding: item.data,
+        queue_reason: item.queueReason,
+        path: item.path ? relative(ROOT, item.path) : undefined
+      })));
+    }
     if (queue.length === 0) {
       console.log('Review queue is empty.');
       process.exit(0);
@@ -866,7 +928,12 @@ Filters (for list):
     }
 
     if (sub === 'list') {
-      const patterns = loadPatterns(ROOT);
+      let patterns = loadPatterns(ROOT);
+      const text = flags.grep || flags.text;
+      if (typeof text === 'string' && text.length > 0) {
+        patterns = patterns.filter(p => matchesText(text, [p.title, p.summary]));
+      }
+      if (flags.json) emitJson(patterns);
       if (patterns.length === 0) { console.log('No patterns found.'); process.exit(0); }
       for (const p of patterns) {
         console.log(`[${p.status}] ${p.pattern_id} (${p.pattern_strength || 'unknown'})`);
@@ -883,6 +950,8 @@ Filters (for list):
       const all = loadPatterns(ROOT);
       const p = all.find(x => x.pattern_id === id);
       if (!p) { console.error(`Pattern not found: ${id}`); process.exit(1); }
+
+      if (flags.json) emitJson(p);
 
       console.log(`Pattern:   ${p.pattern_id}`);
       console.log(`Title:     ${p.title}`);
@@ -1008,7 +1077,12 @@ Filters (for list):
     }
 
     if (sub === 'list') {
-      const recs = loadRecommendations(ROOT);
+      let recs = loadRecommendations(ROOT);
+      const text = flags.grep || flags.text;
+      if (typeof text === 'string' && text.length > 0) {
+        recs = recs.filter(r => matchesText(text, [r.title, r.summary]));
+      }
+      if (flags.json) emitJson(recs);
       if (recs.length === 0) { console.log('No recommendations found.'); process.exit(0); }
       for (const r of recs) {
         console.log(`[${r.status}] ${r.recommendation_id}`);
@@ -1024,6 +1098,7 @@ Filters (for list):
       const all = loadRecommendations(ROOT);
       const r = all.find(x => x.recommendation_id === id);
       if (!r) { console.error(`Recommendation not found: ${id}`); process.exit(1); }
+      if (flags.json) emitJson(r);
       console.log(`Recommendation: ${r.recommendation_id}`);
       console.log(`Title:          ${r.title}`);
       console.log(`Status:         ${r.status}`);
@@ -1101,7 +1176,12 @@ Filters (for list):
     }
 
     if (sub === 'list') {
-      const docs = loadDoctrines(ROOT);
+      let docs = loadDoctrines(ROOT);
+      const text = flags.grep || flags.text;
+      if (typeof text === 'string' && text.length > 0) {
+        docs = docs.filter(d => matchesText(text, [d.title, d.statement, d.summary]));
+      }
+      if (flags.json) emitJson(docs);
       if (docs.length === 0) { console.log('No doctrine found.'); process.exit(0); }
       for (const d of docs) {
         console.log(`[${d.status}] ${d.doctrine_id} [${d.strength}]`);
@@ -1117,6 +1197,7 @@ Filters (for list):
       const all = loadDoctrines(ROOT);
       const d = all.find(x => x.doctrine_id === id);
       if (!d) { console.error(`Doctrine not found: ${id}`); process.exit(1); }
+      if (flags.json) emitJson(d);
       console.log(`Doctrine:  ${d.doctrine_id}`);
       console.log(`Title:     ${d.title}`);
       console.log(`Status:    ${d.status}`);
