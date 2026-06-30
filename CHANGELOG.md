@@ -2,6 +2,36 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.7.0] — 2026-06-30
+
+**VERIFY-F1: a declarative, no-eval policy-rule engine.** An operator can now add a verification gate by writing a bounded predicate in YAML — field-selector + operator + value, composed with `all` / `any` / `not` / `implies` — instead of opening a PR into the verifier. The engine is additive and backward-compatible (a rule with no `when` is enforced exactly as before). The one tightening: a set of generous `maxItems` resource caps on submission arrays (see Safety). Lockstep minor bump across all seven `@dogfood-lab/*` packages.
+
+### The declarative engine
+
+- **Author rules in YAML.** `global_rules[]` gains an optional `when` predicate; a repo policy's `surfaces.<surface>` gains `custom_rules[]` (evaluated per scenario_result). Closed operator set: `equals`/`not_equals`, `in`/`not_in`, `contains`/`not_contains`, `exists`/`not_exists`, `gt`/`gte`/`lt`/`lte`. `when` describes the *violation* (the rule fires when it is true); `implies` is sugar for the "X requires Y" shape so authors write positive clauses instead of a double negation. Full reference: [`docs/policy-dsl.md`](docs/policy-dsl.md) and the [handbook policy-DSL page](https://dogfood-lab.github.io/testing-os/handbook/policy-dsl/).
+- **The named use cases land:** actor allowlists, field-value constraints, and forbidden scenario/tag combinations — no code change per rule.
+- **Forced correctness proof.** Exactly one built-in — `attested-if-human` — is migrated from its hardcoded `switch` arm to a declarative `when` predicate in `global-policy.yaml`, gated by a **differential-equivalence release test**: the old arm (lifted verbatim as an oracle) must produce byte-identical verdicts AND reason strings vs the engine across an adversarial fixture matrix. The arm was removed only because that gate is green. The other seven built-ins stay code-enforced.
+
+### Safety — the whole point of a declarative engine
+
+- **No eval.** No `eval` / `Function` / `vm` / dynamic-require / template-string anywhere in the predicate path; it is a pure tree-walk.
+- **Fail-closed and bounded.** A malformed predicate is a classified rejection, never a silent pass or an uncaught throw. Field reads never touch the prototype chain (banned `__proto__` / `constructor` / `prototype` segments + a null-prototype accessor). Work is bounded — combinator depth ≤ 5, `all`/`any` width ≤ 64, a 10k-node per-evaluation budget, and a 500k `[]` fan-out cap — and new `maxItems` on submission arrays (scenario_results ≤ 1000, evidence/tags ≤ 100, step_results ≤ 500, ci_checks ≤ 200) close the synchronous-DoS surface at the contract gate. Every cap is far above any real run.
+- **Non-weakening, structurally.** A repo `custom_rule` has no accept/except verb, so it can only ADD a constraint — a repo policy can never weaken a global gate. Combining is deny-overrides.
+- **Origin-classified diagnostics.** A malformed *repo* custom-rule predicate is a new `policy-config:` submission-bad rejection (the repo fixes its rule); the same fault in the *global* policy is operational (`VALIDATOR_FAULT_POLICY` — the studio fixes its config).
+
+### Cross-family adversarial hardening
+
+A composed re-audit (5 attack lenses) plus a cross-family cloud jury (DeepSeek / Z.ai / MiniMax, refute-by-default) found and fixed three issues before release: a `[]`-path negative-operator fail-open (documented existential semantics + the fail-closed `not(any(...))` idiom + regression tests), a width/fan-out DoS (the node + frontier budgets + schema caps above), and a global-`defaults` custom-rule origin misclassification (`custom_rules` are now schema-forbidden under `defaults`). Prototype-pollution and field-path exfiltration held.
+
+Architecture grounded in (Phase 0 study-swarm, retrieval-verified citations):
+- Kubernetes CEL / KEP-3488 + cel-go — in-process, cost-bounded, non-Turing-complete evaluation
+- JSON Logic, AWS IAM condition operators, Kyverno — a bounded matcher beats an expression language for the named cases
+- OPA Gatekeeper violation-only + XACML 3.0 deny-overrides — structural non-weakening
+- Baron et al. EASE 2024 + ICER 2025 — the `implies` ergonomics over double negation
+- Saltzer & Schroeder 1975 (fail-safe defaults); Santos & Becker 2024 (deterministic, not LLM-paraphrased, diagnostics)
+
+This entry is the user-facing summary; full per-phase detail lives in the swarm record.
+
 ## [1.6.0] — 2026-06-29
 
 **A full dogfood-swarm pass: a four-stage health pass, then an honesty + capability feature pass.** testing-os ran its own 10-phase swarm protocol on itself again — 7 domain auditors per wave, an adversarial Opus jury, and a cross-family cloud jury (DeepSeek / GLM / Kimi) cross-validating every HIGH; every fix test-first. Lockstep minor bump across all seven `@dogfood-lab/*` packages. No breaking changes — new schema fields are optional and new verbs/flags are opt-in.

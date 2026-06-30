@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/dogfood-swarm",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "type": "module",
   "description": "10-phase parallel-agent protocol runner for testing-os. SQLite-backed control plane, durable receipts, domain-aware orchestration. Three R's recovery contract: revalidate / rewind / redrive.",
   "main": "cli.js",
