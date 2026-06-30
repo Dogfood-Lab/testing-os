@@ -1,0 +1,8 @@
+# VERIFY-F1 invalid fixture — exists/not_exists must not carry a value.
+# Must fail validatePayload('policy', …) at load. See docs/policy-dsl.md.
+policy_version: "1.0.0"
+
+global_rules:
+  - id: exists-with-value
+    severity: reject
+    when: { field: attested_by, op: exists, value: "should-not-be-here" }

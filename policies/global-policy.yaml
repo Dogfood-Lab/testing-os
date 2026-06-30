@@ -34,9 +34,21 @@ global_rules:
     description: "Scenario cannot be pass if any required step is fail or blocked"
     severity: reject
 
+  # VERIFY-F1 (v1.7.0): the FIRST built-in migrated to the declarative engine.
+  # Its old hardcoded switch arm was removed; this `when` predicate is now the
+  # enforcement, proven byte-identical to the old arm by the differential-
+  # equivalence gate (packages/verify/predicate-attested-equivalence.test.js).
+  # The implies node is the violation all(antecedent, not(consequent)): it matches
+  # when execution_mode is human/mixed but attested_by is absent. See docs/policy-dsl.md.
   - id: attested-if-human
     description: "Human or mixed execution_mode requires attested_by field"
     severity: reject
+    scope: scenario_result
+    when:
+      implies:
+        - { field: execution_mode, op: in,     value: [human, mixed] }
+        - { field: attested_by,    op: exists }
+    reason_template: 'scenario "{scenario_id}": execution_mode is "{execution_mode}" but attested_by is missing'
 
   - id: blocked-needs-reason
     description: "Verdict blocked requires blocking_reason"

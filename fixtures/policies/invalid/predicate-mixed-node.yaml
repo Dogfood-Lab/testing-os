@@ -1,0 +1,14 @@
+# VERIFY-F1 invalid fixture — a node must be exactly one form (leaf XOR
+# combinator). Mixing a leaf (field/op) with a combinator (all) is rejected by
+# the oneOf. Must fail validatePayload('policy', …) at load. See docs/policy-dsl.md.
+policy_version: "1.0.0"
+
+global_rules:
+  - id: mixed-node
+    severity: reject
+    when:
+      field: execution_mode
+      op: equals
+      value: human
+      all:
+        - { field: attested_by, op: exists }

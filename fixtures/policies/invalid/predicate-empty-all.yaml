@@ -1,0 +1,10 @@
+# VERIFY-F1 invalid fixture — a combinator must have at least one child
+# (minItems: 1). An empty `all` is meaningless and rejected at load.
+# Must fail validatePayload('policy', …). See docs/policy-dsl.md.
+policy_version: "1.0.0"
+
+global_rules:
+  - id: empty-all
+    severity: reject
+    when:
+      all: []

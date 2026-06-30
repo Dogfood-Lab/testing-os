@@ -1,0 +1,16 @@
+# VERIFY-F1 golden fixture — the forced-proof rule in declarative form.
+# This is the exact shape attested-if-human takes in policies/global-policy.yaml
+# after the v1.7.0 migration. Must produce byte-identical verdicts + reasons vs
+# the old switch arm under the differential-equivalence gate. See docs/policy-dsl.md.
+policy_version: "1.0.0"
+
+global_rules:
+  - id: attested-if-human
+    description: "Human or mixed execution_mode requires attested_by field"
+    severity: reject
+    scope: scenario_result
+    when:
+      implies:
+        - { field: execution_mode, op: in,     value: [human, mixed] }
+        - { field: attested_by,    op: exists }
+    reason_template: 'scenario "{scenario_id}": execution_mode is "{execution_mode}" but attested_by is missing'

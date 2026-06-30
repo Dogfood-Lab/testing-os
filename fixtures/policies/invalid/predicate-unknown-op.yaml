@@ -1,0 +1,9 @@
+# VERIFY-F1 invalid fixture — operator outside the closed set.
+# `matches` is intentionally NOT in the v1.7.0 operator enum (ReDoS). Must fail
+# validatePayload('policy', …) at load. See docs/policy-dsl.md.
+policy_version: "1.0.0"
+
+global_rules:
+  - id: bad-op
+    severity: reject
+    when: { field: attested_by, op: matches, value: ".*" }

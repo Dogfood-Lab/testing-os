@@ -265,6 +265,11 @@ export async function verify(submission, options) {
       if (policyRun.ok) {
         policyValid = policyRun.result.valid;
         reasons.push(...policyRun.result.errors.map(e => `policy: ${e}`));
+        // VERIFY-F1: a malformed REPO custom-rule predicate is a distinct
+        // `policy-config:` rejection (submission-bad — the repo authored the bad
+        // rule). A malformed GLOBAL predicate never reaches here; it throws and
+        // surfaces as VALIDATOR_FAULT_POLICY (operational) via the else branch.
+        reasons.push(...(policyRun.result.configErrors || []).map(e => `policy-config: ${e}`));
         warnings.push(...(policyRun.result.warnings || []).map(w => `policy: ${w}`));
       } else {
         reasons.push(policyRun.faultReason);

@@ -74,6 +74,19 @@
             "type": "string",
             "enum": ["reject", "warn", "info"],
             "description": "reject: fails verification. warn: accepted with warning. info: logged only."
+          },
+          "scope": {
+            "type": "string",
+            "enum": ["submission", "scenario_result"],
+            "description": "VERIFY-F1: evaluation scope of the `when` predicate. submission (default) evaluates against the whole submission and emits one reason if matched. scenario_result evaluates each scenario_result independently and emits one reason per offending element, in array order. Ignored when `when` is absent (the rule falls to the built-in id switch). See docs/policy-dsl.md."
+          },
+          "when": {
+            "$ref": "#/$defs/predicate",
+            "description": "VERIFY-F1: optional declarative VIOLATION predicate. The rule fires (per its severity) when this evaluates true. Absent => the rule is enforced by the built-in id switch instead. See docs/policy-dsl.md."
+          },
+          "reason_template": {
+            "type": "string",
+            "description": "VERIFY-F1: optional per-rule reason body. {slot} placeholders interpolate fields of the matched element (scenario_result scope) or submission (submission scope), raw and unescaped. The engine prepends `[<id>] `. Absent => the body is the rule's `description`."
           }
         }
       }
@@ -238,6 +251,136 @@
               "description": "Scenario tags that EVERY scenario_result on this surface must carry. A scenario_result missing any of these (or carrying no tags at all) fails policy. Enforced per scenario_result independently."
             }
           }
+        },
+        "custom_rules": {
+          "type": "array",
+          "description": "VERIFY-F1: declarative per-scenario_result rules for this surface. Each rule's `when` predicate is evaluated against every scenario_result whose product_surface matches; a match fires the rule per its severity. Custom rules can only ADD constraints (reject/warn/info) — there is no accept/except verb, so a repo policy can never weaken a non-overridable global gate. See docs/policy-dsl.md.",
+          "items": {
+            "type": "object",
+            "required": ["id", "severity", "when"],
+            "additionalProperties": false,
+            "properties": {
+              "id": {
+                "type": "string",
+                "description": "Stable rule ID for reporting and diagnostics."
+              },
+              "description": { "type": "string" },
+              "severity": {
+                "type": "string",
+                "enum": ["reject", "warn", "info"],
+                "description": "reject: fails verification. warn: accepted with warning. info: logged only. There is intentionally no 'accept' value — custom rules are additive-only (non-weakening)."
+              },
+              "when": {
+                "$ref": "#/$defs/predicate",
+                "description": "The declarative VIOLATION predicate, evaluated per scenario_result on this surface. The rule fires when this evaluates true."
+              },
+              "reason_template": {
+                "type": "string",
+                "description": "Optional per-rule reason body. {slot} placeholders interpolate the matched scenario_result's fields, raw and unescaped. The engine prepends `[<id>] `. Absent => the body is the rule's `description`."
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "predicate": {
+      "description": "VERIFY-F1: a bounded, no-eval predicate node. Exactly one form per node: a leaf {field, op, value?} or a combinator (all / any / not / implies). Combinator depth is additionally capped at 5 by the evaluator (the DoS floor; not expressible in JSON Schema). See docs/policy-dsl.md.",
+      "oneOf": [
+        { "$ref": "#/$defs/predicate_leaf" },
+        { "$ref": "#/$defs/predicate_all" },
+        { "$ref": "#/$defs/predicate_any" },
+        { "$ref": "#/$defs/predicate_not" },
+        { "$ref": "#/$defs/predicate_implies" }
+      ]
+    },
+
+    "predicate_leaf": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["field", "op"],
+      "properties": {
+        "field": {
+          "type": "string",
+          "description": "Dotted field path into the evaluated data; a '[]' segment means 'any element'. The segments __proto__, constructor, and prototype are forbidden (prototype-pollution guard).",
+          "pattern": "^(?!.*(?:^|\\.)(?:__proto__|constructor|prototype)(?:$|\\.|\\[))[A-Za-z_][A-Za-z0-9_]*(?:\\[\\])?(?:\\.[A-Za-z_][A-Za-z0-9_]*(?:\\[\\])?)*$"
+        },
+        "op": {
+          "type": "string",
+          "enum": ["equals", "not_equals", "in", "not_in", "contains", "not_contains", "exists", "not_exists", "gt", "gte", "lt", "lte"],
+          "description": "Closed operator set. exists/not_exists are truthiness (not strict key-presence) and take no value."
+        },
+        "value": {
+          "description": "Comparand. Omitted for exists/not_exists. An array for in/not_in. A scalar otherwise. Numeric for gt/gte/lt/lte (a non-numeric resolved field is an eval-time policy-config: fault)."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "required": ["op"], "properties": { "op": { "enum": ["exists", "not_exists"] } } },
+          "then": { "not": { "required": ["value"] } }
+        },
+        {
+          "if": { "required": ["op"], "properties": { "op": { "enum": ["equals", "not_equals", "in", "not_in", "contains", "not_contains", "gt", "gte", "lt", "lte"] } } },
+          "then": { "required": ["value"] }
+        },
+        {
+          "if": { "required": ["op"], "properties": { "op": { "enum": ["in", "not_in"] } } },
+          "then": { "properties": { "value": { "type": "array" } } }
+        }
+      ]
+    },
+
+    "predicate_all": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["all"],
+      "properties": {
+        "all": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Logical AND. True when every child predicate is true.",
+          "items": { "$ref": "#/$defs/predicate" }
+        }
+      }
+    },
+
+    "predicate_any": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["any"],
+      "properties": {
+        "any": {
+          "type": "array",
+          "minItems": 1,
+          "description": "Logical OR. True when at least one child predicate is true.",
+          "items": { "$ref": "#/$defs/predicate" }
+        }
+      }
+    },
+
+    "predicate_not": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["not"],
+      "properties": {
+        "not": {
+          "description": "Logical NOT.",
+          "$ref": "#/$defs/predicate"
+        }
+      }
+    },
+
+    "predicate_implies": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["implies"],
+      "properties": {
+        "implies": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "description": "Sugar for [antecedent, consequent]: 'antecedent requires consequent'. As a VIOLATION predicate it desugars to all(antecedent, not(consequent)) — it matches the inputs that break the implication (antecedent holds but consequent does not).",
+          "items": { "$ref": "#/$defs/predicate" }
         }
       }
     }

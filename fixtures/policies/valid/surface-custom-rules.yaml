@@ -1,0 +1,25 @@
+# VERIFY-F1 golden fixture — a repo policy with surface custom_rules covering
+# the audit's named use cases: actor allowlists, field-value constraints, and
+# forbidden scenario/tag combinations. custom_rules are additive-only (reject/warn
+# /info, no accept verb) so they can never weaken a global gate. See docs/policy-dsl.md.
+policy_version: "1.0.0"
+repo: dogfood-lab/example
+
+surfaces:
+  web:
+    custom_rules:
+      - id: actor-allowlist
+        severity: reject
+        description: "web proof must come from an allowlisted actor"
+        when: { field: attested_by, op: in, value: [ci-bot, release-bot] }
+
+      - id: no-wip-on-web
+        severity: reject
+        description: "web scenarios tagged wip cannot count as proof"
+        when: { field: tags, op: contains, value: wip }
+        reason_template: 'scenario "{scenario_id}": web proof cannot be tagged wip'
+
+      - id: prefer-release-tag
+        severity: warn
+        description: "web proof is best tagged release"
+        when: { field: tags, op: not_contains, value: release }

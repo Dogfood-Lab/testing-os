@@ -23,7 +23,9 @@
  *
  * The prefix vocabulary below is enumerated from the ACTUAL emitters — it is
  * NOT invented:
- *   - verify/index.js:                schema:, policy:, steps[<id>]:,
+ *   - verify/index.js:                schema:, policy:, policy-config: (VERIFY-F1,
+ *                                     repo custom-rule predicate fault → submission-bad),
+ *                                     steps[<id>]:,
  *                                     provenance: (run absent → submission-bad),
  *                                     provenance-fault: (provider 429/5xx/401/403
  *                                       → operational), repo:,
@@ -62,6 +64,13 @@
 const LITERAL_PREFIXES = [
   // submission-bad
   { match: 'schema:', prefix: 'schema:', class: 'submission-bad' },
+  // VERIFY-F1: a malformed REPO custom-rule predicate (eval-time semantic fault the
+  // schema could not catch). submission-bad — the repo authored the bad policy YAML,
+  // so the fix belongs to the submitter, not studio ops. Ordered BEFORE `policy:`
+  // to keep the most-specific-first invariant (the tokens don't overlap — `policy:`
+  // ends at the colon, `policy-config:` continues with `-config:` — but the order is
+  // explicit). A malformed GLOBAL predicate is operational (VALIDATOR_FAULT_POLICY).
+  { match: 'policy-config:', prefix: 'policy-config:', class: 'submission-bad' },
   { match: 'policy:', prefix: 'policy:', class: 'submission-bad' },
   // operational — a provider-side provenance FAULT (429/5xx/401/403). The
   // adapter THROWS these (verify-A-002); index.js catches the throw and emits

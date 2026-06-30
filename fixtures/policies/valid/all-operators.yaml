@@ -1,0 +1,25 @@
+# VERIFY-F1 golden fixture — SCHEMA-SHAPE: every operator in the closed set.
+# Proves validatePayload('policy', …) accepts the shape of all 12 operators in one
+# predicate. Field paths are illustrative (the schema gate validates SHAPE, not
+# field existence or scope — evaluated correctness per operator is pinned by
+# packages/verify/predicate.test.js). See docs/policy-dsl.md.
+policy_version: "1.0.0"
+
+global_rules:
+  - id: every-operator
+    severity: warn
+    description: "exercises the whole closed operator set in one predicate"
+    when:
+      all:
+        - { field: execution_mode,  op: equals,       value: human }
+        - { field: execution_mode,  op: not_equals,   value: bot }
+        - { field: execution_mode,  op: in,           value: [human, mixed] }
+        - { field: execution_mode,  op: not_in,       value: [bot] }
+        - { field: tags,            op: contains,     value: release }
+        - { field: tags,            op: not_contains, value: wip }
+        - { field: attested_by,     op: exists }
+        - { field: blocking_reason, op: not_exists }
+        - { field: source.attempt,  op: gt,           value: 0 }
+        - { field: source.attempt,  op: gte,          value: 1 }
+        - { field: source.attempt,  op: lt,           value: 99 }
+        - { field: source.attempt,  op: lte,          value: 98 }

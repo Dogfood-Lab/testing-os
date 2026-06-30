@@ -1,0 +1,8 @@
+# VERIFY-F1 invalid fixture — `in`/`not_in` value must be an array.
+# Must fail validatePayload('policy', …) at load. See docs/policy-dsl.md.
+policy_version: "1.0.0"
+
+global_rules:
+  - id: in-scalar-value
+    severity: reject
+    when: { field: execution_mode, op: in, value: human }

@@ -5,6 +5,8 @@
  * Global rules are non-overridable. Repo policies add surface-specific requirements.
  */
 
+import { evaluatePredicate, buildReason, PredicateError } from './predicate.js';
+
 function deepMerge(target, source) {
   const result = { ...target };
   for (const key of Object.keys(source)) {
@@ -44,7 +46,6 @@ function deepMerge(target, source) {
 const KNOWN_REJECT_RULE_IDS = new Set([
   // handled by the switch in validatePolicy
   'scenario-minimum',
-  'attested-if-human',
   'blocked-needs-reason',
   // enforced by other validators or by verify() itself (default-arm no-op is correct)
   'schema-valid',
@@ -53,6 +54,34 @@ const KNOWN_REJECT_RULE_IDS = new Set([
   'step-verdict-consistent',
   'no-verdict-upgrade',
 ]);
+
+// VERIFY-F1: `attested-if-human` is intentionally NOT in the set above. It used to
+// be a switch arm; it is now enforced DECLARATIVELY (it carries a `when` predicate
+// in policies/global-policy.yaml and flows through the engine). If it ever appears
+// WITHOUT a `when` — a misconfigured migration — it falls to the default arm and is
+// NOT in KNOWN_REJECT_RULE_IDS, so it surfaces the "no enforcement" diagnostic
+// (fail-closed) instead of silently doing nothing.
+
+/**
+ * VERIFY-F1: evaluate a declarative rule's `when` predicate against each root and
+ * return one reason string (`[id] body`) per match. Throws {@link PredicateError}
+ * on a semantic fault; the caller decides whether that is operational (global rule)
+ * or submission-bad (repo custom rule).
+ */
+function collectMatches(rule, roots, scope) {
+  const reasons = [];
+  for (const root of roots) {
+    if (evaluatePredicate(rule.when, root, scope)) reasons.push(buildReason(rule, root));
+  }
+  return reasons;
+}
+
+/** Route matched reasons by severity. reject -> errors, warn -> warnings, info -> logged-only. */
+function routeReasons(rule, reasons, errors, warnings) {
+  if (rule.severity === 'reject') errors.push(...reasons);
+  else if (rule.severity === 'warn') warnings.push(...reasons);
+  // info: intentionally non-surfacing
+}
 
 /**
  * Resolve the effective surface policy for a given product surface.
@@ -80,7 +109,10 @@ function resolveSurfacePolicy(surface, globalPolicy, repoPolicy) {
  * @param {object} options
  * @param {object} options.globalPolicy
  * @param {object|null} options.repoPolicy
- * @returns {{ valid: boolean, errors: string[], warnings: string[] }}
+ * @returns {{ valid: boolean, errors: string[], warnings: string[], configErrors: string[] }}
+ *   `configErrors` (VERIFY-F1) are eval-time repo custom-rule predicate faults; the
+ *   caller emits them with a `policy-config:` prefix (submission-bad). A non-empty
+ *   `configErrors` makes `valid` false.
  */
 export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
   const errors = [];
@@ -88,12 +120,36 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
   // instead of being silently dropped. A populated warnings[] never affects
   // `valid` — the caller (index.js) routes it to verification.warnings.
   const warnings = [];
+  // VERIFY-F1: a malformed REPO custom-rule predicate (an eval-time semantic fault
+  // the schema could not catch — unknown leading field, numeric op vs non-number,
+  // over-depth) is a `policy-config:` submission-bad reason recorded here (the repo
+  // authored the bad rule; do NOT page studio ops). A non-empty configErrors flips
+  // `valid` false (fail-closed). The caller prefixes these `policy-config: `, not
+  // `policy: `. Global-rule predicate faults are NOT collected here — they throw
+  // (-> VALIDATOR_FAULT_POLICY, operational).
+  const configErrors = [];
 
   // --- Global rules (non-overridable) ---
 
   const globalRules = globalPolicy.global_rules || [];
 
   for (const rule of globalRules) {
+    // VERIFY-F1: a rule carrying a `when` predicate is enforced DECLARATIVELY by
+    // the engine; a rule WITHOUT `when` falls to the legacy severity handling +
+    // id switch below (the seven built-ins that stay code-enforced). A GLOBAL-rule
+    // predicate fault is allowed to THROW (-> VALIDATOR_FAULT_POLICY, operational):
+    // a broken global policy is an operator/ops incident, mirroring loadGlobalPolicy's
+    // fail-loud schema gate. scope 'scenario_result' evaluates per element in array
+    // order (one reason per offending element); 'submission' (default) evaluates once.
+    if (rule.when) {
+      const scope = rule.scope || 'submission';
+      const roots = scope === 'scenario_result'
+        ? (submission.scenario_results || [])
+        : [submission];
+      routeReasons(rule, collectMatches(rule, roots, scope), errors, warnings);
+      continue;
+    }
+
     // VERIFY-F4: a global warn-rule is accepted-with-warning; an info-rule logs
     // only. Neither may reject. Mirrors the PROACT-VERIFY-002 discipline of not
     // dropping operator-authored rules on the floor: a declared rule that the
@@ -115,15 +171,10 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
         }
         break;
 
-      case 'attested-if-human':
-        for (const sr of submission.scenario_results || []) {
-          if ((sr.execution_mode === 'human' || sr.execution_mode === 'mixed') && !sr.attested_by) {
-            errors.push(
-              `[${rule.id}] scenario "${sr.scenario_id}": execution_mode is "${sr.execution_mode}" but attested_by is missing`
-            );
-          }
-        }
-        break;
+      // VERIFY-F1: the `attested-if-human` switch arm was removed in v1.7.0. The rule
+      // is now enforced declaratively via a `when` predicate (see the `if (rule.when)`
+      // branch above and policies/global-policy.yaml). The differential-equivalence
+      // gate proves the declarative form is byte-identical to this removed arm.
 
       case 'blocked-needs-reason':
         for (const sr of submission.scenario_results || []) {
@@ -215,6 +266,22 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
         }
       }
     }
+
+    // VERIFY-F1: declarative custom rules for this surface, evaluated per
+    // scenario_result. Additive-only (reject/warn/info, no accept verb) so a repo
+    // can never weaken a global gate. A predicate fault here is a `policy-config:`
+    // submission-bad reason (the repo authored the bad rule), NOT an ops page.
+    for (const customRule of surfacePolicy.custom_rules || []) {
+      try {
+        routeReasons(customRule, collectMatches(customRule, [sr], 'scenario_result'), errors, warnings);
+      } catch (err) {
+        if (err instanceof PredicateError) {
+          configErrors.push(`rule "${customRule.id}": ${err.message}`);
+          continue;
+        }
+        throw err;
+      }
+    }
   }
 
   const uniqueSurfaces = [...new Set((submission.scenario_results || []).map(sr => sr.product_surface))];
@@ -256,5 +323,10 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
     }
   }
 
-  return { valid: errors.length === 0, errors, warnings };
+  return {
+    valid: errors.length === 0 && configErrors.length === 0,
+    errors,
+    warnings,
+    configErrors,
+  };
 }

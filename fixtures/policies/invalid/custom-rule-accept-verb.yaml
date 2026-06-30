@@ -1,0 +1,13 @@
+# VERIFY-F1 invalid fixture — the non-weakening invariant is structural.
+# There is no `accept`/`except` severity; custom rules are additive-only. A repo
+# trying to author an exception must fail validatePayload('policy', …) at load —
+# the grammar to weaken a global gate does not exist. See docs/policy-dsl.md.
+policy_version: "1.0.0"
+repo: dogfood-lab/example
+
+surfaces:
+  web:
+    custom_rules:
+      - id: try-to-accept
+        severity: accept
+        when: { field: attested_by, op: exists }

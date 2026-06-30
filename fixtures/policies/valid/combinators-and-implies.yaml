@@ -1,0 +1,20 @@
+# VERIFY-F1 golden fixture — nested all/any/not + the implies sugar, valid.
+# "Reject a release-tagged web OR api scenario that is human-unattested."
+# The implies node selects the violation (human/mixed AND not attested).
+# Stays within the depth-5 cap the evaluator enforces. See docs/policy-dsl.md.
+policy_version: "1.0.0"
+
+global_rules:
+  - id: release-web-api-needs-attest
+    severity: reject
+    description: "a release-tagged web/api scenario run by a human must be attested"
+    scope: scenario_result
+    when:
+      all:
+        - any:
+            - { field: product_surface, op: equals, value: web }
+            - { field: product_surface, op: equals, value: api }
+        - { field: tags, op: contains, value: release }
+        - implies:
+            - { field: execution_mode, op: in,     value: [human, mixed] }
+            - { field: attested_by,    op: exists }
