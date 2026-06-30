@@ -20,7 +20,7 @@
 *Protocoles, référentiels de preuves et boucles d’apprentissage pour les logiciels assistés par l’IA.*
 
 <!-- version:start -->
-**v1.6.0** — version actuelle. Consultez le fichier [CHANGELOG.md](CHANGELOG.md) pour connaître les nouveautés.
+**v1.8.0** — dernière version. Consultez le fichier [CHANGELOG.md](CHANGELOG.md) pour connaître les nouveautés.
 <!-- version:end -->
 
 📖 **[Consultez le manuel →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -31,12 +31,16 @@
 
 ## Présentation
 
-`testing-os` est le principal monorepos de l’organisation [Dogfood Lab](https://github.com/dogfood-lab) sur GitHub, successeur de [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs), qui a été archivé. Il regroupe les protocoles et l’infrastructure nécessaires à l’exécution, à l’enregistrement et à l’apprentissage à partir de tests dans un flux de développement natif de l’IA :
+`testing-os` enregistre, vérifie et tire des enseignements des données de test réelles de votre dépôt dans un processus optimisé pour l’IA. Indiquez-lui un dépôt, et chaque exécution de test devient un enregistrement dont la provenance est confirmée et auquel vous pouvez faire confiance — ce n’est pas simplement une indication de réussite auto-déclarée.
 
-- Un **protocole en essaim** pour exécuter des audits multi-agents parallèles sur une base de code.
-- Un **référentiel de preuves + structure de schéma** pour les enregistrements, les résultats, les modèles et les recommandations qui découlent de ces exécutions.
-- Une **couche de politique + de vérificateur** qui détermine ce qui est considéré comme « vérifié » et l’applique dans tous les référentiels consommateurs.
-- Une **couche d’intelligence** qui transforme les résultats bruts en modèles et en doctrines réutilisables.
+Ce que vous obtenez :
+
+- **Enregistrements dont la provenance est confirmée.** Chaque soumission est liée à une exécution CI réelle — sans clé, via l’identité du fournisseur — avant d’être acceptée. Le résultat est un magasin de données infalsifiable et en append-only, et non une simple indication de réussite basée sur le principe de confiance.
+- **Un contrat de politique que vous contrôlez.** Définissez ce qui compte comme « vérifié » dans un fichier YAML — un DSL prédicatif limité (`field`/`op`/`value` + `all`/`any`/`not`/`implies`) — et appliquez-le à tous vos dépôts. Vérifiez une politique avant de la déployer avec `dogfood-verify lint`.
+- **Un protocole d’essaim d’agents parallèles.** Effectuez des audits multi-agents sur une base de code, puis transformez les résultats bruts en modèles et doctrines réutilisables.
+- **Une interface de statut en temps réel.** Enregistrements et index par dépôt, ainsi qu’un badge de statut, le tout servi à partir d’un seul magasin de données.
+
+Il s’agit du monorepo phare de l’organisation [Dogfood Lab](https://github.com/dogfood-lab) — sept paquets `@dogfood-lab/*` derrière une seule interface en ligne de commande `swarm`.
 
 ## Guide de démarrage rapide
 
@@ -109,7 +113,7 @@ Nécessite Node ≥ 22. La matrice CI exécute Node 22 + 24 sur `ubuntu-latest`;
 
 ## Gestion des versions
 
-Tous les packages `@dogfood-lab/*` sont mis à jour ensemble, avec un seul numéro pour l’ensemble du monorepo. Six packages sont publiés sur npm sous `@dogfood-lab` en version v1.5.0 de manière synchronisée (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`) ; le septième, `@dogfood-lab/portfolio`, reste interne. La ligne de version située près du haut de ce fichier README est automatiquement ajoutée à partir de `package.json` via [`scripts/sync-version.mjs`](scripts/sync-version.mjs) à chaque exécution de `npm run build`.
+Tous les paquets `@dogfood-lab/*` sont mis à jour simultanément — un seul numéro pour l’ensemble du monorepo. Six paquets sont publiés sur npm sous `@dogfood-lab` à la version 1.8.0, en synchronisation (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`) ; le septième, `@dogfood-lab/portfolio`, reste interne. La ligne de version située près du haut de ce fichier README est automatiquement ajoutée à partir de `package.json` via [`scripts/sync-version.mjs`](scripts/sync-version.mjs) lors de chaque exécution de `npm run build`.
 
 ## Licence
 

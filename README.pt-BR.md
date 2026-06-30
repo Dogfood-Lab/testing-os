@@ -20,7 +20,7 @@
 *Protocolos, repositórios de evidências e ciclos de aprendizado para software assistido por IA.*
 
 <!-- version:start -->
-**v1.6.0** — versão atual. Consulte [CHANGELOG.md](CHANGELOG.md) para ver o que foi incluído nesta versão.
+**v1.8.0** — versão atual. Consulte [CHANGELOG.md](CHANGELOG.md) para ver o que foi incluído nesta versão.
 <!-- version:end -->
 
 📖 **[Leia o manual →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -31,12 +31,16 @@
 
 ## O que é isso
 
-`testing-os` é o principal monorepos da organização [Dogfood Lab](https://github.com/dogfood-lab) do GitHub — sucessor do agora arquivado [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs). Ele reúne os protocolos e a infraestrutura para executar, registrar e aprender com testes em um fluxo de trabalho de desenvolvimento nativo de IA:
+`testing-os` registra, verifica e aprende com os dados reais dos testes do seu repositório, em um fluxo de trabalho nativo de IA. Aponte-o para um repositório e cada execução de teste se torna um registro confirmado pela sua origem, no qual você pode confiar — não apenas uma indicação de aprovação auto relatada.
 
-- Um **protocolo de enxame** para executar auditorias de agentes paralelos em uma base de código.
-- Um **repositório de evidências + estrutura de esquema** para os registros, descobertas, padrões e recomendações que resultam dessas execuções.
-- Uma **camada de política + verificador** que decide o que conta como "verificado" — e aplica isso em todos os repositórios de consumidores.
-- Uma **camada de inteligência** que transforma as descobertas brutas em padrões e doutrinas reutilizáveis.
+O que você obtém:
+
+- **Registros com confirmação de origem.** Cada envio é vinculado a uma execução real do CI — sem necessidade de chaves, utilizando a própria identidade do provedor — antes de ser aceito. O resultado é um repositório de evidências à prova de adulteração e que só permite adições, não apenas uma marcação verde baseada na confiança.
+- **Um contrato de política que você controla.** Declare o que conta como "verificado" em YAML — um DSL preditivo limitado e sem avaliação (`field`/`op`/`value` + `all`/`any`/`not`/`implies`) — e aplique-o em todos os seus repositórios. Valide uma política antes de implementá-la com `dogfood-verify lint`.
+- **Um protocolo de enxame de agentes paralelos.** Execute auditorias multiagente em um código-fonte e, em seguida, transforme os resultados brutos em padrões reutilizáveis e diretrizes.
+- **Uma interface de status ao vivo.** Registros por repositório, índices e um selo de status, tudo servido a partir de um único repositório de evidências.
+
+Este é o principal monorepositório da organização [Dogfood Lab](https://github.com/dogfood-lab) — sete pacotes `@dogfood-lab/*` por trás de uma única CLI `swarm`.
 
 ## Guia de início rápido
 
@@ -109,7 +113,7 @@ Requer Node ≥ 22. A matriz de CI executa o Node 22 e 24 no `ubuntu-latest`; va
 
 ## Controle de versão
 
-Todos os pacotes `@dogfood-lab/*` são atualizados em conjunto — um único número em todo o monorepositorio. Seis pacotes são publicados no npm sob `@dogfood-lab` na versão v1.5.0, de forma sincronizada (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); o sétimo, `@dogfood-lab/portfolio`, permanece interno. A linha da versão perto do topo deste README é gerada automaticamente a partir de `package.json` por meio de [`scripts/sync-version.mjs`](scripts/sync-version.mjs) em cada execução de `npm run build`.
+Todos os pacotes `@dogfood-lab/*` são atualizados em conjunto — um único número para todo o monorepositório. Seis pacotes são publicados no npm sob `@dogfood-lab` na versão v1.8.0, de forma sincronizada (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); o sétimo, `@dogfood-lab/portfolio`, permanece interno. A linha de versão perto do topo deste arquivo README é gerada automaticamente a partir de `package.json` por meio de [`scripts/sync-version.mjs`](scripts/sync-version.mjs) em cada execução de `npm run build`.
 
 ## Licença
 

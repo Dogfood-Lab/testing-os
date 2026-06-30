@@ -15,7 +15,7 @@ A few things to know up front:
 ```bash
 npm install
 npm run verify      # the canonical pre-commit check
-                    # = sync-version:check → check-doc-drift → check-regression-pins → test:scripts → build → test
+                    # = sync-version:check → check-doc-drift → check-regression-pins → build → test:scripts → test
                     # WARNING: `npm run build && npm test` is NOT equivalent — it skips the four
                     # doc-drift / regression-pin / version-sync / scripts gates that the pre-commit
                     # discipline depends on.

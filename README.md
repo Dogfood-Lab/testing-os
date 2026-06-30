@@ -31,12 +31,16 @@
 
 ## What This Is
 
-`testing-os` is the flagship monorepo of the [Dogfood Lab](https://github.com/dogfood-lab) GitHub org — successor to the now-archived [`mcp-tool-shop-org/dogfood-labs`](https://github.com/mcp-tool-shop-org/dogfood-labs). It bundles the protocols and infrastructure for running, recording, and learning from tests in an AI-native development workflow:
+`testing-os` records, verifies, and learns from your repo's real test evidence in an AI-native workflow. Point it at a repo, and every test run becomes a provenance-confirmed record you can trust — not a self-reported pass.
 
-- A **swarm protocol** for running parallel-agent audits against a codebase.
-- An **evidence store + schema spine** for the records, findings, patterns, and recommendations that come out of those runs.
-- A **policy + verifier** layer that decides what counts as "verified" — and enforces it across consumer repos.
-- An **intelligence layer** that turns raw findings into reusable patterns and doctrine.
+What you get:
+
+- **Provenance-confirmed records.** Every submission is bound to a real CI run — keyless, via the provider's own identity — before it's accepted. The result is a tamper-evident, append-only evidence store, not an honor-system green check.
+- **A policy contract you control.** Declare what counts as "verified" in YAML — a bounded, no-eval predicate DSL (`field`/`op`/`value` + `all`/`any`/`not`/`implies`) — and enforce it across your repos. Lint a policy before you ship it with `dogfood-verify lint`.
+- **A parallel-agent swarm protocol.** Run multi-agent audits against a codebase, then turn raw findings into reusable patterns and doctrine.
+- **A live status surface.** Per-repo records, indexes, and a status badge, all served from one evidence store.
+
+It's the flagship monorepo of the [Dogfood Lab](https://github.com/dogfood-lab) org — seven `@dogfood-lab/*` packages behind one `swarm` CLI.
 
 ## Quick Start
 
