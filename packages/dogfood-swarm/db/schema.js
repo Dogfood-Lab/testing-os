@@ -36,10 +36,12 @@ CREATE TABLE IF NOT EXISTS waves (
   domain_snapshot_id     TEXT,
   -- TRUTH-001: serial-verify discipline signal. Set by collect.js when any
   -- agent_run in the wave emitted verification_skipped: true (the
-  -- --skip-verify discipline path). Read by swarm status to refuse claiming
-  -- READY TO ADVANCE until the coordinators cumulative-tree verify has
-  -- landed. Persistence so the discipline signal does not disappear when the
-  -- collect-time stdout hint scrolls past.
+  -- --skip-verify discipline path). Enforced in TWO places: swarm status
+  -- refuses to claim READY TO ADVANCE, and lib/advance.js#checkVerification
+  -- (Gate 4) returns a NON-overridable VERIFY verdict until a passing
+  -- verification_receipts row exists for THIS wave (F-d12da6ea). Persistence
+  -- so the discipline signal does not disappear when the collect-time stdout
+  -- hint scrolls past.
   serial_verify_required INTEGER NOT NULL DEFAULT 0,
   -- FT-d: ownership-attribution-degraded signal. Set by collect.js when a
   -- NON-isolated amend wave narrowed each agent's independent git ownership

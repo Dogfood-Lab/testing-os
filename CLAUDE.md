@@ -101,7 +101,7 @@ Four workflows, each with a distinct purpose — exceeds the org-wide soft cap o
 
 | Workflow | Trigger | What it does |
 |----------|---------|--------------|
-| `ci.yml` | `push` / `pull_request` on `packages/**`, `package*.json`, `tsconfig*.json`, `.github/workflows/**`, `docs/**`, `site/**`, `swarms/PROTOCOL.md`, `scripts/**`, and the root honesty surfaces (`README.md`, `SHIP_GATE.md`, `SCORECARD.md`, `CLAUDE.md`, `HANDOFF.md`) + `swarms/__schema-fixtures__/**` | Build + test on Node 22 + 24 |
+| `ci.yml` | `push` / `pull_request` on `packages/**`, `package*.json`, `tsconfig*.json`, `.github/workflows/**`, `docs/**`, `site/**`, `swarms/PROTOCOL.md`, `scripts/**`, `policies/**`, `fixtures/**`, `dogfood/**`, and the root honesty surfaces (`README.md`, `SHIP_GATE.md`, `SCORECARD.md`, `CLAUDE.md`, `HANDOFF.md`) + `swarms/__schema-fixtures__/**` | Build + test on Node 22 + 24 |
 | `ingest.yml` | `repository_dispatch` (`dogfood_submission`) + `workflow_dispatch` | Receives consumer dogfood submissions, runs `packages/ingest/run.js --provenance=github`, commits new records + indexes back to `main`. Concurrency-serialized at workflow level; push conflicts handled by git pull --rebase retry loop (3 attempts). |
 | `pages.yml` | `push` to `main` on `site/**` or `.github/workflows/pages.yml` | Builds the Astro Starlight handbook, deploys to `dogfood-lab.github.io/testing-os/`, curls the URL with retry to verify deploy. |
 | `release.yml` | `push` of a `v*.*.*` tag + `workflow_dispatch` (tag input) | Publishes the 6 public `@dogfood-lab/*` packages to npm via OIDC trusted publishing (`--provenance`) and creates the GitHub Release from the matching `CHANGELOG.md` section, in one workflow. Verifies the tag matches `package.json` and runs the full `npm run verify` gate before publishing. |
@@ -152,7 +152,7 @@ CI runs the same `verify` flow on Node 22 + 24.
 
 ## Working with the legacy
 
-The legacy repo (`mcp-tool-shop-org/dogfood-labs`) is **archived but not deleted**. The 30-day grace window before Session H delete started 2026-04-25 and **passed on 2026-05-25**; deletion still gated on Mike's explicit go/no-go (current date 2026-05-31). Several historical references remain on purpose:
+The legacy repo (`mcp-tool-shop-org/dogfood-labs`) is **archived but not deleted**. The 30-day grace window before Session H delete started 2026-04-25 and **passed on 2026-05-25**; deletion is still gated on Mike's explicit go/no-go (still pending as of the last update to this section, 2026-07-02). Several historical references remain on purpose:
 
 - Old records have `repo: "mcp-tool-shop-org/dogfood-labs"` and old paths in their provenance — these are historical truth, not bugs
 - `dogfood-lab/testing-os/policies/repos/mcp-tool-shop-org/dogfood-labs.yaml` — the policy file *for* the legacy repo itself; archived artifact

@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-06-01T05:10:21.039Z",
+  "generatedAt": "2026-07-02T17:09:01.921Z",
   "coverage": {
     "total_repos": 13,
     "surfaces_covered": 8,
@@ -11,7 +11,7 @@
       "surface": "web",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 66,
+      "freshness_days": 97,
       "scenario": "build-and-verify-site",
       "scenarios": [
         "build-and-verify-site"
@@ -24,7 +24,7 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 13,
+      "freshness_days": 44,
       "scenario": "resolve-real-loadout",
       "scenarios": [
         "resolve-real-loadout"
@@ -37,7 +37,7 @@
       "surface": "mcp-server",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 32,
+      "freshness_days": 64,
       "scenario": "status-preflight-roundtrip",
       "scenarios": [
         "status-preflight-roundtrip"
@@ -50,7 +50,7 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "scenario": "init-and-run-pipeline",
       "scenarios": [
         "init-and-run-pipeline"
@@ -63,7 +63,7 @@
       "surface": "desktop",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 73,
+      "freshness_days": 104,
       "scenario": "export-roundtrip-16x16",
       "scenarios": [
         "export-roundtrip-16x16"
@@ -76,7 +76,7 @@
       "surface": "plugin",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 66,
+      "freshness_days": 97,
       "scenario": "build-and-test-extension",
       "scenarios": [
         "build-and-test-extension"
@@ -89,7 +89,7 @@
       "surface": "mcp-server",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "scenario": "crawl-real-repo",
       "scenarios": [
         "crawl-real-repo"
@@ -102,7 +102,7 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 6,
+      "freshness_days": 37,
       "scenario": "self-gate-real-repo",
       "scenarios": [
         "self-gate-real-repo"
@@ -115,7 +115,7 @@
       "surface": "npm-package",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 6,
+      "freshness_days": 37,
       "scenario": "scaffold-and-verify",
       "scenarios": [
         "scaffold-and-verify"
@@ -128,7 +128,7 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "scenario": "scan-real-mcp-definition",
       "scenarios": [
         "scan-real-mcp-definition"
@@ -141,7 +141,7 @@
       "surface": "api",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "scenario": "health-and-presets-roundtrip",
       "scenarios": [
         "health-and-presets-roundtrip"
@@ -154,7 +154,7 @@
       "surface": "library",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "scenario": "import-and-compile",
       "scenarios": [
         "import-and-compile"
@@ -167,7 +167,7 @@
       "surface": "cli",
       "verified": "pass",
       "enforcement": "required",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "scenario": "profile-real-repo",
       "scenarios": [
         "profile-real-repo"
@@ -180,61 +180,79 @@
     {
       "repo": "mcp-tool-shop-org/a11y-demo-site",
       "surface": "web",
-      "freshness_days": 66,
+      "freshness_days": 97,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/ai-loadout",
+      "surface": "cli",
+      "freshness_days": 44,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/claude-guardian",
       "surface": "mcp-server",
-      "freshness_days": 32,
+      "freshness_days": 64,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/code-batch",
       "surface": "cli",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/glyphstudio",
       "surface": "desktop",
-      "freshness_days": 73,
+      "freshness_days": 104,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/polyglot-vscode",
       "surface": "plugin",
-      "freshness_days": 66,
+      "freshness_days": 97,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/repo-crawler-mcp",
       "surface": "mcp-server",
-      "freshness_days": 67,
+      "freshness_days": 98,
+      "max_age_days": 30
+    },
+    {
+      "repo": "mcp-tool-shop-org/shipcheck",
+      "surface": "cli",
+      "freshness_days": 37,
+      "max_age_days": 14
+    },
+    {
+      "repo": "mcp-tool-shop-org/site-theme",
+      "surface": "npm-package",
+      "freshness_days": 37,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/tool-scan",
       "surface": "cli",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/vocal-synth-engine",
       "surface": "api",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/voice-soundboard",
       "surface": "library",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "max_age_days": 30
     },
     {
       "repo": "mcp-tool-shop-org/zip-meta-map",
       "surface": "cli",
-      "freshness_days": 67,
+      "freshness_days": 98,
       "max_age_days": 30
     }
   ],
@@ -250,5 +268,534 @@
       "enforcement": "required"
     }
   ],
-  "unknown_freshness": []
+  "unknown_freshness": [],
+  "trends": {
+    "mcp-tool-shop-org/a11y-demo-site": {
+      "web": {
+        "history": [
+          {
+            "run_id": "a11y-demo-site-23329256169-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T04:36:38Z"
+          },
+          {
+            "run_id": "a11y-demo-site-23619117024-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T21:33:46Z"
+          }
+        ],
+        "current": {
+          "run_id": "a11y-demo-site-23619117024-1",
+          "verified": "pass",
+          "finished_at": "2026-03-26T21:33:46Z"
+        },
+        "previous": {
+          "run_id": "a11y-demo-site-23329256169-1",
+          "verified": "pass",
+          "finished_at": "2026-03-20T04:36:38Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/a11y-demo-site/2026/03/26/run-a11y-demo-site-23619117024-1.json"
+      }
+    },
+    "mcp-tool-shop-org/ai-loadout": {
+      "cli": {
+        "history": [
+          {
+            "run_id": "ai-loadout-23326498651-1",
+            "verified": "fail",
+            "finished_at": "2026-03-20T02:27:52Z"
+          },
+          {
+            "run_id": "ai-loadout-23326630420-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T02:33:59Z"
+          },
+          {
+            "run_id": "ai-loadout-23566269375-1",
+            "verified": "pass",
+            "finished_at": "2026-03-25T21:59:20Z"
+          },
+          {
+            "run_id": "ai-loadout-26069980543-1",
+            "verified": "pass",
+            "finished_at": "2026-05-19T01:10:55Z"
+          }
+        ],
+        "current": {
+          "run_id": "ai-loadout-26069980543-1",
+          "verified": "pass",
+          "finished_at": "2026-05-19T01:10:55Z"
+        },
+        "previous": {
+          "run_id": "ai-loadout-23566269375-1",
+          "verified": "pass",
+          "finished_at": "2026-03-25T21:59:20Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/ai-loadout/2026/05/19/run-ai-loadout-26069980543-1.json"
+      }
+    },
+    "mcp-tool-shop-org/claude-guardian": {
+      "mcp-server": {
+        "history": [
+          {
+            "run_id": "claude-guardian-23326623878-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T02:33:43Z"
+          },
+          {
+            "run_id": "claude-guardian-23567284476-1",
+            "verified": "pass",
+            "finished_at": "2026-03-25T22:26:10Z"
+          },
+          {
+            "run_id": "claude-guardian-24922209099-1",
+            "verified": "pass",
+            "finished_at": "2026-04-25T04:09:45Z"
+          },
+          {
+            "run_id": "claude-guardian-25095040144-1",
+            "verified": "pass",
+            "finished_at": "2026-04-29T06:52:47Z"
+          }
+        ],
+        "current": {
+          "run_id": "claude-guardian-25095040144-1",
+          "verified": "pass",
+          "finished_at": "2026-04-29T06:52:47Z"
+        },
+        "previous": {
+          "run_id": "claude-guardian-24922209099-1",
+          "verified": "pass",
+          "finished_at": "2026-04-25T04:09:45Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/claude-guardian/2026/04/29/run-claude-guardian-25095040144-1.json"
+      }
+    },
+    "mcp-tool-shop-org/code-batch": {
+      "cli": {
+        "history": [
+          {
+            "run_id": "code-batch-23328745842-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T04:12:52Z"
+          },
+          {
+            "run_id": "code-batch-23568260112-1",
+            "verified": "pass",
+            "finished_at": "2026-03-25T22:53:45Z"
+          },
+          {
+            "run_id": "code-batch-23568447714-1",
+            "verified": "pass",
+            "finished_at": "2026-03-25T22:59:23Z"
+          },
+          {
+            "run_id": "code-batch-23568477306-1",
+            "verified": "pass",
+            "finished_at": "2026-03-25T23:00:15Z"
+          }
+        ],
+        "current": {
+          "run_id": "code-batch-23568477306-1",
+          "verified": "pass",
+          "finished_at": "2026-03-25T23:00:15Z"
+        },
+        "previous": {
+          "run_id": "code-batch-23568447714-1",
+          "verified": "pass",
+          "finished_at": "2026-03-25T22:59:23Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/code-batch/2026/03/25/run-code-batch-23568477306-1.json"
+      }
+    },
+    "mcp-tool-shop-org/glyphstudio": {
+      "desktop": {
+        "history": [
+          {
+            "run_id": "glyphstudio-23325766223-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T01:54:44Z"
+          }
+        ],
+        "current": {
+          "run_id": "glyphstudio-23325766223-1",
+          "verified": "pass",
+          "finished_at": "2026-03-20T01:54:44Z"
+        },
+        "previous": null,
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/glyphstudio/2026/03/20/run-glyphstudio-23325766223-1.json"
+      }
+    },
+    "mcp-tool-shop-org/polyglot-vscode": {
+      "plugin": {
+        "history": [
+          {
+            "run_id": "polyglot-vscode-23329272460-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T04:37:25Z"
+          },
+          {
+            "run_id": "polyglot-vscode-23329388494-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T04:42:39Z"
+          },
+          {
+            "run_id": "polyglot-vscode-23570619029-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T00:07:50Z"
+          },
+          {
+            "run_id": "polyglot-vscode-23619483245-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T21:43:09Z"
+          }
+        ],
+        "current": {
+          "run_id": "polyglot-vscode-23619483245-1",
+          "verified": "pass",
+          "finished_at": "2026-03-26T21:43:09Z"
+        },
+        "previous": {
+          "run_id": "polyglot-vscode-23570619029-1",
+          "verified": "pass",
+          "finished_at": "2026-03-26T00:07:50Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/polyglot-vscode/2026/03/26/run-polyglot-vscode-23619483245-1.json"
+      }
+    },
+    "mcp-tool-shop-org/repo-crawler-mcp": {
+      "mcp-server": {
+        "history": [
+          {
+            "run_id": "repo-crawler-mcp-23326627220-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T02:33:58Z"
+          },
+          {
+            "run_id": "repo-crawler-mcp-23510482475-1",
+            "verified": "pass",
+            "finished_at": "2026-03-24T20:23:17Z"
+          },
+          {
+            "run_id": "repo-crawler-mcp-23571073097-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T00:22:41Z"
+          }
+        ],
+        "current": {
+          "run_id": "repo-crawler-mcp-23571073097-1",
+          "verified": "pass",
+          "finished_at": "2026-03-26T00:22:41Z"
+        },
+        "previous": {
+          "run_id": "repo-crawler-mcp-23510482475-1",
+          "verified": "pass",
+          "finished_at": "2026-03-24T20:23:17Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/repo-crawler-mcp/2026/03/26/run-repo-crawler-mcp-23571073097-1.json"
+      }
+    },
+    "mcp-tool-shop-org/shipcheck": {
+      "cli": {
+        "history": [
+          {
+            "run_id": "shipcheck-23320088604-1",
+            "verified": "pass",
+            "finished_at": "2026-03-19T22:33:33Z"
+          },
+          {
+            "run_id": "shipcheck-23326132347-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T02:11:04Z"
+          },
+          {
+            "run_id": "shipcheck-23327511129-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T03:14:25Z"
+          },
+          {
+            "run_id": "shipcheck-23571363808-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T00:32:46Z"
+          },
+          {
+            "run_id": "shipcheck-26432213788-1",
+            "verified": "pass",
+            "finished_at": "2026-05-26T04:26:48Z"
+          },
+          {
+            "run_id": "shipcheck-26432463348-1",
+            "verified": "pass",
+            "finished_at": "2026-05-26T04:34:54Z"
+          },
+          {
+            "run_id": "shipcheck-26432510066-1",
+            "verified": "pass",
+            "finished_at": "2026-05-26T04:47:25Z"
+          }
+        ],
+        "current": {
+          "run_id": "shipcheck-26432510066-1",
+          "verified": "pass",
+          "finished_at": "2026-05-26T04:47:25Z"
+        },
+        "previous": {
+          "run_id": "shipcheck-26432463348-1",
+          "verified": "pass",
+          "finished_at": "2026-05-26T04:34:54Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/shipcheck/2026/05/26/run-shipcheck-26432510066-1.json"
+      }
+    },
+    "mcp-tool-shop-org/site-theme": {
+      "npm-package": {
+        "history": [
+          {
+            "run_id": "site-theme-23328691331-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T04:10:21Z"
+          },
+          {
+            "run_id": "site-theme-23571414763-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T00:34:21Z"
+          },
+          {
+            "run_id": "site-theme-23630281899-1",
+            "verified": "pass",
+            "finished_at": "2026-03-27T03:52:20Z"
+          },
+          {
+            "run_id": "site-theme-23630370204-1",
+            "verified": "pass",
+            "finished_at": "2026-03-27T03:55:56Z"
+          },
+          {
+            "run_id": "site-theme-23630385933-1",
+            "verified": "pass",
+            "finished_at": "2026-03-27T03:56:32Z"
+          },
+          {
+            "run_id": "site-theme-26432147726-1",
+            "verified": "pass",
+            "finished_at": "2026-05-26T04:24:17Z"
+          }
+        ],
+        "current": {
+          "run_id": "site-theme-26432147726-1",
+          "verified": "pass",
+          "finished_at": "2026-05-26T04:24:17Z"
+        },
+        "previous": {
+          "run_id": "site-theme-23630385933-1",
+          "verified": "pass",
+          "finished_at": "2026-03-27T03:56:32Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/site-theme/2026/05/26/run-site-theme-26432147726-1.json"
+      }
+    },
+    "mcp-tool-shop-org/tool-scan": {
+      "cli": {
+        "history": [
+          {
+            "run_id": "tool-scan-23328684276-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T04:10:03Z"
+          },
+          {
+            "run_id": "tool-scan-23571932376-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T00:52:34Z"
+          }
+        ],
+        "current": {
+          "run_id": "tool-scan-23571932376-1",
+          "verified": "pass",
+          "finished_at": "2026-03-26T00:52:34Z"
+        },
+        "previous": {
+          "run_id": "tool-scan-23328684276-1",
+          "verified": "pass",
+          "finished_at": "2026-03-20T04:10:03Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/tool-scan/2026/03/26/run-tool-scan-23571932376-1.json"
+      }
+    },
+    "mcp-tool-shop-org/vocal-synth-engine": {
+      "api": {
+        "history": [
+          {
+            "run_id": "vocal-synth-engine-23326822355-1",
+            "verified": "fail",
+            "finished_at": "2026-03-20T02:43:41Z"
+          },
+          {
+            "run_id": "vocal-synth-engine-23326880607-1",
+            "verified": "fail",
+            "finished_at": "2026-03-20T02:46:21Z"
+          },
+          {
+            "run_id": "vocal-synth-engine-23326934596-1",
+            "verified": "fail",
+            "finished_at": "2026-03-20T02:48:59Z"
+          },
+          {
+            "run_id": "vocal-synth-engine-23326986417-1",
+            "verified": "fail",
+            "finished_at": "2026-03-20T02:51:29Z"
+          },
+          {
+            "run_id": "vocal-synth-engine-23327053189-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T02:54:12Z"
+          },
+          {
+            "run_id": "vocal-synth-engine-23572047723-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T00:56:40Z"
+          }
+        ],
+        "current": {
+          "run_id": "vocal-synth-engine-23572047723-1",
+          "verified": "pass",
+          "finished_at": "2026-03-26T00:56:40Z"
+        },
+        "previous": {
+          "run_id": "vocal-synth-engine-23327053189-1",
+          "verified": "pass",
+          "finished_at": "2026-03-20T02:54:12Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/vocal-synth-engine/2026/03/26/run-vocal-synth-engine-23572047723-1.json"
+      }
+    },
+    "mcp-tool-shop-org/voice-soundboard": {
+      "library": {
+        "history": [
+          {
+            "run_id": "voice-soundboard-23328687304-1",
+            "verified": "fail",
+            "finished_at": "2026-03-20T04:10:14Z"
+          },
+          {
+            "run_id": "voice-soundboard-23328817863-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T04:16:09Z"
+          },
+          {
+            "run_id": "voice-soundboard-23572161533-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T01:00:42Z"
+          }
+        ],
+        "current": {
+          "run_id": "voice-soundboard-23572161533-1",
+          "verified": "pass",
+          "finished_at": "2026-03-26T01:00:42Z"
+        },
+        "previous": {
+          "run_id": "voice-soundboard-23328817863-1",
+          "verified": "pass",
+          "finished_at": "2026-03-20T04:16:09Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/voice-soundboard/2026/03/26/run-voice-soundboard-23572161533-1.json"
+      }
+    },
+    "mcp-tool-shop-org/zip-meta-map": {
+      "cli": {
+        "history": [
+          {
+            "run_id": "zip-meta-map-23328698294-1",
+            "verified": "fail",
+            "finished_at": "2026-03-20T04:10:38Z"
+          },
+          {
+            "run_id": "zip-meta-map-23328825542-1",
+            "verified": "pass",
+            "finished_at": "2026-03-20T04:16:25Z"
+          },
+          {
+            "run_id": "zip-meta-map-23572590802-1",
+            "verified": "pass",
+            "finished_at": "2026-03-26T01:16:09Z"
+          }
+        ],
+        "current": {
+          "run_id": "zip-meta-map-23572590802-1",
+          "verified": "pass",
+          "finished_at": "2026-03-26T01:16:09Z"
+        },
+        "previous": {
+          "run_id": "zip-meta-map-23328825542-1",
+          "verified": "pass",
+          "finished_at": "2026-03-20T04:16:25Z"
+        },
+        "regressed": false,
+        "recovered": false,
+        "pass_rate": null,
+        "pass_rate_sample": 0,
+        "pass_rate_window_days": 30,
+        "latest_path": "records/mcp-tool-shop-org/zip-meta-map/2026/03/26/run-zip-meta-map-23572590802-1.json"
+      }
+    }
+  }
 }

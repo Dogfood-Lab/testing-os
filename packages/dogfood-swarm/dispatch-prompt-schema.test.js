@@ -232,9 +232,20 @@ describe('dispatch — domain-map alignment (Stage B Item 4)', () => {
         prompt.includes('Ownership class: `owned`'),
         `${agent.domain}: prompt must surface ownership class (owned for these test domains)`,
       );
+      // F-950fe296: the contract block must state the TRUE enforcement
+      // property — checkOwnership enforces against the frozen domain MAP;
+      // the snapshot id is the audit anchor, not the enforcement source.
       assert.ok(
-        prompt.includes('the snapshot wins'),
-        `${agent.domain}: prompt must include the snapshot-wins authority note`,
+        prompt.includes('this block wins'),
+        `${agent.domain}: prompt must include the domain-contract authority note`,
+      );
+      assert.ok(
+        prompt.includes('enforces against the frozen domain'),
+        `${agent.domain}: prompt must state enforcement runs against the frozen domain map`,
+      );
+      assert.ok(
+        !prompt.includes('enforces against the snapshot.'),
+        `${agent.domain}: prompt must NOT claim snapshot-based enforcement (false property, F-950fe296)`,
       );
     }
   });

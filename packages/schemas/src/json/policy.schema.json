@@ -312,7 +312,7 @@
           "description": "Closed operator set. exists/not_exists are truthiness (not strict key-presence) and take no value."
         },
         "value": {
-          "description": "Comparand. Omitted for exists/not_exists. An array for in/not_in. A scalar otherwise. Numeric for gt/gte/lt/lte (a non-numeric resolved field is an eval-time policy-config: fault)."
+          "description": "Comparand. Omitted for exists/not_exists. An array of scalars for in/not_in. A number for gt/gte/lt/lte. A scalar (string/number/boolean/null) for equals/not_equals/contains/not_contains. These type constraints are schema-enforced (F-3ed78d6f): the comparand lives in the policy file, so a mistyped one — e.g. the quoted-number YAML footgun value: \"95\" — is a data-independent fault caught structurally at author time, not a rule that silently never fires. A non-numeric resolved FIELD for a numeric op remains an eval-time policy-config: fault."
         }
       },
       "allOf": [
@@ -326,7 +326,15 @@
         },
         {
           "if": { "required": ["op"], "properties": { "op": { "enum": ["in", "not_in"] } } },
-          "then": { "properties": { "value": { "type": "array" } } }
+          "then": { "properties": { "value": { "type": "array", "items": { "type": ["string", "number", "boolean", "null"] } } } }
+        },
+        {
+          "if": { "required": ["op"], "properties": { "op": { "enum": ["gt", "gte", "lt", "lte"] } } },
+          "then": { "properties": { "value": { "type": "number" } } }
+        },
+        {
+          "if": { "required": ["op"], "properties": { "op": { "enum": ["equals", "not_equals", "contains", "not_contains"] } } },
+          "then": { "properties": { "value": { "type": ["string", "number", "boolean", "null"] } } }
         }
       ]
     },

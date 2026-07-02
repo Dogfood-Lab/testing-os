@@ -17,6 +17,7 @@ import { openDb } from '../../db/connection.js';
 import { createHash } from 'node:crypto';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../queries/latest-agent-runs.js';
 import { SCHEMA_VERSION } from '../../db/schema.js';
+import { isOpenFinding } from '../finding-status.js';
 
 /**
  * D3B-014 (Phase 10 Step 1): version of the canonical export ENVELOPE
@@ -64,8 +65,12 @@ export function buildRunExport(db, runId) {
         ${LATEST_AGENT_RUN_PER_DOMAIN}
     `).all(w.id);
 
+    // Latest receipt per wave — id DESC tiebreak (V2-INVARIAN-005, the fourth
+    // F-b9a8f684 site): created_at has second granularity, so a fail-then-pass
+    // verify sequence inside one second tied and could surface the FAIL row to
+    // the durable export while Gate 4 (lib/advance.js) read the pass.
     const verification = db.prepare(
-      'SELECT * FROM verification_receipts WHERE wave_id = ? ORDER BY created_at DESC LIMIT 1'
+      'SELECT * FROM verification_receipts WHERE wave_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
     ).get(w.id);
 
     // F-H8-sibling (advisor-surfaced, Wave A1 D3): the violations subquery
@@ -203,11 +208,17 @@ export function computeRunVerdict(exportData) {
   if (exportData.run.status === 'complete') return 'pass';
   if (exportData.run.status === 'aborted') return 'fail';
 
-  const findings = exportData.findings.summary;
-  const openCritical = (findings.by_status?.new || 0) + (findings.by_status?.recurring || 0);
-  const hasCritical = (findings.by_severity?.CRITICAL || 0) > 0;
+  // F-5c562913: the verdict counts OPEN findings only. Pre-fix, hasCritical
+  // counted by_severity regardless of status — a CRITICAL that was already
+  // FIXED (or rejected/deferred) still forced 'fail' into the durable dogfood
+  // corpus — and the variable named openCritical actually counted
+  // new+recurring across ALL severities, so one open LOW returned 'partial'.
+  // Open/closed semantics come from lib/finding-status.js (the same source
+  // the advancement gate uses).
+  const openItems = (exportData.findings.items || []).filter(f => isOpenFinding(f.status));
+  const openCritical = openItems.filter(f => f.severity === 'CRITICAL').length;
 
-  if (hasCritical) return 'fail';
-  if (openCritical > 0) return 'partial';
+  if (openCritical > 0) return 'fail';
+  if (openItems.length > 0) return 'partial';
   return 'pass';
 }

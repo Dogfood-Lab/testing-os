@@ -40,12 +40,14 @@
  *     but wave still failed) if the process crashes mid-flight.
  */
 
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, statSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
-import { resolve } from 'node:path';
+import { resolve, sep } from 'node:path';
+
+import { minimatch } from 'minimatch';
 
 import { openDb } from '../db/connection.js';
-import { getDomains, checkOwnership } from '../lib/domains.js';
+import { getDomains, checkOwnership, narrowToExclusivelyOwned } from '../lib/domains.js';
 import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from '../lib/output-schema.js';
 import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate-agent-output.js';
 import { transitionAgent, isBlocked } from '../lib/state-machine.js';
@@ -53,6 +55,8 @@ import { transitionWave } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { readBoundedJson } from '../lib/bounded-json-read.js';
+import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
+import { getActualTouchedFiles, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
@@ -237,19 +241,74 @@ export function revalidate(opts) {
     // Ownership check (amend only). The original ownership_violation may have
     // been the blocking status — if the corrected JSON has different
     // files_changed, ownership may now pass.
+    //
+    // F-7d2f60e0: the check runs against the UNION of the operator-supplied
+    // files_changed AND the independently-observed git touched set (mirroring
+    // collect.js's VD-NEW-1 posture). Pre-fix, only files_changed was
+    // re-checked — an agent_run blocked as ownership_violation could be
+    // flipped to 'complete' by simply EDITING files_changed to drop the
+    // offending path while the out-of-domain edit remained in the working
+    // tree. Same isolated/non-isolated narrowing as collect: without
+    // --isolate the shared-tree diff cannot be attributed per-agent, so the
+    // independent contribution is restricted to the files this domain
+    // EXCLUSIVELY OWNS (wave2-live-001 / V2-INVARIAN-002: the shared
+    // narrowToExclusivelyOwned helper — the same specificity arbitration as
+    // checkOwnership; bare glob membership over-collects when globs overlap
+    // and phantom-flags sibling agents' in-domain edits).
     let ownership = null;
-    if (isAmend && Array.isArray(output.files_changed) && output.files_changed.length > 0) {
-      const check = checkOwnership(db, runId, domainName, output.files_changed);
-      if (check.violations.length > 0) {
-        report.refusals.push({
+    let baseDiffNote = null;
+    if (isAmend && Array.isArray(output.files_changed)) {
+      const isolated = !!ar.worktree_path;
+      const worktree = ar.worktree_path || run.local_path;
+      const baseRef = isolated
+        ? resolveWorktreeBaseRef(worktree, run.branch)
+        : run.commit_sha;
+      const actualTouched = getActualTouchedFiles(worktree, { baseRef });
+      // V2-CONTRACT-003 / V2-INVARIAN-006 (mirrors collect.js): a failed base
+      // diff or an unresolvable fork point makes committed edits invisible —
+      // say so instead of silently narrowing to status + self-report coverage.
+      if (!actualTouched.unavailable && (actualTouched.baseDiffUnavailable || (isolated && !baseRef))) {
+        baseDiffNote = {
+          reason: isolated && !baseRef
+            ? 'worktree fork point unresolved (merge-base failed) — committed edits are invisible; probe coverage is status + self-report only'
+            : 'base diff failed (bad ref or shallow clone) — committed edits are invisible; probe coverage is status + self-report only',
+        };
+        logStage('ownership_probe_degraded', {
+          correlation_id: mintCorrelationId(),
           domain: domainName,
-          agent_run_id: ar.id,
-          reason: `ownership: ${check.violations.map(v => v.file).join(', ')}`,
-          violations: check.violations,
+          runId,
+          waveId: wave.id,
+          waveNumber: wave.wave_number,
+          isolated,
+          reason: 'base_diff_unavailable',
+          remediation: isolated
+            ? 'ensure the run branch and the worktree fork point are resolvable (full clone, valid runs.branch)'
+            : 'ensure runs.commit_sha is a resolvable ref in the local repo',
         });
-        continue;
       }
-      ownership = check;
+      const independentTouched = isolated
+        ? actualTouched.all
+        : narrowToExclusivelyOwned(domains, domainName, actualTouched.all);
+      const unionSet = new Set([
+        ...output.files_changed.map(p => String(p).replace(/\\/g, '/')),
+        ...independentTouched,
+      ]);
+      const filesForOwnership = Array.from(unionSet);
+      if (filesForOwnership.length > 0) {
+        const check = checkOwnership(db, runId, domainName, filesForOwnership);
+        if (check.violations.length > 0) {
+          report.refusals.push({
+            domain: domainName,
+            agent_run_id: ar.id,
+            reason: `ownership (reported + git-observed): ${check.violations.map(v => v.file).join(', ')}` +
+              ' — revert the out-of-domain edits in the working tree; editing files_changed alone cannot clear an ownership_violation',
+            violations: check.violations,
+            ...(baseDiffNote ? { base_diff_unavailable: baseDiffNote } : {}),
+          });
+          continue;
+        }
+        ownership = check;
+      }
     }
 
     report.repairs.push({
@@ -259,13 +318,56 @@ export function revalidate(opts) {
       to: 'complete',
       output_path: outputPath,
       ownership,
+      ...(baseDiffNote ? { base_diff_unavailable: baseDiffNote } : {}),
       applied: false,
+      // Carried for the mutation pass: the corrected output's findings are
+      // ingested there (F-8efffdd1) and its verification_skipped flag is
+      // propagated (F-5811d6df). Stripped before the report is returned.
+      output,
+      agent_run: ar,
     });
   }
+
+  // fp-p-005 sourceText cache for the repaired-findings fingerprint pass
+  // (F-8efffdd1). MUST mirror collect.js's sourceText-based fingerprinting —
+  // a repaired finding fingerprinted WITHOUT the context snippet would mint a
+  // different fingerprint than the same finding rediscovered by a later
+  // re-audit, and the recurrence would misclassify as new. Same containment
+  // guard + size cap as collect.js (finding.file is attacker-adjacent).
+  const REVALIDATE_MAX_SOURCE_FILE_BYTES = 2 * 1024 * 1024;
+  const sourceCache = new Map();
+  const readFindingSource = (root, file) => {
+    if (!root || !file) return null;
+    const rootResolved = resolve(root);
+    const resolved = resolve(root, String(file));
+    if (sourceCache.has(resolved)) return sourceCache.get(resolved);
+    let text = null;
+    const contained = resolved === rootResolved || resolved.startsWith(rootResolved + sep);
+    if (contained) {
+      try {
+        const st = statSync(resolved);
+        if (st.isFile() && st.size <= REVALIDATE_MAX_SOURCE_FILE_BYTES) {
+          text = readFileSync(resolved, 'utf-8');
+        }
+      } catch { text = null; }
+    }
+    sourceCache.set(resolved, text);
+    return text;
+  };
 
   // ── Mutation pass — only with --apply, single transaction ──
   if (apply && report.repairs.length > 0) {
     const tx = db.transaction(() => {
+      // F-8efffdd1 (CRITICAL): findings inside a corrected AUDIT output must
+      // be ingested into the control plane. Pre-fix, the repair transitioned
+      // the agent to 'complete' and flipped the wave to 'collected' but never
+      // ran the fingerprint/classify/upsert pipeline — collect() cannot be
+      // re-run afterwards (requires wave.status='dispatched'), so every
+      // HIGH/CRITICAL finding in the corrected output was absent from the
+      // findings table, checkFindingSeverity counted zero open findings, and
+      // the release gate silently ADVANCEd.
+      const repairedFindings = [];
+
       for (const r of report.repairs) {
         // Override path. Requires reason. Writes agent_state_events row for
         // free via executeTransition — preserves audit trail (Stripe Ledger
@@ -301,7 +403,55 @@ export function revalidate(opts) {
           }
         }
 
+        // F-8efffdd1: stage the corrected audit output's findings for the
+        // collect-parity ingestion below. Fingerprints use the same
+        // sourceText path as collect.js (see the cache above).
+        if (isAudit) {
+          const findings = r.output.findings || r.output.features || [];
+          const sourceRoot = r.agent_run.worktree_path || run.local_path;
+          for (const f of findings) {
+            const sourceText = readFindingSource(sourceRoot, f.file);
+            f.fingerprint = computeFingerprint(f, { sourceText });
+            repairedFindings.push(f);
+          }
+        }
+
+        // F-5811d6df: propagate the serial-verify discipline signal exactly
+        // as collect.js does. A --skip-verify wave recovered via revalidate
+        // otherwise loses the TRUTH-001/TRUTH-003 signal entirely — status
+        // and the receipt would report no serial-verify obligation for a
+        // wave in which no agent ran tests.
+        if (r.output.verification_skipped === true) {
+          db.prepare('UPDATE agent_runs SET verification_skipped = 1 WHERE id = ?')
+            .run(r.agent_run_id);
+          db.prepare('UPDATE waves SET serial_verify_required = 1 WHERE id = ?')
+            .run(wave.id);
+        }
+
         r.applied = true;
+      }
+
+      // F-8efffdd1: collect-parity ingestion. upsertFindings' inner
+      // db.transaction nests as a SAVEPOINT inside this outer tx (the L3-003
+      // precedent), so the repair + its findings land atomically. Only the
+      // inserted/recurring buckets are applied: revalidate is a POINT repair
+      // of specific agents' outputs, not a whole-wave re-audit, so the
+      // absence of a prior finding from ONE corrected output is NOT evidence
+      // it was fixed or unverified — sibling agents' same-wave findings were
+      // already ingested by the failed collect and must keep their statuses.
+      if (isAudit && repairedFindings.length > 0) {
+        const priorMap = buildPriorMap(db, runId);
+        const classified = classifyFindings(repairedFindings, priorMap);
+        const stats = upsertFindings(db, runId, wave.id, {
+          new: classified.new,
+          recurring: classified.recurring,
+          fixed: [],
+          unverified: [],
+        });
+        report.findings = {
+          new: stats.inserted,
+          recurring: stats.updated,
+        };
       }
 
       // Wave-level rollback: collect.js:373-377 sets the wave to 'failed' on any
@@ -349,6 +499,13 @@ export function revalidate(opts) {
       });
       throw new Error(`revalidate transaction failed (correlation_id=${correlationId}): ${e.message}`);
     }
+  }
+
+  // Strip the mutation-pass carriers (parsed output + agent_run row) so the
+  // returned report keeps its pre-existing serializable shape.
+  for (const r of report.repairs) {
+    delete r.output;
+    delete r.agent_run;
   }
 
   // Build summary

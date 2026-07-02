@@ -1,0 +1,4 @@
+{
+  "description": "Allowlist for the F-8125c01b orphaned-test discovery sweep in scripts/stageC-check-test-floor.test.mjs. Every committed *.test.{js,mjs,cjs,ts} file must be matched by its owning package's test script, by the root test:scripts globs, or by an entry here WITH a reason (the scripts/regression-pin-allowlist.json discipline). Entries whose path no longer exists fail the sweep — no rot.",
+  "entries": []
+}

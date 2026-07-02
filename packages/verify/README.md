@@ -133,6 +133,7 @@ Discrimination happens by **class**, surfaced by `parseRejectionReason` (below).
 | `VALIDATOR_FAULT_CONTRACT_SCHEMA_VERSION:` | `runValidator('contract_schema_version', …)` catch | The version gate was called with an unknown contract key (a programmer error at the call site, not a submission fault). |
 | `submission-malformed:` | `index.js` null/non-object early-return | The submission itself was `null` or not an object — a malfunctioning **dispatcher** sent garbage, not a submitter who authored a bad-but-shaped payload. Page ops / inspect the dispatch pipeline; do NOT bounce it to a submitter. |
 | `provenance-fault:` | `index.js` provenance catch | The provenance adapter THREW an operational error confirming the run — a provider **429 rate-limit, 5xx outage, or 401/403 token** fault (`validators/provenance.js` throws these on purpose for non-404 responses). The submitter's payload is fine; the verifier could not reach a verdict. Page ops / retry; do NOT bounce it to a submitter. Distinct from the submission-bad `provenance:` (genuine absence/404). |
+| `scenario-fetch-fault:` | `packages/ingest/load-context.js` | The scenario fetcher THREW after exhausting its retry budget (**5xx/429 outage, transport reject**) or hit a **401/403 credential** fault loading a scenario definition. The submission may be perfectly good — the fetch infrastructure faulted. The ingest CLI lets this propagate (exit 2, nothing persisted); a true missing file is the ingest-class `scenario-load: … (reason: not_found)` instead. |
 
 Any future `VALIDATOR_FAULT_<NEW>:` prefix is classified `operational` by family — `parseRejectionReason` matches the `VALIDATOR_FAULT_` head, so a new validator class needs no parser edit. The `submission-malformed:` prefix is matched literally (it is not part of the `VALIDATOR_FAULT_` family).
 
@@ -140,7 +141,7 @@ Any future `VALIDATOR_FAULT_<NEW>:` prefix is classified `operational` by family
 
 | Prefix | Source | Meaning |
 |---|---|---|
-| `scenario-load:` | `packages/ingest/run.js` | A scenario referenced by `scenario_results` could not be loaded from the source repo (typed-reason: `timeout` / `not_found` / `parse_error` / `invalid_id`). |
+| `scenario-load:` | `packages/ingest/run.js` | A scenario referenced by `scenario_results` could not be loaded from the source repo (typed-reason: `timeout` / `not_found` / `parse_error` / `invalid_id` / `too_large` / `schema_invalid`). Outages and credential faults are NOT this class — they throw `scenario-fetch-fault:` (operational, above) instead of rejecting the submission. |
 
 ### Operator hygiene
 

@@ -67,4 +67,14 @@ test('every committed dogfood scenario has a schema-clean automation block', () 
       `${name} has an invalid automation block. Errors: ${JSON.stringify(validate.errors, null, 2)}`
     );
   }
+
+  // Vacuity floor: the D5B-004 invariant is only guarded if at least one
+  // committed scenario actually carries an automation block. If every scenario
+  // dropped (or renamed) the field, the loop above would validate zero blocks
+  // and pass forever — the same zero-matched-inputs failure class D4-004
+  // closed for schema-conformance fixtures.
+  assert.ok(
+    scenarios.some(s => s.payload.automation !== undefined),
+    'D5B-004 invariant unguarded: no committed scenario under dogfood/scenarios/ has an automation block — the schema-conformance loop above validated nothing'
+  );
 });

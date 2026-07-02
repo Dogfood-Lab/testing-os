@@ -732,20 +732,21 @@ describe('fp-003: getActualTouchedFiles recovers space/non-ASCII paths verbatim'
   });
 });
 
-describe('fp-006: git-touched-files comments no longer promise a git diff cross-check', () => {
-  it('the source carries no false `git diff --name-only` cross-check promise', () => {
+describe('fp-006: git-touched-files diff cross-check is REAL code, not a comment promise', () => {
+  it('any `git diff --name-only` mention is backed by an actual execFileSync invocation', () => {
     const src = readFileSync(
       fileURLToPath(new URL('./lib/git-touched-files.js', import.meta.url)),
       'utf-8',
     );
-    // The drifted comment promised `git diff --name-only` as a
-    // "belt-and-suspenders cross-check" the code never ran. After the fix the
-    // only git invocation is the porcelain call; assert the false promise is
-    // gone (no `git diff` mention at all) while porcelain remains.
-    assert.ok(!/git diff --name-only/.test(src),
-      'stale `git diff --name-only` cross-check promise must be removed (fp-006)');
-    assert.ok(/git', \['status', '--porcelain', '-z'/.test(src.replace(/\s+/g, ' '))
-      || /status.*--porcelain.*-z/.test(src),
+    // History of this guard: the original fp-006 drift was a comment that
+    // promised `git diff --name-only` as a cross-check the code never ran, so
+    // this test pinned "no git-diff mention at all". F-4ba6036b then made the
+    // diff REAL (committed-delta union via options.baseRef), so the honest
+    // property is now the inverse: the diff mention must be backed by a live
+    // execFileSync argv call — a comment-only promise would regress fp-006.
+    assert.ok(/execFileSync\(\s*'git',\s*\['diff',\s*'--name-only',\s*'-z'/.test(src),
+      'the committed-delta diff must be an actual execFileSync call (fp-006 / F-4ba6036b)');
+    assert.ok(/status.*--porcelain.*-z/.test(src),
       'the porcelain -z call the code actually runs must be present');
   });
 });

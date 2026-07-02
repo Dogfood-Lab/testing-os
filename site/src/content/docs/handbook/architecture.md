@@ -108,7 +108,7 @@ Corruption does not fail the rebuild — the index is silently incomplete until 
 | Mode | Behavior | Default |
 |------|----------|---------|
 | `required` | Blocks on violation | Yes -- all repos start here |
-| `warn-only` | Warns but doesn't block | Must have documented reason + review date |
+| `warn-only` | Warns but doesn't block | Must have documented reason |
 | `exempt` | Skips evaluation entirely | Must have documented reason + review date |
 
 Missing policy defaults to `required` -- the safe default.

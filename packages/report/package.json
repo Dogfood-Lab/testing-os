@@ -6,7 +6,8 @@
   "main": "build-submission.js",
   "bin": {
     "dogfood-report": "cli.js",
-    "dogfood-init": "init.js"
+    "dogfood-init": "init.js",
+    "report": "cli.js"
   },
   "exports": {
     ".": "./build-submission.js",

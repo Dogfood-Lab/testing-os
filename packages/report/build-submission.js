@@ -22,7 +22,15 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
-import { validatePayload } from '@dogfood-lab/schemas';
+import { validatePayload, SUPPORTED_SCHEMA_VERSIONS } from '@dogfood-lab/schemas';
+
+// F-6fff020d: the stamped schema_version derives from the contract package —
+// the same key validateSchemaVersion gates on — mirroring verify/index.js's
+// F1-CONTRACTS-001 discipline ('not a hardcoded literal that can drift'). When
+// the submission contract's major bumps, every consumer scaffolded by this
+// builder picks it up with the dependency bump instead of emitting
+// CONTRACT_SCHEMA_TOO_OLD until someone hunts down a literal.
+const SUBMISSION_SCHEMA_VERSION = SUPPORTED_SCHEMA_VERSIONS.recordSubmission.current;
 
 // ULID-like sortable ID (timestamp prefix + random suffix)
 function generateRunId() {
@@ -92,7 +100,7 @@ export function buildSubmission(params) {
   const hasValidDuration = Number.isFinite(durationMs) && durationMs >= 0;
 
   const submission = {
-    schema_version: '1.0.0',
+    schema_version: SUBMISSION_SCHEMA_VERSION,
     run_id: generateRunId(),
     repo,
     ref: {

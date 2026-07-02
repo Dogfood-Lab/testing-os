@@ -87,8 +87,9 @@ describe('loadPolicies per-file read-IO tolerance (d3-ingest-B001)', () => {
         'surfaces:',
         '  cli:',
         '    required_scenarios: [self-gate]',
-        '    max_age_days: 14',
-        '    warn_age_days: 7',
+        '    freshness:',
+        '      max_age_days: 14',
+        '      warn_age_days: 7',
         '',
       ].join('\n'));
 
@@ -127,8 +128,9 @@ describe('loadPolicies per-file read-IO tolerance (d3-ingest-B001)', () => {
         'surfaces:',
         '  cli:',
         '    required_scenarios: [s]',
-        '    max_age_days: 14',
-        '    warn_age_days: 7',
+        '    freshness:',
+        '      max_age_days: 14',
+        '      warn_age_days: 7',
         '',
       ].join('\n'));
       writeFileSync(join(orgDir, 'b.yaml'), [
@@ -138,8 +140,9 @@ describe('loadPolicies per-file read-IO tolerance (d3-ingest-B001)', () => {
         'surfaces:',
         '  desktop:',
         '    required_scenarios: [t]',
-        '    max_age_days: 30',
-        '    warn_age_days: 14',
+        '    freshness:',
+        '      max_age_days: 30',
+        '      warn_age_days: 14',
         '',
       ].join('\n'));
 
@@ -277,8 +280,9 @@ describe('ALL_SURFACES schema-derivation drift seal (d3-ingest-B003)', () => {
     for (const s of expected) {
       lines.push(`  ${s}:`);
       lines.push('    required_scenarios: [s]');
-      lines.push('    max_age_days: 14');
-      lines.push('    warn_age_days: 7');
+      lines.push('    freshness:');
+      lines.push('      max_age_days: 14');
+      lines.push('      warn_age_days: 7');
     }
     const policy = parsePolicy(lines.join('\n') + '\n');
     assert.deepEqual(Object.keys(policy.surfaces).sort(), [...expected].sort(),

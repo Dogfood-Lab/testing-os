@@ -21,24 +21,33 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { renameWithRetry } from './rename-with-retry.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const RENAME_HELPER_PATH = resolve(__dirname, 'rename-with-retry.js');
-const TEST_ROOT = resolve(__dirname, '__test_d1b_002_findings_sleepsync__');
 
 describe('D1B-002 (findings): rename-with-retry sleepSync swap', () => {
   it('mechanical invariant: source no longer contains the spin-loop pattern', () => {
     const src = readFileSync(RENAME_HELPER_PATH, 'utf-8');
+    // F-b12442d0: strip block + line comments before matching — copied from
+    // the ingest sibling (packages/ingest/d1b-002-sleep-sync-no-spin.test.js).
+    // rename-with-retry.js's JSDoc archaeology note quotes the old
+    // `while (Date.now() < until)` shape; it only evaded the raw-source regex
+    // because the quote wraps across a `*`-prefixed continuation line, so any
+    // future comment reflow would false-fail the gate.
+    const stripped = src
+      .replace(/\/\*[\s\S]*?\*\//g, '')
+      .replace(/\/\/.*$/gm, '');
     // The legacy spin shape: `while (Date.now() < until)`. Either the
     // direct invocation or the equivalent `while (Date.now() <= until)`
     // must not appear in the final source.
     assert.doesNotMatch(
-      src,
+      stripped,
       /while\s*\(\s*Date\.now\(\)\s*<=?\s*until\s*\)/,
       'spin-loop pattern still present in rename-with-retry.js'
     );
@@ -54,19 +63,21 @@ describe('D1B-002 (findings): rename-with-retry sleepSync swap', () => {
     );
   });
 
-  it('behavioural: renameWithRetry still completes a non-contended rename', () => {
-    if (existsSync(TEST_ROOT)) rmSync(TEST_ROOT, { recursive: true, force: true });
-    mkdirSync(TEST_ROOT, { recursive: true });
+  it('behavioural: renameWithRetry still completes a non-contended rename', (t) => {
+    // F-072c3d77: scratch space lives in os.tmpdir() (the setupTestRoot /
+    // F-W1-SUBSTABLE-4 discipline), not inside the package source tree where
+    // a mid-test failure leaves a dirty `git status`. Cleanup is t.after-
+    // registered so it runs even when an assertion throws.
+    const testRoot = mkdtempSync(join(tmpdir(), 'd1b-002-findings-sleepsync-'));
+    t.after(() => rmSync(testRoot, { recursive: true, force: true }));
 
-    const tmp = resolve(TEST_ROOT, 'src.tmp');
-    const dest = resolve(TEST_ROOT, 'dest.txt');
+    const tmp = resolve(testRoot, 'src.tmp');
+    const dest = resolve(testRoot, 'dest.txt');
     writeFileSync(tmp, 'hello', 'utf-8');
 
     renameWithRetry(tmp, dest);
 
     assert.ok(existsSync(dest), 'rename landed dest');
     assert.equal(readFileSync(dest, 'utf-8'), 'hello');
-
-    rmSync(TEST_ROOT, { recursive: true, force: true });
   });
 });

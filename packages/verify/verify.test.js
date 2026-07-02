@@ -695,18 +695,25 @@ describe('githubProvenance fetch timeout (F-246817-014)', () => {
     assert.equal(result, true);
   });
 
-  it('returns false (not throws) on non-AbortError fetch failures', async () => {
+  it('throws provenance: network error on persistent non-AbortError fetch failures (F-dac7e08c)', async () => {
+    // Pre-F-dac7e08c this pinned `return false` — which classified a network
+    // outage as submission-bad. The contract is now: retry within budget,
+    // then THROW so parseRejectionReason routes the incident to ops.
     const failingFetch = async () => { throw new Error('connection refused'); };
     const adapter = githubProvenance('test-token', {
       timeoutMs: 1000,
+      retries: 1,
+      sleepImpl: async () => {},
       fetchImpl: failingFetch
     });
-    const result = await adapter.confirm({
-      provider: 'github',
-      provider_run_id: '1',
-      run_url: 'https://github.com/owner/repo/actions/runs/1'
-    });
-    assert.equal(result, false);
+    await assert.rejects(
+      adapter.confirm({
+        provider: 'github',
+        provider_run_id: '1',
+        run_url: 'https://github.com/owner/repo/actions/runs/1'
+      }),
+      /provenance: network error: connection refused/
+    );
   });
 });
 

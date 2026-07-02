@@ -75,11 +75,22 @@ const ALLOWLIST = [
 ];
 
 function walkSync(dir, files = []) {
-  for (const entry of readdirSync(dir)) {
-    const p = join(dir, entry);
-    const stat = statSync(p);
-    if (stat.isDirectory()) walkSync(p, files);
-    else if (p.endsWith('.js') || p.endsWith('.mjs')) files.push(p);
+  // F-af78bb29: skip node_modules / dist / dot-dirs (guard mirrored from
+  // meta-amendA-readme-contract.test.js#envVarsReadInSource) so an npm
+  // hoisting change that materializes a package-local node_modules cannot
+  // make this discipline gate sweep third-party sources. withFileTypes
+  // avoids a follow-up statSync, so a broken symlink is skipped instead of
+  // crashing the sweep.
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.name.startsWith('.')) continue;
+    const p = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (entry.name === 'node_modules' || entry.name === 'dist') continue;
+      walkSync(p, files);
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (entry.name.endsWith('.js') || entry.name.endsWith('.mjs')) files.push(p);
   }
   return files;
 }

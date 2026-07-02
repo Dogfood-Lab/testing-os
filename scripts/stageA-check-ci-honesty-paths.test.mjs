@@ -45,6 +45,15 @@ const REQUIRED_PATHS = [
   // push time, but a push touching ONLY these files ran no CI — green-by-absence.
   // Gated in both legs exactly like __schema-fixtures__ above.
   'swarms/swarm-*/wave-*/outputs/**',
+  // F-362d4131: runtime data dirs the test suite reads as REAL fixtures
+  // (CLAUDE.md rule 6). setupTestRoot() copies from fixtures/; the scenario
+  // validation suite (dogfood/scenarios/*.test.mjs, run via test:scripts)
+  // reads dogfood/. A commit editing ONLY a fixture or scenario file must
+  // trigger CI, else a fixture reshape that breaks the ingest/verify suite
+  // lands on main green-by-absence — the same trigger-gap class as
+  // d6-infra-001 above.
+  'fixtures/**',
+  'dogfood/**',
 ];
 
 /**

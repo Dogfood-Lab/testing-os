@@ -43,7 +43,15 @@ export function computeRecordPath(record, repoRoot) {
   const status = record.verification?.status;
   const base = status === 'rejected' ? 'records/_rejected' : 'records';
 
-  const [org, repo] = (record.repo || '').split('/');
+  // V2-CROSS-BO-003 (F-54e5fde7 family): strictly two segments — the old
+  // destructure silently dropped a third segment (`group/subgroup/project`
+  // filed under `group/subgroup/`), sharding the record into the WRONG
+  // repo's path. Fail closed instead.
+  const segments = (record.repo || '').split('/');
+  if (segments.length !== 2) {
+    throw new Error(`invalid repo format: ${record.repo}`);
+  }
+  const [org, repo] = segments;
   if (!org || !repo) {
     throw new Error(`invalid repo format: ${record.repo}`);
   }

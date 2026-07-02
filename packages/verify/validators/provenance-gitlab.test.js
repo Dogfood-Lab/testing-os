@@ -261,14 +261,21 @@ describe('gitlabProvenance fetch timeout', () => {
     assert.ok(Date.now() - start < 5000, 'expected fast abort');
   });
 
-  it('returns false (not throws) on non-AbortError transport failures', async () => {
+  it('throws provenance: network error on persistent transport failures (F-dac7e08c)', async () => {
+    // Pre-F-dac7e08c this pinned `return false` — which classified a network
+    // outage as submission-bad and permanently persisted a rejected record.
+    // The contract is now: retry within budget, then THROW (operational).
     const failingFetch = async () => { throw new Error('connection refused'); };
     const adapter = gitlabProvenance('token', {
       timeoutMs: 1000,
+      retries: 1,
+      sleepImpl: async () => {},
       fetchImpl: failingFetch
     });
-    const ok = await adapter.confirm(pipelineSource(), { refCommitSha: RUN_HEAD });
-    assert.equal(ok, false);
+    await assert.rejects(
+      adapter.confirm(pipelineSource(), { refCommitSha: RUN_HEAD }),
+      /provenance: network error: connection refused/
+    );
   });
 });
 

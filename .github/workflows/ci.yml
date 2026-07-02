@@ -43,6 +43,15 @@ on:
       # schema-nonconformant agent output could land on main green-by-absence.
       # Mirror the __schema-fixtures__ coverage above for the live-run tree.
       - 'swarms/swarm-*/wave-*/outputs/**'
+      # F-362d4131: runtime data dirs the test suite reads as REAL fixtures
+      # (CLAUDE.md rule 6 — no mocks). setupTestRoot() copies from fixtures/;
+      # dogfood/scenarios/*.test.mjs (run via test:scripts) validates dogfood/.
+      # A fixture-only or scenario-only commit must run CI, else a reshape that
+      # breaks the ingest/verify suite lands green-by-absence (same trigger-gap
+      # class as d6-infra-001). Guarded by
+      # scripts/stageA-check-ci-honesty-paths.test.mjs.
+      - 'fixtures/**'
+      - 'dogfood/**'
   pull_request:
     paths:
       - 'packages/**'
@@ -66,6 +75,9 @@ on:
       - 'swarms/__schema-fixtures__/**'
       # F-CI-001: live-run wave outputs (see push block above).
       - 'swarms/swarm-*/wave-*/outputs/**'
+      # F-362d4131: runtime fixture/scenario data dirs (see push block above).
+      - 'fixtures/**'
+      - 'dogfood/**'
   workflow_dispatch:
 
 concurrency:

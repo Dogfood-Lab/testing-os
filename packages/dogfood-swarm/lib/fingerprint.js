@@ -607,8 +607,26 @@ export function upsertFindings(db, runId, waveId, classified) {
         // INSERT OR IGNORE skipped this row on a unique-index conflict. With
         // Part 1's disambiguation this should be unreachable for coarse-key
         // collisions; a skip here is the rare true (run_id, finding_id) /
-        // (run_id, fingerprint) collision. Log it loud (operator can re-report
-        // next wave) rather than aborting the wave.
+        // (run_id, fingerprint) collision — OR the deliberate rejected-row
+        // case below. Log it loud (operator can re-report next wave) rather
+        // than aborting the wave.
+        //
+        // F-6a8a98d6: buildPriorMap excludes 'rejected' rows, so a rejected
+        // finding that is REDISCOVERED classifies as 'new' and lands exactly
+        // here (conflict with the existing rejected row). That recurrence was
+        // previously invisible in the DB — only an NDJSON breadcrumb. Record
+        // an explicit finding_event so triage can see "this keeps coming
+        // back" WITHOUT reopening the rejected row (rejection is a
+        // coordinator decision; recurrence alone does not overturn it).
+        const existing = db.prepare(
+          'SELECT id, status FROM findings WHERE run_id = ? AND (fingerprint = ? OR finding_id = ?)'
+        ).get(runId, f.fingerprint, fid);
+        if (existing && existing.status === 'rejected') {
+          insertEvent.run(
+            existing.id, 'recurred', waveId,
+            'recurred-while-rejected: rediscovered by this wave; rejected status preserved'
+          );
+        }
         logStage('finding_insert_skipped', {
           component: 'dogfood-swarm',
           run_id: runId,

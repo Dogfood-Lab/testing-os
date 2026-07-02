@@ -21,17 +21,33 @@
 import { execFileSync } from 'node:child_process';
 
 /**
- * Compute the actual touched-files set in a worktree relative to HEAD,
- * including untracked files (a new `.github/CODEOWNERS` or similar would be
- * invisible to `git diff` but visible to `git status --porcelain`).
+ * Compute the actual touched-files set in a worktree, including untracked
+ * files (a new `.github/CODEOWNERS` or similar would be invisible to
+ * `git diff` but visible to `git status --porcelain`).
+ *
+ * F-4ba6036b: `git status --porcelain` alone only sees changes relative to
+ * HEAD. An agent that runs `git add && git commit` inside its worktree makes
+ * ALL of its edits invisible to the status probe — status is clean against
+ * the new HEAD — and ownership enforcement silently falls back to the agent's
+ * self-reported `files_changed` (the exact untrusted channel VD-NEW-1 was
+ * built to stop trusting). When `options.baseRef` is supplied, the COMMITTED
+ * delta (`git diff --name-only -z <baseRef>`) is unioned into the touched
+ * set, so committed edits stay visible. The correct base:
+ *   - isolated worktree → the worktree branch point (dispatch-time HEAD) —
+ *     resolve with resolveWorktreeBaseRef(); NOT current main HEAD.
+ *   - non-isolated      → runs.commit_sha (the run's init-time HEAD).
  *
  * @param {string} repoPath — absolute path to the worktree
+ * @param {object} [options]
+ * @param {string} [options.baseRef] — commit-ish to diff the working tree
+ *   against so committed changes are included in the touched set
  * @returns {{ modified: string[], added: string[], deleted: string[], untracked: string[], all: string[] }}
  *   `all` is the union of every category in deduplicated order. Caller passes
  *   `all` to checkOwnership; the per-category breakdown is for the divergence
- *   finding.
+ *   finding. `baseDiffUnavailable: true` is set when a baseRef was supplied
+ *   but the diff probe failed (bad ref, shallow clone) — status-only coverage.
  */
-export function getActualTouchedFiles(repoPath) {
+export function getActualTouchedFiles(repoPath, options = {}) {
   const modified = [];
   const added = [];
   const deleted = [];
@@ -86,13 +102,60 @@ export function getActualTouchedFiles(repoPath) {
     else modified.push(path); // includes R/C — destination is a touched tracked file
   }
 
+  // F-4ba6036b: committed-delta union. `git diff --name-only <baseRef>` diffs
+  // the base against the WORKING TREE, so it covers committed + staged +
+  // unstaged tracked changes in one probe; the status pass above contributes
+  // the untracked files a diff can never see. `-z` for the same quoting
+  // reasons as the status probe (fp-003).
+  let baseDiffUnavailable = false;
+  if (options.baseRef) {
+    try {
+      const diffOut = execFileSync(
+        'git', ['diff', '--name-only', '-z', options.baseRef],
+        { cwd: repoPath, encoding: 'utf-8' }
+      );
+      for (const path of diffOut.split('\0')) {
+        if (path) modified.push(path);
+      }
+    } catch {
+      // Bad ref / shallow clone — fall back to status-only coverage, but say
+      // so: the caller surfaces the degraded probe rather than silently
+      // narrowing (same posture as the `unavailable` status-probe fallback).
+      baseDiffUnavailable = true;
+    }
+  }
+
   const seen = new Set();
   const all = [];
   for (const p of [...modified, ...added, ...deleted, ...untracked]) {
     if (!seen.has(p)) { seen.add(p); all.push(p); }
   }
 
-  return { modified, added, deleted, untracked, all };
+  const result = { modified, added, deleted, untracked, all };
+  if (baseDiffUnavailable) result.baseDiffUnavailable = true;
+  return result;
+}
+
+/**
+ * Resolve the diff base for an ISOLATED worktree: the branch point where the
+ * worktree branch forked off the main branch (dispatch-time HEAD). Using the
+ * CURRENT main HEAD would be wrong once other waves' work merges into main —
+ * their edits would diff as this agent's. Falls back to null when the
+ * merge-base cannot be computed (caller then uses status-only coverage).
+ *
+ * @param {string} worktreePath
+ * @param {string} mainBranch — runs.branch (e.g. 'main')
+ * @returns {string|null}
+ */
+export function resolveWorktreeBaseRef(worktreePath, mainBranch) {
+  try {
+    return execFileSync(
+      'git', ['merge-base', mainBranch, 'HEAD'],
+      { cwd: worktreePath, encoding: 'utf-8' }
+    ).trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 /**

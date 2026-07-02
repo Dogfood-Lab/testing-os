@@ -42,6 +42,16 @@ jobs:
         working-directory: site
         run: npm ci
 
+      - name: Accent reconciliation gate (D-DOCS-003 / F-e4a24655)
+        # scripts/check-accent-color.test.mjs's landing-side half reads
+        # site/node_modules/@mcptoolshop/site-theme/styles/theme.css — a file
+        # that only exists after `npm ci` in site/. ci.yml runs test:scripts
+        # after the ROOT npm ci only, so there the landing-side check skips
+        # (visibly, via t.skip). This is the one CI location where the dep is
+        # guaranteed installed, so the two-palette regression the test exists
+        # to prevent (landing green vs handbook blue) is actually gated here.
+        run: node --test scripts/check-accent-color.test.mjs
+
       - name: Build site
         working-directory: site
         run: npm run build
@@ -57,6 +67,12 @@ jobs:
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
+    # F-a52776d5: expose the verified URL so the pa11y job below can probe it
+    # WITHOUT inheriting this job's `pages: write` + `id-token: write` scope.
+    # The verify step only writes page_url on a 2xx probe, so the a11y job
+    # (needs: deploy) never runs against an unverified deploy.
+    outputs:
+      page_url: ${{ steps.verify.outputs.page_url }}
     steps:
       - id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
@@ -91,6 +107,20 @@ jobs:
           echo "::error::Pages deploy verification failed — $url never returned 2xx"
           exit 1
 
+  a11y:
+    # F-a52776d5: pa11y runs `npx -y pa11y@9.1.1`, whose transitive
+    # puppeteer/chromium chain installs unpinned at run time with no lockfile
+    # (the F-W1-CI-001 trade-off below). It used to run INSIDE the deploy job,
+    # so a supply-chain compromise would have executed under `pages: write` +
+    # `id-token: write`. GitHub permissions are job-scoped: this job needs
+    # only network access to the already-deployed public URL, so it runs with
+    # an explicitly EMPTY token scope — a pa11y-chain compromise executes with
+    # a permissionless token. The no-lockfile trade-off itself is unchanged.
+    needs: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions: {}
+    steps:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
@@ -141,8 +171,16 @@ jobs:
         # .pa11yrc.json, because the only reason the file exists is the GHA
         # runner kernel constraint, not a tested-against config we want to
         # commit. Same "no Cadillac" discipline as the original pa11y wiring.
+        # CWE-78 discipline (matching ingest.yml): hoist the cross-job output
+        # into env rather than interpolating ${{ }} inline into the shell body.
+        env:
+          PAGE_URL: ${{ needs.deploy.outputs.page_url }}
         run: |
-          base="${{ steps.verify.outputs.page_url }}"
+          base="$PAGE_URL"
+          if [ -z "$base" ]; then
+            echo "::error::deploy job produced no page_url output — the a11y job cannot probe an unknown URL. Check the deploy job's verify step."
+            exit 1
+          fi
           # Pages probed for WCAG2AA compliance. Curated, not glob-swept, so
           # adding a new page is an explicit decision (not a silent regression
           # on a new untested page). Update this list when a new high-value

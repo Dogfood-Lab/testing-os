@@ -24,6 +24,15 @@
  * (0 accepted / 1 rejected / 2 operator error) so a wrapper can reason about
  * both uniformly.
  *
+ * KNOWN PREVIEW GAP (V2-CONTRACT-004, documented — wiring deferred to a
+ * feature pass): this CLI loads NO scenario definitions, so
+ * success_criteria.required_steps enforcement (F-3bfc2885) runs only in
+ * production ingest, which fetches scenarios from the source repo at the
+ * persisted commit. A preview VERDICT: ACCEPTED therefore does not cover
+ * required_steps — the same discipline run.js uses to document the GitLab
+ * scenario-fetcher gap. Both --help and every --explain rendering carry the
+ * note so no consumer can read a preview verdict as covering it.
+ *
  * Exit codes (consistent with packages/ingest/run.js):
  *   0 — submission accepted
  *   1 — submission rejected (verdict reached; the payload is the problem)
@@ -32,11 +41,12 @@
  *       submission.
  */
 
-import { readFileSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import yaml from 'js-yaml';
 
+import { validatePayload } from '@dogfood-lab/schemas';
 import { verify, parseRejectionReason } from './index.js';
 import { stubProvenance, provenanceForProvider } from './validators/provenance.js';
 import { runLint } from './cli-lint.js';
@@ -82,6 +92,11 @@ PROVENANCE (default: stub):
 
   -h, --help           Show this help.
 
+NOT CHECKED IN PREVIEW:
+  not checked in preview: required_steps (needs scenario definitions).
+  Scenario definitions live in the source repo; only a real ingest fetches
+  them and enforces success_criteria.required_steps.
+
 EXIT CODES:
   0  accepted     1  rejected     2  operator error (bad flags / IO / JSON)`;
 
@@ -113,7 +128,12 @@ export function parseArgs(argv) {
         arg = arg.slice(0, eq);
       }
     }
-    const hasValue = inlineValue !== null || argv[i + 1] !== undefined;
+    // F-b4dbdc52: a following token that is itself a flag is NOT a value —
+    // `verify --file --json` must hit the '--file requires a path' operator
+    // error, not consume '--json' as the path. Same guard as run.js
+    // (f-ingest-003), which this parser mirrors.
+    const nextIsValue = argv[i + 1] !== undefined && !argv[i + 1].startsWith('--');
+    const hasValue = inlineValue !== null || nextIsValue;
     const takeValue = () => (inlineValue !== null ? inlineValue : argv[++i]);
 
     switch (arg) {
@@ -238,19 +258,42 @@ function loadPolicies(submission, repoRoot) {
   let repoPolicy = null;
   const repoSlug = submission && typeof submission === 'object' ? submission.repo : null;
   if (typeof repoSlug === 'string' && repoSlug.includes('/')) {
-    const [org, repo] = repoSlug.split('/');
+    // F-54e5fde7: two-segment contract only (nested GitLab subgroups are
+    // unsupported by the submission schema). A 3+-segment slug fails closed —
+    // destructuring would silently drop the tail and look up the WRONG policy.
+    const segments = repoSlug.split('/');
+    const [org, repo] = segments.length === 2 ? segments : [null, null];
     // Reject path-traversal segments before touching the filesystem — a hostile
     // submission.repo like '../../etc' must never escape policies/repos/.
     const safe = (s) => typeof s === 'string' && s.length > 0 && !s.includes('..') && !s.includes('\\') && s !== '.';
     if (safe(org) && safe(repo)) {
       const repoPath = join(repoRoot, 'policies', 'repos', org, `${repo}.yaml`);
-      try {
-        repoPolicy = yaml.load(readFileSync(repoPath, 'utf-8'));
-      } catch {
-        // Absent or unreadable repo policy → null (defaults apply). This CLI is
-        // a preview; it does not reproduce ingest's torn-policy sentinel. A real
-        // ingest is the authority on a corrupt repo-policy file.
-        repoPolicy = null;
+      // F-65d4d6dd: mirror ingest's loadRepoPolicy contract exactly so the
+      // preview can never green-light a submission production will reject:
+      //   - absent file          → null (defaults apply)
+      //   - YAML parse failure   → `__torn` sentinel (verify() rejects with
+      //     `policy: repo policy unreadable — …`)
+      //   - parses, schema-invalid (D2B-005 class) → `__torn` sentinel too
+      // Pre-fix, a parses-but-schema-invalid policy was silently applied as-is
+      // and a bad-YAML policy silently became null — both preview/production
+      // divergences.
+      if (existsSync(repoPath)) {
+        try {
+          repoPolicy = yaml.load(readFileSync(repoPath, 'utf-8'));
+        } catch (e) {
+          repoPolicy = { __torn: true, reason: e && e.message ? e.message : String(e), path: repoPath };
+        }
+        if (repoPolicy && repoPolicy.__torn !== true) {
+          const validation = validatePayload('policy', repoPolicy);
+          if (!validation.valid) {
+            const detail = validation.errors
+              .slice(0, 3)
+              .map(e => `${e.path || '/'} ${e.message}`)
+              .join('; ');
+            const ellipsis = validation.errors.length > 3 ? `; (+${validation.errors.length - 3} more)` : '';
+            repoPolicy = { __torn: true, reason: `schema-invalid — ${detail}${ellipsis}`, path: repoPath };
+          }
+        }
       }
     }
   }
@@ -296,6 +339,15 @@ function resolveProvenance(provenanceMode, submission) {
  * the routing decision parseRejectionReason() makes; this maps it to operator
  * language so the consumer knows WHOSE problem each reason is.
  */
+/**
+ * V2-CONTRACT-004: appended to EVERY --explain rendering (accepted and
+ * rejected alike) so a preview verdict can never be read as covering the
+ * required_steps gate, which only production ingest enforces (it fetches the
+ * scenario definitions this preview does not have).
+ */
+const PREVIEW_GAP_NOTE =
+  'Not checked in preview: required_steps (needs scenario definitions — enforced only by real ingest).';
+
 const CLASS_LABEL = {
   'submission-bad': 'SUBMISSION  — fix your payload and resubmit',
   'operational': 'OPERATIONAL — verifier/tooling fault; page ops, do not bounce to submitter',
@@ -334,6 +386,8 @@ export function renderExplain(record) {
   if (accepted) {
     lines.push('');
     lines.push('No rejection reasons. This submission would be accepted.');
+    lines.push('');
+    lines.push(PREVIEW_GAP_NOTE);
     return lines.join('\n');
   }
 
@@ -361,6 +415,8 @@ export function renderExplain(record) {
       lines.push(`    - ${prefix}${parsed.detail}`);
     }
   }
+  lines.push('');
+  lines.push(PREVIEW_GAP_NOTE);
   return lines.join('\n');
 }
 

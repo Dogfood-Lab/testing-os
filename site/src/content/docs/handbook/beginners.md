@@ -13,7 +13,7 @@ testing-os is a centralized evidence system that proves each repo under the [Dog
 
 The core question it answers: "Was this repo actually used the way a real user would use it, and can we prove it?"
 
-Every repo starts at the strictest enforcement level (`required`), and weakening enforcement requires a documented reason and a review date.
+Every repo starts at the strictest enforcement level (`required`), and weakening enforcement requires a documented reason (`exempt` additionally requires a review date).
 
 ## Key Terminology
 

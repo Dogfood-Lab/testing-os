@@ -61,12 +61,26 @@ function isRetryableStatus(status) {
 }
 
 /**
+ * F-5fd3f832: ceiling on a provider-sent Retry-After wait. The per-request
+ * AbortController timeout bounds each REQUEST but not the inter-attempt sleep
+ * — without this clamp, one hostile or misconfigured `Retry-After: 86400`
+ * (plausible via gitlabProvenance's self-hosted `apiBase` override) would
+ * stall the concurrency-serialized ingest.yml queue for a day. 30s matches
+ * the per-request timeout: an honest throttle rarely asks for more, and a
+ * provider that does is better surfaced as an exhausted-retries operational
+ * throw than silently obeyed.
+ */
+export const MAX_RETRY_AFTER_MS = 30_000;
+
+/**
  * Resolve the wait before the next attempt. A `Retry-After` header (delay in
- * seconds, or an HTTP-date) is honored when present and parseable; otherwise
- * fall back to exponential backoff. `attempt` is 1-based (1 = wait before the
- * 2nd request).
+ * seconds, or an HTTP-date) is honored when present and parseable — clamped
+ * to {@link MAX_RETRY_AFTER_MS} in both branches (F-5fd3f832); otherwise
+ * fall back to exponential backoff (already bounded by the retry budget).
+ * `attempt` is 1-based (1 = wait before the 2nd request).
  *
- * @param {Response} resp - The non-ok response carrying a possible Retry-After.
+ * @param {Response|null} resp - The non-ok response carrying a possible
+ *   Retry-After, or null for a transport reject (no response → exponential).
  * @param {number} attempt - 1-based retry index.
  * @param {number} backoffMs - Base backoff.
  * @returns {number} Milliseconds to wait (never negative).
@@ -76,11 +90,11 @@ function nextBackoffMs(resp, attempt, backoffMs) {
   if (header != null && header !== '') {
     const asSeconds = Number(header);
     if (Number.isFinite(asSeconds) && asSeconds >= 0) {
-      return Math.round(asSeconds * 1000);
+      return Math.min(Math.round(asSeconds * 1000), MAX_RETRY_AFTER_MS);
     }
     const asDate = Date.parse(header);
     if (!Number.isNaN(asDate)) {
-      return Math.max(0, asDate - Date.now());
+      return Math.min(Math.max(0, asDate - Date.now()), MAX_RETRY_AFTER_MS);
     }
   }
   return backoffMs * 2 ** (attempt - 1);
@@ -187,9 +201,19 @@ export function githubProvenance(token, opts = {}) {
           if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
             throw new Error(`provenance: GitHub API timeout after ${timeoutMs}ms`);
           }
-          // Genuine transport error (DNS, connection refused) — no run to
-          // confirm. Reserve `return false` for this case (mirrors GitLab).
-          return false;
+          // F-dac7e08c: a transport reject (DNS failure, ECONNREFUSED) means the
+          // provider or the runner's NETWORK is down — an operational incident,
+          // not evidence the run is absent. Retry within the same budget as a
+          // 5xx (at least as transient), then THROW so the reason lands under
+          // the operational `provenance-fault:` prefix. The old `return false`
+          // persisted a REJECTED submission-bad record during a network blip,
+          // and the duplicate guard then blocked a clean resubmission under the
+          // same run_id. `return false` is reserved for HTTP 404 (mirrors GitLab).
+          if (attempt < retries) {
+            await sleep(nextBackoffMs(null, attempt + 1, backoffMs));
+            continue;
+          }
+          throw new Error(`provenance: network error: ${err.message}`);
         } finally {
           clearTimeout(timer);
         }
@@ -312,8 +336,12 @@ export function gitlabProvenance(token, opts = {}) {
       if (urlRunId !== String(provider_run_id)) return false;
 
       // Bind the project path to source.repo BEFORE the network call — a forged
-      // project claim is a cheap, offline rejection. For GitLab, submission.repo
-      // is the full project path (which may contain nested-subgroup slashes).
+      // project claim is a cheap, offline rejection. V2-CROSS-BO-005
+      // (F-54e5fde7 contract): submission.repo is strictly two-segment — the
+      // submission schema's `repo` pattern forbids a second slash, so nested
+      // GitLab subgroups are UNSUPPORTED end-to-end. A nested project path
+      // decoded from the run_url (group/subgroup/project) can therefore never
+      // equal a schema-valid source.repo and fails closed right here.
       if (source.repo && projectPath !== source.repo) return false;
 
       const projectId = encodeURIComponent(projectPath);
@@ -345,8 +373,13 @@ export function gitlabProvenance(token, opts = {}) {
           if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
             throw new Error(`provenance: GitLab API timeout after ${timeoutMs}ms`);
           }
-          // Genuine transport error (DNS, connection refused) — no run to confirm.
-          return false;
+          // F-dac7e08c: transport reject = operational, retried then thrown —
+          // mirrors githubProvenance exactly. `return false` is 404-only.
+          if (attempt < retries) {
+            await sleep(nextBackoffMs(null, attempt + 1, backoffMs));
+            continue;
+          }
+          throw new Error(`provenance: network error: ${err.message}`);
         } finally {
           clearTimeout(timer);
         }

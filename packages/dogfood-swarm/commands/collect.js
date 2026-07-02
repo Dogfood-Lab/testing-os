@@ -16,7 +16,7 @@ import { readFileSync, existsSync, statSync } from 'node:fs';
 import { resolve as resolvePath, join as joinPath, sep } from 'node:path';
 import { createHash } from 'node:crypto';
 import { openDb } from '../db/connection.js';
-import { getDomains, checkOwnership } from '../lib/domains.js';
+import { getDomains, checkOwnership, narrowToExclusivelyOwned } from '../lib/domains.js';
 import { minimatch } from 'minimatch';
 import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from '../lib/output-schema.js';
 import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate-agent-output.js';
@@ -29,7 +29,7 @@ import {
 } from '../lib/bounded-json-read.js';
 import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
-import { getActualTouchedFiles, diffReportedVsActual } from '../lib/git-touched-files.js';
+import { getActualTouchedFiles, diffReportedVsActual, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
 
 /**
@@ -314,6 +314,13 @@ export function collect(opts) {
     // single `npm run verify` against the cumulative tree before promoting
     // the wave to `collected`. The CLI surfaces this as a Next-step hint.
     serial_verify_required: false,
+    // F-aba6fa9d: agents whose output file was missing. Previously these were
+    // transitioned to 'failed' but counted toward NEITHER validation_errors
+    // NOR violations, so the wave landed in 'collected' with a failed agent
+    // and the collect reason claimed every agent was "accepted". A wave with
+    // a missing output is a FAILED wave; recovery is `swarm redrive <wave-id>`
+    // (flips wave + agent back to dispatched) after re-running the agent.
+    missing_outputs: [],
     // d3b-collect-A-002 (Stage B follow-up): wave-level aggregate of the
     // per-agent `ownership_probe_degraded` note. In a NON-isolated amend wave
     // the independent git probe cannot attribute the shared-worktree diff to a
@@ -425,6 +432,9 @@ export function collect(opts) {
       db.prepare('UPDATE agent_runs SET error_message = ? WHERE id = ?')
         .run('Output file not found', ar.id);
       report.agents.push(agentReport);
+      // F-aba6fa9d: count the missing output toward the wave-failure decision
+      // so the wave does not land in 'collected' while overstating success.
+      report.missing_outputs.push({ domain: domain.name, path: outputPath || null });
       continue;
     }
 
@@ -536,17 +546,28 @@ export function collect(opts) {
     // `files_changed` would bypass ownership enforcement.
     //
     // Sourcing: the agent worktree (if --isolate was used) or run.local_path.
-    // We probe `git status --porcelain` + `git diff --name-only HEAD` via
-    // lib/git-touched-files.js, then run checkOwnership against the union
-    // (actual ∪ reported). The union semantics preserves backwards-compat
-    // for legacy outputs where files_changed lists files outside the
-    // worktree's HEAD diff (e.g. an amend that reverted edits before
-    // reporting). When git is unavailable (no .git), we fall back to the
-    // agent's self-report and surface the degradation in the report.
+    // We probe `git status --porcelain -z` (uncommitted + untracked) AND — per
+    // F-4ba6036b — a committed-delta diff against the dispatch base, then run
+    // checkOwnership against the union (actual ∪ reported). Without the
+    // committed-delta half, an agent that `git commit`ed inside its worktree
+    // made every edit invisible to the probe and enforcement fell back
+    // entirely to the self-reported files_changed (the untrusted channel
+    // VD-NEW-1 exists to distrust). Diff base: the worktree's branch point
+    // for --isolate (dispatch-time HEAD, resolved via merge-base — NOT
+    // current main HEAD, which would attribute other waves' merged work to
+    // this agent); runs.commit_sha for the non-isolated shared tree. The
+    // union semantics preserves backwards-compat for legacy outputs where
+    // files_changed lists files outside the probed diff (e.g. an amend that
+    // reverted edits before reporting). When git is unavailable (no .git), we
+    // fall back to the agent's self-report and surface the degradation in
+    // the report.
     if (isAmend && output.files_changed !== undefined) {
       const isolated = !!ar.worktree_path;
       const worktree = ar.worktree_path || run.local_path;
-      const actualTouched = getActualTouchedFiles(worktree);
+      const baseRef = isolated
+        ? resolveWorktreeBaseRef(worktree, run.branch)
+        : run.commit_sha;
+      const actualTouched = getActualTouchedFiles(worktree, { baseRef });
       const reported = Array.isArray(output.files_changed) ? output.files_changed : [];
 
       // d3b-collect-A-002: in a NON-isolated parallel amend wave (no --isolate),
@@ -556,16 +577,22 @@ export function collect(opts) {
       // files another domain legitimately edited as ownership violations,
       // failing the wave on phantom out-of-domain edits. Without per-agent
       // isolation the independent probe can only soundly validate THIS domain's
-      // own files; restrict the independent contribution to the domain's globs.
-      // The agent's self-reported `files_changed` is still checked in full, so
-      // a self-confessed out-of-domain edit is still caught. Under --isolate the
-      // worktree holds only this agent's edits, so the full diff is attributable
-      // and the cross-domain under-report catch (VD-NEW-1) is preserved.
+      // own files; restrict the independent contribution to the files this
+      // domain EXCLUSIVELY OWNS. wave2-live-001 / V2-INVARIAN-002: the
+      // narrowing is the shared narrowToExclusivelyOwned helper (lib/domains.js)
+      // — the same specificity arbitration checkOwnership uses — consumed by
+      // both collect and revalidate so the two paths cannot fork. Narrowing by
+      // bare glob MEMBERSHIP over-collects when globs overlap (`**/*.test.*`
+      // admits every sibling package's test-file edits, which enforcement then
+      // resolves to the package domain and phantom-flags). The agent's
+      // self-reported `files_changed` is still checked in full, so a
+      // self-confessed out-of-domain edit is still caught. Under --isolate the
+      // worktree holds only this agent's edits, so the full diff is
+      // attributable and the cross-domain under-report catch (VD-NEW-1) is
+      // preserved.
       const independentTouched = isolated
         ? actualTouched.all
-        : actualTouched.all.filter(
-            f => (domain.globs || []).some(g => minimatch(f, g, { dot: true }))
-          );
+        : narrowToExclusivelyOwned(domains, domain.name, actualTouched.all);
 
       const divergence = diffReportedVsActual(reported, independentTouched);
 
@@ -585,6 +612,34 @@ export function collect(opts) {
       }
       if (actualTouched.unavailable) {
         agentReport.files_changed_divergence = { unavailable: true, reason: 'git probe failed; ownership check used agent self-report only' };
+      }
+      // V2-CONTRACT-003 / V2-INVARIAN-006: the committed-delta half of the
+      // probe degraded — either the base diff itself failed (bad ref / shallow
+      // clone: actualTouched.baseDiffUnavailable) or an isolated agent's fork
+      // point could not be resolved (resolveWorktreeBaseRef returned null, so
+      // no base diff was even attempted). Either way committed edits are
+      // invisible and coverage silently narrows to status + self-report — the
+      // exact channel F-4ba6036b exists to distrust. Surface it like the
+      // sibling degradations above: agent-report note + structured
+      // ownership_probe_degraded breadcrumb. Observability only — never a gate.
+      if (!actualTouched.unavailable && (actualTouched.baseDiffUnavailable || (isolated && !baseRef))) {
+        agentReport.base_diff_unavailable = {
+          reason: isolated && !baseRef
+            ? 'worktree fork point unresolved (merge-base failed) — committed edits are invisible; probe coverage is status + self-report only'
+            : 'base diff failed (bad ref or shallow clone) — committed edits are invisible; probe coverage is status + self-report only',
+        };
+        logStage('ownership_probe_degraded', {
+          correlation_id: mintCorrelationId(),
+          domain: domain.name,
+          runId: opts.runId,
+          waveId: wave.id,
+          waveNumber: wave.wave_number,
+          isolated,
+          reason: 'base_diff_unavailable',
+          remediation: isolated
+            ? 'ensure the run branch and the worktree fork point are resolvable (full clone, valid runs.branch)'
+            : 'ensure runs.commit_sha is a resolvable ref in the local repo',
+        });
       }
       // Degradation note: without --isolate the independent probe cannot
       // attribute cross-domain edits to a single agent, so its coverage is
@@ -725,7 +780,14 @@ export function collect(opts) {
   // recover. The wrapper here logs structured context, surfaces a typed
   // error so the CLI can exit non-zero, and lets atomicity stay where it
   // belongs (inside upsertFindings).
-  if (allFindings.length > 0) {
+  // F-6c5ee5dd: the classification pass runs for EVERY audit wave, including
+  // the fully-clean re-audit reporting ZERO findings (the success case the
+  // whole loop drives toward). classifyFindings([], priorMap) handles the
+  // empty-current case and marks non-rediscovered priors 'unverified'
+  // consistently with a wave that reported one finding — pre-fix, a clean
+  // wave reclassified nothing, so stale prior rows kept their statuses with
+  // no finding_events row recording that the clean wave looked at all.
+  if (allFindings.length > 0 || isAudit) {
     const priorMap = buildPriorMap(db, opts.runId);
     const classified = classifyFindings(allFindings, priorMap);
     let stats;
@@ -769,17 +831,25 @@ export function collect(opts) {
   // collect's stdout hint scrolls past.
   const hasViolations = report.violations.length > 0;
   const hasErrors = report.validation_errors.length > 0;
-  const waveStatus = hasViolations || hasErrors ? 'failed' : 'collected';
+  // F-aba6fa9d: a missing agent output is a wave failure too — otherwise the
+  // wave lands 'collected' with a failed agent, collect cannot re-run
+  // (requires 'dispatched'), and the operator hits a dead end after `swarm
+  // resume`. As a 'failed' wave the named recovery is `swarm redrive`.
+  const hasMissing = report.missing_outputs.length > 0;
+  const waveStatus = hasViolations || hasErrors || hasMissing ? 'failed' : 'collected';
   // OPF-3: name the dispatched → <waveStatus> transition explicitly so the
   // operator does not have to infer it from a subsequent `No dispatched wave
   // found` error.
   report.waveStatusBefore = 'dispatched';
   report.waveStatusAfter = waveStatus;
+  const acceptedForReason = report.agents.filter(a => a.status === 'complete').length;
   const collectReason = hasViolations
     ? `collect: ${report.violations.length} ownership violation(s)`
     : hasErrors
       ? `collect: ${report.validation_errors.length} validation error(s)`
-      : `collect: ${report.agents.length} agent(s) accepted`;
+      : hasMissing
+        ? `collect: ${report.missing_outputs.length} missing output(s), ${acceptedForReason} agent(s) accepted — recover with \`swarm redrive <wave-id>\``
+        : `collect: ${acceptedForReason} agent(s) accepted`;
   transitionWave(db, wave.id, waveStatus, collectReason);
   if (report.serial_verify_required) {
     db.prepare('UPDATE waves SET serial_verify_required = 1 WHERE id = ?').run(wave.id);

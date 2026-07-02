@@ -29,7 +29,7 @@ The realistic external attack surface — what we explicitly want researchers to
 Out of scope:
 - Issues in third-party dependencies (report upstream; we'll pin/patch when notified)
 - Findings stored as evidence (those are intentionally public; the *system* is what we secure)
-- Old `@dogfood-labs/*` packages (deprecated — see migration notice in README)
+- Old `@dogfood-labs/*` packages (deprecated — superseded by `@dogfood-lab/*`; the legacy source lives in the archived [mcp-tool-shop-org/dogfood-labs](https://github.com/mcp-tool-shop-org/dogfood-labs) repo)
 
 ## Threat Model
 

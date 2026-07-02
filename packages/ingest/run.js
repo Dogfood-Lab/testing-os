@@ -24,7 +24,7 @@ import { randomBytes } from 'node:crypto';
 import { verify } from '@dogfood-lab/verify';
 import { stubProvenance, provenanceForProvider } from '@dogfood-lab/verify/validators/provenance.js';
 import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-stage.js';
-import { loadGlobalPolicy, loadRepoPolicy, loadScenarios } from './load-context.js';
+import { loadGlobalPolicy, loadRepoPolicy, loadScenarios, githubScenarioFetcher } from './load-context.js';
 import { isDuplicate, writeRecord, computeRecordPath } from './persist.js';
 import { rebuildIndexes } from './rebuild-indexes.js';
 import { verifyChain, formatChainResult } from './verify-chain.js';
@@ -44,6 +44,19 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * @param {object} submission
  * @returns {{ provenance: object } | { err: Error }}
  */
+/**
+ * F-a2e40a09: the ONE definition of "running in CI" for the provenance
+ * branches. Truthy check on either conventional variable — CI systems export
+ * CI=1 / CI=yes / CI=true interchangeably. Previously the stub-forbidden
+ * guard used this truthy check while the real-by-default branch demanded the
+ * exact string 'true', so a CI=1 environment was "CI" for one branch and
+ * "not CI" for the other (fail-closed, but with a misleading flag-required
+ * error instead of the token hint).
+ */
+function isCI() {
+  return Boolean(process.env.CI || process.env.GITHUB_ACTIONS);
+}
+
 function resolveProviderProvenance(submission) {
   const provider = (submission && submission.source && submission.source.provider) || 'github';
   const factory = provenanceForProvider(provider);
@@ -58,6 +71,42 @@ function resolveProviderProvenance(submission) {
     return { err: new Error(`real provenance for provider '${provider}' requires ${need} in the environment.`) };
   }
   return { provenance: factory(token) };
+}
+
+/**
+ * V2-INVARIAN-004: the ONE definition of "which submissions get a scenario
+ * fetcher" (and with it required-steps enforcement). Previously this
+ * condition lived inline in the CLI entrypoint where it was untestable
+ * without spawning a process.
+ *
+ * Returns a `githubScenarioFetcher` when ALL hold:
+ *   - provenance is REAL (not stubProvenance — preview/test runs never hit
+ *     the GitHub API);
+ *   - the submission is a plain object with provider `github` (default when
+ *     `source.provider` is absent) — GitLab has no contents-API adapter yet,
+ *     so its required_steps gate remains unenforced (documented gap);
+ *   - `submission.repo` and `submission.ref.commit_sha` are strings (the
+ *     fetcher re-validates their shapes fail-closed);
+ *   - a GitHub token is present in `env` (GITHUB_TOKEN, then GH_TOKEN — the
+ *     same token resolveProviderProvenance validated).
+ *
+ * Otherwise returns null: verification proceeds without scenario
+ * definitions, exactly as before F-3bfc2885 wired the production path.
+ *
+ * @param {object} provenance - resolved provenance adapter
+ * @param {object} submission
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {ReturnType<typeof githubScenarioFetcher> | null}
+ */
+export function resolveScenarioFetcher(provenance, submission, env = process.env) {
+  if (provenance === stubProvenance) return null;
+  if (!submission || typeof submission !== 'object' || Array.isArray(submission)) return null;
+  if (((submission.source && submission.source.provider) || 'github') !== 'github') return null;
+  if (typeof submission.repo !== 'string') return null;
+  if (typeof submission.ref?.commit_sha !== 'string') return null;
+  const token = env.GITHUB_TOKEN || env.GH_TOKEN;
+  if (!token) return null;
+  return githubScenarioFetcher(token, submission.repo, submission.ref.commit_sha);
 }
 
 /**
@@ -227,10 +276,18 @@ export async function ingest(submission, options) {
   });
 
   // 3. Load scenario definitions (non-fatal if missing — becomes rejection reason)
+  // F-3bfc2885: keep the loaded `scenarios` Map (previously discarded) and hand
+  // it to verify() so success_criteria.required_steps is actually enforced.
+  // V2-CROSS-BO-001: a `scenario-fetch-fault:` throw (GitHub outage /
+  // credential fault) propagates PAST this step on purpose — the CLI's outer
+  // catch emits a structured operational error and exits 2. A missing
+  // scenario rejects the submission; an outage never does.
   let scenarioErrors = [];
+  let scenarios = null;
   if (scenarioFetcher && submissionIsObject && submission.scenario_results) {
     const result = await loadScenarios(submission, scenarioFetcher);
     scenarioErrors = result.errors;
+    scenarios = result.scenarios;
   }
 
   // 4. Call verifier — the law engine makes all decisions
@@ -238,7 +295,8 @@ export async function ingest(submission, options) {
     globalPolicy,
     repoPolicy,
     provenance,
-    policyVersion
+    policyVersion,
+    scenarios
   });
 
   logStage('verify_complete', {
@@ -418,10 +476,15 @@ export async function verifyOnly(submission, options) {
   });
 
   // 3. Load scenario definitions (non-fatal — becomes rejection reason)
+  // F-3bfc2885: same as ingest() — keep the Map, pass it to verify().
+  // V2-CROSS-BO-001: same as ingest() — a scenario-fetch-fault throw
+  // propagates (operational, exit 2), never a rejection.
   let scenarioErrors = [];
+  let scenarios = null;
   if (scenarioFetcher && submissionIsObject && submission.scenario_results) {
     const result = await loadScenarios(submission, scenarioFetcher);
     scenarioErrors = result.errors;
+    scenarios = result.scenarios;
   }
 
   // 4. Call verifier
@@ -429,7 +492,8 @@ export async function verifyOnly(submission, options) {
     globalPolicy,
     repoPolicy,
     provenance,
-    policyVersion
+    policyVersion,
+    scenarios
   });
 
   logStage('verify_complete', {
@@ -791,7 +855,7 @@ if (isMain) {
   let provenance;
   if (provenanceMode === 'stub') {
     // Structural anti-misuse: stub only allowed outside CI
-    if (process.env.CI || process.env.GITHUB_ACTIONS) {
+    if (isCI()) {
       emitCliErrorEvent({
         failedStage: 'cli_provenance_resolve',
         correlationId: cliCorrelationId,
@@ -819,7 +883,7 @@ if (isMain) {
       process.exit(2);
     }
     provenance = resolved.provenance;
-  } else if (process.env.CI === 'true' || process.env.GITHUB_ACTIONS === 'true') {
+  } else if (isCI()) {
     // In CI without an explicit flag: default to real provenance, routed by the
     // submission's source.provider (github | gitlab).
     const resolved = resolveProviderProvenance(submission);
@@ -845,6 +909,19 @@ if (isMain) {
     process.exit(2);
   }
 
+  // F-3bfc2885: construct a scenario fetcher for the production path. Before
+  // this, the CLI never passed one, so scenario definitions — and with them the
+  // `step-results-present` / `step-verdict-consistent` required_steps gates —
+  // were test-only: an operator-declared severity:reject rule silently passed.
+  // Real (non-stub) provenance + a github-provider submission loads scenario
+  // definitions from the source repo at the persisted commit, reusing the token
+  // resolveProviderProvenance already validated. GitLab submissions have no
+  // scenario fetcher yet (no gitlab contents-API adapter exists); their
+  // required_steps gate remains unenforced — a known, documented gap.
+  // V2-INVARIAN-004: the eligibility condition is the exported, unit-tested
+  // resolveScenarioFetcher above.
+  const scenarioFetcher = resolveScenarioFetcher(provenance, submission, process.env);
+
   // D1B-001: track the last successful pipeline stage so the outer catch
   // can surface a useful `failed_stage` in its structured error event.
   // We update it once the verify/ingest call has RETURNED — anything
@@ -856,7 +933,7 @@ if (isMain) {
   // when they could.
   try {
     if (verifyOnlyFlag) {
-      const result = await verifyOnly(submission, { repoRoot, provenance });
+      const result = await verifyOnly(submission, { repoRoot, provenance, scenarioFetcher });
       lastSuccessfulStage = 'verify_only';
 
       console.log(JSON.stringify({
@@ -877,7 +954,7 @@ if (isMain) {
       process.exit(result.record.verification.status === 'accepted' ? 0 : 1);
     }
 
-    const result = await ingest(submission, { repoRoot, provenance });
+    const result = await ingest(submission, { repoRoot, provenance, scenarioFetcher });
     lastSuccessfulStage = 'ingest';
 
     if (result.duplicate) {

@@ -73,13 +73,20 @@ jobs:
           # persists but the index rebuild throws — it still returns
           # written:true/accepted, so the stdout result JSON (captured by tee
           # below) carries NO staleness field. Without capturing stderr the
-          # degraded run is invisible. `2> >(tee ...)` is a process
-          # substitution, not a pipeline element, so PIPESTATUS of the
-          # echo|node|tee pipeline is unchanged.
+          # degraded run is invisible.
+          # F-50558cb2: plain redirect + post-pipeline cat, NOT a tee process
+          # substitution. Bash does not wait for a process substitution
+          # when the pipeline completes, so the step could exit while tee's
+          # final flush was in flight and the 'Warn on stale indexes' step
+          # would read a truncated capture — silently skipping the degraded-run
+          # warning this capture exists to feed. The redirect is complete
+          # before cat replays it to the live log, and stderr is not a
+          # pipeline element so PIPESTATUS is unchanged.
           set +e
-          echo "$SUBMISSION_PAYLOAD" | node packages/ingest/run.js --provenance=github 2> >(tee /tmp/ingest-stderr.log >&2) | tee /tmp/ingest-result.json
+          echo "$SUBMISSION_PAYLOAD" | node packages/ingest/run.js --provenance=github 2> /tmp/ingest-stderr.log | tee /tmp/ingest-result.json
           rc=${PIPESTATUS[1]}
           set -e
+          cat /tmp/ingest-stderr.log >&2
           if [ "$rc" -ge 2 ]; then
             echo "::error::ingest pipeline faulted (exit $rc) on a repository_dispatch submission — this is a genuine error, NOT a rejection (rejections exit 1 and still commit). Inspect the run log above and the structured \"stage\":\"error\" NDJSON event from packages/ingest/run.js."
             exit "$rc"
@@ -104,10 +111,13 @@ jobs:
           # written and must still be committed); only exit >=2 is a real fault.
           # PB-CI-003: capture run.js STDERR (same rationale as the
           # repository_dispatch leg) so a stale-index degraded run is detectable.
+          # F-50558cb2: plain redirect + post-pipeline cat, not a procsub —
+          # see the repository_dispatch leg for the torn-capture rationale.
           set +e
-          node packages/ingest/run.js --provenance=github --file "$SUBMISSION_FILE" 2> >(tee /tmp/ingest-stderr.log >&2) | tee /tmp/ingest-result.json
+          node packages/ingest/run.js --provenance=github --file "$SUBMISSION_FILE" 2> /tmp/ingest-stderr.log | tee /tmp/ingest-result.json
           rc=${PIPESTATUS[0]}
           set -e
+          cat /tmp/ingest-stderr.log >&2
           if [ "$rc" -ge 2 ]; then
             echo "::error::ingest pipeline faulted (exit $rc) on workflow_dispatch file $SUBMISSION_FILE — genuine error, NOT a rejection (rejections exit 1 and still commit). Inspect the run log above and the structured \"stage\":\"error\" NDJSON event from packages/ingest/run.js."
             exit "$rc"
@@ -126,10 +136,19 @@ jobs:
             # first and emit a structured ::error:: (matching the
             # SUBMISSION_PAYLOAD null-guard and the rebase ::error:: discipline
             # elsewhere in this file).
+            # F-caeeacc3: DEFER the failure instead of exiting 1 here. run.js
+            # already persisted the accepted or _rejected record to the runner
+            # working tree; a red step between persist and commit skips the
+            # commit step and discards that evidence with the run (the
+            # repository_dispatch payload is unrecoverable). Flag
+            # parse_failed=true so the commit step still runs, then the
+            # 'Fail run on deferred result-parse error' step reds the run
+            # AFTER the evidence is committed.
             if ! jq -e . /tmp/ingest-result.json >/dev/null 2>&1; then
-              echo "::error::ingest-result.json is not valid JSON — packages/ingest/run.js emitted unparseable stdout (a non-JSON warning, or a torn write). Raw contents follow; fix run.js's stdout contract so it always emits a single JSON object on the result line."
+              echo "::error::ingest-result.json is not valid JSON — packages/ingest/run.js emitted unparseable stdout (a non-JSON warning, or a torn write). Raw contents follow; fix run.js's stdout contract so it always emits a single JSON object on the result line. The working-tree evidence is still committed below; the run fails at the deferred-error step."
               cat /tmp/ingest-result.json
-              exit 1
+              echo "parse_failed=true" >> "$GITHUB_OUTPUT"
+              exit 0
             fi
             # `// empty` so an absent field yields '' rather than the literal
             # string 'null' leaking into the step outputs.
@@ -150,8 +169,15 @@ jobs:
         # the commit step below (`git add indexes/`) picks them up. The
         # generator is deterministic (sorted keys, atomic temp+rename) so an
         # unchanged fleet produces no diff and the commit-step no-op guard fires.
+        # F-caeeacc3: non-fatal. A generate.js failure (malformed index edge,
+        # portfolio bug, OOM) between persist and commit would otherwise skip
+        # the commit step and discard the record run.js already wrote — the
+        # same evidence-loss class d6-infra-B001 closed for the rejected-exit
+        # path. The generator is deterministic and re-runs on every ingest, so
+        # a skipped regeneration self-heals; a dropped record does not.
         if: steps.result.outputs.written == 'true'
-        run: node packages/portfolio/generate.js
+        run: |
+          node packages/portfolio/generate.js || echo "::warning::badge/trends regeneration failed — the record is still committed by the next step; badges and trends regenerate (and self-heal) on the next ingest."
 
       - name: Commit records and indexes
         # F-FA-001 (Phase 10 Step 1): push-retry loop with exponential
@@ -168,7 +194,13 @@ jobs:
         # pa11y step). Per-attempt `::warning::` annotations let an
         # operator see which attempt landed; the final `::error::`
         # only fires when all 3 failed.
-        if: steps.result.outputs.written == 'true'
+        #
+        # F-caeeacc3: also runs when the result parse failed (parse_failed) —
+        # run.js may still have persisted a record even though its stdout was
+        # unparseable, and the evidence must be committed before the deferred
+        # fail step below reds the run. The no-op guard handles the
+        # nothing-was-written case.
+        if: steps.result.outputs.written == 'true' || steps.result.outputs.parse_failed == 'true'
         # CWE-78: hoist run_id/status into env rather than interpolating
         # ${{ steps.result.outputs.* }} inline into the shell `run:` body.
         # run_id originates from untrusted repository_dispatch client_payload;
@@ -185,37 +217,48 @@ jobs:
           git config user.email "64996768+mcp-tool-shop@users.noreply.github.com"
           git add records/ indexes/
           git diff --cached --quiet && echo "No changes to commit" && exit 0
-          git commit -m "ingest: ${STATUS} dogfood record ${RUN_ID}"
+          git commit -m "ingest: ${STATUS:-unknown-status} dogfood record ${RUN_ID:-unknown-run}"
 
           for attempt in 1 2 3; do
             if git push; then
               echo "::notice::Push succeeded on attempt $attempt for run ${RUN_ID}"
               exit 0
             fi
+            # F-68818085: rebase + sleep only when another attempt follows. A
+            # rebase after the FINAL failed push can itself hit a conflict, so
+            # the run's terminal error would read 'rebase failed during push
+            # retry attempt 3' even though no retry was going to happen —
+            # misdirecting the operator from the real terminus ('all 3 push
+            # attempts failed'). Rebase failures inside the branch still
+            # surface immediately rather than continuing the loop with a
+            # half-rebased tree: a concurrent ingest touching the same
+            # records/ or indexes/ paths produces a merge conflict, and
+            # without the guard the next push fails for a different reason
+            # with no signal that the underlying issue was a content conflict.
             if [ $attempt -lt 3 ]; then
               wait_s=$((attempt * 10))
               echo "::warning::Push attempt $attempt failed for run ${RUN_ID} — rebasing and sleeping ${wait_s}s before retry"
-            else
-              echo "::warning::Push attempt $attempt failed for run ${RUN_ID} — final attempt"
-            fi
-            # Surface rebase failures immediately rather than continuing the
-            # retry loop with a half-rebased working tree. A concurrent ingest
-            # touching the same records/ or indexes/ paths produces a merge
-            # conflict; without this guard the next push attempt fails for a
-            # different reason and the operator sees only the generic "All
-            # push attempts failed" with no signal that the underlying issue
-            # was a content conflict.
-            git pull --rebase || {
-              echo "::error::rebase failed during push retry attempt $attempt — likely concurrent ingest conflict on records/ or indexes/ for run ${RUN_ID}"
-              git status --porcelain=v2 || true
-              git rebase --abort 2>/dev/null || true
-              exit 1
-            }
-            if [ $attempt -lt 3 ]; then
-              sleep $((attempt * 10))
+              git pull --rebase || {
+                echo "::error::rebase failed during push retry attempt $attempt — likely concurrent ingest conflict on records/ or indexes/ for run ${RUN_ID}"
+                git status --porcelain=v2 || true
+                git rebase --abort 2>/dev/null || true
+                exit 1
+              }
+              sleep $wait_s
             fi
           done
           echo "::error::All 3 push attempts failed for run ${RUN_ID} (no rebase conflict — likely sustained GitHub-API issue or branch protection)"
+          exit 1
+
+      - name: Fail run on deferred result-parse error
+        # F-caeeacc3: this is where the parse-guard failure deferred by the
+        # 'Read result' step lands. The run goes red AFTER the persisted
+        # evidence was committed above — evidence preservation first, honest
+        # red run second. The ::error:: annotation on the Read result step
+        # names the actual defect (run.js's stdout contract).
+        if: steps.result.outputs.parse_failed == 'true'
+        run: |
+          echo "::error::ingest-result.json was not parseable (see the 'Read result' step annotation). The working-tree evidence was still committed above; fix packages/ingest/run.js's stdout contract so it always emits a single JSON object on the result line."
           exit 1
 
       - name: Warn on stale indexes (degraded run)

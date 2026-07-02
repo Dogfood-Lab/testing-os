@@ -128,16 +128,24 @@ export function buildReceipt(opts) {
   ).length;
   const totalFixed = (findingsByStatus.fixed || 0);
 
-  // Verification receipt for this wave
-  const verification = db.prepare('SELECT * FROM verification_receipts WHERE wave_id = ?').get(wave.id);
+  // Verification receipt for this wave — LATEST row (F-b9a8f684). Without the
+  // ORDER BY, .get() returned the OLDEST receipt while lib/advance.js's Gate 4
+  // reads the newest: after a fail-then-pass verify sequence the durable
+  // receipt rendered FAIL while `swarm advance` passed. Ordering mirrors
+  // checkVerification so both operator surfaces read the same DB truth.
+  const verification = db.prepare(
+    'SELECT * FROM verification_receipts WHERE wave_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
+  ).get(wave.id);
 
-  // Compute advance recommendation from OPEN findings (not historical aggregate)
+  // Compute advance recommendation from OPEN findings (not historical aggregate).
+  // The wave-scoped verification receipt is threaded in so the serial-verify
+  // obligation is visible to the recommendation (V2-CONTRACT-002).
   const recommendation = computeRecommendation(wave, agentRuns, openBySeverity, {
     waveNew,
     waveNewCrit,
     waveNewHigh,
     totalFixed,
-  });
+  }, verification);
 
   return {
     receipt_version: '1.0.0',
@@ -351,7 +359,7 @@ function formatReceiptMarkdown(r) {
   return lines.join('\n');
 }
 
-export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta) {
+export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta, verification) {
   const allComplete = agentRuns.every(a => a.status === 'complete');
   const hasBlocked = agentRuns.some(a => ['invalid_output', 'ownership_violation'].includes(a.status));
   const hasInFlight = agentRuns.some(a => ['dispatched', 'running'].includes(a.status));
@@ -366,6 +374,21 @@ export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta
     return { action: 'RESUME', reason: 'Some agents not complete — run `swarm resume`' };
   }
 
+  // V2-CONTRACT-002: mirror lib/advance.js#checkVerification (F-d12da6ea). A
+  // wave dispatched under --skip-verify ran zero tests by design; until a
+  // PASSING wave-scoped verification receipt exists, the actual gate returns
+  // the NON-overridable VERIFY verdict — so the receipt must recommend VERIFY,
+  // not ADVANCE. Same branch position as Gate 4: after agent completion,
+  // before the finding-severity gate.
+  if (wave.serial_verify_required && !(verification && verification.passed)) {
+    return {
+      action: 'VERIFY',
+      reason: verification
+        ? `serial verify required (--skip-verify wave) — latest verification failed (${verification.repo_type}, exit ${verification.exit_code}); fix and re-run \`swarm verify\``
+        : 'serial verify required (--skip-verify wave) — no verification receipt; run `swarm verify` first',
+    };
+  }
+
   const wavePart = `Wave: ${waveDelta.waveNew} new (${waveDelta.waveNewCrit} CRIT + ${waveDelta.waveNewHigh} HIGH)`;
   const runPart = `Run total: ${openBySeverity.CRITICAL} CRIT + ${openBySeverity.HIGH} HIGH open (fixed: ${waveDelta.totalFixed})`;
 
@@ -373,10 +396,12 @@ export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta
   // is owned by lib/finding-status.js and applied where openBySeverity is
   // computed (buildReceipt above, via isOpenFinding), so a deferred CRITICAL/HIGH
   // is not counted as a blocker — matching lib/advance.js#checkFindingSeverity.
-  // Gate on the same FINDING_GATED_PHASES set lib/advance.js enforces, so the
-  // receipt's recommendation can never say ADVANCE while `swarm advance` blocks
-  // — that mismatch surfaced in health-audit-b/c and stage-d-audit, which are
-  // finding-gated but were not caught by the old health-audit-a prefix test.
+  // Gate on the same FINDING_GATED_PHASES set lib/advance.js enforces. Together
+  // with the VERIFY branch above (Gate 4's serial-verify obligation), the
+  // receipt's recommendation cannot say ADVANCE while `swarm advance` refuses —
+  // the finding-gate half of that mismatch surfaced in health-audit-b/c and
+  // stage-d-audit (finding-gated but missed by the old health-audit-a prefix
+  // test); the verify half was V2-CONTRACT-002.
   if (FINDING_GATED_PHASES.has(wave.phase) && (openBySeverity.CRITICAL > 0 || openBySeverity.HIGH > 0)) {
     return {
       action: 'AMEND',

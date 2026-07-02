@@ -10,8 +10,9 @@
  * Validate step results for a single scenario result.
  *
  * Note: Without access to the source repo's scenario definition, we validate
- * structural integrity. The full required_steps check is done by policy
- * evaluation when scenario definitions are available.
+ * structural integrity. The full required_steps check is done by
+ * validateRequiredSteps below, which verify() runs per scenario_result when
+ * the caller supplies loaded scenario definitions (options.scenarios).
  *
  * @param {object} scenarioResult - A single scenario_results[] item
  * @returns {string[]} Array of error messages (empty if valid)
@@ -41,6 +42,10 @@ export function validateStepResults(scenarioResult) {
   const seenIds = new Set();
   for (const step of step_results) {
     if (step == null || typeof step !== 'object') continue;
+    // F-70338558: a step without a string step_id is already reported as
+    // malformed above; letting `undefined` into the dedupe Set made two
+    // malformed steps emit a spurious `duplicate step_id: undefined`.
+    if (typeof step.step_id !== 'string') continue;
     if (seenIds.has(step.step_id)) {
       errors.push(`duplicate step_id: ${step.step_id}`);
     }
@@ -72,7 +77,13 @@ export function validateStepResults(scenarioResult) {
 
 /**
  * Validate step results against a scenario definition's required_steps.
- * Used when the scenario definition is available (policy evaluation phase).
+ *
+ * F-3bfc2885: this is the REAL enforcement behind the `step-results-present`
+ * and `step-verdict-consistent` global reject rules (policies/global-policy.yaml,
+ * allowlisted in KNOWN_REJECT_RULE_IDS). verify() calls it per scenario_result
+ * when the caller supplies loaded scenario definitions (options.scenarios).
+ * Each error is tagged with the `[rule-id]` it enforces so operators can pivot
+ * from a rejection reason straight to the policy rule.
  *
  * @param {object} scenarioResult - A single scenario_results[] item
  * @param {string[]} requiredSteps - Step IDs from scenario definition's success_criteria.required_steps
@@ -82,7 +93,7 @@ export function validateRequiredSteps(scenarioResult, requiredSteps) {
   const errors = [];
   const { step_results, verdict } = scenarioResult;
 
-  if (!step_results) return ['step_results missing'];
+  if (!step_results) return ['[step-results-present] step_results missing'];
 
   const resultMap = new Map(step_results.map(s => [s.step_id, s]));
 
@@ -90,17 +101,24 @@ export function validateRequiredSteps(scenarioResult, requiredSteps) {
   for (const stepId of requiredSteps) {
     const result = resultMap.get(stepId);
     if (!result) {
-      errors.push(`required step "${stepId}" has no matching step_result`);
+      errors.push(`[step-results-present] required step "${stepId}" has no matching step_result`);
     }
   }
 
-  // A scenario cannot be "pass" if any required step is fail/blocked
+  // A scenario cannot be "pass" if any required step is fail/blocked — or
+  // absent entirely: validateStepResults' structural check only sees REPORTED
+  // steps, so a submitter who silently omits a failing required step would
+  // otherwise keep a "pass" verdict consistent (F-3bfc2885 sibling case).
   if (verdict === 'pass') {
     for (const stepId of requiredSteps) {
       const result = resultMap.get(stepId);
-      if (result && (result.status === 'fail' || result.status === 'blocked')) {
+      if (!result) {
         errors.push(
-          `scenario verdict is "pass" but required step "${stepId}" has status "${result.status}"`
+          `[step-verdict-consistent] scenario verdict is "pass" but required step "${stepId}" has no step_result`
+        );
+      } else if (result.status === 'fail' || result.status === 'blocked') {
+        errors.push(
+          `[step-verdict-consistent] scenario verdict is "pass" but required step "${stepId}" has status "${result.status}"`
         );
       }
     }

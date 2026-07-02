@@ -20,6 +20,9 @@ import { openDb } from '../db/connection.js';
 import { getDomains } from '../lib/domains.js';
 import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../lib/templates.js';
 import { findingsForDomain } from '../lib/findings-filter.js';
+import { createWorktree } from '../lib/worktree.js';
+import { IsolationError } from '../lib/errors.js';
+import { SKIP_VERIFY_DIRECTIVE } from './dispatch.js';
 import {
   applyTimeoutPolicy, getTimeoutPolicy,
   isBlocked, isTerminal, isRedispatchable, isInFlight,
@@ -141,30 +144,85 @@ export function resume(opts) {
   // pair in one tx so the redispatch wave is all-or-nothing at the DB
   // level. better-sqlite3 nests the inner executeTransition self-wrap as a
   // SAVEPOINT inside this outer tx.
+  //
+  // F-f405dbd9: redispatch CARRIES WORKTREE ISOLATION FORWARD. Pre-fix the
+  // INSERT wrote only (wave_id, domain_id, status) — worktree_path/
+  // worktree_branch were left NULL even when the timed-out predecessor had
+  // them — and the prompt rendered against run.local_path, so the redispatched
+  // agent edited the SHARED tree while siblings ran isolated (the same
+  // silent-isolation-fallback class as F-693631-001/F-742440-007, fixed on
+  // the dispatch path but not here; redrive.js funnels into the same INSERT
+  // shape). Design call, documented: the worktree is RECREATED FRESH via
+  // createWorktree (which force-removes and re-adds from HEAD) — a fresh
+  // agent must not inherit the dead agent's partial edits, and collect's
+  // diff-vs-branch-point attribution stays consistent because the new branch
+  // point is the recreation-time HEAD. If the worktree cannot be recreated we
+  // fail LOUD with IsolationError (isolation is a contract, never a silent
+  // downgrade); the tx rolls back every redispatch row, and worktrees already
+  // recreated for earlier candidates remain as FS orphans (the documented
+  // D3B-002 trade-off).
   const redispatched = [];
   const buildRedispatch = db.transaction(() => {
     for (const ar of redispatchCandidates) {
+      let worktreePath = null;
+      let worktreeBranch = null;
+      if (ar.worktree_path || ar.worktree_branch) {
+        try {
+          const wt = createWorktree(run.local_path, {
+            runId: opts.runId,
+            waveNumber: wave.wave_number,
+            domainName: ar.domain_name,
+          });
+          worktreePath = wt.worktreePath;
+          worktreeBranch = wt.branch;
+        } catch (e) {
+          logStage('isolate_failed', {
+            component: 'dogfood-swarm',
+            correlation_id: mintCorrelationId(),
+            err: e.message,
+            runId: opts.runId,
+            waveNumber: wave.wave_number,
+            domain: ar.domain_name,
+            repoPath: run.local_path,
+            context: 'resume_redispatch',
+          });
+          throw new IsolationError(
+            `redispatch requires isolation (predecessor agent ${ar.id} ran isolated) but worktree recreation failed for domain=${ar.domain_name}: ${e.message}`,
+            { cause: e }
+          );
+        }
+      }
+
       const newAr = db.prepare(`
-        INSERT INTO agent_runs (wave_id, domain_id, status)
-        VALUES (?, ?, 'pending')
-      `).run(wave.id, ar.domain_id);
+        INSERT INTO agent_runs (wave_id, domain_id, status, worktree_path, worktree_branch)
+        VALUES (?, ?, 'pending', ?, ?)
+      `).run(wave.id, ar.domain_id, worktreePath, worktreeBranch);
       const newArId = Number(newAr.lastInsertRowid);
 
       transitionAgent(db, newArId, 'dispatched',
         `Redispatch: previous agent ${ar.id} was "${ar.status}"`);
 
-      redispatched.push({ ar, newArId });
+      redispatched.push({ ar, newArId, worktreePath });
     }
   });
   buildRedispatch();
 
+  // F-ec97601a: the --skip-verify discipline choice is persisted by dispatch
+  // on the wave's kv entry; redispatch prompts must carry the same directive
+  // or the redispatched agent runs `npm test` against the cumulative
+  // in-motion tree mid-wave.
+  const skipVerify = !!db.prepare('SELECT value FROM kv WHERE key = ?')
+    .get(`wave:${wave.id}:skip_verify`)?.value;
+
   // Stage 3 — FS-side prompt rendering. Outside the tx by design; a throw
   // here leaves the new agent rows committed (operator can re-render with
   // the prompt helpers; the redispatched wave is recoverable).
-  for (const { ar, newArId } of redispatched) {
+  for (const { ar, newArId, worktreePath } of redispatched) {
     const globs = JSON.parse(ar.globs);
     const promptOpts = {
-      repoPath: run.local_path,
+      // F-f405dbd9: an isolated redispatch renders its prompt against the
+      // recreated worktree, not the shared tree.
+      repoPath: worktreePath || run.local_path,
       repo: run.repo,
       domainName: ar.domain_name,
       globs,
@@ -181,6 +239,7 @@ export function resume(opts) {
       // every redispatched agent (F-742440-003).
       const findings = findingsForDomain(db, opts.runId, { globs });
       prompt = buildAmendPrompt({ ...promptOpts, findings });
+      if (skipVerify) prompt += SKIP_VERIFY_DIRECTIVE;
     } else {
       prompt = buildAuditPrompt(promptOpts);
     }
@@ -196,6 +255,7 @@ export function resume(opts) {
       newAgentRunId: newArId,
       promptPath,
       previousStatus: ar.status,
+      worktreePath: worktreePath || null,
     });
     report.prompts.push(promptPath);
   }

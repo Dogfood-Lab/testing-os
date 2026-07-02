@@ -342,7 +342,7 @@ describe('withFileLock — file-mutex contract', () => {
     assert.equal(isLocked(t2), false);
   });
 
-  it('reclaims a stale lock whose holder PID is gone', () => {
+  it('reclaims a stale lock whose holder PID is gone', (t) => {
     const target = join(tmp, 'log.yaml');
     const lockPath = lockDirFor(target);
     // Plant a lock file with a definitely-dead PID. Use a very high pid that
@@ -350,7 +350,13 @@ describe('withFileLock — file-mutex contract', () => {
     const fakeDeadPid = 2_147_000_000;
     let alive = true;
     try { process.kill(fakeDeadPid, 0); } catch (e) { if (e?.code === 'ESRCH') alive = false; }
-    if (alive) return; // best-effort skip on flaky environment
+    if (alive) {
+      // F-ed7ad48b: a COUNTED skip, not a bare return — a plain pass here
+      // would hide a permanently-untested reclaim path if the environment
+      // probe ever misbehaved consistently (e.g. kill(pid,0) not throwing).
+      t.skip('sentinel PID unexpectedly alive — cannot plant a dead-PID lock');
+      return;
+    }
 
     writeFileSync(lockPath, String(fakeDeadPid), 'utf-8');
 

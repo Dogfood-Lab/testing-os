@@ -319,15 +319,22 @@ test('d6-infra-B003: Read result — valid JSON extracts status/run_id/written i
   assert.match(ghOut, /written=true/, 'written=true must reach GITHUB_OUTPUT so the rejected record commits');
 });
 
-test('d6-infra-B003: Read result — malformed JSON emits a structured ::error::, not a bare jq error', (t) => {
+test('d6-infra-B003 + F-caeeacc3: Read result — malformed JSON emits a structured ::error:: and DEFERS the failure (parse_failed=true, exit 0) so the commit step still runs', (t) => {
   if (!CAN_EXEC) return t.skip('Linux-CI-targeted');
   const h = makeHarness(t);
   const script = extractRunBlock(readFileSync(ingestYml, 'utf8'), 'Read result');
   writeFileSync(h.resultPath, 'this is not json at all');
   h.writeJqStub({ valid: false }); // jq -e . fails
-  const { status, stdout } = h.run(script);
-  assert.notEqual(status, 0, 'malformed result JSON must fail the step');
+  const { status, stdout, ghOut } = h.run(script);
+  // F-caeeacc3 (wave-2 addendum): the parse guard must NOT exit 1 between
+  // persist and commit — run.js already wrote the accepted/_rejected record to
+  // the runner working tree, and a failing step here skips the commit step and
+  // discards that evidence (the exact d6-infra-B001 evidence-loss class, one
+  // step later). The step exits 0, flags parse_failed=true, and a dedicated
+  // deferred-fail step turns the run red AFTER the commit.
+  assert.equal(status, 0, `malformed result JSON must NOT fail this step (evidence preservation first).\n${stdout}`);
   assert.match(stdout, /::error::ingest-result\.json is not valid JSON/, 'must emit a labeled annotation naming the file');
+  assert.match(ghOut, /parse_failed=true/, 'must flag parse_failed=true so the commit step still runs and the deferred-fail step reds the run afterwards');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -351,8 +358,108 @@ test('STRUCTURAL d6-infra-B001: both ingestion legs decouple node exit from step
   }
 });
 
-test('STRUCTURAL d6-infra-B003: the Read result step guards malformed JSON before extracting', () => {
+test('STRUCTURAL d6-infra-B003 + F-caeeacc3: the Read result step guards malformed JSON and defers the failure past the commit step', () => {
   const block = extractRunBlock(readFileSync(ingestYml, 'utf8'), 'Read result');
   assert.match(block, /jq -e \./, 'must validate the result is JSON (jq -e .) before extracting fields');
   assert.match(block, /::error::ingest-result\.json is not valid JSON/, 'malformed JSON must emit a labeled ::error:: naming the file, not a bare jq error');
+  assert.match(block, /parse_failed=true/, 'the parse guard must flag parse_failed=true instead of failing the step (F-caeeacc3 — evidence preservation first)');
+  assert.doesNotMatch(block, /exit 1/, 'the Read result step must NOT exit 1 — a failure here between persist and commit discards the persisted record (F-caeeacc3)');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-caeeacc3 (wave-2 HIGH): no step between the ingestion legs (persist) and
+// 'Commit records and indexes' may fail the job — a red step there discards
+// the record run.js already wrote to the runner working tree, and the
+// repository_dispatch payload is gone with the run. Badge regeneration is
+// deterministic and self-heals on the next ingest; a dropped record does not.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Extract the full step section (all lines) for `- name: <stepName>`. */
+function extractStepSection(yamlText, stepName) {
+  const lines = yamlText.split(/\r?\n/);
+  const start = lines.findIndex((l) => new RegExp(`^\\s*-\\s*name:\\s*${stepName}\\s*$`).test(l));
+  assert.ok(start >= 0, `could not find step named "${stepName}" in ingest.yml`);
+  const body = [lines[start]];
+  for (let j = start + 1; j < lines.length; j++) {
+    if (/^\s*-\s*name:/.test(lines[j])) break;
+    body.push(lines[j]);
+  }
+  return body.join('\n');
+}
+
+test('STRUCTURAL F-caeeacc3: badge/trends regeneration is non-fatal (commit step always reachable)', () => {
+  const yaml = readFileSync(ingestYml, 'utf8');
+  const block = extractRunBlock(yaml, 'Regenerate served badges \\+ trends');
+  assert.match(
+    block,
+    /node packages\/portfolio\/generate\.js\s*\|\|\s*echo "::warning::/,
+    'the generate.js invocation must be non-fatal (`|| echo "::warning::..."`) so a portfolio bug cannot skip the commit step and drop the persisted record (F-caeeacc3)',
+  );
+});
+
+test('STRUCTURAL F-caeeacc3: the commit step also runs when the result parse failed', () => {
+  const section = extractStepSection(readFileSync(ingestYml, 'utf8'), 'Commit records and indexes');
+  assert.match(
+    section,
+    /if:[^\n]*parse_failed[^\n]*==\s*'true'/,
+    "the commit step's `if:` must include the parse_failed output so an unparseable run.js stdout still commits the persisted evidence (F-caeeacc3)",
+  );
+});
+
+test('STRUCTURAL F-caeeacc3: a deferred-fail step reds the run after the evidence commit on parse failure', () => {
+  const yaml = readFileSync(ingestYml, 'utf8');
+  const section = extractStepSection(yaml, 'Fail run on deferred result-parse error');
+  assert.match(section, /parse_failed[^\n]*==\s*'true'/, 'the deferred-fail step must be gated on parse_failed');
+  assert.match(section, /exit 1/, 'the deferred-fail step must exit 1 so an unparseable result still reds the run (failures must surface)');
+  // Ordering: the deferred fail must come AFTER the commit step. Match the
+  // step NAME lines, not free text — the Read result comment also mentions
+  // the deferred step by name.
+  assert.ok(
+    yaml.indexOf('name: Fail run on deferred result-parse error') > yaml.indexOf('name: Commit records and indexes'),
+    'the deferred-fail step must run after the commit step — evidence first, red run second',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-50558cb2: stderr capture must be deterministic. Bash does not wait for a
+// `2> >(tee ...)` process substitution when the pipeline completes, so the
+// staleness NDJSON tail could still be unflushed when the 'Warn on stale
+// indexes' step reads the file. A plain redirect + post-pipeline cat has no
+// async writer.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('STRUCTURAL F-50558cb2: both ingestion legs capture stderr with a plain redirect, not a procsub, and replay it to the live log', () => {
+  const yaml = readFileSync(ingestYml, 'utf8');
+  for (const step of ['Run ingestion \\(repository_dispatch\\)', 'Run ingestion \\(workflow_dispatch\\)']) {
+    const block = extractRunBlock(yaml, step);
+    assert.doesNotMatch(block, /2>\s*>\(/, `${step}: must not use a process substitution for the stderr capture — bash does not wait for it, so the capture file can be torn (F-50558cb2)`);
+    assert.match(block, /2>\s*\/tmp\/ingest-stderr\.log/, `${step}: must capture stderr with a plain redirect to /tmp/ingest-stderr.log`);
+    assert.match(block, /cat \/tmp\/ingest-stderr\.log >&2/, `${step}: must replay the captured stderr to the live log so operators still see run.js diagnostics inline`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-68818085: the push-retry loop must only rebase when another attempt
+// follows. A rebase after the final failed push can itself conflict, making
+// the run's terminal error 'rebase failed during push retry attempt 3' even
+// though no retry was going to happen — misdirecting the operator from the
+// real terminus ('all 3 push attempts failed').
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('STRUCTURAL F-68818085: git pull --rebase runs only inside the another-attempt-follows branch', () => {
+  const block = extractRunBlock(readFileSync(ingestYml, 'utf8'), 'Commit records and indexes');
+  const rebaseCount = (block.match(/git pull --rebase/g) ?? []).length;
+  assert.equal(rebaseCount, 1, 'exactly one rebase site expected in the retry loop');
+  // The nearest preceding `if [ $attempt -lt 3 ]; then` must still be OPEN
+  // (no intervening `fi`) when the rebase runs — i.e. the rebase is inside
+  // that branch, not after it. A lazy `[\s\S]*?` match would pass on the
+  // broken layout by crossing the closing `fi`, so we check the slice.
+  const rebaseIdx = block.indexOf('git pull --rebase');
+  const ifIdx = block.lastIndexOf('if [ $attempt -lt 3 ]; then', rebaseIdx);
+  assert.ok(ifIdx >= 0, 'expected an `if [ $attempt -lt 3 ]; then` branch before the rebase');
+  assert.doesNotMatch(
+    block.slice(ifIdx, rebaseIdx),
+    /\bfi\b/,
+    'the rebase must sit INSIDE the `if [ $attempt -lt 3 ]` branch so no wasted (and possibly conflicting) rebase runs after the final failed push (F-68818085)',
+  );
 });

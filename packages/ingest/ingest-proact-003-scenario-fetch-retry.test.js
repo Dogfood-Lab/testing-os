@@ -21,8 +21,10 @@
  *   - a 429 followed by a 200 returns the scenario.
  *   - a 404 is returned immediately with reason='not_found' and is NOT retried
  *     (exactly one fetch call).
- *   - persistent 5xx exhausts the bounded attempts and returns reason='not_found'
- *     (the back-compat failure class) after exactly `attempts` calls.
+ *   - persistent 5xx exhausts the bounded attempts and THROWS the classified
+ *     `scenario-fetch-fault:` operational error after exactly `attempts` calls
+ *     (V2-CROSS-BO-001 superseded the original return of the back-compat
+ *     'not_found' class — an outage is an ops incident, not a missing file).
  */
 
 import { describe, it } from 'node:test';
@@ -40,7 +42,23 @@ function resp(status, body = '') {
   };
 }
 
-const GOOD_YAML = 'scenario_id: sanity\nsteps:\n  - id: one\n    purpose: smoke\n';
+// Schema-valid (V2-CROSS-BO-002 added a validatePayload('scenario', …) gate
+// at the fetch boundary, so success-path fixtures must conform).
+const GOOD_YAML = [
+  'scenario_id: sanity',
+  'scenario_name: Sanity smoke',
+  'scenario_version: 1.0.0',
+  'product_surface: cli',
+  'execution_mode: bot',
+  'description: Smoke-checks the CLI happy path.',
+  'steps:',
+  '  - id: one',
+  '    action: run the CLI once',
+  'success_criteria:',
+  '  required_steps:',
+  '    - one',
+  ''
+].join('\n');
 
 describe('INGEST-PROACT-003 — bounded retry with backoff for transient faults', () => {
   it('a transient 5xx then a 200 returns the scenario (retry worked)', async () => {
@@ -89,15 +107,16 @@ describe('INGEST-PROACT-003 — bounded retry with backoff for transient faults'
     assert.equal(n, 1, 'a 404 is a definitive answer — never retried');
   });
 
-  it('persistent 5xx exhausts the bounded attempts and returns not_found', async () => {
+  it('persistent 5xx exhausts the bounded attempts then THROWS the classified operational fault', async () => {
+    // V2-CROSS-BO-001: this case previously returned reason='not_found' —
+    // an outage misclassified as a missing scenario file, which rejected a
+    // good submission. The retry budget is unchanged; the exhaustion outcome is now a throw.
     let n = 0;
     const fetchImpl = async () => { n += 1; return resp(500); };
     const fetcher = githubScenarioFetcher('tok', 'org/repo', VALID_SHA, {
       fetchImpl, attempts: 3, sleepImpl: () => {},
     });
-    const result = await fetcher.fetchWithReason('sanity');
-    assert.equal(result.scenario, null);
-    assert.equal(result.reason, 'not_found');
+    await assert.rejects(fetcher.fetchWithReason('sanity'), /scenario-fetch-fault: .*500/);
     assert.equal(n, 3, 'must try exactly `attempts` times before giving up');
   });
 

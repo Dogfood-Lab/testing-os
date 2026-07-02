@@ -35,6 +35,9 @@
  *   - validators/schema-version.js:   CONTRACT_SCHEMA_TOO_NEW:,
  *                                     CONTRACT_SCHEMA_TOO_OLD:
  *   - packages/ingest/run.js:         scenario-load:
+ *   - packages/ingest/load-context.js: scenario-fetch-fault: (V2-CROSS-BO-001,
+ *                                     scenario-fetch outage/credential fault
+ *                                     → operational)
  *
  * `VALIDATOR_FAULT_*` is matched by family, not by an exhaustive name list, so
  * a future `VALIDATOR_FAULT_<NEW>:` (e.g. the runValidator seam adds a 5th
@@ -93,6 +96,13 @@ const LITERAL_PREFIXES = [
   // (verify-B-003), not a submitter who sent a bad-but-shaped payload. Page ops;
   // do NOT bounce it back to the submitter.
   { match: 'submission-malformed:', prefix: 'submission-malformed:', class: 'operational' },
+  // operational — the scenario fetcher THREW after exhausting its retry
+  // budget (5xx/429 outage, transport reject) or hit a credential fault
+  // (401/403). V2-CROSS-BO-001: packages/ingest/load-context.js throws this
+  // classified error instead of returning `not_found`, so an outage never
+  // rejects a good submission. Ordered before `scenario-load:` to keep the
+  // most-specific-first invariant explicit (the tokens do not overlap).
+  { match: 'scenario-fetch-fault:', prefix: 'scenario-fetch-fault:', class: 'operational' },
   // ingest
   { match: 'scenario-load:', prefix: 'scenario-load:', class: 'ingest' },
 ];

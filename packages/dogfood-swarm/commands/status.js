@@ -120,13 +120,20 @@ export function status(opts) {
     )
   `).get(opts.runId);
 
-  // Verification receipts
-  const lastReceipt = db.prepare(`
-    SELECT vr.* FROM verification_receipts vr
-    JOIN waves w ON vr.wave_id = w.id
-    WHERE w.run_id = ?
-    ORDER BY vr.created_at DESC LIMIT 1
-  `).get(opts.runId);
+  // Verification receipt — scoped to the CURRENT wave (F-b22182da). The
+  // TRUTH-001 serial-verify refusal keys on this row; a run-wide "latest
+  // receipt anywhere" query let a stale passing receipt from an EARLIER wave
+  // satisfy the check for a later --skip-verify wave that was never verified,
+  // producing the exact false 'READY TO ADVANCE' claim TRUTH-001 exists to
+  // prevent. The display block below reads the same row — wave-latest is the
+  // honest display. Ordering mirrors lib/advance.js#checkVerification.
+  const lastReceipt = currentWave
+    ? db.prepare(`
+        SELECT * FROM verification_receipts
+        WHERE wave_id = ?
+        ORDER BY created_at DESC, id DESC LIMIT 1
+      `).get(currentWave.id)
+    : null;
 
   // Wave receipt
   const waveReceipt = currentWave

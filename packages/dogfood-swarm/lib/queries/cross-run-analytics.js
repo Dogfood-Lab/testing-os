@@ -49,10 +49,14 @@
  * derive first_seen / last_seen from the runs' created_at (the earliest /
  * latest run the fingerprint was observed in).
  *
- * severity / description are taken from a representative row; for a
- * content-addressed fingerprint they are identical across runs by
- * construction, so MAX() (deterministic pick) is safe and avoids a correlated
- * subquery.
+ * description is taken from a representative row via MAX() (deterministic
+ * pick, avoids a correlated subquery) — NOTE it is NOT part of the
+ * fingerprint, so wave-to-wave rewordings can differ across runs; the pick is
+ * merely stable, not "identical by construction". severity is likewise not
+ * fingerprint-folded, so it is ranked EXPLICITLY (F-832f8547): the most
+ * severe observation across runs wins. A bare MAX(severity) was an
+ * ALPHABETICAL pick — a fingerprint recorded CRITICAL in one run and MEDIUM
+ * in another reported 'MEDIUM' ('M' > 'C').
  *
  * @param {import('better-sqlite3').Database} db
  * @returns {Array<{
@@ -71,7 +75,17 @@ export function queryRecurringFindings(db) {
       f.fingerprint                 AS fingerprint,
       MAX(f.description)            AS description,
       COUNT(DISTINCT f.run_id)      AS run_count,
-      MAX(f.severity)               AS severity,
+      CASE MAX(CASE f.severity
+        WHEN 'CRITICAL' THEN 4
+        WHEN 'HIGH'     THEN 3
+        WHEN 'MEDIUM'   THEN 2
+        WHEN 'LOW'      THEN 1
+        ELSE 0 END)
+        WHEN 4 THEN 'CRITICAL'
+        WHEN 3 THEN 'HIGH'
+        WHEN 2 THEN 'MEDIUM'
+        WHEN 1 THEN 'LOW'
+        ELSE MAX(f.severity) END    AS severity,
       MIN(r.created_at)             AS first_seen,
       MAX(r.created_at)             AS last_seen
     FROM findings f

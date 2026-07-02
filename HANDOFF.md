@@ -8,7 +8,7 @@
 >
 > **What's left to do tomorrow (or whenever you pick it up):**
 >
-> 1. **Session H — delete legacy `mcp-tool-shop-org/dogfood-labs`.** Pre-flight checklist below is satisfied for items A–G; the 30-day grace window started 2026-04-25 and **passed on 2026-05-25** (current date 2026-05-31 — six days past). Remaining gates: Mike's explicit "yes delete it" go/no-go on the deferred close, archiving issues + PR history + Actions runs into `legacy/`, and a final traffic re-check just before delete. No additional waiting required — this is now a deliberate hold pending Mike's call.
+> 1. **Session H — delete legacy `mcp-tool-shop-org/dogfood-labs`.** Pre-flight checklist below is satisfied for items A–G; the 30-day grace window started 2026-04-25 and **passed on 2026-05-25** (already past as of the last update to this note, 2026-07-02). Remaining gates: Mike's explicit "yes delete it" go/no-go on the deferred close, archiving issues + PR history + Actions runs into `legacy/`, and a final traffic re-check just before delete. No additional waiting required — this is now a deliberate hold pending Mike's call.
 > 2. **Five surfaced follow-ups** (each is its own small session, none blocks H):
 >    - Set `DOGFOOD_TOKEN` secret on consumer repos so dispatch actually fires (currently skipped silently). User-side: mint a fine-grained PAT with `contents: write` on `dogfood-lab/testing-os`, add as `DOGFOOD_TOKEN` to ai-loadout / claude-guardian / glyphstudio / site-theme / shipcheck.
 >    - Fix ai-loadout's broken `main` build (TS errors on missing `@types/node` config).
@@ -297,7 +297,7 @@ Logo (step 1) deferred to its own session — wants Sprite Foundry pipeline + Mi
   gh run list --repo mcp-tool-shop-org/dogfood-labs --limit 1000 --json databaseId,headBranch,conclusion,createdAt,name > legacy-actions.json
   ```
 - [ ] **GitHub Pages traffic check** confirms no recent (last 14 days) external traffic
-- [x] **Wait 30+ days after archive.** Lets external consumers fail loudly. Don't rush. — **Grace window passed 2026-05-25** (30 days after 2026-04-25 archive); current date 2026-05-31. Awaiting Mike's go/no-go on the deferred-close items below before any deletion command runs.
+- [x] **Wait 30+ days after archive.** Lets external consumers fail loudly. Don't rush. — **Grace window passed 2026-05-25** (30 days after 2026-04-25 archive). Awaiting Mike's go/no-go on the deferred-close items below before any deletion command runs (still pending as of 2026-07-02).
 - [ ] **Mike has explicitly approved deletion** — not just acknowledged. The kind of "yes delete it" that matches the magnitude of "I am about to permanently remove 8000+ commits, hundreds of evidence records, and the audit trail of months of dogfood runs."
 
 **Delete:**

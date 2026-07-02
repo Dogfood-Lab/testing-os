@@ -4,16 +4,19 @@
  * findings-digest.js — read-only helper
  *
  * Flattens all per-domain wave outputs into one markdown findings table.
- * Purely additive — reads the per-domain `<domain>.json` files that agents
- * write to the wave directory. Does not touch the DB, does not modify any
- * swarm state.
+ * Purely additive — does not touch the DB, does not modify any swarm state.
  *
- * File-glob contract: a wave dir contains both prompt files (`<domain>.md`)
- * and agent output files (`<domain>.json`). Some legacy waves (and a small
- * set of generated artifacts in collect/persist) also drop manifest-style
- * JSON like `manifest.json`, `summary.json`, `submission.json`, or
- * `audit-payload.json`. The digest filters those reserved names out so it
- * only iterates true per-domain agent outputs.
+ * File-glob contract (F-00c35ce7): the CANONICAL layout — promised by
+ * dispatch and consumed by `swarm collect --all` (AGENT_OUTPUT_FILENAME in
+ * commands/collect.js, F4-CP-05) — is `wave-N/<domain>/output.json`, one
+ * subdirectory per domain. The digest treats each wave-dir subdirectory
+ * containing an `output.json` as a domain output. LEGACY waves instead wrote
+ * flat `<domain>.json` files next to the prompt files (`<domain>.md`); that
+ * shape is still read so old wave dirs keep rendering. Some legacy waves
+ * (and a small set of generated artifacts in collect/persist) also drop
+ * manifest-style JSON like `manifest.json`, `summary.json`,
+ * `submission.json`, or `audit-payload.json` — those reserved names are
+ * filtered out so only true per-domain agent outputs are iterated.
  *
  * Usage:
  *   node findings-digest.js <run-id> [wave-number]
@@ -52,16 +55,8 @@ const RESERVED_WAVE_JSON = new Set([
 ]);
 
 export function loadDomainOutputs(waveDir) {
-  const entries = readdirSync(waveDir).filter((e) => {
-    if (!e.endsWith('.json')) return false;
-    if (RESERVED_WAVE_JSON.has(e)) return false;
-    return true;
-  });
   const outputs = [];
-  for (const entry of entries) {
-    // Tolerate the older `<domain>.output.json` shape if a stale wave dir is
-    // ever reprocessed — strip whichever suffix is present.
-    const domain = entry.replace(/\.output\.json$/, '').replace(/\.json$/, '');
+  const pushOutput = (domain, filePath) => {
     // F-H5 (Wave A1 D3): per-domain agent output JSON read goes through the
     // bounded helper. A pathological agent output (logging loop, raw stdout)
     // here would otherwise OOM the digest renderer. The digest layer
@@ -69,11 +64,34 @@ export function loadDomainOutputs(waveDir) {
     // `parseError` on the output entry), so we preserve that contract — the
     // bounded helper's structured errors are mapped to the same shape.
     try {
-      const parsed = readBoundedJson(join(waveDir, entry));
+      const parsed = readBoundedJson(filePath);
       outputs.push({ domain, parsed });
     } catch (err) {
       outputs.push({ domain, parseError: err.message });
     }
+  };
+
+  for (const entry of readdirSync(waveDir)) {
+    const entryPath = join(waveDir, entry);
+
+    // Canonical layout (F-00c35ce7): `wave-N/<domain>/output.json`. Without
+    // this branch, a healthy modern wave loaded ZERO outputs and the digest
+    // classified it 'pipeline_broken' (exit 2) — breaking the documented CI
+    // exit-code contract for every canonical-layout wave.
+    let st = null;
+    try { st = statSync(entryPath, { throwIfNoEntry: false }); } catch { st = null; }
+    if (st && st.isDirectory()) {
+      const canonical = join(entryPath, 'output.json');
+      if (existsSync(canonical)) pushOutput(entry, canonical);
+      continue;
+    }
+
+    // Legacy layout: flat `<domain>.json` (or older `<domain>.output.json`)
+    // next to the prompt files.
+    if (!entry.endsWith('.json')) continue;
+    if (RESERVED_WAVE_JSON.has(entry)) continue;
+    const domain = entry.replace(/\.output\.json$/, '').replace(/\.json$/, '');
+    pushOutput(domain, entryPath);
   }
   return outputs;
 }

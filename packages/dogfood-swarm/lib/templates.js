@@ -157,9 +157,14 @@ function renderDomainContract(globs, ownershipClass, domainSnapshotId) {
   const lines = [];
   lines.push('## Your domain (canonical, derived from frozen map)');
   lines.push('');
-  lines.push('These globs are the frozen-snapshot authority. If the coordinator');
-  lines.push('brief lists different files or scopes, the snapshot wins —');
-  lines.push('collect-time `checkOwnership()` enforces against the snapshot.');
+  // F-950fe296: state the TRUE enforcement property. checkOwnership reads the
+  // frozen domain MAP (lib/domains.js documents the snapshot as forensic-only;
+  // sm-001 tracks threading the snapshot id into enforcement). Claiming
+  // "enforces against the snapshot" told every agent a false property.
+  lines.push('These globs come from the frozen domain map. If the coordinator');
+  lines.push('brief lists different files or scopes, this block wins —');
+  lines.push('collect-time `checkOwnership()` enforces against the frozen domain');
+  lines.push('map; the snapshot ID below is the audit anchor for this wave.');
   lines.push('');
   if (ownershipClass) {
     lines.push(`Ownership class: \`${ownershipClass}\``);

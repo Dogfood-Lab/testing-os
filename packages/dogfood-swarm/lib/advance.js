@@ -31,7 +31,7 @@ import { openDb } from '../db/connection.js';
 import { isBlocked, isInFlight } from './state-machine.js';
 import { transitionWave } from './wave-state-machine.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from './queries/latest-agent-runs.js';
-import { cleanupAllWorktrees } from './worktree.js';
+import { cleanupRunWorktrees } from './worktree.js';
 import { logStage } from './log-stage.js';
 import { CLOSED_FINDING_STATUSES_SQL } from './finding-status.js';
 
@@ -125,8 +125,9 @@ export function checkGates(db, runId) {
     return { verdict: 'BLOCK', nextPhase: null, gates, overridable: true, reason: violationGate.reason };
   }
 
-  // ── Gate 4: Verification must pass (if receipt exists) ──
-  const verifyGate = checkVerification(db, wave.id);
+  // ── Gate 4: Verification must pass (if receipt exists; MANDATORY when the
+  // wave carries the serial-verify obligation) ──
+  const verifyGate = checkVerification(db, wave);
   gates.push(verifyGate);
   if (!verifyGate.passed && verifyGate.verdict === 'VERIFY') {
     return { verdict: 'VERIFY', nextPhase: null, gates, overridable: false, reason: verifyGate.reason };
@@ -263,7 +264,11 @@ export function recordPromotion(db, runId, waveId, fromPhase, toPhase, opts) {
     const run = db.prepare('SELECT local_path FROM runs WHERE id = ?').get(runId);
     if (run && run.local_path) {
       try {
-        cleanupAllWorktrees(run.local_path);
+        // F-e7369293: scope the sweep to THIS run's worktrees (run-short
+        // branch prefix, same filter as `swarm clean`). cleanupAllWorktrees
+        // is repo-wide and would tear down a concurrent run's in-flight
+        // --isolate worktrees in the same repo.
+        cleanupRunWorktrees(run.local_path, runId);
       } catch (e) {
         logStage('worktree_cleanup_failed', {
           component: 'dogfood-swarm',
@@ -313,7 +318,15 @@ export function advance(db, runId, opts = {}) {
     // AMEND means: approve findings, then dispatch amend wave
     const wave = db.prepare('SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1').get(runId);
     if (opts.override && opts.overrideReason) {
-      const promotionId = recordPromotion(db, runId, wave.id, wave.phase, gateResult.nextPhase, {
+      // F-5a251061: an overridden AMEND verdict means the operator ACCEPTED
+      // the open findings and wants to move PAST the finding gate — promote to
+      // the phase's `next` stage (mirroring the generic-override branch
+      // below), NOT to gateResult.nextPhase, which for AMEND is the amend
+      // phase itself. Pre-fix, `swarm advance --override` routed the operator
+      // straight back into the amend loop the override existed to skip, and
+      // the immutable promotions row recorded the wrong to_phase.
+      const toPhase = PHASE_MAP[wave.phase]?.next || wave.phase;
+      const promotionId = recordPromotion(db, runId, wave.id, wave.phase, toPhase, {
         authorizedBy: opts.authorizedBy,
         gates: gateResult.gates,
         overrides: [{ gate: 'finding_severity', reason: opts.overrideReason }],
@@ -322,7 +335,7 @@ export function advance(db, runId, opts = {}) {
         promoted: true,
         verdict: 'ADVANCE (override)',
         fromPhase: wave.phase,
-        toPhase: gateResult.nextPhase,
+        toPhase,
         promotionId,
         gates: gateResult.gates,
       };
@@ -441,10 +454,28 @@ function checkViolations(db, waveId, agents) {
   return { name: 'ownership', passed: true, reason: 'No ownership violations' };
 }
 
-function checkVerification(db, waveId) {
+function checkVerification(db, wave) {
   const receipt = db.prepare(
-    'SELECT * FROM verification_receipts WHERE wave_id = ? ORDER BY created_at DESC LIMIT 1'
-  ).get(waveId);
+    'SELECT * FROM verification_receipts WHERE wave_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
+  ).get(wave.id);
+
+  // F-d12da6ea (TRUTH-001 enforcement): when the wave was dispatched under the
+  // --skip-verify discipline, agents deliberately ran zero tests and the
+  // coordinator's cumulative-tree verify is MANDATORY, not optional. Without
+  // this branch a scripted `swarm advance` promoted the wave with zero
+  // verification anywhere — `swarm status` refused (VERIFY REQUIRED) but the
+  // actual gate did not. verdict:'VERIFY' lands in checkGates' NON-overridable
+  // branch, matching the status surface.
+  if (wave.serial_verify_required && !(receipt && receipt.passed)) {
+    return {
+      name: 'verification',
+      passed: false,
+      verdict: 'VERIFY',
+      reason: receipt
+        ? `serial verify required (--skip-verify wave) — latest verification failed (${receipt.repo_type}, exit ${receipt.exit_code}); fix and re-run \`swarm verify\``
+        : 'serial verify required (--skip-verify wave) — no verification receipt; run `swarm verify` first',
+    };
+  }
 
   if (!receipt) {
     return {

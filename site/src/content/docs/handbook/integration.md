@@ -35,7 +35,7 @@ Provenance confirms your CI run actually happened and binds your `repo` + `commi
 
 ### Record integrity
 
-Every persisted record carries an `integrity` hash chain (`submission_digest` + `prev_digest`). `dogfood ingest --verify-chain` validates it fully offline; an optional, off-by-default XRPL anchor (`dogfood ingest --anchor-compute|--anchor-post|--anchor-verify`) witnesses the chain head externally so truncation or rewrite below an anchored point is detectable. The integrity model — tamper-evident by default, tamper-proof only with the anchor — is documented in the [README threat model](https://github.com/dogfood-lab/testing-os#threat-model).
+Every persisted record carries an `integrity` hash chain (`submission_digest` + `prev_digest`). `node packages/ingest/run.js --verify-chain` (run in a testing-os checkout) validates it fully offline; an optional, off-by-default XRPL anchor (`node packages/ingest/run.js --anchor-compute|--anchor-post|--anchor-verify`) witnesses the chain head externally so truncation or rewrite below an anchored point is detectable. The integrity model — tamper-evident by default, tamper-proof only with the anchor — is documented in the [README threat model](https://github.com/dogfood-lab/testing-os#threat-model).
 
 ## shipcheck Gate F
 

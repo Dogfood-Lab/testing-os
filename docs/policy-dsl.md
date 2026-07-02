@@ -54,7 +54,7 @@ surfaces:
       - id: actor-allowlist
         severity: reject
         description: "web proof must come from an allowlisted actor"
-        when: { field: "attested_by", op: in, value: [ci-bot, release-bot] }
+        when: { field: "attested_by", op: not_in, value: [ci-bot, release-bot] }
 ```
 
 `custom_rules` are **always** evaluated at `scenario_result` scope (they live under a surface, so they apply to

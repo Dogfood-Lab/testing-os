@@ -50,6 +50,11 @@ const KNOWN_REJECT_RULE_IDS = new Set([
   // enforced by other validators or by verify() itself (default-arm no-op is correct)
   'schema-valid',
   'provenance-confirmed',
+  // F-3bfc2885: enforced by validateRequiredSteps (validators/steps.js), which
+  // verify() runs per scenario_result when the ingest layer supplies loaded
+  // scenario definitions (options.scenarios). The structural half (non-empty
+  // step_results, dup ids, pass-vs-fail over REPORTED steps) is
+  // validateStepResults.
   'step-results-present',
   'step-verdict-consistent',
   'no-verdict-upgrade',
@@ -155,7 +160,10 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
     // dropping operator-authored rules on the floor: a declared rule that the
     // build does nothing with is invisible to the operator who wrote it.
     if (rule.severity === 'warn') {
-      warnings.push(`${rule.id}: ${rule.description || 'policy warning'}`);
+      // F-57a0c0ad: bracketed `[id]` form — the same shape buildReason gives
+      // declarative rules — so one grep pattern finds every rule-attributed
+      // message regardless of how the rule is enforced.
+      warnings.push(`[${rule.id}] ${rule.description || 'policy warning'}`);
       continue;
     }
     if (rule.severity === 'info') {

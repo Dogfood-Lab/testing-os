@@ -19,8 +19,8 @@
  *
  * Transition rules:
  *   pending            → dispatched, aborted_for_rewind
- *   dispatched         → running, complete, failed, timed_out, aborted_for_rewind
- *   running            → complete, failed, timed_out, aborted_for_rewind
+ *   dispatched         → running, complete, failed, timed_out, invalid_output, ownership_violation, aborted_for_rewind
+ *   running            → complete, failed, timed_out, invalid_output, ownership_violation, aborted_for_rewind
  *   complete           → (terminal)
  *   failed             → dispatched (redispatch), aborted_for_rewind
  *   timed_out          → dispatched (redispatch), aborted_for_rewind
@@ -118,6 +118,22 @@ export function transitionAgent(db, agentRunId, toStatus, reason, override = fal
   // Override path for blocked statuses
   if (override && BLOCKED_STATUSES.has(from)) {
     if (!reason) throw new Error(`Override requires a reason for "${from}" → "${toStatus}"`);
+    // F-3771ff90: the override bypasses canTransition entirely, and SQLite has
+    // no enum enforcement — validate the TARGET against the canonical status
+    // set so a caller bug cannot write a non-canonical string that downstream
+    // classifiers only catch ad hoc.
+    if (!Object.prototype.hasOwnProperty.call(TRANSITIONS, toStatus)) {
+      throw new StateMachineRejectionError(
+        `Override transition '${from}' → '${toStatus}' refused: '${toStatus}' is not a canonical agent status.`,
+        {
+          kind: 'INVALID',
+          from,
+          to: toStatus,
+          agentRunId,
+          hint: `canonical statuses: ${Object.keys(TRANSITIONS).join(' | ')}`,
+        }
+      );
+    }
     return executeTransition(db, agentRunId, from, toStatus, reason);
   }
 

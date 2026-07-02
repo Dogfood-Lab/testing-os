@@ -8,6 +8,7 @@
  */
 
 import { buildSubmission } from '@dogfood-lab/report/build-submission.js';
+import { isOpenFinding } from '../finding-status.js';
 
 /**
  * Build a dogfood submission from a canonical run export.
@@ -72,14 +73,22 @@ export function buildDogfoodSubmission(exportData, overallVerdict) {
     value: v.test_count || 0,
   }));
 
-  // Add finding summary as a check
+  // Add finding summary as a check.
+  //
+  // F-5c562913 (sibling): the severity check counts OPEN findings only —
+  // by_severity spans every status, so a CRITICAL that was already fixed
+  // (or rejected/deferred) kept failing this check in the durable corpus.
+  // Open/closed semantics from lib/finding-status.js, same as the gate.
   const findingSummary = exportData.findings.summary;
   if (findingSummary.total > 0) {
+    const openItems = (exportData.findings.items || []).filter(f => isOpenFinding(f.status));
+    const openHighOrCritical = openItems.filter(
+      f => f.severity === 'CRITICAL' || f.severity === 'HIGH'
+    ).length;
     ciChecks.push({
       id: 'findings-severity',
       kind: 'security',
-      status: (findingSummary.by_severity?.CRITICAL || 0) > 0 ? 'fail' :
-              (findingSummary.by_severity?.HIGH || 0) > 0 ? 'fail' : 'pass',
+      status: openHighOrCritical > 0 ? 'fail' : 'pass',
       value: findingSummary.total,
     });
   }

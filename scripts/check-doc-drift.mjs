@@ -266,6 +266,20 @@ const forbiddenPatternInTargetsHandler = {
     const reports = [];
     const targetFiles = expandGlobs(check.targets ?? [], repoRoot);
 
+    // F-cca3ed17: zero matched targets means the gate protects NOTHING — a
+    // renamed docs dir or a typo'd glob turned the check silently green
+    // forever (the D4-004 vacuous-gate class, closed for every sibling
+    // handler but this one). Fail loud unless the check explicitly opts into
+    // empty via allowEmpty (parity with schema-conformance).
+    if (targetFiles.length === 0 && !check.allowEmpty) {
+      return [{
+        checkId: check.id,
+        severity: 'config-error',
+        message: `[${check.id}] no target files matched: ${(check.targets ?? []).join(', ')}`,
+        hint: 'The target globs may have rotted (docs reorganized, path typo). Fix the globs in scripts/doc-drift-patterns.json, or set "allowEmpty": true only if matching zero files is genuinely acceptable for this check.',
+      }];
+    }
+
     for (const file of targetFiles) {
       const text = readFileSync(file, 'utf8');
       const lines = text.split(/\r?\n/);
@@ -389,25 +403,34 @@ const untaggedFenceHandler = {
       const lines = text.split(/\r?\n/);
       let inFence = false;
       lines.forEach((line, idx) => {
-        const m = /^```(.*)$/.exec(line);
-        if (!m) return;
-        if (!inFence) {
-          const info = m[1].trim();
-          if (info.length === 0) {
-            const rel = relative(repoRoot, file).replace(/\\/g, '/');
-            reports.push({
-              checkId: check.id,
-              severity: 'drift',
-              message: `[${check.id}] ${check.title}: ${rel}:${idx + 1} — opening fence missing language tag`,
-              file: `${rel}:${idx + 1}`,
-              forbidden: ['```\\n (untagged opening fence)'],
-              hint: check.hint,
-            });
-          }
-          inFence = true;
-        } else {
-          inFence = false;
+        if (inFence) {
+          // A closer is a BARE fence, optionally indented up to 3 spaces
+          // (CommonMark). A fence-looking line WITH an info string inside an
+          // open block is content, not a close.
+          if (/^\s{0,3}```\s*$/.test(line)) inFence = false;
+          return;
         }
+        // F-de02ea22: openers may be indented up to 3 spaces and may sit on a
+        // list-marker line (`- ```js`) or a list continuation — legal, common
+        // CommonMark that the previous column-0-only regex silently skipped,
+        // so untagged fences nested in the handbook's bulleted lists shipped
+        // unflagged. 4+ spaces of indent is an indented code block, not a
+        // fence, and stays ignored.
+        const m = /^\s{0,3}(?:(?:[-*+]|\d+\.)\s+)?```(.*)$/.exec(line);
+        if (!m) return;
+        const info = m[1].trim();
+        if (info.length === 0) {
+          const rel = relative(repoRoot, file).replace(/\\/g, '/');
+          reports.push({
+            checkId: check.id,
+            severity: 'drift',
+            message: `[${check.id}] ${check.title}: ${rel}:${idx + 1} — opening fence missing language tag`,
+            file: `${rel}:${idx + 1}`,
+            forbidden: ['```\\n (untagged opening fence)'],
+            hint: check.hint,
+          });
+        }
+        inFence = true;
       });
     }
 
@@ -570,20 +593,38 @@ const schemaConformanceHandler = {
       }];
     }
 
-    // Ajv is an optional dep — fall back to a structural check if it's not
-    // installable in this context. The structural check matches required[]
-    // and type for top-level properties; it's less thorough but keeps the
-    // gate functional in minimum-dep environments.
+    // Ajv is an optional dep — a structural fallback exists for minimum-dep
+    // environments, but ONLY as an explicit opt-in. F-1b9456a0: the fallback
+    // ignores additionalProperties, oneOf/anyOf, deep $defs, and numeric
+    // constraints, so silently substituting it (node_modules corruption, a
+    // future dep restructure) is a strength downgrade of a CI gate with no
+    // signal — positive fixtures could pass the weak validator while
+    // violating the real schema. Default is fail-loud (config-error);
+    // `allowStructuralFallback: true` accepts the weaker gate explicitly,
+    // and even then the downgrade is logged. `ajvModule` exists as a
+    // dependency-injection seam so the META test can exercise this path.
     let validate;
+    const ajvModule = check.ajvModule ?? 'ajv/dist/2020.js';
     try {
-      const Ajv2020Mod = await import('ajv/dist/2020.js');
+      const Ajv2020Mod = await import(ajvModule);
       const Ajv2020 = Ajv2020Mod.default ?? Ajv2020Mod;
       const addFormatsMod = await import('ajv-formats').catch(() => null);
       const addFormats = addFormatsMod?.default ?? addFormatsMod;
       const ajv = new Ajv2020({ allErrors: true, strict: false });
       if (addFormats) addFormats(ajv);
       validate = ajv.compile(schema);
-    } catch {
+    } catch (err) {
+      if (check.allowStructuralFallback !== true) {
+        return [{
+          checkId: check.id,
+          severity: 'config-error',
+          message: `[${check.id}] Ajv unavailable (${err.message}) — refusing to silently downgrade to the weaker structural validator`,
+          hint: 'Restore the ajv install (npm ci), or set "allowStructuralFallback": true on the check to accept the degraded gate explicitly.',
+        }];
+      }
+      console.error(
+        `[check-doc-drift] WARNING: Ajv unavailable for check '${check.id}' (${err.message}) — running with the weaker structural validator (ignores additionalProperties, oneOf/anyOf, numeric constraints).`,
+      );
       validate = makeStructuralValidator(schema);
     }
 
@@ -1051,6 +1092,12 @@ export function countCommandMapEntries(src, bindingName, fileLabel) {
   let depth = 1; // we're inside the object literal
   let keyCount = 0;
   let pendingKeyAtTopLevel = false; // saw a key token at depth 1, awaiting ':'
+  // F-1ca7b818: true when the scanner is in KEY position (map start / after a
+  // depth-1 comma), false once this entry's key has been consumed by a ':'.
+  // Discriminates a method-shorthand KEY (`verb(args) {}` — unsupported,
+  // throw) from a call expression in VALUE position (`verb: wrap(cmdA)` —
+  // fine), which are both "identifier followed by '('" at depth 1.
+  let awaitingKey = true;
   const n = src.length;
 
   while (i < n && depth > 0) {
@@ -1104,6 +1151,7 @@ export function countCommandMapEntries(src, bindingName, fileLabel) {
           keyCount++;
           pendingKeyAtTopLevel = false;
         }
+        awaitingKey = false;
         i++;
         continue;
       }
@@ -1111,14 +1159,39 @@ export function countCommandMapEntries(src, bindingName, fileLabel) {
         // Reset between entries. A trailing comma before `}` leaves no pending
         // key, so it contributes nothing.
         pendingKeyAtTopLevel = false;
+        awaitingKey = true;
         i++;
         continue;
+      }
+      // F-1ca7b818: a '?' at depth 1 is a ternary (or optional-chaining /
+      // nullish) in value position — outside the flat verb→handler shape.
+      // Pre-fix, `verb: cond ? h1 : h2` minted a PHANTOM second key: the
+      // ternary's ':' followed an identifier that had set
+      // pendingKeyAtTopLevel. Fail loud (config-error) instead of counting
+      // silently wrong — the doc-comment above promises exactly that.
+      if (c === '?') {
+        throw new Error(
+          `command-map-count: unsupported ternary/'?' expression at the top level of '${bindingName}' object literal in ${fileLabel} — the resolver only supports a flat verb→handler map (its ':' would be miscounted as a key)`,
+        );
       }
       // An identifier-start at depth 1 begins an unquoted key (e.g. `init:`).
       if (/[A-Za-z_$]/.test(c)) {
         // Consume the whole identifier so we don't mark every char pending.
         i++;
         while (i < n && /[A-Za-z0-9_$]/.test(src[i])) i++;
+        // F-1ca7b818: a KEY-position identifier directly followed by '(' is a
+        // method-shorthand entry (`verb(args) { ... }`) — no depth-1 ':' ever
+        // confirms it, so pre-fix it was silently NOT counted and the R9
+        // verb-count claims drifted with a misleading total. Fail loud.
+        if (awaitingKey) {
+          let j = i;
+          while (j < n && /\s/.test(src[j])) j++;
+          if (src[j] === '(') {
+            throw new Error(
+              `command-map-count: method-shorthand entry at the top level of '${bindingName}' object literal in ${fileLabel} — the resolver only supports a flat verb→handler map (write 'verb: handler' instead of 'verb() {}')`,
+            );
+          }
+        }
         pendingKeyAtTopLevel = true;
         continue;
       }
@@ -1203,6 +1276,16 @@ export function expandGlobs(patterns, repoRoot, opts = {}) {
         if (fileRe.test(relPath)) out.push(file);
       }
       continue;
+    }
+    // F-ae195c1d: `**` without opts.recursive would fall through to the
+    // segmented expander, where globToRegex degrades `**` to a single-segment
+    // wildcard — a config author who widens a check with a doublestar glob
+    // would see green while only ONE directory level is actually gated.
+    // Fail loud instead; runDriftChecks converts the throw to a config-error.
+    if (pattern.includes('**')) {
+      throw new Error(
+        `glob '${pattern}' uses '**' but this check kind does not enable recursive expansion — it would silently match a single directory level. Use single-star segments, or a handler kind that opts into recursive globs (helper-adoption-sweep, schema-conformance).`,
+      );
     }
     if (pattern.includes('*')) {
       // Walk file segments, expanding each level. This handles the simple
@@ -1295,9 +1378,18 @@ function doublestarToRegex(glob) {
   // First mark `**/` as a placeholder to expand later.
   const SENTINEL_DOUBLE = ' DBL ';
   const SENTINEL_SINGLE = ' SGL ';
-  let pattern = glob.replace(/\*\*\//g, SENTINEL_DOUBLE).replace(/\*\*/g, SENTINEL_DOUBLE);
+  const SENTINEL_TRAIL = ' TRL ';
+  // F-ae195c1d: a TRAILING `**` means "everything under this directory".
+  // Routing it through the generic doublestar sentinel compiled `outputs/**`
+  // to `^outputs/(?:.*/)?$`, which requires the match to END at a slash
+  // boundary — relative file paths never end with '/', so the glob matched
+  // ZERO files and silently degraded the gate to nothing. Map it to
+  // `(?:/.*)?` anchored after the directory name instead: `^outputs(?:/.*)?$`.
+  let pattern = glob.replace(/\/\*\*$/, SENTINEL_TRAIL);
+  pattern = pattern.replace(/\*\*\//g, SENTINEL_DOUBLE).replace(/\*\*/g, SENTINEL_DOUBLE);
   pattern = pattern.replace(/\*/g, SENTINEL_SINGLE);
   pattern = pattern.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  pattern = pattern.replace(new RegExp(SENTINEL_TRAIL, 'g'), '(?:/.*)?');
   pattern = pattern.replace(new RegExp(SENTINEL_DOUBLE, 'g'), '(?:.*/)?');
   pattern = pattern.replace(new RegExp(SENTINEL_SINGLE, 'g'), '[^/]*');
   return new RegExp(`^${pattern}$`);

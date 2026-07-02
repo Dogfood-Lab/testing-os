@@ -143,8 +143,9 @@ describe('parsePolicy required_scenarios (F-882513-001)', () => {
       '      - scenario_a',
       '      - scenario_b',
       '      - scenario_c',
-      '    max_age_days: 14',
-      '    warn_age_days: 7',
+      '    freshness:',
+      '      max_age_days: 14',
+      '      warn_age_days: 7',
       ''
     ].join('\n');
 
@@ -163,8 +164,9 @@ describe('parsePolicy required_scenarios (F-882513-001)', () => {
       '  cli:',
       '    required_scenarios:',
       '      - only_scenario',
-      '    max_age_days: 14',
-      '    warn_age_days: 7',
+      '    freshness:',
+      '      max_age_days: 14',
+      '      warn_age_days: 7',
       ''
     ].join('\n');
 
@@ -182,8 +184,9 @@ describe('parsePolicy required_scenarios (F-882513-001)', () => {
       '    required_scenarios:',
       '      - scenario_a',
       '      - scenario_b',
-      '    max_age_days: 14',
-      '    warn_age_days: 7',
+      '    freshness:',
+      '      max_age_days: 14',
+      '      warn_age_days: 7',
       ''
     ].join('\n');
 
@@ -208,8 +211,9 @@ describe('parsePolicy real-YAML semantics (F-246817-003)', () => {
       '  cli:',
       '    required_scenarios:',
       '      - test_a',
-      '    max_age_days: not-a-number',
-      '    warn_age_days: 7',
+      '    freshness:',
+      '      max_age_days: not-a-number',
+      '      warn_age_days: 7',
       ''
     ].join('\n');
 
@@ -231,8 +235,9 @@ describe('parsePolicy real-YAML semantics (F-246817-003)', () => {
       '  cli:',
       '    required_scenarios:',
       '      - scenario_with_reason',
-      '    max_age_days: 14',
-      '    warn_age_days: 7',
+      '    freshness:',
+      '      max_age_days: 14',
+      '      warn_age_days: 7',
       '    reason: this-is-a-surface-level-note',
       ''
     ].join('\n');
@@ -251,13 +256,15 @@ describe('parsePolicy real-YAML semantics (F-246817-003)', () => {
       '  unknown-surface:',
       '    required_scenarios:',
       '      - whatever',
-      '    max_age_days: 14',
-      '    warn_age_days: 7',
+      '    freshness:',
+      '      max_age_days: 14',
+      '      warn_age_days: 7',
       '  cli:',
       '    required_scenarios:',
       '      - real_scenario',
-      '    max_age_days: 14',
-      '    warn_age_days: 7',
+      '    freshness:',
+      '      max_age_days: 14',
+      '      warn_age_days: 7',
       ''
     ].join('\n');
 
@@ -355,8 +362,9 @@ describe('loadPolicies multi-org enumeration (F-721047-004)', () => {
         'surfaces:',
         '  cli:',
         '    required_scenarios: [self-gate-real-repo]',
-        '    max_age_days: 14',
-        '    warn_age_days: 7',
+        '    freshness:',
+        '      max_age_days: 14',
+        '      warn_age_days: 7',
         ''
       ].join('\n'));
 
@@ -367,8 +375,9 @@ describe('loadPolicies multi-org enumeration (F-721047-004)', () => {
         'surfaces:',
         '  cli:',
         '    required_scenarios: [ingest-roundtrip]',
-        '    max_age_days: 30',
-        '    warn_age_days: 14',
+        '    freshness:',
+        '      max_age_days: 30',
+        '      warn_age_days: 14',
         ''
       ].join('\n'));
 
@@ -397,8 +406,9 @@ describe('loadPolicies multi-org enumeration (F-721047-004)', () => {
         'surfaces:',
         '  cli:',
         '    required_scenarios: [self]',
-        '    max_age_days: 30',
-        '    warn_age_days: 14',
+        '    freshness:',
+        '      max_age_days: 30',
+        '      warn_age_days: 14',
         ''
       ].join('\n'));
 
@@ -435,8 +445,9 @@ describe('loadPolicies multi-org enumeration (F-721047-004)', () => {
         'surfaces:',
         '  cli:',
         '    required_scenarios: [self-gate-real-repo]',
-        '    max_age_days: 14',
-        '    warn_age_days: 7',
+        '    freshness:',
+        '      max_age_days: 14',
+        '      warn_age_days: 7',
         ''
       ].join('\n'));
 
@@ -458,6 +469,11 @@ describe('loadPolicies multi-org enumeration (F-721047-004)', () => {
     const root = mkdtempSync(join(tmpdir(), 'portfolio-single-'));
     try {
       // Yaml files directly under the dir (no subdirs) = legacy single-org shape.
+      // F-508a5675: this fixture DELIBERATELY keeps the legacy FLAT
+      // max_age_days/warn_age_days shape (pre-schema policies put them at the
+      // surface top level). It is the one flat-shape regression test pinning
+      // parsePolicy's fallback; every other fixture uses the schema-valid
+      // nested `freshness:` shape.
       writeFileSync(join(root, 'one.yaml'), [
         'repo: only-org/one',
         'enforcement:',
@@ -472,6 +488,9 @@ describe('loadPolicies multi-org enumeration (F-721047-004)', () => {
       const policies = loadPolicies(root);
       assert.ok(policies['only-org/one'],
         'single-org-dir callers should still see their policies');
+      assert.equal(policies['only-org/one'].surfaces.cli.max_age_days, 14,
+        'legacy flat max_age_days must still be honored as a fallback');
+      assert.equal(policies['only-org/one'].surfaces.cli.warn_age_days, 7);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

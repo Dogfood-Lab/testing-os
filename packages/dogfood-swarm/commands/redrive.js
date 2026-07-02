@@ -33,7 +33,10 @@
  *       complete            → PRESERVED (informational — receipt unchanged)
  *       dispatched, pending → ELIGIBLE — redriven to dispatched (no-op for
  *                                        already-dispatched: source == target)
- *       failed              → ELIGIBLE — redriven via override (BLOCKED source)
+ *       failed              → ELIGIBLE — redriven via the NORMAL path
+ *                                        (failed→dispatched is a legal edge in
+ *                                        the AGENT machine; only the WAVE-level
+ *                                        'failed' is BLOCKED and needs override)
  *       timed_out           → ELIGIBLE — redriven (normal path; `timed_out`
  *                                        is NOT in BLOCKED_STATUSES but the
  *                                        edge timed_out→dispatched already exists)
@@ -116,7 +119,10 @@ const AGENT_PRESERVED_SOURCES = new Set(['complete']);
 // Agent source statuses ELIGIBLE for redrive to `dispatched`.
 //   - `pending` and `dispatched` are pre-execution states (re-dispatch is a
 //     no-op when source == target; we still surface the row in output).
-//   - `failed` is BLOCKED; redrive uses the override path.
+//   - `failed` redispatches via the NORMAL failed→dispatched edge — at the
+//     AGENT level 'failed' is not in BLOCKED_STATUSES (only invalid_output /
+//     ownership_violation are). It is the WAVE-level 'failed' that is BLOCKED
+//     and requires the override path (F-e241fa61 doc correction).
 //   - `timed_out` is non-blocked; the timed_out→dispatched edge already
 //     exists in TRANSITIONS.
 //

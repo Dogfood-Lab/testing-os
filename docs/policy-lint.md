@@ -51,6 +51,12 @@ says so in its own output rather than letting a clean result read as "fully chec
 | `type_mismatch` (a numeric op `gt`/`gte`/`lt`/`lte` against a field that resolves to a non-number) | The resolved value's *type* depends on the submission data. `{ field: coverage_pct, op: gt, value: 80 }` is well-formed; whether `coverage_pct` is a number is a runtime fact. |
 | `fanout_budget` (a `[]` selection exceeding 500,000 elements) | Fan-out is the product of array *sizes* in the submission, which the policy file does not contain. |
 
+The data-dependence above is strictly the **field** side. The **comparand** side (the literal `value:` in
+the policy file) *is* static, and the policy schema enforces its type per operator — a number for
+`gt`/`gte`/`lt`/`lte`, a scalar for the `equals`/`contains` families, scalar elements for `in`/`not_in` —
+so a YAML-quoted numeric (`value: "95"`) or an object comparand is rejected at the structural gate, in
+both the verify path and the lint verb.
+
 `policy-lint` prints a one-line **coverage note** stating this. A clean lint means *"no static fault and
 no footgun"* — not *"this policy can never produce a `policy-config:` rejection."* Surface a real submission
 (`dogfood-verify --file … --explain`) to exercise the data-dependent path.

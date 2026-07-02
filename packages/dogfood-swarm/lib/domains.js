@@ -377,7 +377,7 @@ function findOwnedGlobOverlaps(domains) {
         // strict-subset overlap (frontend's src/ui/** ⊂ backend's src/**) is
         // legal — not a conflict (sm-r-001).
         if (compareSpecificity(here.score, there.score) !== 0) continue;
-        const key = [domain.name, other.name].sort().join(' ') + ' ' + sample;
+        const key = [domain.name, other.name].sort().join('\u0000') + '\u0000' + sample;
         if (seen.has(key)) continue;
         seen.add(key);
         conflicts.push({ a: domain.name, b: other.name, file: sample });
@@ -398,8 +398,13 @@ function findOwnedGlobOverlaps(domains) {
  * getDomains' alphabetical order, which DISAGREED with detection order and
  * misattributed ownership once the freeze guard was relaxed. Returns the owning
  * domain name, or null if no owned domain matches.
+ *
+ * Exported (wave2-live-001): the non-isolated ownership-probe narrowing in
+ * collect/revalidate must use THIS arbitration, not bare glob membership —
+ * with overlapping globs (`**\/*.test.*` vs `packages/<pkg>/**`) membership
+ * over-collects sibling agents' edits and enforcement then phantom-flags them.
  */
-function resolveExclusiveOwner(domains, file) {
+export function resolveExclusiveOwner(domains, file) {
   let winner = null;
   for (const d of domains) {
     if (d.ownership_class !== 'owned') continue;
@@ -415,6 +420,26 @@ function resolveExclusiveOwner(domains, file) {
     }
   }
   return winner ? winner.name : null;
+}
+
+/**
+ * Narrow a file set to those THIS domain exclusively owns — the non-isolated
+ * ownership-probe narrowing (wave2-live-001 / V2-INVARIAN-002). In a
+ * shared-worktree amend wave the whole-tree diff cannot be attributed
+ * per-agent, so the independent probe contribution is restricted to the files
+ * this domain wins under the SAME specificity arbitration checkOwnership uses
+ * — bare glob MEMBERSHIP over-collects when globs overlap (`**\/*.test.*` vs
+ * `packages/<pkg>/**`) and enforcement then phantom-flags sibling agents'
+ * in-domain edits. ONE helper, consumed by BOTH commands/collect.js and
+ * commands/revalidate.js, so the arbitration cannot fork between the two paths.
+ *
+ * @param {Array<object>} domains — getDomains() rows (globs parsed)
+ * @param {string} domainName — the agent's domain
+ * @param {string[]} files — forward-slash-normalized candidate paths
+ * @returns {string[]} — the subset exclusively owned by `domainName`
+ */
+export function narrowToExclusivelyOwned(domains, domainName, files) {
+  return files.filter(f => resolveExclusiveOwner(domains, f) === domainName);
 }
 
 // ── Freeze / Unfreeze ──

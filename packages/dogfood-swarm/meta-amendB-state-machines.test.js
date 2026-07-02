@@ -218,7 +218,9 @@ describe('sm-p-003 — worktree cleanup failures emit a forensic NDJSON row', ()
     // downstream `git worktree add` then fails on the occupied path. Pre-fix the
     // operator saw only the `add` error; the fix emits a greppable breadcrumb
     // for the precursor failure first.
-    const wtDir = join(repo, '.swarm', 'worktrees', 'w1-backend');
+    // F-527dc73e: worktree dir names now carry the run-short slug
+    // (w<N>-<domain>-<runShort>) so concurrent runs cannot collide.
+    const wtDir = join(repo, '.swarm', 'worktrees', 'w1-backend-smp3');
     mkdirSync(wtDir, { recursive: true });
     writeFileSync(join(wtDir, 'occupied.txt'), 'not a worktree\n');
 

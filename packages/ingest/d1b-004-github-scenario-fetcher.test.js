@@ -105,10 +105,28 @@ describe('D1B-004 — githubScenarioFetcher AbortController + typed reason', () 
   });
 
   it('POSITIVE success: 200 OK with valid YAML returns the scenario (no reason field)', async () => {
+    // Schema-valid fixture (V2-CROSS-BO-002 added a validatePayload gate at
+    // the fetch boundary).
     const goodFetch = async () => ({
       ok: true,
       status: 200,
-      async text() { return 'scenario_id: sanity\nsteps:\n  - id: one\n    purpose: smoke\n'; }
+      async text() {
+        return [
+          'scenario_id: sanity',
+          'scenario_name: Sanity smoke',
+          'scenario_version: 1.0.0',
+          'product_surface: cli',
+          'execution_mode: bot',
+          'description: Smoke-checks the CLI happy path.',
+          'steps:',
+          '  - id: one',
+          '    action: run the CLI once',
+          'success_criteria:',
+          '  required_steps:',
+          '    - one',
+          ''
+        ].join('\n');
+      }
     });
     await withMockFetch(goodFetch, async () => {
       const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'deadbeef');

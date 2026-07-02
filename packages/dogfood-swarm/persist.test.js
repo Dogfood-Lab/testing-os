@@ -307,12 +307,16 @@ describe('Repo-knowledge bridge', () => {
     db.close();
   });
 
-  it('computes metrics', () => {
+  it('computes metrics from OPEN findings only', () => {
     buildCompleteRun(db);
     const exp = buildRunExport(db, 'r1');
     const payload = buildAuditPayload(exp);
 
-    assert.equal(payload.metrics.high_count, 1);
+    // V2-CONTRACT-001: F-001 (HIGH) is 'fixed' — CLOSED, so it no longer
+    // counts toward the audit-DB severity metrics; F-002 (MEDIUM) is 'new'
+    // — open. Open/closed semantics from lib/finding-status.js, same as
+    // the gate.
+    assert.equal(payload.metrics.high_count, 0);
     assert.equal(payload.metrics.medium_count, 1);
     assert.equal(payload.metrics.test_count, 42);
     db.close();

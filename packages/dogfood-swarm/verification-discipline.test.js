@@ -738,3 +738,91 @@ describe('VD-NEW-1 — getActualTouchedFiles graceful degradation', () => {
     }
   });
 });
+
+describe('wave2-live-001 — glob-overlap narrowing must not phantom-flag the broad-glob domain (d3b-collect-A-002 fractal)', () => {
+  // Live incident, run swarm-1783007856-9fdb wave 2: a "tests"-style domain
+  // owning `**/*.test.*` shared a worktree with package domains owning
+  // `packages/<pkg>/**`. The non-isolated narrowing admitted every sibling
+  // agent's test-file edit into the broad-glob agent's independent set (glob
+  // MEMBERSHIP), while checkOwnership resolves the exclusive owner by glob
+  // SPECIFICITY — so the package-owned test files resolved to the package
+  // domain and the tests agent was blocked on 39 phantom out-of-domain edits
+  // it never made. The narrowing must use the same arbitration as enforcement:
+  // exclusive-owner resolution, not bare glob membership.
+  const OVERLAP_RUN = 'test-glob-overlap-narrowing';
+  let tmpDir, dbPath, repoPath;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'verif-disc-overlap-'));
+    dbPath = join(tmpDir, 'control-plane.db');
+    repoPath = join(tmpDir, 'repo');
+    mkdirSync(join(repoPath, 'packages/a/src'), { recursive: true });
+    mkdirSync(join(repoPath, 'dogfood'), { recursive: true });
+    execFileSync('git', ['init', '-q'], { cwd: repoPath });
+    execFileSync('git', ['config', 'user.email', 't@t.t'], { cwd: repoPath });
+    execFileSync('git', ['config', 'user.name', 't'], { cwd: repoPath });
+    writeFileSync(join(repoPath, 'packages/a/src/foo.test.js'), 'seed\n');
+    writeFileSync(join(repoPath, 'dogfood/gate.test.js'), 'seed\n');
+    execFileSync('git', ['add', '.'], { cwd: repoPath });
+    execFileSync('git', ['commit', '-q', '-m', 'seed'], { cwd: repoPath });
+
+    const db = openDb(dbPath);
+    db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, branch, status)
+      VALUES (?, ?, ?, ?, 'main', 'pending')`)
+      .run(OVERLAP_RUN, 'org/repo', repoPath, 'a'.repeat(40));
+    saveDomainDraft(db, OVERLAP_RUN, [
+      { name: 'pkg-a', globs: ['packages/a/**'], ownership_class: 'owned' },
+      { name: 'xtests', globs: ['**/*.test.*'], ownership_class: 'owned' },
+    ]);
+    freezeDomains(db, OVERLAP_RUN);
+    const insert = db.prepare(`INSERT INTO findings
+      (run_id, finding_id, fingerprint, severity, category, file_path, line_number,
+       description, recommendation, status)
+      VALUES (?, ?, ?, ?, 'quality', ?, ?, ?, ?, 'approved')`);
+    insert.run(OVERLAP_RUN, 'F-PA-001', 'fp-pa-1', 'HIGH',
+      'packages/a/src/foo.test.js', 1, 'pkg-a test finding', 'fix it');
+    insert.run(OVERLAP_RUN, 'F-XT-001', 'fp-xt-1', 'HIGH',
+      'dogfood/gate.test.js', 1, 'xtests finding', 'fix it');
+    dispatch({ runId: OVERLAP_RUN, phase: 'health-amend-a', dbPath, outputDir: tmpDir });
+  });
+
+  afterEach(() => {
+    closeDb(dbPath);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('does not attribute a package-owned test-file edit to the broad **/*.test.* domain', () => {
+    // pkg-a edits ITS OWN test file in the shared (non-isolated) tree.
+    writeFileSync(join(repoPath, 'packages/a/src/foo.test.js'), 'fixed by pkg-a\n');
+
+    const outA = join(tmpDir, 'pkg-a.json');
+    const outX = join(tmpDir, 'xtests.json');
+    writeFileSync(outA, JSON.stringify({
+      domain: 'pkg-a',
+      summary: 'fixed own test file',
+      fixes: [{ finding_id: 'F-PA-001', description: 'fixed it' }],
+      files_changed: ['packages/a/src/foo.test.js'],
+    }));
+    writeFileSync(outX, JSON.stringify({
+      domain: 'xtests',
+      summary: 'no work this wave',
+      fixes: [{ finding_id: 'F-XT-001', description: 'fixed it' }],
+      files_changed: [],
+    }));
+
+    const report = collect({
+      runId: OVERLAP_RUN,
+      dbPath,
+      outputs: { 'pkg-a': outA, 'xtests': outX },
+    });
+
+    const xReport = report.agents.find(r => r.domain === 'xtests');
+    const aReport = report.agents.find(r => r.domain === 'pkg-a');
+    assert.notEqual(xReport.status, 'ownership_violation',
+      'the broad-glob domain must not be flagged for a file whose exclusive owner (by specificity) is another domain');
+    assert.notEqual(aReport.status, 'ownership_violation',
+      'the owning domain editing its own test file is clean');
+    assert.equal(report.violations.length, 0,
+      'a clean overlapping-glob wave must produce zero ownership violations');
+  });
+});

@@ -91,8 +91,20 @@ function syncReadme({ readmePath, version, check }) {
   const after = readme.slice(endIdx);
   const inner = readme.slice(startIdx + VERSION_BLOCK_START.length, endIdx);
 
-  if (!VERSION_TOKEN_REGEX.test(inner)) {
+  // F-c03b121c: the block's contract is exactly ONE stampable token.
+  // VERSION_TOKEN_REGEX is single-match, so with two tokens present only the
+  // FIRST would be stamped/validated — a compound line like
+  // "v1.8.0 — supersedes v1.7.0" would ship the second token stale forever
+  // while --check stayed green (or clobber a historical mention on stamp).
+  // Assert the invariant loudly instead of leaving an unvalidated bystander.
+  const tokens = inner.match(new RegExp(VERSION_TOKEN_REGEX.source, 'g')) ?? [];
+  if (tokens.length === 0) {
     throw new Error('[sync-version] README.md version block does not contain a vX.Y.Z token to replace.');
+  }
+  if (tokens.length > 1) {
+    throw new Error(
+      `[sync-version] README.md version block contains ${tokens.length} vX.Y.Z tokens (${tokens.join(', ')}) — the block's contract is exactly ONE stampable token; extra tokens would go stale unvalidated. Move historical version mentions outside the version block.`
+    );
   }
   const nextInner = inner.replace(VERSION_TOKEN_REGEX, `v${version}`);
 

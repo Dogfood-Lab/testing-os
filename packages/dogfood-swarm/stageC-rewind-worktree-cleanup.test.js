@@ -106,7 +106,8 @@ function setupFixtureWithWorktrees({ createOnDisk = true } = {}) {
     } else {
       // Path that was persisted but never created (or already pruned) — the
       // failure-channel scenario.
-      worktreePath = join(tempDir, '.swarm', 'worktrees', `w1-${d.name}`);
+      // F-527dc73e naming: w<N>-<domain>-<runShort> (runShortOf('r1') === 'r1').
+      worktreePath = join(tempDir, '.swarm', 'worktrees', `w1-${d.name}-r1`);
       branch = `swarm/r1/w1-${d.name}`;
     }
     const ar = db.prepare(

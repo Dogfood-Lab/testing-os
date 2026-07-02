@@ -15,16 +15,18 @@
 
 import { describe, it, beforeEach, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolve, dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { mkdirSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync, rmSync, existsSync, mkdtempSync } from 'node:fs';
 import yaml from 'js-yaml';
 
 import { reviewArtifact } from './review-artifacts.js';
 import { resetSeenArtifactWrites, writePattern, PatternIdCollisionError } from '../synthesis/write-artifacts.js';
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const TEST_ROOT = resolve(__dirname, '__test_b003_scoped_reset__');
+// F-072c3d77: scratch space lives in os.tmpdir() (the setupTestRoot /
+// F-W1-SUBSTABLE-4 discipline), not inside the package source tree where a
+// mid-test failure leaves a dirty `git status`.
+const TEST_ROOT = mkdtempSync(join(tmpdir(), 'b003-scoped-reset-'));
 
 function makeCandidatePattern(id) {
   return {

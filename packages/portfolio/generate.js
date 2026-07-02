@@ -136,11 +136,19 @@ export function parsePolicy(rawText) {
     const scenariosRaw = Array.isArray(raw.required_scenarios) ? raw.required_scenarios : [];
     const scenarios = scenariosRaw.map(s => String(s).trim()).filter(Boolean);
 
-    const maxAge = Number.isFinite(Number(raw.max_age_days))
-      ? Math.trunc(Number(raw.max_age_days))
+    // F-508a5675: policy.schema.json ($defs/surface_policy) nests the
+    // thresholds under `freshness:` — the shape every schema-valid policy on
+    // disk uses. Read that first; fall back to the legacy flat shape
+    // (pre-schema policies put max_age_days/warn_age_days at the surface top
+    // level) so old files keep parsing.
+    const fresh = (raw.freshness && typeof raw.freshness === 'object' && !Array.isArray(raw.freshness))
+      ? raw.freshness
+      : raw;
+    const maxAge = Number.isFinite(Number(fresh.max_age_days))
+      ? Math.trunc(Number(fresh.max_age_days))
       : DEFAULT_MAX_AGE;
-    const warnAge = Number.isFinite(Number(raw.warn_age_days))
-      ? Math.trunc(Number(raw.warn_age_days))
+    const warnAge = Number.isFinite(Number(fresh.warn_age_days))
+      ? Math.trunc(Number(fresh.warn_age_days))
       : DEFAULT_WARN_AGE;
 
     surfaces[name] = {

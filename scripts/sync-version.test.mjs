@@ -155,6 +155,28 @@ test('lockfile rewrite preserves 2-space indent + trailing newline', (t) => {
   assert.match(raw, /\n  "lockfileVersion": 3,/);
 });
 
+test('F-c03b121c: a version block containing TWO vX.Y.Z tokens throws loudly instead of stamping/validating only the first', (t) => {
+  // VERSION_TOKEN_REGEX is single-match: with two tokens in the block, only
+  // the FIRST is stamped/checked — a compound line like
+  // 'v1.8.0 — supersedes v1.7.0' would ship the second token stale forever
+  // while --check stays green. The contract is exactly ONE stampable token;
+  // more is a loud config violation (plain Error, exit 2 — not DriftError).
+  const dir = mkdtempSync(join(tmpdir(), 'sync-version-twotokens-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'fake', version: '1.8.0' }, null, 2));
+  writeFileSync(
+    join(dir, 'README.md'),
+    `# Fake\n<!-- version:start -->\nv1.8.0 — current release, supersedes v1.7.0\n<!-- version:end -->\nbody\n`
+  );
+  for (const check of [true, false]) {
+    assert.throws(
+      () => syncVersion({ repoRoot: dir, check }),
+      (err) => !(err instanceof DriftError) && /2 .*tokens|contains 2/.test(err.message),
+      `check=${check}: two tokens in the block must throw a contract error naming the count`,
+    );
+  }
+});
+
 test('package.json without a version field throws', (t) => {
   const dir = mkdtempSync(join(tmpdir(), 'sync-version-noversion-'));
   t.after(() => rmSync(dir, { recursive: true, force: true }));

@@ -30,16 +30,7 @@
  */
 
 import { openDb } from '../db/connection.js';
-import { listWorktrees, removeWorktree } from '../lib/worktree.js';
-
-/**
- * Derive the run-short slug createWorktree uses for the branch namespace.
- * Kept identical to lib/worktree.js#createWorktree so the run-scope filter is
- * exact. A change there must change here.
- */
-function runShortOf(runId) {
-  return runId.replace(/^swarm-/, '').slice(0, 12);
-}
+import { listWorktrees, removeWorktree, runShortOf } from '../lib/worktree.js';
 
 /**
  * @param {object} opts
@@ -111,12 +102,13 @@ export function clean(opts) {
       if (outcome.stranded) report.stranded++;
       else report.removed++;
     }
-  } else {
-    // Dry-run: every listed worktree is a "would-remove" survivor; nothing is
-    // touched. removed/stranded stay 0 so the rollup reads honestly as "no
-    // mutation happened" — the operator reads `total` for the blast radius.
-    for (const entry of report.worktrees) entry.stranded = true;
   }
+  // Dry-run: nothing is touched; per-entry removed/stranded stay false and
+  // the rollup counters stay 0 so the JSON output is internally consistent
+  // (F-54cb35f4 — the old code marked every entry stranded:true as a
+  // rendering convenience while the top-level rollup said stranded:0).
+  // formatClean branches on report.apply for the '[would remove]' tag and
+  // does not need a per-entry flag.
 
   report.summary = formatPlanSummary(report);
   return report;

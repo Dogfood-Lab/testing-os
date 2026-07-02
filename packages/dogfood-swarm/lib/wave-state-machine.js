@@ -156,6 +156,21 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
   // Override path for blocked statuses
   if (override && BLOCKED_STATUSES.has(from)) {
     if (!reason) throw new Error(`Override requires a reason for wave "${from}" → "${toStatus}"`);
+    // F-3771ff90 (sibling): validate the override TARGET against the
+    // canonical wave-status set — SQLite has no enum enforcement, so an
+    // unvalidated override could write any string into waves.status.
+    if (!Object.prototype.hasOwnProperty.call(TRANSITIONS, toStatus)) {
+      throw new StateMachineRejectionError(
+        `Override transition '${from}' → '${toStatus}' refused: '${toStatus}' is not a canonical wave status.`,
+        {
+          kind: 'INVALID',
+          from,
+          to: toStatus,
+          agentRunId: waveId,
+          hint: `canonical statuses: ${Object.keys(TRANSITIONS).join(' | ')}`,
+        }
+      );
+    }
     return executeTransition(db, waveId, from, toStatus, reason);
   }
 

@@ -19,7 +19,7 @@ import { openDb } from '../db/connection.js';
 import { getDomains, aredomainsFrozen, freezeDomains, takeDomainSnapshot } from '../lib/domains.js';
 import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../lib/templates.js';
 import { buildPriorMap } from '../lib/fingerprint.js';
-import { createWorktree } from '../lib/worktree.js';
+import { createWorktree, runShortOf } from '../lib/worktree.js';
 import { findingsForDomain } from '../lib/findings-filter.js';
 import { transitionAgent } from '../lib/state-machine.js';
 import { IsolationError, DispatchPreconditionError } from '../lib/errors.js';
@@ -57,7 +57,7 @@ function emitPreconditionFailed({ runId, phase, code, message }) {
  * `commands/collect.js` propagates this into `report.serial_verify_required`
  * and the CLI surfaces the Next-step hint.
  */
-const SKIP_VERIFY_DIRECTIVE = `
+export const SKIP_VERIFY_DIRECTIVE = `
 
 ## Verification discipline (parallel-wave)
 
@@ -91,9 +91,11 @@ Set \`verification_skipped: true\` at the top level of your output JSON to make 
  * @returns {{ worktreePath: string, branch: string }}
  */
 function previewWorktree(repoPath, waveNumber, domainName, runId) {
-  const runShort = runId.replace(/^swarm-/, '').slice(0, 12);
+  const runShort = runShortOf(runId);
   const branch = `swarm/${runShort}/w${waveNumber}-${domainName}`;
-  const worktreePath = join(repoPath, '.swarm', 'worktrees', `w${waveNumber}-${domainName}`);
+  // F-527dc73e: run-short slug in the directory name — must stay byte-for-byte
+  // with lib/worktree.js#createWorktree.
+  const worktreePath = join(repoPath, '.swarm', 'worktrees', `w${waveNumber}-${domainName}-${runShort}`);
   return { worktreePath, branch };
 }
 
@@ -236,6 +238,35 @@ export function dispatch(opts) {
     });
   }
 
+  // F-cf8b7a6c: refuse to open a NEW wave while another wave of this run is
+  // still in flight. collect/resume/advance all operate on the LATEST wave
+  // only, so an older 'dispatched' wave would be stranded forever: it
+  // permanently satisfies hasActiveWave (blocking `swarm domains --unfreeze`),
+  // its agents run until timeout, and its outputs can never be collected. The
+  // classic trigger is an operator retry after a slow first dispatch.
+  const inFlightWave = db.prepare(`
+    SELECT id, wave_number, phase, status FROM waves
+    WHERE run_id = ? AND status IN ('dispatched', 'collecting')
+    ORDER BY wave_number DESC LIMIT 1
+  `).get(opts.runId);
+  if (inFlightWave) {
+    emitPreconditionFailed({
+      runId: opts.runId,
+      phase: opts.phase,
+      code: 'DISPATCH_WAVE_IN_FLIGHT',
+      message: `Wave ${inFlightWave.wave_number} (${inFlightWave.phase}) is still '${inFlightWave.status}'`,
+    });
+    throw new DispatchPreconditionError(
+      `Wave ${inFlightWave.wave_number} (${inFlightWave.phase}) is still '${inFlightWave.status}' — dispatching a new wave would strand it.`,
+      {
+        code: 'DISPATCH_WAVE_IN_FLIGHT',
+        runId: opts.runId,
+        phase: opts.phase,
+        hint: `finish the in-flight wave first: \`swarm collect ${opts.runId}\` (or \`swarm resume ${opts.runId}\` / \`swarm redrive ${inFlightWave.id}\` / \`swarm rewind\` if it is unrecoverable)`,
+      }
+    );
+  }
+
   // 2. Take domain snapshot (read-side prep; no commits here yet).
   const snapshot = takeDomainSnapshot(db, opts.runId);
 
@@ -250,6 +281,40 @@ export function dispatch(opts) {
   const isAmend = AMEND_PHASES.includes(opts.phase);
 
   const promptDirPath = join(opts.outputDir, `wave-${waveNumber}`);
+
+  // F-aa32371b: approved findings that route to NO domain agent — a finding
+  // with no file_path (repo-level finding), or whose path matches no owned
+  // glob, is excluded from every amend prompt by findingsForDomain and would
+  // otherwise be silently unfixable while its OPEN 'approved' status blocks
+  // the finding-severity gate forever. Surface them loudly at dispatch time
+  // (report field + NDJSON event; the CLI prints the warning) with the
+  // recovery paths named.
+  let unroutedApprovedFindings = [];
+  if (isAmend) {
+    const approved = db.prepare(
+      "SELECT finding_id, severity, file_path FROM findings WHERE run_id = ? AND status = 'approved'"
+    ).all(opts.runId);
+    const routedIds = new Set();
+    for (const domain of domains) {
+      if (domain.ownership_class === 'shared') continue;
+      for (const f of findingsForDomain(db, opts.runId, domain)) routedIds.add(f.finding_id);
+    }
+    unroutedApprovedFindings = approved
+      .filter(f => !routedIds.has(f.finding_id))
+      .map(f => ({ finding_id: f.finding_id, severity: f.severity, file_path: f.file_path }));
+    if (unroutedApprovedFindings.length > 0) {
+      logStage('unrouted_approved_findings', {
+        component: 'dogfood-swarm',
+        correlation_id: mintCorrelationId(),
+        runId: opts.runId,
+        phase: opts.phase,
+        waveNumber,
+        count: unroutedApprovedFindings.length,
+        finding_ids: unroutedApprovedFindings.map(f => f.finding_id),
+        hint: 'fix manually + use the coordinator_resolved path, or `swarm approve --defer/--reject`; these findings block the severity gate but are routed to zero agents',
+      });
+    }
+  }
 
   // 3a. Dry-run / preview: compute the wave shape with ZERO side effects — no
   // DB write (waves/agent_runs/runs.status), no prompt files, no worktree
@@ -292,6 +357,7 @@ export function dispatch(opts) {
       domainSnapshotId: snapshot.snapshotId,
       promptDir: promptDirPath,
       agents: previewAgents,
+      unroutedApprovedFindings,
     };
   }
 
@@ -326,6 +392,17 @@ export function dispatch(opts) {
     waveId = waveResult.lastInsertRowid;
 
     db.prepare('UPDATE runs SET status = ? WHERE id = ?').run(opts.phase, opts.runId);
+
+    // F-ec97601a: persist the --skip-verify discipline choice on the wave so
+    // `swarm resume` can re-render redispatch prompts WITH the
+    // SKIP_VERIFY_DIRECTIVE. Pre-fix the choice lived only in the originally
+    // rendered prompt text — a redispatched amend agent in a
+    // serial-final-verify wave would run `npm test` against the cumulative
+    // in-motion tree (the exact measurement artifact Item 5 prevents).
+    if (opts.skipVerify && isAmend) {
+      db.prepare('INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)')
+        .run(`wave:${waveId}:skip_verify`, '1');
+    }
 
     for (const domain of domains) {
       // Only dispatch owned + bridge domains as agents (shared is a zone, not an agent)
@@ -481,5 +558,6 @@ export function dispatch(opts) {
     phase: opts.phase,
     agents: builtAgents,
     promptDir,
+    unroutedApprovedFindings,
   };
 }

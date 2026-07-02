@@ -23,6 +23,24 @@ import assert from 'node:assert/strict';
 
 import { githubScenarioFetcher } from './load-context.js';
 
+// Schema-valid success fixture (V2-CROSS-BO-002 added a validatePayload gate
+// at the fetch boundary, so 200-path fixtures must conform).
+const VALID_SCENARIO_YAML = [
+  'scenario_id: sanity',
+  'scenario_name: Sanity smoke',
+  'scenario_version: 1.0.0',
+  'product_surface: cli',
+  'execution_mode: bot',
+  'description: Smoke-checks the CLI happy path.',
+  'steps:',
+  '  - id: one',
+  '    action: run the CLI once',
+  'success_criteria:',
+  '  required_steps:',
+  '    - one',
+  ''
+].join('\n');
+
 describe('F-INGEST-002 — githubScenarioFetcher commitSha shape guard', () => {
   const malformed = [
     'main',                       // a branch name, not a sha
@@ -58,7 +76,7 @@ describe('F-INGEST-002 — githubScenarioFetcher commitSha shape guard', () => {
     let fetchedUrl = null;
     const fetchImpl = async (url) => {
       fetchedUrl = url;
-      return { ok: true, status: 200, async text() { return 'scenario_id: sanity\nsteps:\n  - id: one\n'; } };
+      return { ok: true, status: 200, async text() { return VALID_SCENARIO_YAML; } };
     };
     const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'deadbeef', { fetchImpl });
     const result = await fetcher.fetchWithReason('sanity');
@@ -68,7 +86,7 @@ describe('F-INGEST-002 — githubScenarioFetcher commitSha shape guard', () => {
   });
 
   it('accepts a full 40-char lowercase sha', async () => {
-    const fetchImpl = async () => ({ ok: true, status: 200, async text() { return 'scenario_id: sanity\n'; } });
+    const fetchImpl = async () => ({ ok: true, status: 200, async text() { return VALID_SCENARIO_YAML; } });
     const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'a'.repeat(40), { fetchImpl });
     const result = await fetcher.fetchWithReason('sanity');
     assert.ok(result.scenario);

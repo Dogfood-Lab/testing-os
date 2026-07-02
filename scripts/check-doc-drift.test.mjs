@@ -2079,3 +2079,239 @@ test('FT-g LIVE: the real config\'s verbCount resolver uses command-map-count, n
     );
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Wave-2 amend (ci-tooling): F-cca3ed17 / F-ae195c1d / F-1ca7b818 /
+// F-1b9456a0 / F-de02ea22 — vacuity guards and fail-loud contracts for the
+// framework internals. Every guard added here has a META case proving the
+// gate FIRES on a mutated input (the non-vacuity discipline).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-cca3ed17 META: forbidden-pattern-in-targets with a zero-match target glob reports config-error, not silent green', async (t) => {
+  const fx = makeFixture(t);
+  // No file matches — e.g. the handbook dir was renamed out from under the glob.
+  const cfg = fx.config({
+    checks: [{
+      id: 'no-legacy',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'no-legacy',
+      patterns: [{ regex: 'legacy', label: 'legacy ref' }],
+      targets: ['docs/renamed-away/*.md'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'zero matched targets must NOT be a silent pass — that is the D4-004 vacuous-gate class');
+  const cfgErr = result.reports.find((r) => r.severity === 'config-error');
+  assert.ok(cfgErr, 'expected a config-error report');
+  assert.match(cfgErr.message, /no target files matched/, 'the config-error must name the unmatched globs');
+});
+
+test('F-cca3ed17: forbidden-pattern-in-targets allowEmpty escape hatch permits a zero-match glob explicitly', async (t) => {
+  const fx = makeFixture(t);
+  const cfg = fx.config({
+    checks: [{
+      id: 'no-legacy',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'no-legacy',
+      patterns: [{ regex: 'legacy', label: 'legacy ref' }],
+      targets: ['docs/renamed-away/*.md'],
+      allowEmpty: true,
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, 'allowEmpty:true must permit a zero-match target list (parity with schema-conformance)');
+});
+
+test('F-ae195c1d META: a `**` glob WITHOUT recursive mode is a loud config-error, not a silent single-level match', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('packages/a/deep/nested.md', '```js\nx\n```\n');
+  // untagged-fence does NOT enable opts.recursive — pre-fix, `packages/**/*.md`
+  // fell through to the segmented expander where `**` degraded to a
+  // single-segment wildcard, silently narrowing the gate's coverage.
+  const cfg = fx.config({
+    checks: [{
+      id: 'fences',
+      kind: 'untagged-fence',
+      title: 'fences',
+      targets: ['packages/**/*.md'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  const cfgErr = result.reports.find((r) => r.severity === 'config-error');
+  assert.ok(cfgErr, 'expected a config-error report (the handler throw surfaces as config-error)');
+  assert.match(cfgErr.message, /\*\*/, 'the error must name the doublestar glob');
+});
+
+test('F-ae195c1d META: expandGlobs throws directly on `**` without opts.recursive', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('packages/a/x.js', '');
+  assert.throws(
+    () => expandGlobs(['packages/**/*.js'], fx.dir),
+    /\*\*/,
+    '`**` without recursive mode must throw, not degrade to single-segment matching',
+  );
+});
+
+test('F-ae195c1d META: a TRAILING `**` in recursive mode matches files at every depth (previously matched zero files)', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('outputs/top.json', '{}');
+  fx.write('outputs/deep/nested.json', '{}');
+  fx.write('other/skip.json', '{}');
+  const matched = expandGlobs(['outputs/**'], fx.dir, { recursive: true });
+  assert.equal(
+    matched.length,
+    2,
+    `'outputs/**' must match files at any depth under outputs/ — pre-fix it compiled to a regex requiring the path to END at a slash boundary and matched ZERO files. Got: ${JSON.stringify(matched)}`,
+  );
+});
+
+test('F-1ca7b818 META: countCommandMapEntries throws on a ternary value at depth 1 (no phantom second key)', () => {
+  const src = [
+    'const commands = {',
+    '  a: cmdA,',
+    '  b: cond ? cmdB1 : cmdB2,',
+    '  c: cmdC,',
+    '};',
+  ].join('\n');
+  // Pre-fix this counted 4 (the ternary\'s `:` after `cmdB1` minted a phantom
+  // key). The doc-comment promises unsupported shapes THROW — hold it to that.
+  assert.throws(
+    () => countCommandMapEntries(src, 'commands', 'fixture.js'),
+    /ternary|\?/i,
+    'a ternary value must throw (fail-loud), not silently over-count',
+  );
+});
+
+test('F-1ca7b818 META: countCommandMapEntries throws on a method-shorthand entry at depth 1 (no silent undercount)', () => {
+  const src = [
+    'const commands = {',
+    '  a: cmdA,',
+    '  b(args) { return args; },',
+    '  c: cmdC,',
+    '};',
+  ].join('\n');
+  // Pre-fix this counted 2 — the shorthand entry has no depth-1 `:` and was
+  // silently skipped, so the R9 verb-count claims would drift-fail with a
+  // misleading count (or coincidentally still match).
+  assert.throws(
+    () => countCommandMapEntries(src, 'commands', 'fixture.js'),
+    /method|shorthand/i,
+    'a method-shorthand entry must throw (fail-loud), not silently under-count',
+  );
+});
+
+test('F-1ca7b818: value-position call expressions and arrows still count correctly (no false throw)', () => {
+  const src = [
+    'const commands = {',
+    '  a: wrap(cmdA),',
+    '  b: (args) => run(args),',
+    '  c: cmdC,',
+    '};',
+  ].join('\n');
+  assert.equal(countCommandMapEntries(src, 'commands', 'fixture.js'), 3);
+});
+
+test('F-1b9456a0 META: schema-conformance refuses a silent downgrade when Ajv is unavailable (config-error by default)', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('schema.json', JSON.stringify({ type: 'object', required: ['domain'] }));
+  fx.write('out/good.json', JSON.stringify({ domain: 'x' }));
+  const cfg = fx.config({
+    checks: [{
+      id: 'conformance',
+      kind: 'schema-conformance',
+      title: 'conformance',
+      schema: 'schema.json',
+      targets: ['out/*.json'],
+      // Test lever: point the Ajv import at a module that cannot resolve, the
+      // same failure shape as node_modules corruption / a dep restructure.
+      ajvModule: './this-module-does-not-exist.js',
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'Ajv-unavailable must NOT silently run the weaker structural validator');
+  const cfgErr = result.reports.find((r) => r.severity === 'config-error');
+  assert.ok(cfgErr, 'expected a config-error report');
+  assert.match(cfgErr.message, /Ajv unavailable/i);
+});
+
+test('F-1b9456a0: allowStructuralFallback:true opts into the degraded validator explicitly (and it still catches missing required)', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('schema.json', JSON.stringify({ type: 'object', required: ['domain'] }));
+  fx.write('out/good.json', JSON.stringify({ domain: 'x' }));
+  fx.write('out/bad.json', JSON.stringify({ nope: true }));
+  const cfg = fx.config({
+    checks: [{
+      id: 'conformance',
+      kind: 'schema-conformance',
+      title: 'conformance',
+      schema: 'schema.json',
+      targets: ['out/*.json'],
+      ajvModule: './this-module-does-not-exist.js',
+      allowStructuralFallback: true,
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'bad.json must still drift under the structural validator');
+  const drift = result.reports.find((r) => r.severity === 'drift');
+  assert.ok(drift);
+  assert.match(drift.file, /out\/bad\.json/);
+  assert.equal(result.reports.length, 1, 'good.json must pass; only bad.json drifts');
+});
+
+test('F-de02ea22 META: an untagged fence indented inside a list item is flagged (previously invisible to the column-0 state machine)', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('docs/list.md', [
+    '# Doc',
+    '',
+    '- step one:',
+    '',
+    '  ```',       // line 5 — untagged opener, indented list continuation
+    '  code',
+    '  ```',
+    '',
+    '- step two:',
+    '',
+    '  ```js',     // tagged — fine
+    '  more',
+    '  ```',
+    '',
+  ].join('\n'));
+  const cfg = fx.config({
+    checks: [{
+      id: 'fences',
+      kind: 'untagged-fence',
+      title: 'fences',
+      targets: ['docs/list.md'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'the indented untagged opener must be flagged');
+  assert.equal(result.reports.length, 1, `only the untagged opener should surface: ${JSON.stringify(result.reports)}`);
+  assert.match(result.reports[0].file, /docs\/list\.md:5/, 'drift must anchor to the opener line');
+});
+
+test('F-de02ea22: a fence opened directly on a list-marker line (`- ```) is flagged when untagged', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('docs/marker.md', [
+    '- ```',    // line 1 — untagged opener on the marker line
+    '  x',
+    '  ```',
+    '- ```sh',  // tagged on marker line — fine
+    '  y',
+    '  ```',
+    '',
+  ].join('\n'));
+  const cfg = fx.config({
+    checks: [{
+      id: 'fences',
+      kind: 'untagged-fence',
+      title: 'fences',
+      targets: ['docs/marker.md'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  assert.equal(result.reports.length, 1, JSON.stringify(result.reports));
+  assert.match(result.reports[0].file, /docs\/marker\.md:1/);
+});

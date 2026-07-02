@@ -129,7 +129,14 @@ export function loadGlobalPolicy(repoRoot) {
  * @returns {object|null|{ __torn: true, reason: string, path: string }}
  */
 export function loadRepoPolicy(repoSlug, repoRoot) {
-  const [org, repo] = repoSlug.split('/');
+  // F-54e5fde7: the submission contract is strictly two-segment (the schema's
+  // `repo` pattern forbids a second slash; nested GitLab subgroups are
+  // UNSUPPORTED). A 3+-segment slug must fail closed here — the old 2-way
+  // destructure silently dropped the third segment and would have resolved a
+  // DIFFERENT repo's policy file (group/subgroup/project → repos/group/subgroup.yaml).
+  const segments = repoSlug.split('/');
+  if (segments.length !== 2) return null;
+  const [org, repo] = segments;
   if (!org || !repo || isUnsafeSegment(org) || isUnsafeSegment(repo)) return null;
   const path = join(repoRoot, 'policies', 'repos', org, `${repo}.yaml`);
 
@@ -215,6 +222,34 @@ export const GITHUB_SCENARIO_FETCH_ATTEMPTS = 3;
 const RETRY_BASE_MS = 250;
 const RETRY_MAX_MS = 2000;
 
+/**
+ * V2-CROSS-BO-002: byte cap on a fetched scenario body. A scenario definition
+ * crosses the consumer-repo → verifier trust boundary; without a cap a
+ * hostile/misconfigured source repo could stream an arbitrarily large body
+ * into memory and into yaml.load. Real scenario files are a few KB — 1 MiB is
+ * three orders of magnitude of headroom. Checked against Content-Length
+ * BEFORE the body is read (when the response exposes it) and against the
+ * decoded byte length after, since Content-Length is attacker-suppliable.
+ */
+export const GITHUB_SCENARIO_MAX_BYTES = 1024 * 1024;
+
+/**
+ * V2-CROSS-BO-001: classified operational fault for the scenario fetch —
+ * mirrors the F-dac7e08c adapter discipline in
+ * `packages/verify/validators/provenance.js` (transport rejects and non-404
+ * provider statuses THROW after the bounded retry, they never masquerade as
+ * "the file does not exist"). The `scenario-fetch-fault:` prefix is
+ * registered in `@dogfood-lab/verify`'s parseRejectionReason as
+ * 'operational', so any surface that stringifies this error routes the
+ * incident to ops instead of bouncing a good submission back to the
+ * submitter.
+ */
+function scenarioFetchFault(detail) {
+  const err = new Error(`scenario-fetch-fault: ${detail}`);
+  err.code = 'SCENARIO_FETCH_FAULT';
+  return err;
+}
+
 /** Default async backoff. Injectable (`opts.sleepImpl`) so tests run instantly. */
 function defaultSleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
@@ -231,9 +266,10 @@ function defaultSleep(ms) {
  *   - `fetchWithReason(scenarioId)`: D1B-004 typed contract — always
  *     returns `{ scenario, reason }` where `scenario` is the loaded
  *     object on success or `null` on failure, and `reason` is one of
- *     `'timeout' | 'not_found' | 'parse_error' | 'invalid_id'` on
- *     failure (absent on success). The reason gives operators a
- *     pivot key when diagnosing a stale scenario-load chain.
+ *     `'timeout' | 'not_found' | 'parse_error' | 'invalid_id' |
+ *     'too_large' | 'schema_invalid'` on failure (absent on success).
+ *     The reason gives operators a pivot key when diagnosing a stale
+ *     scenario-load chain.
  *
  * Both surfaces honour the per-request AbortController timeout
  * (`GITHUB_SCENARIO_FETCH_TIMEOUT_MS`, overridable via `opts.timeoutMs`).
@@ -241,10 +277,20 @@ function defaultSleep(ms) {
  * INGEST-PROACT-003: each call makes up to `opts.attempts`
  * (`GITHUB_SCENARIO_FETCH_ATTEMPTS`) tries with exponential backoff, retrying
  * ONLY the transient classes — request timeout, HTTP 5xx, HTTP 429, and network
- * rejects. A 404 (`not_found`), an `invalid_id`, and a `parse_error` are
- * DEFINITIVE answers and are returned immediately without a retry (mirrors the
- * EPERM/EBUSY-only discipline in `lib/rename-with-retry.js`). The backoff sleep
- * is injectable (`opts.sleepImpl`) so tests do not actually wait.
+ * rejects. A 404 (`not_found`), an `invalid_id`, a `parse_error`, a
+ * `too_large`, and a `schema_invalid` are DEFINITIVE answers and are returned
+ * immediately without a retry (mirrors the EPERM/EBUSY-only discipline in
+ * `lib/rename-with-retry.js`). The backoff sleep is injectable
+ * (`opts.sleepImpl`) so tests do not actually wait.
+ *
+ * V2-CROSS-BO-001: exhausting the retry budget on a 5xx/429 or a transport
+ * reject, or hitting any other non-404 non-ok status (401/403 bad
+ * credential), THROWS a `scenario-fetch-fault:` classified error instead of
+ * returning `not_found` — an outage or a token fault is an OPERATIONAL
+ * incident, never evidence that the scenario file is absent. Callers
+ * (loadScenarios → run.js) propagate the throw so the CLI exits 2 without
+ * persisting a rejected record. A timeout on exhaustion keeps its typed
+ * `'timeout'` reason (pinned D1B-004/L1-007 operator contract).
  *
  * @param {string} token - GitHub PAT
  * @param {string} repoSlug - e.g. "mcp-tool-shop-org/shipcheck"
@@ -258,7 +304,13 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
   const attempts = opts.attempts ?? GITHUB_SCENARIO_FETCH_ATTEMPTS;
   const sleep = opts.sleepImpl ?? defaultSleep;
 
-  const [org, repo] = repoSlug.split('/');
+  // V2-CROSS-BO-003 (F-54e5fde7 family): the submission contract is strictly
+  // two-segment. The old 2-way destructure silently dropped a third segment —
+  // and worse, the URL below was built from the RAW slug, so `org/repo/extra`
+  // reached the authenticated GitHub API verbatim. Fail closed here and build
+  // the URL from the VALIDATED segments only.
+  const segments = typeof repoSlug === 'string' ? repoSlug.split('/') : [];
+  const [org, repo] = segments.length === 2 ? segments : [null, null];
   // commitSha is interpolated into the authenticated (Bearer-token) GitHub API
   // URL's `?ref=` — a shape guard (lowercase-hex, 7–40 chars) refuses anything
   // that could re-target the ref or inject query params, matching how org/repo
@@ -274,11 +326,14 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
     };
   }
 
-  // One bounded attempt. Returns `{ scenario, reason, retryable }`; the loop
-  // below decides whether to retry on `retryable`.
+  // One bounded attempt. Returns `{ scenario, reason, retryable, fault }`;
+  // the loop below retries on `retryable` and THROWS `fault` (when present)
+  // once the budget is exhausted — so a transient blip is ridden out, but a
+  // real outage surfaces as an operational fault, never as `not_found`.
   async function attemptOnce(scenarioId) {
     const path = `dogfood/scenarios/${scenarioId}.yaml`;
-    const url = `https://api.github.com/repos/${repoSlug}/contents/${path}?ref=${commitSha}`;
+    // V2-CROSS-BO-003: built from the validated org/repo, never the raw slug.
+    const url = `https://api.github.com/repos/${org}/${repo}/contents/${path}?ref=${commitSha}`;
 
     // D1B-004: AbortController-bounded request. Copied from
     // `packages/verify/validators/provenance.js:80-104`. The 30s default
@@ -298,33 +353,81 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
         signal: controller.signal
       });
       if (!resp.ok) {
-        // A 5xx server error or a 429 rate-limit is transient — retry. Any
-        // other non-ok (notably 404) is a definitive answer; do not retry.
-        const retryable = resp.status >= 500 || resp.status === 429;
-        return { scenario: null, reason: 'not_found', retryable };
+        // V2-CROSS-BO-001: only a 404 means "the scenario file is absent" —
+        // that is the sole not_found. A 5xx / 429 is a transient provider
+        // fault: retry, then throw operational on exhaustion. Anything else
+        // (401/403 bad credential, unexpected 4xx) is a definitive
+        // OPERATIONAL fault: throw immediately, never retried, never
+        // misread as a missing file.
+        if (resp.status === 404) {
+          return { scenario: null, reason: 'not_found', retryable: false };
+        }
+        const fault = scenarioFetchFault(
+          `GitHub API HTTP ${resp.status} loading scenario "${scenarioId}" from ${org}/${repo}`
+        );
+        if (resp.status >= 500 || resp.status === 429) {
+          return { scenario: null, retryable: true, fault };
+        }
+        throw fault;
+      }
+
+      // V2-CROSS-BO-002: byte cap at the trust boundary. Check the declared
+      // Content-Length first (skips buffering an oversized body when the
+      // response exposes headers), then the decoded byte length — the header
+      // is attacker-suppliable, the decoded length is not.
+      const declaredLength = typeof resp.headers?.get === 'function'
+        ? Number(resp.headers.get('content-length'))
+        : NaN;
+      if (declaredLength > GITHUB_SCENARIO_MAX_BYTES) {
+        return { scenario: null, reason: 'too_large', retryable: false };
       }
       text = await resp.text();
+      if (Buffer.byteLength(text, 'utf8') > GITHUB_SCENARIO_MAX_BYTES) {
+        return { scenario: null, reason: 'too_large', retryable: false };
+      }
     } catch (err) {
+      if (err && err.code === 'SCENARIO_FETCH_FAULT') {
+        throw err;
+      }
       if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
         // A timed-out request may succeed on a retry.
         return { scenario: null, reason: 'timeout', retryable: true };
       }
-      // Network reject, DNS failure, etc. — transient; surface as not_found
-      // for back-compat with the legacy null contract, but allow a retry.
-      return { scenario: null, reason: 'not_found', retryable: true };
+      // V2-CROSS-BO-001: network reject, DNS failure, etc. — transient, so
+      // retry; but on exhaustion this is an outage (operational fault), NOT
+      // evidence the scenario file is absent.
+      return {
+        scenario: null,
+        retryable: true,
+        fault: scenarioFetchFault(
+          `network error loading scenario "${scenarioId}" from ${org}/${repo}: ${err && err.message ? err.message : String(err)}`
+        )
+      };
     } finally {
       clearTimeout(timer);
     }
 
+    let scenario;
     try {
-      const scenario = yaml.load(text);
-      if (!scenario || typeof scenario !== 'object') {
-        return { scenario: null, reason: 'parse_error', retryable: false };
-      }
-      return { scenario };
+      scenario = yaml.load(text);
     } catch {
       return { scenario: null, reason: 'parse_error', retryable: false };
     }
+    if (!scenario || typeof scenario !== 'object') {
+      return { scenario: null, reason: 'parse_error', retryable: false };
+    }
+
+    // V2-CROSS-BO-002: schema-gate the loaded object before it crosses into
+    // verify()'s required-steps enforcement. A parses-but-nonconforming
+    // scenario is a SUBMISSION-SIDE fault (the source repo authored it) — it
+    // surfaces through loadScenarios as a typed `schema_invalid` reason and
+    // becomes a `scenario-load:` rejection at the ingest layer, never a
+    // validator fault.
+    const validation = validatePayload('scenario', scenario);
+    if (!validation.valid) {
+      return { scenario: null, reason: 'schema_invalid', retryable: false };
+    }
+    return { scenario };
   }
 
   async function fetchWithReason(scenarioId) {
@@ -337,6 +440,12 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
       last = await attemptOnce(scenarioId);
       if (last.scenario || !last.retryable || i === attempts - 1) break;
       await sleep(Math.min(RETRY_BASE_MS * (1 << i), RETRY_MAX_MS));
+    }
+    // V2-CROSS-BO-001: a transient fault that survived every retry is an
+    // outage — throw the classified operational error instead of returning a
+    // reason the ingest layer would turn into a submission rejection.
+    if (last.fault) {
+      throw last.fault;
     }
     // Strip the internal `retryable` flag from the public contract.
     const { retryable: _drop, ...result } = last;
@@ -364,6 +473,12 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
  * `not_found` / `parse_error` / `invalid_id`) is propagated into the
  * error string so the operator can pivot on the failure class. Otherwise
  * we fall back to the legacy `fetch(id)` truthiness contract.
+ *
+ * V2-CROSS-BO-001: a `scenario-fetch-fault:` throw from the fetcher (outage /
+ * credential fault) PROPAGATES deliberately — it is never converted into an
+ * `errors[]` entry, because those become `scenario-load:` rejections of the
+ * submission. The caller (run.js) lets it reach the CLI's outer catch, which
+ * emits a structured operational error and exits 2 without persisting.
  *
  * @param {object} submission
  * @param {object} scenarioFetcher - { fetch(scenarioId), fetchWithReason?(scenarioId) }

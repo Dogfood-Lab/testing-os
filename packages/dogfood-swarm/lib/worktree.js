@@ -5,8 +5,14 @@
  * This gives clean attribution, prevents shared-workspace drift,
  * and makes retry/discard mechanical.
  *
- * Worktrees live at: <repo>/.swarm/worktrees/<wave>-<domain>/
- * Branch names: swarm/<run-short>/<wave>-<domain>
+ * Worktrees live at: <repo>/.swarm/worktrees/w<wave>-<domain>-<run-short>/
+ * Branch names: swarm/<run-short>/w<wave>-<domain>
+ *
+ * The run-short slug is part of the DIRECTORY name, not just the branch
+ * (F-527dc73e): two concurrent runs against the same repo whose wave numbers
+ * and domain names coincide would otherwise collide on the path, and the
+ * stale-cleanup in createWorktree (`git worktree remove --force`) would
+ * destroy the other run's live worktree including uncommitted agent edits.
  *
  * Lifecycle:
  *   dispatch → create worktree per agent
@@ -48,6 +54,19 @@ export function isSafeDomainName(name) {
 }
 
 /**
+ * Derive the run-short slug used in both the worktree branch namespace
+ * (`swarm/<runShort>/...`) and the worktree directory name. Single source of
+ * truth — commands/clean.js and commands/dispatch.js#previewWorktree must
+ * derive the same slug byte-for-byte.
+ *
+ * @param {string} runId
+ * @returns {string}
+ */
+export function runShortOf(runId) {
+  return runId.replace(/^swarm-/, '').slice(0, 12);
+}
+
+/**
  * Create a worktree for an agent.
  *
  * @param {string} repoPath — main repo path
@@ -66,9 +85,12 @@ export function createWorktree(repoPath, opts) {
   if (!Number.isInteger(opts.waveNumber) || opts.waveNumber < 0) {
     throw new Error(`Unsafe wave number: ${JSON.stringify(opts.waveNumber)}`);
   }
-  const runShort = opts.runId.replace(/^swarm-/, '').slice(0, 12);
+  const runShort = runShortOf(opts.runId);
   const branch = `swarm/${runShort}/w${opts.waveNumber}-${opts.domainName}`;
-  const wtDir = join(repoPath, '.swarm', 'worktrees', `w${opts.waveNumber}-${opts.domainName}`);
+  // F-527dc73e: the run-short slug is folded into the DIRECTORY name so two
+  // runs against the same repo can never collide on the path (the stale-remove
+  // below would otherwise destroy the other run's live worktree).
+  const wtDir = join(repoPath, '.swarm', 'worktrees', `w${opts.waveNumber}-${opts.domainName}-${runShort}`);
 
   // Ensure .swarm/worktrees exists
   const parentDir = join(repoPath, '.swarm', 'worktrees');
@@ -235,6 +257,48 @@ export function cleanupAllWorktrees(repoPath) {
   // Prune stale worktree references. sm-p-003: best-effort, but a swallowed
   // prune failure left no breadcrumb at all; log it so a stuck prune is
   // greppable. Control flow is unchanged — cleanup is advisory.
+  try {
+    git(repoPath, 'worktree prune');
+  } catch (e) {
+    logStage('worktree_prune_failed', {
+      component: 'dogfood-swarm',
+      repoPath,
+      err: e.message,
+    });
+  }
+  return { removed, stranded, total: worktrees.length };
+}
+
+/**
+ * Clean up the swarm worktrees belonging to ONE run.
+ *
+ * F-e7369293: the run's terminal 'complete' promotion previously called
+ * cleanupAllWorktrees, which sweeps EVERY swarm/* worktree and branch in the
+ * repo — completing run A tore down run B's in-flight --isolate worktrees in
+ * the same repo, destroying B's unmerged agent edits. This helper applies the
+ * same run-short branch-prefix scoping that commands/clean.js documents
+ * (branches are namespaced swarm/<runShort>/...), so only THIS run's
+ * worktrees are removed. The prune step and its worktree_prune_failed
+ * breadcrumb mirror cleanupAllWorktrees.
+ *
+ * @param {string} repoPath
+ * @param {string} runId
+ * @returns {{ removed: number, stranded: number, total: number }}
+ */
+export function cleanupRunWorktrees(repoPath, runId) {
+  const branchPrefix = `swarm/${runShortOf(runId)}/`;
+  const worktrees = listWorktrees(repoPath).filter(w => {
+    const branch = (w.branch || '').replace(/^refs\/heads\//, '');
+    return branch.includes(branchPrefix);
+  });
+  let removed = 0;
+  let stranded = 0;
+  for (const wt of worktrees) {
+    const branch = (wt.branch || '').replace(/^refs\/heads\//, '');
+    const outcome = removeWorktree(repoPath, wt.path, branch);
+    if (outcome.stranded) stranded++;
+    else removed++;
+  }
   try {
     git(repoPath, 'worktree prune');
   } catch (e) {

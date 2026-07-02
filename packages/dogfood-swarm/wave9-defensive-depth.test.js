@@ -57,8 +57,11 @@ describe('findings-digest — F-COORD-003 file-glob', () => {
     rmSync(tmp, { recursive: true, force: true });
   });
 
-  it('reads <domain>.json (the canonical convention) and skips <domain>.md prompts', () => {
-    // Mirror the actual wave-dir layout: per-domain .json output + .md prompt.
+  it('reads flat <domain>.json (the LEGACY layout) and skips <domain>.md prompts', () => {
+    // F-00c35ce7: the CANONICAL layout is wave-N/<domain>/output.json (see
+    // AGENT_OUTPUT_FILENAME in commands/collect.js); the flat <domain>.json
+    // shape tested here is the legacy layout that must KEEP working.
+    // Mirror the legacy wave-dir layout: per-domain .json output + .md prompt.
     const runId = 'r-fglob';
     const runDir = join(tmp, runId);
     const waveDir = join(runDir, 'wave-1');

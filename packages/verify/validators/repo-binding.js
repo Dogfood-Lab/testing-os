@@ -50,16 +50,24 @@ export const RUN_URL_PARSERS = {
   //   PIPELINE: https://<host>/<namespace>/<project>/-/pipelines/<id>
   // The project path is everything between the host and the `/-/` run segment.
   //
-  // NESTED-SUBGROUP MAPPING (load-bearing decision, kept consistent with how
-  // submission.repo is expressed for GitLab): GitLab namespaces can nest —
-  // `group/subgroup/project`. We map owner = the FULL namespace (everything
-  // before the last path segment, slashes preserved) and repo = the LAST segment
-  // (the project). So `${owner}/${repo}` reconstructs the full project path. For
-  // a flat `group/project` this degenerates to owner='group', repo='project'
-  // (same shape as GitHub). The repo-binding guard then compares
-  // `${owner}/${repo}` against submission.repo, so for GitLab submission.repo is
-  // the FULL project path — which may contain more than one slash for nested
-  // subgroups, unlike GitHub's strict two-segment org/repo.
+  // TWO-SEGMENT CONTRACT (F-54e5fde7, load-bearing decision): nested GitLab
+  // subgroups (`group/subgroup/project`) are UNSUPPORTED end-to-end. The
+  // submission schema's `repo` pattern (^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$)
+  // forbids a second slash, so a nested project path can never be a valid
+  // submission.repo, and the policy loaders (ingest load-context.js, verify
+  // cli.js) fail closed on 3+-segment slugs. A GitLab consumer with nested
+  // subgroups must submit from a top-level group/project (or mirror the repo)
+  // until the contract is widened deliberately — schema pattern, both policy
+  // loaders, and the records/ path layout together, never piecemeal.
+  //
+  // The parser still maps owner = full namespace (slashes preserved) and
+  // repo = last segment. That is DELIBERATE fail-closed behavior, not nested
+  // support: for a nested run_url the reconstructed `${owner}/${repo}` carries
+  // 2+ slashes and can never equal a schema-valid submission.repo, so the
+  // binding guard rejects with repo:mismatch instead of silently skipping the
+  // anti-forgery check (returning null here would fail OPEN). For a flat
+  // `group/project` this degenerates to owner='group', repo='project' — the
+  // same shape as GitHub, and the only shape the contract supports.
   //
   // A single-segment path (no namespace + project, just `<project>/-/jobs/<id>`)
   // returns null — it cannot be split into owner + repo and is not a valid

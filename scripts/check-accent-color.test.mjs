@@ -66,12 +66,21 @@ test('Starlight handbook accent (--sl-color-accent) matches the verified logo co
   );
 });
 
-test('Site-theme landing accent (--color-accent) matches the verified logo color', () => {
+test('Site-theme landing accent (--color-accent) matches the verified logo color', (t) => {
   // The upstream theme.css is a node_modules file. If the dep isn't installed
-  // (fresh checkout, no `npm ci` in site/), we skip with a clear message rather
-  // than failing — the test only runs when the install step has happened.
+  // (fresh checkout, no `npm ci` in site/), we skip rather than failing — the
+  // check only runs where the install step has happened.
+  //
+  // F-e4a24655: this MUST be a visible t.skip, not a silent `return`. Root
+  // `npm ci` does not install site/ dependencies (site is not a workspace),
+  // so in ci.yml's test:scripts run this half of the gate never executes —
+  // a silent return rendered it as an ordinary green pass and the vacuity was
+  // invisible in output. The skip now shows in TAP, and pages.yml runs this
+  // test file right after its `npm ci` in site/ (the 'Accent reconciliation
+  // gate' step), where the dependency is guaranteed present — so the
+  // landing-side half is actually enforced on every site deploy.
   if (!existsSync(themeCss)) {
-    console.log(`[accent-snapshot] skipping landing-side check — ${themeCss} not present (run \`npm ci\` in site/ first).`);
+    t.skip(`landing-side check skipped — ${themeCss} not present (run \`npm ci\` in site/ first; enforced for real in pages.yml)`);
     return;
   }
   // Strip CSS block comments before scanning so the example value inside the

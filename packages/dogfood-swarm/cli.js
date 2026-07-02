@@ -214,7 +214,7 @@ export function parseFormatFlag(args) {
 }
 
 // ── Resolve DB path ──
-// Default: F:\AI\dogfood-labs\swarms\control-plane.db
+// Default: <repo root>/swarms/control-plane.db (resolved relative to this package)
 const DEFAULT_SWARM_DIR = resolve(import.meta.dirname, '../../swarms');
 const DEFAULT_DB_PATH = join(DEFAULT_SWARM_DIR, 'control-plane.db');
 
@@ -538,6 +538,20 @@ function cmdDispatch(args) {
     skipVerify,
     dryRun,
   });
+
+  // F-aa32371b: approved findings routed to ZERO domain agents (file-less or
+  // no-glob-match) silently block the finding-severity gate forever if the
+  // operator never learns about them. Loud on BOTH the dry-run and apply
+  // paths, before the per-agent listing.
+  const unrouted = result.unroutedApprovedFindings || [];
+  if (unrouted.length > 0) {
+    console.log(`\n===== [!] ${unrouted.length} APPROVED FINDING(S) ROUTED TO NO AGENT [!] =====`);
+    for (const f of unrouted) {
+      console.log(`  ${f.finding_id} [${f.severity}] ${f.file_path || '(no file_path — cannot match any domain glob)'}`);
+    }
+    console.log('  These findings stay OPEN and block the severity gate, but no amend agent will receive them.');
+    console.log('  Fix manually + verify via the coordinator_resolved path, or close with `swarm approve --defer/--reject`.');
+  }
 
   if (result.dryRun) {
     console.log(`\nDISPATCH DRY-RUN — wave ${result.waveNumber} would be dispatched (${result.phase})`);

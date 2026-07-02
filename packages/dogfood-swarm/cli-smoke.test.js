@@ -396,8 +396,13 @@ describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
       assert.match(r.stdout, /\(2 transitions\)/,
         `output must summarize "(2 transitions)"; got:\n${r.stdout}`);
 
-      assert.doesNotMatch(r.stdout, /\[/,
-        'output must be plain ASCII (no ANSI escapes)');
+      // F-eb26c327: pin "no ANSI escapes" precisely as the CSI introducer
+      // ESC+[ — written with the visible \x1b escape, not a raw ESC byte
+      // (invisible control bytes in source survive neither editors nor
+      // reviews). A bare /\[/ would forbid ANY literal bracket (an operator
+      // --reason containing '[' or the package's own [!] marker).
+      assert.doesNotMatch(r.stdout, /\x1b\[/,
+        'output must contain no ANSI escape sequences');
     } finally {
       teardownFixtureDb();
     }

@@ -34,7 +34,13 @@ permissions:
   id-token: write       # for npm OIDC trusted publishing
 
 concurrency:
-  group: release-${{ github.event.inputs.tag || github.ref }}
+  # F-60f0c4f5: normalize the group to the BARE tag on both triggers.
+  # `github.ref` is `refs/tags/v1.8.0` on a tag push while the dispatch input
+  # is `v1.8.0`, so the two runs for the SAME tag landed in different groups
+  # and did not serialize — a manual re-fire mid-publish could race the
+  # npm-view/npm-publish and gh-release check-then-act pairs.
+  # `github.ref_name` is `v1.8.0` for a tag push, matching the input form.
+  group: release-${{ github.event.inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
@@ -180,7 +186,14 @@ jobs:
           #
           # Private packages (portfolio) are excluded by reading the same
           # non-private filter the version guard uses.
-          mapfile -t PKGS < <(node -e '
+          # F-ef512e21: write the enumeration to a file FIRST so the node exit
+          # code is observable. `mapfile -t PKGS < <(node -e ...)` ignores the
+          # process substitution's exit status — a corrupt packages/*/package.json
+          # would leave PKGS empty and this step would fail with the misleading
+          # 'No publishable packages found' instead of the actual parse error.
+          # Under `set -e` the plain `node ... > file` form fails the step with
+          # the real error.
+          node -e '
             const { readdirSync, readFileSync, existsSync } = require("node:fs");
             const { join } = require("node:path");
             for (const e of readdirSync("packages", { withFileTypes: true })) {
@@ -191,7 +204,8 @@ jobs:
               if (pkg.private === true) continue;
               process.stdout.write(`${pkg.name}\t${pkg.version}\n`);
             }
-          ')
+          ' > /tmp/publishable-pkgs.tsv
+          mapfile -t PKGS < /tmp/publishable-pkgs.tsv
 
           if [ "${#PKGS[@]}" -eq 0 ]; then
             echo "::error::No publishable packages found under packages/ — nothing to publish. Expected 6 non-private @dogfood-lab/* packages."
@@ -256,7 +270,22 @@ jobs:
             echo "GitHub Release ${PUBLISH_TAG} already exists — skipping creation."
             exit 0
           fi
+          # F-60f0c4f5 defense-in-depth: the view-then-create pair above is
+          # check-then-act. Two concurrent runs for the same tag (now
+          # serialized by the normalized concurrency group, but belt-and-
+          # braces) can both pass the view before either creates; the loser's
+          # create fails AFTER packages are live. Tolerate a lost create race
+          # by re-checking: if the release exists now, another run created it
+          # and this is a no-op success, not a red run.
           gh release create "${PUBLISH_TAG}" \
             --title "testing-os ${PUBLISH_TAG}" \
             --notes-file /tmp/release-notes.md \
-            --verify-tag
+            --verify-tag \
+          || {
+            if gh release view "${PUBLISH_TAG}" >/dev/null 2>&1; then
+              echo "::notice::GitHub Release ${PUBLISH_TAG} was created by a concurrent run — treating as success."
+            else
+              echo "::error::gh release create failed for ${PUBLISH_TAG} and no release exists. Packages published this run are LIVE (irreversible); re-fire the workflow to create the release (publish steps are idempotent no-ops)."
+              exit 1
+            fi
+          }

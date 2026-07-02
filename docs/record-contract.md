@@ -53,3 +53,5 @@ Every `scenario_results[]` item must include `step_results[]` with at least one 
 The verifier enforces:
 - Every `required_steps[]` in the scenario definition has a matching `step_results[]` entry
 - A scenario cannot have `verdict: pass` if any required step has `status: fail` or `status: blocked`
+
+Both checks require the scenario *definition* to be resolvable at verify time: they run for `github`-provenance submissions (the scenario file is fetched from the submitting repo at the attested commit) and whenever a scenarios map is supplied to `verify()` directly. For `gitlab` submissions scenario fetching is not yet implemented, so these two checks are skipped there — a documented gap, not a silent one.

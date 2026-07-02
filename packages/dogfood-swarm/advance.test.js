@@ -367,6 +367,16 @@ describe('advance()', () => {
     });
     assert.ok(result.promoted);
     assert.ok(result.verdict.includes('override'));
+    // F-5a251061: an overridden AMEND promotes PAST the finding gate to the
+    // NEXT stage — not into the amend phase the operator explicitly chose to
+    // skip. The old code promoted health-audit-a → health-amend-a and this
+    // test let it ship by never pinning toPhase.
+    assert.equal(result.fromPhase, 'health-audit-a');
+    assert.equal(result.toPhase, 'health-audit-b',
+      'override must promote to the next stage, not the amend phase');
+    const run = db.prepare('SELECT status FROM runs WHERE id = ?').get(runId);
+    assert.equal(run.status, 'health-audit-b',
+      'runs.status must land on the next stage, not the amend loop');
     db.close();
   });
 
@@ -435,6 +445,12 @@ describe('Promotion records', () => {
     assert.ok(promotions[0].overrides);
     assert.equal(promotions[0].overrides[0].reason, 'Risk accepted');
     assert.equal(promotions[0].authorized_by, 'mike');
+    // F-5a251061: the immutable promotions row must record the TRUE target —
+    // the next stage — not the amend phase (the pre-fix audit trail
+    // permanently recorded a phase progression that never matched intent).
+    assert.equal(promotions[0].from_phase, 'health-audit-a');
+    assert.equal(promotions[0].to_phase, 'health-audit-b',
+      'promotions.to_phase must be the next stage for an overridden AMEND');
     db.close();
   });
 

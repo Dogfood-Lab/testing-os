@@ -8,7 +8,10 @@
 
 import { validateSubmissionSchema as _defaultValidateSubmissionSchema } from './validators/schema.js';
 import { validatePolicy as _defaultValidatePolicy } from './validators/policy.js';
-import { validateStepResults as _defaultValidateStepResults } from './validators/steps.js';
+import {
+  validateStepResults as _defaultValidateStepResults,
+  validateRequiredSteps as _defaultValidateRequiredSteps
+} from './validators/steps.js';
 import { validateSchemaVersion as _defaultValidateSchemaVersion } from './validators/schema-version.js';
 import { computeVerdict } from './validators/verdict.js';
 import { parseRunUrlRepo } from './validators/repo-binding.js';
@@ -79,6 +82,12 @@ function runValidator(name, fn) {
  * @param {object|null} options.repoPolicy - Parsed repo policy (null if none)
  * @param {object} options.provenance - Provenance adapter { confirm(source) => Promise<boolean> }
  * @param {string} options.policyVersion - Semver of the policy set being applied
+ * @param {Map<string, object>|null} [options.scenarios] - Loaded scenario
+ *   definitions keyed by scenario_id (from loadScenarios). When present, each
+ *   scenario_result is checked against its definition's
+ *   success_criteria.required_steps — the REAL enforcement behind the
+ *   `step-results-present` / `step-verdict-consistent` global reject rules
+ *   (F-3bfc2885). Absent/null keeps the legacy structural-only behavior.
  * @param {object} [options.validators] - Test-only override hook (D1B-003).
  *   Pass `{ validateSubmissionSchema, validateStepResults, validatePolicy }`
  *   to swap in fault-injecting stubs. Production callers leave this unset
@@ -114,12 +123,13 @@ export async function verify(submission, options) {
     };
   }
 
-  const { globalPolicy, repoPolicy, provenance, policyVersion, validators: validatorOverrides = {} } = options;
+  const { globalPolicy, repoPolicy, provenance, policyVersion, scenarios = null, validators: validatorOverrides = {} } = options;
   // Resolve the three validators per-call so tests can inject fault-
   // injecting stubs. Production callers leave `validators` unset and the
   // module-level imports flow through unchanged.
   const validateSubmissionSchema = validatorOverrides.validateSubmissionSchema || _defaultValidateSubmissionSchema;
   const validateStepResults = validatorOverrides.validateStepResults || _defaultValidateStepResults;
+  const validateRequiredSteps = validatorOverrides.validateRequiredSteps || _defaultValidateRequiredSteps;
   const validatePolicy = validatorOverrides.validatePolicy || _defaultValidatePolicy;
   const validateSchemaVersion = validatorOverrides.validateSchemaVersion || _defaultValidateSchemaVersion;
   const now = new Date().toISOString();
@@ -210,8 +220,9 @@ export async function verify(submission, options) {
       });
     } catch (err) {
       // verify-A-002: the adapter THROWS on operational provider faults
-      // (429 rate-limit, 5xx outage, 401/403 token) and returns false only for
-      // a genuinely-absent run (404/transport). Emit a DISTINCT `provenance-fault:`
+      // (429 rate-limit, 5xx outage, 401/403 token, exhausted-retry transport
+      // errors — F-dac7e08c) and returns false only for a genuinely-absent run
+      // (HTTP 404). Emit a DISTINCT `provenance-fault:`
       // prefix here so parseRejectionReason routes the incident to ops instead of
       // bouncing an outage back to the submitter as submission-bad. The not-confirmed
       // case below keeps the bare `provenance:` prefix (still submission-bad).
@@ -231,6 +242,27 @@ export async function verify(submission, options) {
         reasons.push(...stepsRun.result.map(e => `steps[${scenario.scenario_id}]: ${e}`));
       } else {
         reasons.push(stepsRun.faultReason);
+      }
+
+      // F-3bfc2885: enforce success_criteria.required_steps when the caller
+      // loaded the scenario definition. This is the enforcement behind the
+      // `step-results-present` / `step-verdict-consistent` global reject rules
+      // that KNOWN_REJECT_RULE_IDS attributes to "verify() itself" — before
+      // this wiring, validateRequiredSteps had no callers and the rules were
+      // declared-but-unenforced. A scenario_result whose definition failed to
+      // load is NOT checked here; loadScenarios already reports that as a
+      // `scenario-load:` rejection at the ingest layer.
+      if (scenarios && typeof scenarios.get === 'function') {
+        const definition = scenarios.get(scenario.scenario_id);
+        const requiredSteps = definition?.success_criteria?.required_steps ?? [];
+        if (requiredSteps.length > 0) {
+          const requiredRun = runValidator('steps', () => validateRequiredSteps(scenario, requiredSteps));
+          if (requiredRun.ok) {
+            reasons.push(...requiredRun.result.map(e => `steps[${scenario.scenario_id}]: ${e}`));
+          } else {
+            reasons.push(requiredRun.faultReason);
+          }
+        }
       }
     }
   }
