@@ -477,6 +477,27 @@ export function computeAssessment(wave, agents, openBySeverity, blocked, inFligh
     };
   }
 
+  // F-15fc601e: a wave failed for missing outputs (F-aba6fa9d) leaves its
+  // agents in 'failed'/'timed_out' — redispatchable, NOT blocked — so the
+  // allComplete check below would render INCOMPLETE and recommend `swarm
+  // resume`. That was a three-verb dead-end: resume redispatches the failed
+  // agents but never flips the wave out of 'failed', so collect then refuses
+  // ('No dispatched wave found') and revalidate refuses too (the agents are
+  // not blocked). The lawful verb that flips BOTH the wave and the agents
+  // back to dispatched is `swarm redrive <wave-id>` — route there BEFORE the
+  // INCOMPLETE branch.
+  const failedTail = agents.filter(a => a.status === 'failed' || a.status === 'timed_out');
+  if (wave.status === 'failed' && failedTail.length > 0) {
+    return {
+      state: 'WAVE FAILED',
+      blockers,
+      nextAction:
+        `${failedTail.length} agent(s) in '${[...new Set(failedTail.map(a => a.status))].join("'/'")}' on a failed wave. ` +
+        `Recover with \`swarm redrive ${wave.id} --reason "<text>" --apply\` (flips the wave AND the failure tail back to dispatched), ` +
+        `re-run the agent(s), then \`swarm collect\`.`,
+    };
+  }
+
   // Check if all complete
   const allComplete = agents.every(a => a.status === 'complete');
   if (!allComplete) {

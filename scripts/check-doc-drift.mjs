@@ -402,12 +402,18 @@ const untaggedFenceHandler = {
       const text = readFileSync(file, 'utf8');
       const lines = text.split(/\r?\n/);
       let inFence = false;
+      let fenceLen = 0;
       lines.forEach((line, idx) => {
         if (inFence) {
           // A closer is a BARE fence, optionally indented up to 3 spaces
-          // (CommonMark). A fence-looking line WITH an info string inside an
-          // open block is content, not a close.
-          if (/^\s{0,3}```\s*$/.test(line)) inFence = false;
+          // (CommonMark), AT LEAST as long as its opener (F-1c99c064: a
+          // fixed-``` closer could never close a 4-backtick block — the
+          // standard way to SHOW fence examples — so the inner bare ```
+          // example lines were false-flagged and every later real fence in
+          // the file went invisible). A fence-looking line WITH an info
+          // string inside an open block is content, not a close.
+          const close = /^\s{0,3}(`{3,})\s*$/.exec(line);
+          if (close && close[1].length >= fenceLen) inFence = false;
           return;
         }
         // F-de02ea22: openers may be indented up to 3 spaces and may sit on a
@@ -415,10 +421,14 @@ const untaggedFenceHandler = {
         // CommonMark that the previous column-0-only regex silently skipped,
         // so untagged fences nested in the handbook's bulleted lists shipped
         // unflagged. 4+ spaces of indent is an indented code block, not a
-        // fence, and stays ignored.
-        const m = /^\s{0,3}(?:(?:[-*+]|\d+\.)\s+)?```(.*)$/.exec(line);
+        // fence, and stays ignored. F-1c99c064: the opener's backtick run is
+        // captured so the closer can require an equal-or-longer run.
+        const m = /^\s{0,3}(?:(?:[-*+]|\d+\.)\s+)?(`{3,})(.*)$/.exec(line);
         if (!m) return;
-        const info = m[1].trim();
+        const info = m[2].trim();
+        // CommonMark: the info string of a backtick fence may not contain a
+        // backtick — such a line is not a fence opener at all (F-1c99c064).
+        if (info.includes('`')) return;
         if (info.length === 0) {
           const rel = relative(repoRoot, file).replace(/\\/g, '/');
           reports.push({
@@ -431,6 +441,7 @@ const untaggedFenceHandler = {
           });
         }
         inFence = true;
+        fenceLen = m[1].length;
       });
     }
 

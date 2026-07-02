@@ -14,6 +14,7 @@
 
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
 import { getDomains, aredomainsFrozen, freezeDomains, takeDomainSnapshot } from '../lib/domains.js';
@@ -25,6 +26,7 @@ import { transitionAgent } from '../lib/state-machine.js';
 import { IsolationError, DispatchPreconditionError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
@@ -267,6 +269,54 @@ export function dispatch(opts) {
     );
   }
 
+  // F-7970a30b: dispatching over a FAILED wave with blocked agents is a
+  // legitimate abandon-and-retry choice (the in-flight guard above only
+  // covers dispatched/collecting), but it silently closes the `swarm
+  // revalidate` window — revalidate reads the LATEST wave regardless of
+  // status, so the failed wave's invalid_output / ownership_violation agents
+  // become unreachable by the lawful repair verb the moment this dispatch
+  // lands. Warn loudly at dispatch time; `swarm redrive <wave-id>` (explicit
+  // wave id) remains the surviving recovery path. Observability only — never
+  // a gate.
+  let supersededFailedWave = null;
+  {
+    const latestWave = db.prepare(`
+      SELECT id, wave_number, phase, status FROM waves
+      WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1
+    `).get(opts.runId);
+    if (latestWave && latestWave.status === 'failed') {
+      const blockedRows = db.prepare(`
+        SELECT ar.id FROM agent_runs ar
+        WHERE ar.wave_id = ?
+          ${LATEST_AGENT_RUN_PER_DOMAIN}
+          AND ar.status IN ('invalid_output', 'ownership_violation')
+      `).all(latestWave.id);
+      if (blockedRows.length > 0) {
+        supersededFailedWave = {
+          waveId: latestWave.id,
+          waveNumber: latestWave.wave_number,
+          phase: latestWave.phase,
+          blockedAgents: blockedRows.length,
+          message:
+            `wave ${latestWave.wave_number} (id ${latestWave.id}) is 'failed' with ` +
+            `${blockedRows.length} blocked agent_run(s). Once this dispatch lands, ` +
+            `\`swarm revalidate\` (which reads the LATEST wave) can no longer reach it — ` +
+            `post-dispatch recovery narrows to \`swarm redrive ${latestWave.id} --reason "<text>" --apply\` or manual repair.`,
+        };
+        logStage('dispatch_supersedes_failed_wave', {
+          component: 'dogfood-swarm',
+          correlation_id: mintCorrelationId(),
+          runId: opts.runId,
+          phase: opts.phase,
+          failedWaveId: latestWave.id,
+          failedWaveNumber: latestWave.wave_number,
+          blockedAgents: blockedRows.length,
+          hint: `swarm redrive ${latestWave.id} --reason "<text>" --apply`,
+        });
+      }
+    }
+  }
+
   // 2. Take domain snapshot (read-side prep; no commits here yet).
   const snapshot = takeDomainSnapshot(db, opts.runId);
 
@@ -358,6 +408,7 @@ export function dispatch(opts) {
       promptDir: promptDirPath,
       agents: previewAgents,
       unroutedApprovedFindings,
+      supersededFailedWave,
     };
   }
 
@@ -382,13 +433,27 @@ export function dispatch(opts) {
   // INSERT agent_runs + transitionAgent ALL land or none do. Prompts and
   // worktrees are FS-side and stay outside the tx — see header for the
   // FS-orphan trade-off.
+  // F-0e55b5ca: capture the repo HEAD as this wave's diff base BEFORE the
+  // wave-build tx (an FS read, not a DB write). runs.commit_sha is stamped
+  // once at `swarm init` and goes stale as waves land commits; using it as
+  // the non-isolated collect probe base attributed every prior wave's edits
+  // to THIS wave's agents. NULL when the probe fails (bare dir in tests,
+  // git unavailable) — collect falls back to runs.commit_sha, its legacy
+  // behavior.
+  let dispatchSha = null;
+  try {
+    dispatchSha = execFileSync('git', ['rev-parse', 'HEAD'], {
+      cwd: run.local_path, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'],
+    }).trim() || null;
+  } catch { dispatchSha = null; }
+
   const agents = [];
   let waveId;
   const buildWave = db.transaction(() => {
     const waveResult = db.prepare(`
-      INSERT INTO waves (run_id, phase, wave_number, status, domain_snapshot_id)
-      VALUES (?, ?, ?, 'dispatched', ?)
-    `).run(opts.runId, opts.phase, waveNumber, snapshot.snapshotId);
+      INSERT INTO waves (run_id, phase, wave_number, status, domain_snapshot_id, dispatch_sha)
+      VALUES (?, ?, ?, 'dispatched', ?, ?)
+    `).run(opts.runId, opts.phase, waveNumber, snapshot.snapshotId, dispatchSha);
     waveId = waveResult.lastInsertRowid;
 
     db.prepare('UPDATE runs SET status = ? WHERE id = ?').run(opts.phase, opts.runId);
@@ -559,5 +624,6 @@ export function dispatch(opts) {
     agents: builtAgents,
     promptDir,
     unroutedApprovedFindings,
+    supersededFailedWave,
   };
 }

@@ -13,24 +13,23 @@
  *
  *   - Submission-bad → existing `'schema: …'`, `'policy: …'`, `'steps[id]: …'`
  *     prefixes (kept unchanged for back-compat).
- *   - Validator-crashed → new `'VALIDATOR_FAULT_SCHEMA: …'`,
- *     `'VALIDATOR_FAULT_POLICY: …'`, `'VALIDATOR_FAULT_STEPS: …'`. Format
- *     mirrors the established `<KEY>: <details>` convention so existing
- *     log aggregators / parsers degrade cleanly: anything starting with
- *     `VALIDATOR_FAULT_` is an operator alert; everything else is a
- *     submission-class signal.
+ *   - Validator-crashed → verify() THROWS a classified error whose message
+ *     carries `'VALIDATOR_FAULT_<CLASS>: …'` and whose `.code` is
+ *     `VALIDATOR_FAULT_<CLASS>`. (F-82429f90, wave 4: this superseded the
+ *     original push-into-rejection_reasons behavior — persisting a
+ *     validator crash as a `_rejected` record permanently poisoned the
+ *     run_id via ingest's duplicate guard. Operational faults now
+ *     propagate: both production callers map a verify() throw to exit 2
+ *     with NOTHING persisted, so a clean resubmission after recovery is
+ *     accepted.)
  *
- * The wrapped helper (`runValidator(name, fn)`) is checked indirectly:
- * its invariant is that the catches no longer raw-prefix `'validator error:'`
- * — a regex sweep over the source file pins this.
- *
- * Invariant (both halves enforced for each catch):
+ * Invariant (both halves enforced for each class):
  *   1. POSITIVE (validator-crashed): force the inner validator function to
- *      throw → `rejection_reasons` contains a `VALIDATOR_FAULT_<CLASS>:`
- *      reason AND NO `'validator error: '` raw prefix anywhere.
+ *      throw → verify() rejects with a `VALIDATOR_FAULT_<CLASS>` coded
+ *      error whose message carries the underlying detail.
  *   2. POSITIVE (submission-bad): force a clean submission-rejection signal
- *      → `rejection_reasons` carries the existing `'<class>: '` prefix.
- *      Both classes coexist in the same vocabulary; nothing collides.
+ *      → `rejection_reasons` carries the existing `'<class>: '` prefix and
+ *      NO fault is thrown.
  *   3. NEGATIVE (sweep): no occurrence of the literal `'validator error: '`
  *      string survives in `index.js`. The discipline is the regression
  *      pin against the old vocabulary leaking back.
@@ -67,32 +66,33 @@ before(() => {
 // ─────────────────────────────────────────────────────────────────
 
 describe('D1B-003 — schema validator: VALIDATOR_FAULT_SCHEMA vs schema: prefixes', () => {
-  it('POSITIVE crash: a validator-internal throw lands as VALIDATOR_FAULT_SCHEMA', async () => {
+  it('POSITIVE crash: a validator-internal throw PROPAGATES as a coded VALIDATOR_FAULT_SCHEMA fault (F-82429f90)', async () => {
     // Inject a fault via the test-only `validators` override hook (see
     // index.js JSDoc). The override is the seam D1B-003 introduces so a
     // simulated validator crash is reproducible without monkey-patching
     // ESM modules (which is a no-op for live bindings).
-    const record = await verify(pilot0, {
-      globalPolicy,
-      repoPolicy,
-      provenance: stubProvenance,
-      policyVersion: '1.0.0',
-      validators: {
-        validateSubmissionSchema: () => {
-          throw new Error('simulated ajv compile fault: out-of-memory');
+    await assert.rejects(
+      verify(pilot0, {
+        globalPolicy,
+        repoPolicy,
+        provenance: stubProvenance,
+        policyVersion: '1.0.0',
+        validators: {
+          validateSubmissionSchema: () => {
+            throw new Error('simulated ajv compile fault: out-of-memory');
+          }
         }
-      }
-    });
-
-    const reasons = record.verification.rejection_reasons;
-    const fault = reasons.find(r => r.startsWith('VALIDATOR_FAULT_SCHEMA:'));
-    assert.ok(fault,
-      `expected VALIDATOR_FAULT_SCHEMA prefix; reasons=${JSON.stringify(reasons)}`);
-    assert.ok(fault.includes('simulated ajv compile fault'),
-      'underlying error.message must be carried');
-    assert.equal(
-      reasons.filter(r => r.startsWith('validator error:')).length, 0,
-      'old "validator error:" prefix must not appear anymore'
+      }),
+      (err) => {
+        assert.equal(err.code, 'VALIDATOR_FAULT_SCHEMA',
+          `expected code VALIDATOR_FAULT_SCHEMA; got ${err.code} (${err.message})`);
+        assert.match(err.message, /^VALIDATOR_FAULT_SCHEMA: /,
+          'message must carry the greppable coded prefix');
+        assert.ok(err.message.includes('simulated ajv compile fault'),
+          'underlying error.message must be carried');
+        return true;
+      },
+      'a validator crash is operational — it must propagate, never assemble a persisted rejected record'
     );
   });
 
@@ -126,28 +126,26 @@ describe('D1B-003 — schema validator: VALIDATOR_FAULT_SCHEMA vs schema: prefix
 // ─────────────────────────────────────────────────────────────────
 
 describe('D1B-003 — steps validator: VALIDATOR_FAULT_STEPS vs steps: prefixes', () => {
-  it('POSITIVE crash: a steps-validator throw lands as VALIDATOR_FAULT_STEPS', async () => {
-    const record = await verify(pilot0, {
-      globalPolicy,
-      repoPolicy,
-      provenance: stubProvenance,
-      policyVersion: '1.0.0',
-      validators: {
-        validateStepResults: () => {
-          throw new Error('simulated steps validator fault: stack overflow');
+  it('POSITIVE crash: a steps-validator throw PROPAGATES as a coded VALIDATOR_FAULT_STEPS fault (F-82429f90)', async () => {
+    await assert.rejects(
+      verify(pilot0, {
+        globalPolicy,
+        repoPolicy,
+        provenance: stubProvenance,
+        policyVersion: '1.0.0',
+        validators: {
+          validateStepResults: () => {
+            throw new Error('simulated steps validator fault: stack overflow');
+          }
         }
+      }),
+      (err) => {
+        assert.equal(err.code, 'VALIDATOR_FAULT_STEPS');
+        assert.match(err.message, /^VALIDATOR_FAULT_STEPS: /);
+        assert.ok(err.message.includes('simulated steps validator fault'),
+          'underlying error.message must be carried');
+        return true;
       }
-    });
-
-    const reasons = record.verification.rejection_reasons;
-    const fault = reasons.find(r => r.startsWith('VALIDATOR_FAULT_STEPS:'));
-    assert.ok(fault,
-      `expected VALIDATOR_FAULT_STEPS prefix; reasons=${JSON.stringify(reasons)}`);
-    assert.ok(fault.includes('simulated steps validator fault'),
-      'underlying error.message must be carried');
-    assert.equal(
-      reasons.filter(r => r.startsWith('validator error:')).length, 0,
-      'old "validator error:" prefix must not appear anymore'
     );
   });
 
@@ -181,28 +179,26 @@ describe('D1B-003 — steps validator: VALIDATOR_FAULT_STEPS vs steps: prefixes'
 // ─────────────────────────────────────────────────────────────────
 
 describe('D1B-003 — policy validator: VALIDATOR_FAULT_POLICY vs policy: prefixes', () => {
-  it('POSITIVE crash: a policy-validator throw lands as VALIDATOR_FAULT_POLICY', async () => {
-    const record = await verify(pilot0, {
-      globalPolicy,
-      repoPolicy,
-      provenance: stubProvenance,
-      policyVersion: '1.0.0',
-      validators: {
-        validatePolicy: () => {
-          throw new Error('simulated policy validator fault: merge cycle');
+  it('POSITIVE crash: a policy-validator throw PROPAGATES as a coded VALIDATOR_FAULT_POLICY fault (F-82429f90)', async () => {
+    await assert.rejects(
+      verify(pilot0, {
+        globalPolicy,
+        repoPolicy,
+        provenance: stubProvenance,
+        policyVersion: '1.0.0',
+        validators: {
+          validatePolicy: () => {
+            throw new Error('simulated policy validator fault: merge cycle');
+          }
         }
+      }),
+      (err) => {
+        assert.equal(err.code, 'VALIDATOR_FAULT_POLICY');
+        assert.match(err.message, /^VALIDATOR_FAULT_POLICY: /);
+        assert.ok(err.message.includes('simulated policy validator fault'),
+          'underlying error.message must be carried');
+        return true;
       }
-    });
-
-    const reasons = record.verification.rejection_reasons;
-    const fault = reasons.find(r => r.startsWith('VALIDATOR_FAULT_POLICY:'));
-    assert.ok(fault,
-      `expected VALIDATOR_FAULT_POLICY prefix; reasons=${JSON.stringify(reasons)}`);
-    assert.ok(fault.includes('simulated policy validator fault'),
-      'underlying error.message must be carried');
-    assert.equal(
-      reasons.filter(r => r.startsWith('validator error:')).length, 0,
-      'old "validator error:" prefix must not appear anymore'
     );
   });
 });

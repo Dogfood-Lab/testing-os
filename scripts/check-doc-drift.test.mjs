@@ -2315,3 +2315,61 @@ test('F-de02ea22: a fence opened directly on a list-marker line (`- ```) is flag
   assert.equal(result.reports.length, 1, JSON.stringify(result.reports));
   assert.match(result.reports[0].file, /docs\/marker\.md:1/);
 });
+
+test('F-1c99c064 META: a four-backtick fence wrapping bare ``` examples closes correctly and does not false-flag the inner lines', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('docs/nested.md', [
+    '# Doc',            // line 1
+    '',
+    '````markdown',     // line 3 — tagged 4-backtick opener (the CommonMark way to SHOW fences)
+    '```',              // line 4 — CONTENT (an example fence), not an opener
+    'example fence',
+    '```',              // line 6 — content, not a closer of the outer block
+    '````',             // line 7 — the real closer (>= opener length)
+    '',
+    '```',              // line 9 — a REAL untagged opener after the block
+    'untagged real fence',
+    '```',              // line 11 — its closer
+    '',
+  ].join('\n'));
+  const cfg = fx.config({
+    checks: [{
+      id: 'fences',
+      kind: 'untagged-fence',
+      title: 'fences',
+      targets: ['docs/nested.md'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'the real untagged opener at line 9 must surface');
+  assert.equal(
+    result.reports.length,
+    1,
+    `exactly ONE drift expected — the pre-fix state machine could not close the 4-backtick block, so it false-flagged the inner example lines and went blind to everything after: ${JSON.stringify(result.reports)}`,
+  );
+  assert.match(result.reports[0].file, /docs\/nested\.md:9$/, 'drift must anchor to the real opener, not the example lines inside the 4-backtick block');
+});
+
+test('F-1c99c064: an opener whose info string contains a backtick is not a fence (CommonMark)', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('docs/notafence.md', [
+    '# Doc',
+    '',
+    '``` `weird` ```',  // info string contains backticks — NOT a fence opener per CommonMark
+    '',
+    '```js',            // real tagged fence — must still be tracked normally
+    'code',
+    '```',
+    '',
+  ].join('\n'));
+  const cfg = fx.config({
+    checks: [{
+      id: 'fences',
+      kind: 'untagged-fence',
+      title: 'fences',
+      targets: ['docs/notafence.md'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, `a backtick-bearing info string must not open a fence (and must not trip state for the real fence below): ${JSON.stringify(result.reports)}`);
+});

@@ -228,10 +228,26 @@ const RETRY_MAX_MS = 2000;
  * hostile/misconfigured source repo could stream an arbitrarily large body
  * into memory and into yaml.load. Real scenario files are a few KB — 1 MiB is
  * three orders of magnitude of headroom. Checked against Content-Length
- * BEFORE the body is read (when the response exposes it) and against the
- * decoded byte length after, since Content-Length is attacker-suppliable.
+ * BEFORE the body is read (when the response exposes it), then enforced
+ * WHILE the body streams (F-35486d38: the reader aborts the moment the
+ * running byte count crosses the cap, so a header-suppressed oversized body
+ * never fully buffers). Responses without a streamable body (test stubs)
+ * fall back to text() + a post-read length check, which then bounds only
+ * yaml.load, not the buffering step.
  */
 export const GITHUB_SCENARIO_MAX_BYTES = 1024 * 1024;
+
+/**
+ * F-2750c4e8: hard ceiling on DISTINCT scenario ids fetched per submission.
+ * Matches the submission schema's `scenario_results` maxItems (1000) — the
+ * published contract bound — so a schema-valid submission can never hit it,
+ * while a hostile pre-schema-gate payload (the fetch loop runs before
+ * verify()'s schema rejection lands) cannot drive unbounded sequential
+ * authenticated GitHub API calls. Combined with the attempted-id dedupe in
+ * loadScenarios, the worst-case network spend per submission is bounded by
+ * this constant regardless of payload shape.
+ */
+export const MAX_DISTINCT_SCENARIO_FETCHES = 1000;
 
 /**
  * V2-CROSS-BO-001: classified operational fault for the scenario fetch —
@@ -266,10 +282,11 @@ function defaultSleep(ms) {
  *   - `fetchWithReason(scenarioId)`: D1B-004 typed contract — always
  *     returns `{ scenario, reason }` where `scenario` is the loaded
  *     object on success or `null` on failure, and `reason` is one of
- *     `'timeout' | 'not_found' | 'parse_error' | 'invalid_id' |
- *     'too_large' | 'schema_invalid'` on failure (absent on success).
- *     The reason gives operators a pivot key when diagnosing a stale
- *     scenario-load chain.
+ *     `'not_found' | 'parse_error' | 'invalid_id' | 'too_large' |
+ *     'schema_invalid'` on failure (absent on success). The reason gives
+ *     operators a pivot key when diagnosing a stale scenario-load chain.
+ *     A timeout that survives every retry no longer RETURNS a typed
+ *     reason — it throws `scenario-fetch-fault:` (F-07ab7f86, see below).
  *
  * Both surfaces honour the per-request AbortController timeout
  * (`GITHUB_SCENARIO_FETCH_TIMEOUT_MS`, overridable via `opts.timeoutMs`).
@@ -283,14 +300,17 @@ function defaultSleep(ms) {
  * `lib/rename-with-retry.js`). The backoff sleep is injectable
  * (`opts.sleepImpl`) so tests do not actually wait.
  *
- * V2-CROSS-BO-001: exhausting the retry budget on a 5xx/429 or a transport
- * reject, or hitting any other non-404 non-ok status (401/403 bad
- * credential), THROWS a `scenario-fetch-fault:` classified error instead of
- * returning `not_found` — an outage or a token fault is an OPERATIONAL
- * incident, never evidence that the scenario file is absent. Callers
- * (loadScenarios → run.js) propagate the throw so the CLI exits 2 without
- * persisting a rejected record. A timeout on exhaustion keeps its typed
- * `'timeout'` reason (pinned D1B-004/L1-007 operator contract).
+ * V2-CROSS-BO-001 + F-07ab7f86: exhausting the retry budget on a 5xx/429, a
+ * transport reject, OR a per-request timeout, or hitting any other non-404
+ * non-ok status (401/403 bad credential), THROWS a `scenario-fetch-fault:`
+ * classified error instead of returning a typed reason — an outage, a slow-API
+ * window, or a token fault is an OPERATIONAL incident, never evidence that
+ * the scenario file is absent. Callers (loadScenarios → run.js) propagate the
+ * throw so the CLI exits 2 without persisting a rejected record. The
+ * exhausted-timeout fault keeps the literal word 'timeout' in its detail so
+ * the D1B-004/L1-007 operator pivot key survives (contract updated wave 4;
+ * pre-fix the typed 'timeout' reason became a submission-rejecting
+ * `scenario-load:` reason that poisoned the run_id via the duplicate guard).
  *
  * @param {string} token - GitHub PAT
  * @param {string} repoSlug - e.g. "mcp-tool-shop-org/shipcheck"
@@ -372,18 +392,47 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
       }
 
       // V2-CROSS-BO-002: byte cap at the trust boundary. Check the declared
-      // Content-Length first (skips buffering an oversized body when the
-      // response exposes headers), then the decoded byte length — the header
-      // is attacker-suppliable, the decoded length is not.
+      // Content-Length first (skips even starting an oversized read when the
+      // response exposes headers) — the header is attacker-suppliable, so the
+      // read below re-enforces the cap on real bytes.
       const declaredLength = typeof resp.headers?.get === 'function'
         ? Number(resp.headers.get('content-length'))
         : NaN;
       if (declaredLength > GITHUB_SCENARIO_MAX_BYTES) {
         return { scenario: null, reason: 'too_large', retryable: false };
       }
-      text = await resp.text();
-      if (Buffer.byteLength(text, 'utf8') > GITHUB_SCENARIO_MAX_BYTES) {
-        return { scenario: null, reason: 'too_large', retryable: false };
+      // F-35486d38: stream the body with a running byte count and abort the
+      // moment the cap is crossed, so a header-suppressed oversized body is
+      // never fully buffered. Responses without a streamable body (test
+      // stubs, non-spec fetch impls) fall back to text() + post-read check,
+      // which bounds yaml.load but not the buffering step.
+      if (resp.body && typeof resp.body.getReader === 'function') {
+        const reader = resp.body.getReader();
+        const chunks = [];
+        let received = 0;
+        let overflow = false;
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          received += value.byteLength;
+          if (received > GITHUB_SCENARIO_MAX_BYTES) {
+            overflow = true;
+            // cancel() may reject if the connection is already torn down —
+            // the too_large verdict below stands either way.
+            await reader.cancel().catch(() => {});
+            break;
+          }
+          chunks.push(value);
+        }
+        if (overflow) {
+          return { scenario: null, reason: 'too_large', retryable: false };
+        }
+        text = Buffer.concat(chunks.map((c) => Buffer.from(c))).toString('utf8');
+      } else {
+        text = await resp.text();
+        if (Buffer.byteLength(text, 'utf8') > GITHUB_SCENARIO_MAX_BYTES) {
+          return { scenario: null, reason: 'too_large', retryable: false };
+        }
       }
     } catch (err) {
       if (err && err.code === 'SCENARIO_FETCH_FAULT') {
@@ -447,6 +496,20 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
     if (last.fault) {
       throw last.fault;
     }
+    // F-07ab7f86: timeout EXHAUSTION is outage-shaped too — a sustained
+    // slow-API window (every attempt >timeoutMs) is the same operational
+    // class as exhausted ECONNREFUSED/5xx, not evidence the submission is
+    // bad. Throw the classified fault, keeping the literal word 'timeout'
+    // in the detail so the D1B-004/L1-007 operator pivot key survives in
+    // the error message. (This deliberately supersedes the earlier pinned
+    // contract where exhausted-timeout returned the typed reason and became
+    // a `scenario-load:` rejection — that permanently poisoned run_ids
+    // during slow-API windows via the _rejected duplicate guard.)
+    if (last.reason === 'timeout') {
+      throw scenarioFetchFault(
+        `timeout after ${attempts} attempt(s) loading scenario "${scenarioId}" from ${org}/${repo}`
+      );
+    }
     // Strip the internal `retryable` flag from the public contract.
     const { retryable: _drop, ...result } = last;
     return result;
@@ -466,38 +529,91 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
 /**
  * Load all scenario definitions referenced by a submission's scenario_results.
  *
- * D1B-004 / L1-007 (Wave A2 Stage C amend2): when the fetcher exposes
- * the typed `fetchWithReason` surface (the canonical
- * `githubScenarioFetcher` does; the legacy `localScenarioFetcher` and any
- * legacy test stub may not), the discriminated `reason` (`timeout` /
- * `not_found` / `parse_error` / `invalid_id`) is propagated into the
- * error string so the operator can pivot on the failure class. Otherwise
- * we fall back to the legacy `fetch(id)` truthiness contract.
+ * F-efe4f893: this function now runs BEFORE the schema gate on untrusted
+ * consumer input (the F-3bfc2885 production wiring), so it must be defensive:
+ *   - a non-array `scenario_results` returns empty-handed (the schema
+ *     rejection downstream in verify() is the authoritative signal);
+ *   - an entry that is not a non-null object carrying a string `scenario_id`
+ *     is NEVER fetched — pre-fix, `/^[\w-]+$/.test(undefined)` coerced to the
+ *     string 'undefined' and issued a real authenticated GitHub API request
+ *     per malformed entry. It pushes a typed `malformed_entry` error instead.
  *
- * V2-CROSS-BO-001: a `scenario-fetch-fault:` throw from the fetcher (outage /
- * credential fault) PROPAGATES deliberately — it is never converted into an
- * `errors[]` entry, because those become `scenario-load:` rejections of the
- * submission. The caller (run.js) lets it reach the CLI's outer catch, which
- * emits a structured operational error and exits 2 without persisting.
+ * F-2750c4e8: every ATTEMPTED id is cached (successes AND typed failures), so
+ * a repeated id — loaded or failed — costs exactly one fetch, and the number
+ * of distinct fetches is capped at {@link MAX_DISTINCT_SCENARIO_FETCHES}
+ * (the schema's own maxItems bound). Entries beyond the cap get a typed
+ * `fetch_cap` error without touching the network. Thrown
+ * `scenario-fetch-fault:`s are deliberately NOT cached — they propagate
+ * immediately (see below), so outage semantics survive the dedupe.
+ *
+ * DESIGN RULING (wave 4) — three-way failure split:
+ *   - true 404 (`not_found`, typed surface only) → NOT a rejection. The fleet
+ *     is mixed (some consumers commit dogfood/scenarios/, some don't);
+ *     nothing declared means nothing to enforce. Surfaces on `warnings` so
+ *     run.js lands it on verification.warnings (the v1.6.0
+ *     accepted-with-warning channel) and required-steps enforcement is
+ *     simply skipped for that scenario.
+ *   - malformed committed file (`parse_error` / `schema_invalid` /
+ *     `too_large` / `invalid_id`) → `errors` → submission-bad
+ *     `scenario-load:` rejection (unchanged).
+ *   - outage (`scenario-fetch-fault:` throw, incl. exhausted timeout) →
+ *     PROPAGATES deliberately; the CLI's outer catch emits a structured
+ *     operational error and exits 2 without persisting (V2-CROSS-BO-001).
+ *
+ * The legacy `fetch(id)` truthiness surface cannot discriminate not_found
+ * from a malformed file, so its `null` keeps the historical
+ * rejection-on-error behavior.
  *
  * @param {object} submission
  * @param {object} scenarioFetcher - { fetch(scenarioId), fetchWithReason?(scenarioId) }
- * @returns {Promise<{ scenarios: Map<string, object>, errors: string[] }>}
+ * @returns {Promise<{ scenarios: Map<string, object>, errors: string[], warnings: string[] }>}
  */
 export async function loadScenarios(submission, scenarioFetcher) {
   const scenarios = new Map();
   const errors = [];
+  const warnings = [];
+
+  const results = submission && typeof submission === 'object'
+    ? submission.scenario_results
+    : undefined;
+  if (!Array.isArray(results)) {
+    // Non-array shapes (string, object, null) iterate wrong or crash —
+    // notably a STRING iterates characters. Skip entirely; verify()'s schema
+    // gate rejects the submission with the authoritative reason.
+    return { scenarios, errors, warnings };
+  }
 
   const supportsTypedReason = typeof scenarioFetcher.fetchWithReason === 'function';
+  // F-2750c4e8: id → true once an id has been resolved (success OR typed
+  // failure), so repeats never re-fetch. Faults are uncached: they throw.
+  const attempted = new Set();
+  let distinctFetches = 0;
 
-  for (const sr of submission.scenario_results || []) {
+  for (const sr of results) {
+    if (!sr || typeof sr !== 'object' || Array.isArray(sr) || typeof sr.scenario_id !== 'string') {
+      errors.push(
+        'scenario_results entry is not an object with a string scenario_id (reason: malformed_entry)'
+      );
+      continue;
+    }
     const id = sr.scenario_id;
-    if (scenarios.has(id)) continue;
+    if (attempted.has(id)) continue;
+    attempted.add(id);
+
+    if (distinctFetches >= MAX_DISTINCT_SCENARIO_FETCHES) {
+      errors.push(
+        `scenario "${id}" not fetched — distinct-scenario fetch cap (${MAX_DISTINCT_SCENARIO_FETCHES}) reached (reason: fetch_cap)`
+      );
+      continue;
+    }
+    distinctFetches++;
 
     if (supportsTypedReason) {
       const result = await scenarioFetcher.fetchWithReason(id);
       if (result && result.scenario) {
         scenarios.set(id, result.scenario);
+      } else if (result && result.reason === 'not_found') {
+        warnings.push(`scenario definition not found for "${id}" — required_steps unenforced`);
       } else {
         const reason = result && result.reason ? result.reason : 'unknown';
         errors.push(`scenario "${id}" could not be loaded from source repo (reason: ${reason})`);
@@ -512,5 +628,5 @@ export async function loadScenarios(submission, scenarioFetcher) {
     }
   }
 
-  return { scenarios, errors };
+  return { scenarios, errors, warnings };
 }

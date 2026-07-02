@@ -79,8 +79,16 @@ jobs:
 
       - name: Verify deployed site returns 200
         id: verify
+        # F-bc123f41: env-hoist rather than inline-interpolate — the same
+        # CWE-78 discipline the a11y step below and ingest.yml follow. The
+        # value comes from GitHub's own deploy-pages action so it is trusted
+        # today; the hoist keeps this file demonstrating exactly ONE pattern
+        # for expression values reaching a shell body, so the unhardened form
+        # can't be copy-pasted into a step where the value IS attacker-influenced.
+        env:
+          PAGE_URL: ${{ steps.deployment.outputs.page_url }}
         run: |
-          url="${{ steps.deployment.outputs.page_url }}"
+          url="$PAGE_URL"
           if [ -z "$url" ]; then
             echo "::error::deploy-pages did not emit a page_url output"
             exit 1
@@ -131,21 +139,25 @@ jobs:
         # reference pages after the deploy has been verified. WCAG2AA is the
         # bar; we fail on errors, ignore warnings and notices. Pinned to an
         # exact version (NOT a floating caret-major tag) because pa11y embeds
-        # puppeteer + chromium and the workflow runs under `pages: write` +
-        # `id-token: write`. F-W1-CI-001: a supply-chain compromise of pa11y
-        # or any transitive dep would execute with elevated permissions
-        # during every Pages deploy. There is no consumer in the workspace
-        # that needs a lockfile entry, and adding one to root devDependencies
-        # would pull the chromium-puppeteer chain into every `npm ci` for a
-        # check that only ever runs in this workflow leg. Bump in lockstep
-        # with Dependabot github-actions / npm sweeps.
+        # puppeteer + chromium. F-W1-CI-001: this step USED to run inside the
+        # deploy job under `pages: write` + `id-token: write`, where a
+        # supply-chain compromise of pa11y or any transitive dep would have
+        # executed with elevated permissions during every Pages deploy — the
+        # F-a52776d5 restructure (see the job-level comment above) moved it
+        # into this permissionless job, so a compromise now executes with an
+        # empty token. The exact-version pin stays: it still bounds what code
+        # runs at all. There is no consumer in the workspace that needs a
+        # lockfile entry, and adding one to root devDependencies would pull
+        # the chromium-puppeteer chain into every `npm ci` for a check that
+        # only ever runs in this workflow leg. Bump in lockstep with
+        # Dependabot github-actions / npm sweeps.
         #
         # Stage D amend FX5 (D4B-015 closure): wrap each per-page pa11y
         # invocation in a 3-attempt retry-with-backoff. Pre-amend the step
         # ran once and any transient chromium-mirror blip during the `npx
-        # -y` install broke an otherwise-successful deploy. The deploy-
-        # verify step above (lines 73-90) already used a 5-attempt loop;
-        # this asymmetry was the audit finding. Three attempts is enough:
+        # -y` install broke an otherwise-successful deploy. The deploy job's
+        # 'Verify deployed site returns 200' step already used a 5-attempt
+        # loop; this asymmetry was the audit finding. Three attempts is enough:
         # real accessibility regressions are deterministic and re-fail;
         # only transient network/install errors recover. Backoff factor 10
         # (vs verify's 5) because pa11y's failure mode is install timeout,

@@ -5,7 +5,7 @@
  * artifacts, findings, finding_events, verification_receipts, kv.
  */
 
-export const SCHEMA_VERSION = 7;
+export const SCHEMA_VERSION = 8;
 
 export const SCHEMA_SQL = `
 -- ───────────────────────────────────────────
@@ -54,6 +54,15 @@ CREATE TABLE IF NOT EXISTS waves (
   -- — never a gate (matches the collect-time semantics). Mirrors the
   -- serial_verify_required persistence pattern directly above.
   ownership_probe_degraded INTEGER NOT NULL DEFAULT 0,
+  -- F-0e55b5ca: per-wave diff base for the non-isolated committed-delta
+  -- ownership probe. runs.commit_sha is written ONCE at swarm-init time and
+  -- goes stale as waves commit results to the branch; diffing wave N's tree
+  -- against the init sha attributed EVERY prior wave's landed edit to this
+  -- wave's agents (false divergence alarms + polluted file_claims forensics).
+  -- dispatch.js stamps the repo HEAD here inside the wave-build tx; collect
+  -- and revalidate prefer it as the non-isolated baseRef, falling back to
+  -- runs.commit_sha only for legacy waves dispatched before this column.
+  dispatch_sha           TEXT,
   created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
   completed_at           TEXT,
   UNIQUE(run_id, wave_number)
@@ -365,6 +374,10 @@ export const MIGRATIONS_SQL = [
   // collect-time NDJSON/stdout hint scrolls past. Default 0 keeps every
   // existing row (isolated waves, audit waves) at the un-degraded baseline.
   "ALTER TABLE waves ADD COLUMN ownership_probe_degraded INTEGER NOT NULL DEFAULT 0",
+  // F-0e55b5ca (target_version 8): waves: per-wave dispatch-time diff base
+  // for the non-isolated committed-delta ownership probe. NULL on legacy
+  // waves — collect/revalidate fall back to runs.commit_sha for those.
+  "ALTER TABLE waves ADD COLUMN dispatch_sha TEXT",
 ];
 
 /**
@@ -413,6 +426,8 @@ export const MIGRATIONS_MANIFEST = [
   { id: 'v6-findings-run-finding-id-unique',target_version: 6, sql: MIGRATIONS_SQL[12] },
   // FT-d ownership-probe-degraded receipt signal (target_version 7)
   { id: 'v7-waves-ownership-probe-degraded', target_version: 7, sql: MIGRATIONS_SQL[13] },
+  // F-0e55b5ca per-wave dispatch-time diff base (target_version 8)
+  { id: 'v8-waves-dispatch-sha',             target_version: 8, sql: MIGRATIONS_SQL[14] },
 ];
 
 /**

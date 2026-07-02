@@ -161,10 +161,17 @@ export function revalidate(opts) {
     }
 
     if (!isBlocked(ar.status)) {
+      // F-f35352cb: the 'failed'/'timed_out' tail (the common F-aba6fa9d
+      // missing-output route) has a lawful verb — name it here instead of
+      // making the operator rediscover it. redrive.js's own refusal taxonomy
+      // already names revalidate for the inverse case.
+      const redriveHint = (ar.status === 'failed' || ar.status === 'timed_out')
+        ? `; use \`swarm redrive ${wave.id} --reason "<text>" --apply\` to put the failure tail back into flight`
+        : '';
       report.refusals.push({
         domain: domainName,
         agent_run_id: ar.id,
-        reason: `agent_run is in '${ar.status}' (not blocked) — revalidate only repairs invalid_output / ownership_violation`,
+        reason: `agent_run is in '${ar.status}' (not blocked) — revalidate only repairs invalid_output / ownership_violation${redriveHint}`,
       });
       continue;
     }
@@ -260,9 +267,11 @@ export function revalidate(opts) {
     if (isAmend && Array.isArray(output.files_changed)) {
       const isolated = !!ar.worktree_path;
       const worktree = ar.worktree_path || run.local_path;
+      // F-0e55b5ca (mirrors collect.js): per-wave dispatch-time base; the
+      // init-time runs.commit_sha is the legacy fallback only.
       const baseRef = isolated
         ? resolveWorktreeBaseRef(worktree, run.branch)
-        : run.commit_sha;
+        : (wave.dispatch_sha || run.commit_sha);
       const actualTouched = getActualTouchedFiles(worktree, { baseRef });
       // V2-CONTRACT-003 / V2-INVARIAN-006 (mirrors collect.js): a failed base
       // diff or an unresolvable fork point makes committed edits invisible —

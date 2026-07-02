@@ -53,6 +53,12 @@ jobs:
       # Produce scenario-results.json — an array of scenario_result objects.
       # Replace this with whatever turns YOUR test output into that shape; see
       # scenario-results.example.json in this folder for the contract.
+      #
+      # OPTIONAL — required-steps enforcement: commit a scenario definition at
+      # dogfood/scenarios/<scenario_id>.yaml in this repo to have the receiver
+      # enforce its success_criteria.required_steps against your results. With
+      # no definition committed, the submission is accepted with a warning and
+      # that enforcement is skipped.
       - name: Build scenario results
         run: |
           # e.g. node scripts/to-dogfood-scenarios.mjs > scenario-results.json

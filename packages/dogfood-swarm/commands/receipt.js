@@ -370,6 +370,22 @@ export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta
   if (hasBlocked) {
     return { action: 'FIX', reason: 'Blocked agents need manual intervention before advancing' };
   }
+  // F-15fc601e (mirrors status.js#computeAssessment): a wave failed for
+  // missing outputs leaves agents in 'failed'/'timed_out' — redispatchable,
+  // not blocked — and the RESUME recommendation below was a dead-end (resume
+  // never flips the wave out of 'failed'; collect and revalidate then both
+  // refuse). Route the failure tail to `swarm redrive`, the verb that flips
+  // wave AND agents back to dispatched.
+  const failedTail = agentRuns.filter(a => a.status === 'failed' || a.status === 'timed_out');
+  if (wave.status === 'failed' && failedTail.length > 0) {
+    return {
+      action: 'REDRIVE',
+      reason:
+        `wave failed with ${failedTail.length} failed/timed_out agent(s) — ` +
+        `\`swarm redrive ${wave.id} --reason "<text>" --apply\` puts the failure tail back into flight ` +
+        `(resume alone cannot flip the wave out of 'failed')`,
+    };
+  }
   if (!allComplete) {
     return { action: 'RESUME', reason: 'Some agents not complete — run `swarm resume`' };
   }

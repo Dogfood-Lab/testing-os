@@ -78,11 +78,19 @@ export function loadDomainOutputs(waveDir) {
     // this branch, a healthy modern wave loaded ZERO outputs and the digest
     // classified it 'pipeline_broken' (exit 2) — breaking the documented CI
     // exit-code contract for every canonical-layout wave.
+    //
+    // F-197de6dd: a subdirectory WITHOUT an output.json is a domain whose
+    // agent created its dir but crashed before writing output — the strongest
+    // existence signal the FS layout carries. Silently skipping it let a wave
+    // with a never-reported domain render 'clean' (exit 0) with a smaller
+    // totalDomains; surface it as a parseError so the wave classifies
+    // pipeline_broken (exit 2).
     let st = null;
     try { st = statSync(entryPath, { throwIfNoEntry: false }); } catch { st = null; }
     if (st && st.isDirectory()) {
       const canonical = join(entryPath, 'output.json');
       if (existsSync(canonical)) pushOutput(entry, canonical);
+      else outputs.push({ domain: entry, parseError: `output.json missing (expected ${canonical})` });
       continue;
     }
 

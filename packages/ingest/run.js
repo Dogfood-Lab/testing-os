@@ -52,9 +52,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  * exact string 'true', so a CI=1 environment was "CI" for one branch and
  * "not CI" for the other (fail-closed, but with a misleading flag-required
  * error instead of the token hint).
+ *
+ * F-5ca6c91a: the literal strings 'false' and '0' are explicit OPT-OUTS
+ * (a convention many tools respect — `CI=false npm test` is a real idiom),
+ * not truthy CI signals. Without this carve-out, a CI=false environment was
+ * classified as CI: stub provenance forbidden and the no-flag default
+ * demanding a real token — fail-closed, but against the operator's stated
+ * intent.
  */
 function isCI() {
-  return Boolean(process.env.CI || process.env.GITHUB_ACTIONS);
+  const truthy = (v) => Boolean(v && v !== 'false' && v !== '0');
+  return truthy(process.env.CI) || truthy(process.env.GITHUB_ACTIONS);
 }
 
 function resolveProviderProvenance(submission) {
@@ -99,14 +107,43 @@ function resolveProviderProvenance(submission) {
  * @returns {ReturnType<typeof githubScenarioFetcher> | null}
  */
 export function resolveScenarioFetcher(provenance, submission, env = process.env) {
-  if (provenance === stubProvenance) return null;
-  if (!submission || typeof submission !== 'object' || Array.isArray(submission)) return null;
-  if (((submission.source && submission.source.provider) || 'github') !== 'github') return null;
-  if (typeof submission.repo !== 'string') return null;
-  if (typeof submission.ref?.commit_sha !== 'string') return null;
+  return resolveScenarioFetcherDecision(provenance, submission, env).fetcher;
+}
+
+/**
+ * F-b04473d5: the reason-carrying form of {@link resolveScenarioFetcher}.
+ * Every ineligible branch previously returned a silent null — an operator
+ * auditing an accepted record could not tell "required_steps enforced and
+ * satisfied" from "enforcement skipped (GitLab gap / missing token)" in the
+ * run log. The CLI logs the decision as a `scenario_enforcement` NDJSON
+ * event; this function is the unit-testable seam behind it.
+ *
+ * @param {object} provenance
+ * @param {object} submission
+ * @param {NodeJS.ProcessEnv} [env]
+ * @returns {{ fetcher: ReturnType<typeof githubScenarioFetcher> | null,
+ *   active: boolean, reason: string | null }} `reason` names the skip class
+ *   when `active` is false; null when a fetcher was constructed.
+ */
+export function resolveScenarioFetcherDecision(provenance, submission, env = process.env) {
+  const skip = (reason) => ({ fetcher: null, active: false, reason });
+  if (provenance === stubProvenance) return skip('stub-provenance');
+  if (!submission || typeof submission !== 'object' || Array.isArray(submission)) {
+    return skip('submission-malformed');
+  }
+  if (((submission.source && submission.source.provider) || 'github') !== 'github') {
+    // GitLab has no contents-API adapter yet — the documented gap.
+    return skip('provider-unsupported');
+  }
+  if (typeof submission.repo !== 'string') return skip('repo-not-string');
+  if (typeof submission.ref?.commit_sha !== 'string') return skip('commit-sha-not-string');
   const token = env.GITHUB_TOKEN || env.GH_TOKEN;
-  if (!token) return null;
-  return githubScenarioFetcher(token, submission.repo, submission.ref.commit_sha);
+  if (!token) return skip('no-token');
+  return {
+    fetcher: githubScenarioFetcher(token, submission.repo, submission.ref.commit_sha),
+    active: true,
+    reason: null
+  };
 }
 
 /**
@@ -128,6 +165,50 @@ export function resolveScenarioFetcher(provenance, submission, env = process.env
  */
 function posixifyPath(p) {
   return typeof p === 'string' ? p.split(sep).join('/') : p;
+}
+
+/**
+ * F-2750c4e8: ceiling on individually-persisted `scenario-load:` rejection
+ * reasons. A hostile pre-schema-gate payload can produce up to
+ * MAX_DISTINCT_SCENARIO_FETCHES scenario-load errors; persisting one reason
+ * line per error bloats the evidence record without adding operator signal
+ * (a 1000-error submission has one root cause). Everything past the ceiling
+ * collapses into a single count summary.
+ */
+const SCENARIO_LOAD_REASON_CEILING = 20;
+
+/**
+ * Format loadScenarios errors as `scenario-load:` rejection reasons,
+ * collapsing past {@link SCENARIO_LOAD_REASON_CEILING}.
+ *
+ * @param {string[]} scenarioErrors
+ * @returns {string[]}
+ */
+function scenarioLoadReasons(scenarioErrors) {
+  const reasons = scenarioErrors.map(e => `scenario-load: ${e}`);
+  if (reasons.length <= SCENARIO_LOAD_REASON_CEILING) return reasons;
+  return [
+    ...reasons.slice(0, SCENARIO_LOAD_REASON_CEILING),
+    `scenario-load: (+${reasons.length - SCENARIO_LOAD_REASON_CEILING} more scenario-load errors collapsed; ${reasons.length} total)`
+  ];
+}
+
+/**
+ * DESIGN RULING (wave 4): loadScenarios' `warnings` (true-404 scenario
+ * definitions — nothing declared, nothing to enforce) land on the v1.6.0
+ * accepted-with-warning channel (`verification.warnings`), NEVER on
+ * rejection_reasons. verify() only sets the field when policy warnings
+ * exist, so create-or-append here.
+ *
+ * @param {object} record - the record returned by verify()
+ * @param {string[]} scenarioWarnings
+ */
+function appendScenarioWarnings(record, scenarioWarnings) {
+  if (!scenarioWarnings || scenarioWarnings.length === 0) return;
+  record.verification.warnings = [
+    ...(record.verification.warnings || []),
+    ...scenarioWarnings
+  ];
 }
 
 /**
@@ -275,18 +356,25 @@ export async function ingest(submission, options) {
     repo_policy_present: !!repoPolicy
   });
 
-  // 3. Load scenario definitions (non-fatal if missing — becomes rejection reason)
+  // 3. Load scenario definitions.
   // F-3bfc2885: keep the loaded `scenarios` Map (previously discarded) and hand
   // it to verify() so success_criteria.required_steps is actually enforced.
-  // V2-CROSS-BO-001: a `scenario-fetch-fault:` throw (GitHub outage /
-  // credential fault) propagates PAST this step on purpose — the CLI's outer
-  // catch emits a structured operational error and exits 2. A missing
-  // scenario rejects the submission; an outage never does.
+  // F-efe4f893: gate on Array.isArray — this runs BEFORE the schema gate on
+  // untrusted input, and a string/object scenario_results must never reach the
+  // fetch loop (a string iterates CHARACTERS). verify() lands the
+  // authoritative schema rejection downstream.
+  // DESIGN RULING (wave 4): a true-404 definition is a WARNING (nothing
+  // declared, nothing to enforce), a malformed committed file is a
+  // `scenario-load:` rejection, and V2-CROSS-BO-001 outages (incl. exhausted
+  // timeout, F-07ab7f86) throw `scenario-fetch-fault:` PAST this step — the
+  // CLI's outer catch emits a structured operational error and exits 2.
   let scenarioErrors = [];
+  let scenarioWarnings = [];
   let scenarios = null;
-  if (scenarioFetcher && submissionIsObject && submission.scenario_results) {
+  if (scenarioFetcher && submissionIsObject && Array.isArray(submission.scenario_results)) {
     const result = await loadScenarios(submission, scenarioFetcher);
     scenarioErrors = result.errors;
+    scenarioWarnings = result.warnings || [];
     scenarios = result.scenarios;
   }
 
@@ -307,11 +395,12 @@ export async function ingest(submission, options) {
     verdict: record.overall_verdict?.verified ?? null
   });
 
-  // 4b. Append scenario loading errors to rejection reasons if any
+  // 4b. Surface scenario loading outcomes: warnings (true-404 definitions) go
+  // to verification.warnings; errors (malformed committed files) become
+  // scenario-load rejections, collapsed past the reason ceiling (F-2750c4e8).
+  appendScenarioWarnings(record, scenarioWarnings);
   if (scenarioErrors.length > 0) {
-    record.verification.rejection_reasons.push(
-      ...scenarioErrors.map(e => `scenario-load: ${e}`)
-    );
+    record.verification.rejection_reasons.push(...scenarioLoadReasons(scenarioErrors));
     // If scenario loading failed, this is a rejection
     if (record.verification.status === 'accepted' && scenarioErrors.length > 0) {
       record.verification.status = 'rejected';
@@ -475,15 +564,17 @@ export async function verifyOnly(submission, options) {
     repo_policy_present: !!repoPolicy
   });
 
-  // 3. Load scenario definitions (non-fatal — becomes rejection reason)
-  // F-3bfc2885: same as ingest() — keep the Map, pass it to verify().
-  // V2-CROSS-BO-001: same as ingest() — a scenario-fetch-fault throw
-  // propagates (operational, exit 2), never a rejection.
+  // 3. Load scenario definitions — same gates + semantics as ingest() step 3
+  // (F-3bfc2885 Map pass-through, F-efe4f893 Array.isArray gate, wave-4
+  // ruling's warning/rejection/operational split), so verify-only and real
+  // ingest produce identical records for the same submission.
   let scenarioErrors = [];
+  let scenarioWarnings = [];
   let scenarios = null;
-  if (scenarioFetcher && submissionIsObject && submission.scenario_results) {
+  if (scenarioFetcher && submissionIsObject && Array.isArray(submission.scenario_results)) {
     const result = await loadScenarios(submission, scenarioFetcher);
     scenarioErrors = result.errors;
+    scenarioWarnings = result.warnings || [];
     scenarios = result.scenarios;
   }
 
@@ -506,10 +597,9 @@ export async function verifyOnly(submission, options) {
 
   // 4b. Mirror ingest's scenario-error verdict downgrade so verify-only and
   //     real ingest produce identical records for the same submission.
+  appendScenarioWarnings(record, scenarioWarnings);
   if (scenarioErrors.length > 0) {
-    record.verification.rejection_reasons.push(
-      ...scenarioErrors.map(e => `scenario-load: ${e}`)
-    );
+    record.verification.rejection_reasons.push(...scenarioLoadReasons(scenarioErrors));
     if (record.verification.status === 'accepted' && scenarioErrors.length > 0) {
       record.verification.status = 'rejected';
       record.verification.policy_valid = false;
@@ -919,8 +1009,23 @@ if (isMain) {
   // scenario fetcher yet (no gitlab contents-API adapter exists); their
   // required_steps gate remains unenforced — a known, documented gap.
   // V2-INVARIAN-004: the eligibility condition is the exported, unit-tested
-  // resolveScenarioFetcher above.
-  const scenarioFetcher = resolveScenarioFetcher(provenance, submission, process.env);
+  // resolveScenarioFetcherDecision above.
+  // F-b04473d5: log the decision — an operator auditing an accepted record
+  // must be able to tell "required_steps enforced" from "enforcement skipped
+  // (and why)" straight from the NDJSON stream.
+  const scenarioDecision = resolveScenarioFetcherDecision(provenance, submission, process.env);
+  const scenarioFetcher = scenarioDecision.fetcher;
+  logStage('scenario_enforcement', {
+    submission_id: submission && typeof submission === 'object' && !Array.isArray(submission)
+      ? (submission.run_id || null)
+      : null,
+    correlation_id: cliCorrelationId,
+    active: scenarioDecision.active,
+    ...(scenarioDecision.reason ? { reason: scenarioDecision.reason } : {}),
+    scenario_count: submission && typeof submission === 'object' && Array.isArray(submission.scenario_results)
+      ? submission.scenario_results.length
+      : 0
+  });
 
   // D1B-001: track the last successful pipeline stage so the outer catch
   // can surface a useful `failed_stage` in its structured error event.

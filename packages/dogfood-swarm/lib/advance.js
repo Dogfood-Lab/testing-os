@@ -102,45 +102,39 @@ export function checkGates(db, runId) {
       ${LATEST_AGENT_RUN_PER_DOMAIN}
   `).all(wave.id);
 
-  const gates = [];
+  // F-feb78e7b (DESIGN RULING): evaluate ALL five gates unconditionally and
+  // return the full array. The pre-fix code returned at the FIRST failing
+  // gate, so gateResult.gates never contained the gates after it — and the
+  // override branch in advance() then promoted past EVERY unevaluated gate,
+  // including the NON-overridable serial-verify gate (F-d12da6ea). The
+  // override master-key hole and the permanently-incomplete gates_checked
+  // audit trail were the same defect: verdicts computed from a truncated
+  // gate set. Each gate now carries its own `overridable` flag so advance()
+  // can mask ONLY individually-overridable failures.
+  const waveGate = { ...checkWaveStatus(wave), overridable: false };
+  const agentGate = { ...checkAgentCompletion(agents), overridable: false };
+  const violationGate = { ...checkViolations(db, wave.id, agents), overridable: true };
+  const verifyGateRaw = checkVerification(db, wave);
+  // The serial-verify obligation (verdict:'VERIFY') is the one deliberately
+  // NON-overridable verification failure; a plain failed receipt stays
+  // overridable (matches the pre-fix BLOCK/overridable:true branch).
+  const verifyGate = { ...verifyGateRaw, overridable: verifyGateRaw.verdict !== 'VERIFY' };
+  const findingGate = { ...checkFindingSeverity(db, runId, wave.phase), overridable: true };
+  const gates = [waveGate, agentGate, violationGate, verifyGate, findingGate];
 
-  // ── Gate 1: Wave must be collected or verified ──
-  const waveGate = checkWaveStatus(wave);
-  gates.push(waveGate);
+  // Verdict precedence (F-feb78e7b): the first NON-overridable failure
+  // dominates — BLOCK for gates 1-2, VERIFY for the serial-verify
+  // obligation — then AMEND for the finding gate in gated phases, then the
+  // overridable BLOCKs (ownership, failed receipt) in gate order.
   if (!waveGate.passed) {
-    return { verdict: waveGate.verdict, nextPhase: null, gates, overridable: false, reason: waveGate.reason };
+    return { verdict: waveGate.verdict || 'BLOCK', nextPhase: null, gates, overridable: false, reason: waveGate.reason };
   }
-
-  // ── Gate 2: All agents must be complete (no blocked, no in-flight) ──
-  const agentGate = checkAgentCompletion(agents);
-  gates.push(agentGate);
   if (!agentGate.passed) {
     return { verdict: 'BLOCK', nextPhase: null, gates, overridable: false, reason: agentGate.reason };
   }
-
-  // ── Gate 3: No ownership violations ──
-  const violationGate = checkViolations(db, wave.id, agents);
-  gates.push(violationGate);
-  if (!violationGate.passed) {
-    return { verdict: 'BLOCK', nextPhase: null, gates, overridable: true, reason: violationGate.reason };
-  }
-
-  // ── Gate 4: Verification must pass (if receipt exists; MANDATORY when the
-  // wave carries the serial-verify obligation) ──
-  const verifyGate = checkVerification(db, wave);
-  gates.push(verifyGate);
   if (!verifyGate.passed && verifyGate.verdict === 'VERIFY') {
     return { verdict: 'VERIFY', nextPhase: null, gates, overridable: false, reason: verifyGate.reason };
   }
-  if (!verifyGate.passed) {
-    return { verdict: 'BLOCK', nextPhase: null, gates, overridable: true, reason: verifyGate.reason };
-  }
-
-  // ── Gate 5: Finding severity gate (for audit phases) ──
-  const findingGate = checkFindingSeverity(db, runId, wave.phase);
-  gates.push(findingGate);
-
-  // Determine next phase based on finding gate
   if (!findingGate.passed && FINDING_GATED_PHASES.has(wave.phase)) {
     // Findings need amending — go to amend phase
     return {
@@ -150,6 +144,12 @@ export function checkGates(db, runId) {
       overridable: true,
       reason: findingGate.reason,
     };
+  }
+  if (!violationGate.passed) {
+    return { verdict: 'BLOCK', nextPhase: null, gates, overridable: true, reason: violationGate.reason };
+  }
+  if (!verifyGate.passed) {
+    return { verdict: 'BLOCK', nextPhase: null, gates, overridable: true, reason: verifyGate.reason };
   }
 
   // All gates passed — advance to next phase
@@ -261,14 +261,20 @@ export function recordPromotion(db, runId, waveId, fromPhase, toPhase, opts) {
   // operator can `git worktree prune` manually. Mirrors the B002 rewind-path
   // cleanup and dispatch.js's documented FS-orphan trade-off.
   if (toPhase === 'complete') {
-    const run = db.prepare('SELECT local_path FROM runs WHERE id = ?').get(runId);
+    const run = db.prepare('SELECT local_path, branch FROM runs WHERE id = ?').get(runId);
     if (run && run.local_path) {
       try {
         // F-e7369293: scope the sweep to THIS run's worktrees (run-short
         // branch prefix, same filter as `swarm clean`). cleanupAllWorktrees
         // is repo-wide and would tear down a concurrent run's in-flight
         // --isolate worktrees in the same repo.
-        cleanupRunWorktrees(run.local_path, runId);
+        //
+        // F-1ab3fd1f: the run branch is the merged-check baseline — the
+        // cleanup skips (and loudly names) any worktree with uncommitted
+        // edits or unmerged commits instead of force-destroying agent work
+        // that never merged. `swarm clean --apply` is the only verb that may
+        // remove preserved work.
+        cleanupRunWorktrees(run.local_path, runId, { mainBranch: run.branch });
       } catch (e) {
         logStage('worktree_cleanup_failed', {
           component: 'dogfood-swarm',
@@ -314,22 +320,29 @@ export function advance(db, runId, opts = {}) {
     };
   }
 
-  if (gateResult.verdict === 'AMEND') {
-    // AMEND means: approve findings, then dispatch amend wave
-    const wave = db.prepare('SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1').get(runId);
-    if (opts.override && opts.overrideReason) {
-      // F-5a251061: an overridden AMEND verdict means the operator ACCEPTED
-      // the open findings and wants to move PAST the finding gate — promote to
-      // the phase's `next` stage (mirroring the generic-override branch
-      // below), NOT to gateResult.nextPhase, which for AMEND is the amend
-      // phase itself. Pre-fix, `swarm advance --override` routed the operator
-      // straight back into the amend loop the override existed to skip, and
-      // the immutable promotions row recorded the wrong to_phase.
+  // F-feb78e7b (DESIGN RULING): an override is consent to the NAMED,
+  // individually-overridable gate failures — never a master key. checkGates
+  // now evaluates all five gates, so the failure set here is complete; the
+  // pre-fix branches keyed on the verdict of a TRUNCATED gate array and
+  // promoted past every gate that was never evaluated (including the
+  // non-overridable serial-verify gate). Any non-overridable failure refuses
+  // the override outright; a lawful override records EVERY evaluated gate in
+  // gates_checked with `overridden: true` on the masked ones.
+  //
+  // F-5a251061 semantics preserved: overriding a failed finding gate (the
+  // AMEND verdict) promotes PAST the gate to the phase's `next` stage — not
+  // into the amend loop the operator explicitly chose to skip.
+  if (opts.override && opts.overrideReason) {
+    const failedGates = gateResult.gates.filter(g => !g.passed);
+    const nonOverridable = failedGates.filter(g => !g.overridable);
+    if (failedGates.length > 0 && nonOverridable.length === 0) {
+      const wave = db.prepare('SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1').get(runId);
       const toPhase = PHASE_MAP[wave.phase]?.next || wave.phase;
+      const gatesChecked = gateResult.gates.map(g => (g.passed ? g : { ...g, overridden: true }));
       const promotionId = recordPromotion(db, runId, wave.id, wave.phase, toPhase, {
         authorizedBy: opts.authorizedBy,
-        gates: gateResult.gates,
-        overrides: [{ gate: 'finding_severity', reason: opts.overrideReason }],
+        gates: gatesChecked,
+        overrides: failedGates.map(g => ({ gate: g.name, reason: opts.overrideReason })),
       });
       return {
         promoted: true,
@@ -337,33 +350,20 @@ export function advance(db, runId, opts = {}) {
         fromPhase: wave.phase,
         toPhase,
         promotionId,
-        gates: gateResult.gates,
+        gates: gatesChecked,
       };
     }
+    // A non-overridable gate failed — the override is refused; fall through
+    // to the non-promoted return carrying the true verdict.
+  }
+
+  if (gateResult.verdict === 'AMEND') {
+    // AMEND means: approve findings, then dispatch amend wave
     return {
       promoted: false,
       verdict: 'AMEND',
       nextPhase: gateResult.nextPhase,
       reason: gateResult.reason,
-      gates: gateResult.gates,
-    };
-  }
-
-  if (gateResult.overridable && opts.override && opts.overrideReason) {
-    const wave = db.prepare('SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1').get(runId);
-    const phaseInfo = PHASE_MAP[wave.phase];
-    const toPhase = phaseInfo?.next || wave.phase;
-    const promotionId = recordPromotion(db, runId, wave.id, wave.phase, toPhase, {
-      authorizedBy: opts.authorizedBy,
-      gates: gateResult.gates,
-      overrides: [{ gate: gateResult.gates.find(g => !g.passed)?.name || 'unknown', reason: opts.overrideReason }],
-    });
-    return {
-      promoted: true,
-      verdict: 'ADVANCE (override)',
-      fromPhase: wave.phase,
-      toPhase,
-      promotionId,
       gates: gateResult.gates,
     };
   }

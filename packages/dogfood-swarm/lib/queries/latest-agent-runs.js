@@ -119,4 +119,7 @@ export const WAVE9_FAMILY_CALL_SITES = Object.freeze([
   { file: 'commands/resume.js', purpose: 'redispatch eligibility loop' },
   { file: 'commands/revalidate.js', purpose: 'validation pass + post-repair recheck (3 sites)' },
   { file: 'lib/advance.js', purpose: 'agent completion + violation gates' },
+  // F-7970a30b: dispatch's superseded-failed-wave warning counts the LATEST
+  // blocked agent_runs of the prior failed wave.
+  { file: 'commands/dispatch.js', purpose: 'blocked-agent count for the revalidate-window-closing warning' },
 ]);

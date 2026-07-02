@@ -79,6 +79,17 @@ function scaffoldGood(root, over = {}) {
   if (over.policy !== null) {
     writeFileSync(join(root, 'policy.example.yaml'), 'repo: acme/widgets\n', 'utf-8');
   }
+  // F-9106e1ec: a "complete, correctly-wired" onboarding now includes a
+  // committed scenario definition (required-steps enforcement is opt-in;
+  // without one the scenario-definitions check WARNs).
+  if (over.scenarioDefinition !== null) {
+    mkdirSync(join(root, 'dogfood', 'scenarios'), { recursive: true });
+    writeFileSync(
+      join(root, 'dogfood', 'scenarios', 'cli-smoke.yaml'),
+      'scenario_id: cli-smoke\n',
+      'utf-8'
+    );
+  }
 }
 
 function checkById(report, id) {

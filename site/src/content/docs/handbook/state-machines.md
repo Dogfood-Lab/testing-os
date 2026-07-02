@@ -200,7 +200,7 @@ The error type carries a `kind` field — `TERMINAL`, `BLOCKED`, or `INVALID` �
 Two statuses are members of `BLOCKED_STATUSES` (the `Set` of that name declared in `state-machine.js`):
 
 - `invalid_output` — produced output that failed the envelope schema or a legacy validator. The output is on disk; the gate refused it.
-- `ownership_violation` — produced output whose `files_changed[]` lies outside the agent's frozen domain map.
+- `ownership_violation` — produced output that touched files outside the agent's frozen domain map, judged on the **union** of the self-reported `files_changed[]` and the independent git probe (status + committed-delta diff; see the CLI reference's `swarm collect` section for the non-isolated attribution caveat).
 
 Neither has any outbound entry in `TRANSITIONS`. Automatic retry is impossible by design — these failures are deterministic, not transient, and re-dispatching without operator review would either reproduce the violation or paper over real drift.
 

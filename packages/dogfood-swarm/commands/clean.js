@@ -30,7 +30,7 @@
  */
 
 import { openDb } from '../db/connection.js';
-import { listWorktrees, removeWorktree, runShortOf } from '../lib/worktree.js';
+import { listWorktrees, removeWorktree, runShortOf, worktreeDisposition } from '../lib/worktree.js';
 
 /**
  * @param {object} opts
@@ -51,7 +51,7 @@ export function clean(opts) {
 
   const db = openDb(dbPath);
 
-  const run = db.prepare('SELECT id, repo, local_path FROM runs WHERE id = ?').get(opts.runId);
+  const run = db.prepare('SELECT id, repo, local_path, branch FROM runs WHERE id = ?').get(opts.runId);
   if (!run) {
     const err = new Error(`clean: run not found: ${opts.runId}`);
     err.code = 'RUN_NOT_FOUND';
@@ -85,12 +85,25 @@ export function clean(opts) {
     total: mine.length,
     removed: 0,
     stranded: 0,
-    worktrees: mine.map(w => ({
-      path: w.path,
-      branch: (w.branch || '').replace(/^refs\/heads\//, ''),
-      removed: false,
-      stranded: false,
-    })),
+    // F-1ab3fd1f sibling: annotate each worktree with its preserved-work
+    // disposition so the DRY-RUN preview shows what --apply would DESTROY.
+    // clean remains the deliberate force-disposal verb (the terminal-
+    // promotion cleanup skips dirty/unmerged worktrees; clean does not) —
+    // but the operator sees the blast radius before consenting.
+    worktrees: mine.map(w => {
+      const branch = (w.branch || '').replace(/^refs\/heads\//, '');
+      const disposition = worktreeDisposition(
+        run.local_path, w.path, branch, run.branch || 'HEAD'
+      );
+      return {
+        path: w.path,
+        branch,
+        dirty: disposition.dirty,
+        unmerged: disposition.unmerged,
+        removed: false,
+        stranded: false,
+      };
+    }),
     summary: null,
   };
 
@@ -146,7 +159,13 @@ export function formatClean(report) {
     let tag;
     if (!report.apply) tag = '[would remove]';
     else tag = w.removed ? '[REMOVED]' : '[STRANDED]';
-    out += `  ${tag} ${w.path}  (branch ${w.branch})\n`;
+    // F-1ab3fd1f sibling: name the at-risk state inline so `--apply` is
+    // informed consent, not a surprise.
+    const risk = [];
+    if (w.dirty) risk.push('DIRTY: uncommitted edits');
+    if (w.unmerged) risk.push('UNMERGED commits');
+    const riskNote = risk.length > 0 ? `  [!] ${risk.join(' + ')} — --apply destroys this work` : '';
+    out += `  ${tag} ${w.path}  (branch ${w.branch})${riskNote}\n`;
   }
   return out;
 }

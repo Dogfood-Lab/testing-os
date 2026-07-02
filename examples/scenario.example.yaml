@@ -1,0 +1,46 @@
+# Example scenario DEFINITION — the optional companion to scenario-results.example.json.
+#
+# Committing a definition like this at dogfood/scenarios/<scenario_id>.yaml in
+# YOUR repo opts that scenario into required-steps enforcement: the receiver
+# fetches this file at your attested commit and rejects a submission whose
+# step_results omit any required_step (or claims verdict: pass over a failed
+# one). Without a committed definition the submission is still accepted — the
+# record just carries a "required_steps unenforced" warning.
+#
+# Copy to: dogfood/scenarios/cli-smoke.yaml (the filename must match scenario_id).
+scenario_id: cli-smoke
+scenario_name: "CLI builds and runs --help"
+scenario_version: "1.0.0"
+
+product_surface: cli
+
+execution_mode: bot
+
+description: >
+  Bot-driven smoke check: the CLI builds from a clean checkout and --help
+  exits zero. The smallest real proof that the shipped artifact runs.
+
+preconditions:
+  - "Dependencies install cleanly (npm ci or equivalent)"
+
+steps:
+  - id: build
+    action: "Build the CLI from a clean checkout"
+    verifiable: true
+    expected: "Build exits zero"
+
+  - id: help-exits-zero
+    action: "Run the built CLI with --help"
+    verifiable: true
+    expected: "--help prints usage and exits zero"
+
+success_criteria:
+  required_steps:
+    - build
+    - help-exits-zero
+  minimum_evidence:
+    - kind: log
+      description: "CI run log with build + smoke output"
+
+tags:
+  - smoke

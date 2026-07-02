@@ -272,18 +272,26 @@ test('d6-infra-B001: repository_dispatch leg — node exit 0 (accepted) proceeds
   assert.equal(status, 0, 'an accepted submission (node exit 0) must proceed');
 });
 
-test('d6-infra-B001: repository_dispatch leg — node exit 2 (genuine fault) FAILS with a structured ::error::', (t) => {
+test('d6-infra-B001 + F-42e57a77: repository_dispatch leg — node exit 2 (genuine fault) annotates ::error:: and DEFERS (fault=2, exit 0) so the commit step still runs', (t) => {
   if (!CAN_EXEC) return t.skip('Linux-CI-targeted');
   const h = makeHarness(t);
   const script = extractRunBlock(readFileSync(ingestYml, 'utf8'), 'Run ingestion \\(repository_dispatch\\)');
   h.writeNodeStub('{"stage":"error"}', 2);
-  const { status, stdout } = h.run(script, { SUBMISSION_PAYLOAD: '{"run_id":"r-err"}' });
-  assert.notEqual(status, 0, 'a genuine fault (node exit 2) MUST fail the step');
+  const { status, stdout, ghOut } = h.run(script, { SUBMISSION_PAYLOAD: '{"run_id":"r-err"}' });
+  // F-42e57a77: run.js's generic catch (exit 2) can fire AFTER a record was
+  // persisted to the runner working tree (persist-then-fail-later is a proven
+  // run.js shape — the stale-index precedent). A red step here skips the
+  // commit step and discards that evidence — the same evidence-loss class
+  // F-caeeacc3 closed for the parse seam. The leg annotates the fault,
+  // records fault=$rc, and exits 0; the dedicated deferred-fault step reds
+  // the run AFTER the commit.
+  assert.equal(status, 0, `a fault must NOT fail the ingestion step (evidence preservation first).\n${stdout}`);
   assert.match(stdout, /::error::ingest pipeline faulted \(exit 2\)/, 'exit 2 must emit a structured ::error:: naming the fault');
   assert.match(stdout, /NOT a rejection/, 'the error must distinguish a fault from a designed rejection');
+  assert.match(ghOut, /fault=2/, 'the fault code must reach GITHUB_OUTPUT so the deferred-fault step reds the run after the commit (F-42e57a77)');
 });
 
-test('d6-infra-B001: workflow_dispatch leg — node exit 1 (rejected) proceeds; exit 2 fails', (t) => {
+test('d6-infra-B001 + F-42e57a77: workflow_dispatch leg — node exit 1 (rejected) proceeds; exit 2 defers with fault=2', (t) => {
   if (!CAN_EXEC) return t.skip('Linux-CI-targeted');
   const yaml = readFileSync(ingestYml, 'utf8');
   const script = extractRunBlock(yaml, 'Run ingestion \\(workflow_dispatch\\)');
@@ -296,8 +304,9 @@ test('d6-infra-B001: workflow_dispatch leg — node exit 1 (rejected) proceeds; 
   const h2 = makeHarness(t);
   h2.writeNodeStub('{"stage":"error"}', 2);
   const r2 = h2.run(script, { SUBMISSION_FILE: 'sub.json' });
-  assert.notEqual(r2.status, 0, 'workflow_dispatch fault (exit 2) must fail');
+  assert.equal(r2.status, 0, `workflow_dispatch fault (exit 2) must defer, not fail the step (F-42e57a77).\n${r2.stdout}`);
   assert.match(r2.stdout, /::error::ingest pipeline faulted \(exit 2\)/);
+  assert.match(r2.ghOut, /fault=2/, 'the fault code must reach GITHUB_OUTPUT (F-42e57a77)');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -346,16 +355,39 @@ test('d6-infra-B003 + F-caeeacc3: Read result — malformed JSON emits a structu
 // test below covers win32" the skip messages promise.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('STRUCTURAL d6-infra-B001: both ingestion legs decouple node exit from step failure', () => {
+test('STRUCTURAL d6-infra-B001 + F-42e57a77: both ingestion legs decouple node exit from step failure and DEFER faults', () => {
   const yaml = readFileSync(ingestYml, 'utf8');
   for (const step of ['Run ingestion \\(repository_dispatch\\)', 'Run ingestion \\(workflow_dispatch\\)']) {
     const block = extractRunBlock(yaml, step);
     assert.match(block, /set \+e/, `${step}: must disable -e so a rejection (exit 1) does not halt the job`);
     assert.match(block, /PIPESTATUS/, `${step}: must read node's code via PIPESTATUS, not the pipeline's`);
-    assert.match(block, /"\$rc" -ge 2/, `${step}: only exit >= 2 (a genuine fault) may fail the job`);
+    assert.match(block, /"\$rc" -ge 2/, `${step}: only exit >= 2 (a genuine fault) may red the RUN — and only via the deferred-fault step`);
     assert.match(block, /::error::ingest pipeline faulted/, `${step}: a fault must emit a structured ::error::`);
     assert.match(block, /NOT a rejection/, `${step}: the fault error must distinguish itself from a designed rejection`);
+    // F-42e57a77: the fault must be DEFERRED past the commit step, not exit
+    // the leg — run.js's generic catch (exit 2) can fire after persist, and a
+    // red step between persist and commit discards the evidence (the same
+    // class F-caeeacc3 closed for the parse seam).
+    assert.match(block, /fault=\$rc/, `${step}: a fault must record fault=$rc to GITHUB_OUTPUT for the deferred-fault step (F-42e57a77)`);
+    assert.doesNotMatch(block, /exit "\$rc"/, `${step}: the leg must NOT exit non-zero on a fault — that skips the commit step and drops persisted evidence (F-42e57a77)`);
   }
+});
+
+test('STRUCTURAL F-42e57a77: the commit step also runs on a deferred fault, and a deferred-fault step reds the run after it', () => {
+  const yaml = readFileSync(ingestYml, 'utf8');
+  const commit = extractStepSection(yaml, 'Commit records and indexes');
+  assert.match(
+    commit,
+    /if:[^\n]*ingest_rd\.outputs\.fault[^\n]*ingest_wd\.outputs\.fault/,
+    "the commit step's `if:` must include both legs' fault outputs so a persisted record still commits when run.js faulted after persist (F-42e57a77)",
+  );
+  const section = extractStepSection(yaml, 'Fail run on deferred pipeline fault');
+  assert.match(section, /ingest_rd\.outputs\.fault[^\n]*ingest_wd\.outputs\.fault/, 'the deferred-fault step must be gated on the fault outputs');
+  assert.match(section, /exit\s+"?\$/, 'the deferred-fault step must exit non-zero so a fault still reds the run (failures must surface)');
+  assert.ok(
+    yaml.indexOf('name: Fail run on deferred pipeline fault') > yaml.indexOf('name: Commit records and indexes'),
+    'the deferred-fault step must run after the commit step — evidence first, red run second (F-42e57a77)',
+  );
 });
 
 test('STRUCTURAL d6-infra-B003 + F-caeeacc3: the Read result step guards malformed JSON and defers the failure past the commit step', () => {

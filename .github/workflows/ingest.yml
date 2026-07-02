@@ -43,6 +43,7 @@ jobs:
       - run: npm ci
 
       - name: Run ingestion (repository_dispatch)
+        id: ingest_rd
         if: github.event_name == 'repository_dispatch'
         env:
           SUBMISSION_PAYLOAD: ${{ toJson(github.event.client_payload.submission) }}
@@ -87,14 +88,25 @@ jobs:
           rc=${PIPESTATUS[1]}
           set -e
           cat /tmp/ingest-stderr.log >&2
+          # F-42e57a77: DEFER the red run past the commit step. run.js's
+          # generic catch exits 2 for anything thrown inside ingest() — which
+          # can fire AFTER a record was persisted to the runner working tree
+          # (persist-then-fail-later is a proven run.js shape; the stale-index
+          # path is the precedent). Exiting here would skip the commit step
+          # and discard that evidence with the runner — the same evidence-loss
+          # class F-caeeacc3 closed for the parse seam. Annotate the fault,
+          # record fault=$rc, and let the 'Fail run on deferred pipeline
+          # fault' step red the run AFTER the evidence is committed.
           if [ "$rc" -ge 2 ]; then
-            echo "::error::ingest pipeline faulted (exit $rc) on a repository_dispatch submission — this is a genuine error, NOT a rejection (rejections exit 1 and still commit). Inspect the run log above and the structured \"stage\":\"error\" NDJSON event from packages/ingest/run.js."
-            exit "$rc"
+            echo "::error::ingest pipeline faulted (exit $rc) on a repository_dispatch submission — this is a genuine error, NOT a rejection (rejections exit 1 and still commit). Inspect the run log above and the structured \"stage\":\"error\" NDJSON event from packages/ingest/run.js. Any evidence run.js persisted before the fault is still committed below; the run fails at the deferred-fault step."
+            echo "fault=$rc" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
           # exit 0 (accepted) or 1 (rejected) both proceed: the accepted or
           # _rejected record is on the runner working tree and must be committed.
 
       - name: Run ingestion (workflow_dispatch)
+        id: ingest_wd
         if: github.event_name == 'workflow_dispatch'
         # Hoists $SUBMISSION_FILE into env to match the repository_dispatch leg's
         # env-var hardening (CWE-78). Inline ${{ inputs.* }} interpolation into a
@@ -118,9 +130,12 @@ jobs:
           rc=${PIPESTATUS[0]}
           set -e
           cat /tmp/ingest-stderr.log >&2
+          # F-42e57a77: same fault-defer as the repository_dispatch leg — see
+          # that leg's comment for the persist-then-fault evidence-loss rationale.
           if [ "$rc" -ge 2 ]; then
-            echo "::error::ingest pipeline faulted (exit $rc) on workflow_dispatch file $SUBMISSION_FILE — genuine error, NOT a rejection (rejections exit 1 and still commit). Inspect the run log above and the structured \"stage\":\"error\" NDJSON event from packages/ingest/run.js."
-            exit "$rc"
+            echo "::error::ingest pipeline faulted (exit $rc) on workflow_dispatch file $SUBMISSION_FILE — genuine error, NOT a rejection (rejections exit 1 and still commit). Inspect the run log above and the structured \"stage\":\"error\" NDJSON event from packages/ingest/run.js. Any evidence run.js persisted before the fault is still committed below; the run fails at the deferred-fault step."
+            echo "fault=$rc" >> "$GITHUB_OUTPUT"
+            exit 0
           fi
 
       - name: Read result
@@ -198,9 +213,11 @@ jobs:
         # F-caeeacc3: also runs when the result parse failed (parse_failed) —
         # run.js may still have persisted a record even though its stdout was
         # unparseable, and the evidence must be committed before the deferred
-        # fail step below reds the run. The no-op guard handles the
-        # nothing-was-written case.
-        if: steps.result.outputs.written == 'true' || steps.result.outputs.parse_failed == 'true'
+        # fail step below reds the run. F-42e57a77: likewise when either
+        # ingestion leg recorded a deferred pipeline fault (run.js's generic
+        # exit-2 catch can fire after persist). The no-op guard handles the
+        # nothing-was-written case in both.
+        if: steps.result.outputs.written == 'true' || steps.result.outputs.parse_failed == 'true' || steps.ingest_rd.outputs.fault != '' || steps.ingest_wd.outputs.fault != ''
         # CWE-78: hoist run_id/status into env rather than interpolating
         # ${{ steps.result.outputs.* }} inline into the shell `run:` body.
         # run_id originates from untrusted repository_dispatch client_payload;
@@ -249,6 +266,21 @@ jobs:
           done
           echo "::error::All 3 push attempts failed for run ${RUN_ID} (no rebase conflict — likely sustained GitHub-API issue or branch protection)"
           exit 1
+
+      - name: Fail run on deferred pipeline fault
+        # F-42e57a77: this is where a fault deferred by either ingestion leg
+        # lands. The run goes red AFTER any persisted evidence was committed
+        # above — same evidence-first, red-run-second ordering as the
+        # deferred parse-error step below. The ::error:: annotation on the
+        # ingestion leg names the actual fault and exit code.
+        if: steps.ingest_rd.outputs.fault != '' || steps.ingest_wd.outputs.fault != ''
+        env:
+          FAULT_RD: ${{ steps.ingest_rd.outputs.fault }}
+          FAULT_WD: ${{ steps.ingest_wd.outputs.fault }}
+        run: |
+          rc="${FAULT_RD:-$FAULT_WD}"
+          echo "::error::ingest pipeline faulted (exit $rc) — see the ingestion step's annotation for the failing stage. Any evidence run.js persisted before the fault was committed above; the run is red because the fault is a genuine pipeline error, not a rejection."
+          exit "$rc"
 
       - name: Fail run on deferred result-parse error
         # F-caeeacc3: this is where the parse-guard failure deferred by the

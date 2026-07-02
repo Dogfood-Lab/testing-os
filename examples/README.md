@@ -8,6 +8,7 @@ template — copy it into your repo and fill in the blanks.
 |------|------------|
 | [`dogfood.yml`](dogfood.yml) | The GitHub Actions workflow that packages a run and dispatches it. Copy to `.github/workflows/dogfood.yml` in **your** repo. |
 | [`scenario-results.example.json`](scenario-results.example.json) | The shape your test output must take — an array of `scenario_result` objects. |
+| [`scenario.example.yaml`](scenario.example.yaml) | An optional scenario *definition*. Commit one at `dogfood/scenarios/<scenario_id>.yaml` in your repo to opt that scenario into required-steps enforcement. |
 | [`policy.example.yaml`](policy.example.yaml) | A starter repo policy — per-surface requirements plus declarative [custom rules](https://dogfood-lab.github.io/testing-os/handbook/policy-dsl/) (VERIFY-F1). Open a PR to add yours at `policies/repos/<org>/<repo>.yaml`. |
 
 ## The five minutes
@@ -23,9 +24,11 @@ template — copy it into your repo and fill in the blanks.
    npx @dogfood-lab/report --scenario-file scenario-results.json --verdict pass --output submission.json
    npx @dogfood-lab/verify --file submission.json --explain
    ```
-   `--explain` tells you whether it would be accepted and, if not, classifies each rejection as *your* problem (submission-bad) or *ours* (operational).
+   `--explain` tells you whether it would be accepted and, if not, classifies each rejection as *your* problem (submission-bad) or *ours* (operational). One boundary: the preview cannot check `required_steps` (that needs your committed scenario definitions — see step 6); it says so in its output.
 
 5. **Push.** The next time your test workflow completes, `dogfood.yml` builds the submission, dispatches it, and testing-os verifies the provenance (it confirms your run actually happened) and records the evidence. Watch it land in the [ingest workflow](https://github.com/dogfood-lab/testing-os/actions/workflows/ingest.yml), then see your repo in [`latest-by-repo.json`](https://raw.githubusercontent.com/dogfood-lab/testing-os/main/indexes/latest-by-repo.json).
+
+6. **Opt into required-steps enforcement (optional, recommended once you're flowing).** Commit a scenario *definition* at `dogfood/scenarios/<scenario_id>.yaml` in your repo — see [`scenario.example.yaml`](scenario.example.yaml). The receiver fetches it at your attested commit and rejects any submission whose `step_results` skip a `required_step` (or that claims `verdict: pass` over a failed one). Without a committed definition your submissions are still accepted — each record just carries a visible `required_steps unenforced` warning.
 
 ## What testing-os does with it
 

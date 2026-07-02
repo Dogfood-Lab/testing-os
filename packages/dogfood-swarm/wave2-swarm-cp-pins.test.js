@@ -446,7 +446,14 @@ describe('F-00c35ce7 — findings-digest reads the canonical wave-N/<domain>/out
     mkdirSync(join(waveDir, 'empty-dir'));
 
     const outputs = loadDomainOutputs(waveDir);
-    assert.deepEqual(outputs.map(o => o.domain).sort(), ['backend', 'docs']);
+    // F-197de6dd (wave 4): a subdirectory WITHOUT output.json is a domain
+    // whose agent never reported — it now surfaces as a parseError entry
+    // (pipeline_broken) instead of being silently skipped.
+    assert.deepEqual(outputs.map(o => o.domain).sort(), ['backend', 'docs', 'empty-dir']);
+    const emptyDir = outputs.find(o => o.domain === 'empty-dir');
+    assert.match(emptyDir.parseError, /output\.json missing/);
+    assert.ok(!outputs.find(o => o.domain === 'backend').parseError);
+    assert.ok(!outputs.find(o => o.domain === 'docs').parseError);
   });
 });
 
@@ -625,20 +632,27 @@ describe('F-6c5ee5dd — a zero-findings audit wave reclassifies prior findings'
   });
   afterEach(() => { closeDb(dbPath); rmSync(tmp, { recursive: true, force: true }); });
 
-  it('the non-rediscovered prior flips to unverified with a finding_events row', () => {
+  it('the non-rediscovered prior is reclassified with a finding_events row', () => {
+    // CP4-SCOPE-WIRING (wave 4) upgraded this pin's expectation: this wave
+    // dispatches EVERY owned domain and both agents complete, so the wave is
+    // FULL coverage and the absent prior is positive evidence of `fixed`
+    // (pre-CP4 it landed `unverified` because collect never passed a scope).
+    // The original F-6c5ee5dd property — a clean wave still RECLASSIFIES
+    // priors instead of skipping the pass — is unchanged.
     const outA = join(tmp, 'a.json');
     const outB = join(tmp, 'b.json');
-    writeFileSync(outA, JSON.stringify({ domain: 'domain-a', summary: 'clean', findings: [] }));
-    writeFileSync(outB, JSON.stringify({ domain: 'domain-b', summary: 'clean', findings: [] }));
+    writeFileSync(outA, JSON.stringify({ domain: 'domain-a', stage: 'A', summary: 'clean', findings: [] }));
+    writeFileSync(outB, JSON.stringify({ domain: 'domain-b', stage: 'A', summary: 'clean', findings: [] }));
     const report = collect({ runId: 'r-clean', dbPath, outputs: { 'domain-a': outA, 'domain-b': outB } });
-    assert.equal(report.findings.unverified, 1,
+    assert.equal(report.findings.fixed, 1,
       'pre-fix: the classification pass was skipped entirely when allFindings was empty');
+    assert.equal(report.findings.unverified, 0);
 
     const db = openDb(dbPath);
     const f = db.prepare("SELECT * FROM findings WHERE run_id = 'r-clean'").get();
-    assert.equal(f.status, 'unverified');
+    assert.equal(f.status, 'fixed');
     const ev = db.prepare('SELECT * FROM finding_events WHERE finding_id = ? ORDER BY id DESC LIMIT 1').get(f.id);
-    assert.equal(ev.event_type, 'unverified', 'the clean wave must leave an audit-trail event');
+    assert.equal(ev.event_type, 'fixed', 'the clean wave must leave an audit-trail event');
   });
 });
 
@@ -749,7 +763,16 @@ describe('F-e7369293 — completing run A leaves run B\'s worktrees alone', () =
       'pre-fix: cleanupAllWorktrees swept run B\'s in-flight worktree too');
     assert.ok(existsSync(join(wtB.worktreePath, 'in-flight.js')), 'run B\'s edits survive');
 
-    // And the run-scoped helper cleans B when B completes.
+    // F-1ab3fd1f (wave 4): the run-scoped helper now SKIPS run B's DIRTY
+    // worktree instead of force-destroying the uncommitted edit — the guard
+    // this pin's original `removed: 1` expectation predated.
+    const guarded = cleanupRunWorktrees(repo, 'swarm-bbbb2');
+    assert.equal(guarded.skipped, 1, 'dirty worktree must be preserved, not removed');
+    assert.equal(guarded.removed, 0);
+    assert.ok(existsSync(join(wtB.worktreePath, 'in-flight.js')));
+
+    // Once the dirty edit is disposed of, the clean worktree is reclaimable.
+    rmSync(join(wtB.worktreePath, 'in-flight.js'));
     const outcome = cleanupRunWorktrees(repo, 'swarm-bbbb2');
     assert.equal(outcome.removed, 1);
     assert.equal(listWorktrees(repo).length, 0);
@@ -1121,8 +1144,12 @@ describe('V2-CONTRACT-003 / V2-INVARIAN-006 — a degraded committed-delta probe
   it('GATE RED: an unresolvable runs.commit_sha surfaces base_diff_unavailable on the agent report', () => {
     // setupRun's default commit_sha is 40 a's — not a real ref in this repo,
     // so the committed-delta diff fails and coverage silently narrowed pre-fix.
+    // F-0e55b5ca made non-isolated collect prefer the per-wave dispatch_sha;
+    // NULL it out to simulate the LEGACY wave this fallback (and this
+    // degradation surface) still serves.
     setupRun(dbPath, repoPath, 'r-badbase');
     dispatch({ runId: 'r-badbase', phase: 'health-amend-a', dbPath, outputDir: tmp });
+    openDb(dbPath).prepare("UPDATE waves SET dispatch_sha = NULL WHERE run_id = 'r-badbase'").run();
     const report = collectBoth('r-badbase');
     const a = report.agents.find(x => x.domain === 'domain-a');
     assert.ok(a.base_diff_unavailable,

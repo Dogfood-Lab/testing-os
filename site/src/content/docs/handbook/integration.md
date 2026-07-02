@@ -26,6 +26,10 @@ The fastest path is the [`examples/` starter kit](https://github.com/dogfood-lab
 - **`npx @dogfood-lab/verify --file <submission> --explain`** — dry-runs a submission against the contract before you dispatch, classifying any rejection as *submission-bad* (your fix) vs *operational* (ours).
 - **`dogfood-report --status --repo <org/repo>`** — closes the loop *after* dispatch. Because ingest runs asynchronously in the receiver repo, your workflow goes green the instant the dispatch returns — even if the submission is later rejected. This command reads the public served index (no auth) and tells you whether your latest run was recorded, accepted (or rejected, with the reason), and fresh; it exits non-zero on rejected/absent so a CI step fails loud instead of green-on-silent-non-record. The scaffolded `dogfood.yml` runs it best-effort after dispatch.
 
+### Scenario definitions (optional — required-steps enforcement)
+
+Committing a scenario *definition* at `dogfood/scenarios/<scenario_id>.yaml` in your repo opts that scenario into required-steps enforcement: for a `github` submission the receiver fetches the definition **read-only at your attested commit** (size-capped and schema-validated before use) and rejects a submission whose `step_results` omit a `required_step` or claim `verdict: pass` over a failed one. Without a committed definition the submission is still accepted — the record just carries a visible `required_steps unenforced` warning. The starter kit ships [`scenario.example.yaml`](https://github.com/dogfood-lab/testing-os/blob/main/examples/scenario.example.yaml) as the template. This fetch is the only consumer-repo content the verifier reads, and only for `github` provenance (GitLab scenario fetching is not yet implemented — a documented gap).
+
 ### Provenance providers
 
 Provenance confirms your CI run actually happened and binds your `repo` + `commit_sha` to it — a record cannot attest to a run that did not occur.

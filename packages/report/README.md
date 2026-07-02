@@ -61,6 +61,16 @@ if (!valid) {
 
 It returns `{ valid: boolean, errors: string[] }` — the same contract the verifier enforces, so a green precheck means the receiver's schema gate will pass.
 
+## CLI bins
+
+The package ships three bins:
+
+| Bin | What it is |
+|-----|------------|
+| `dogfood-report` | The **canonical** CLI name — use this in scripts and docs. |
+| `dogfood-init` | Scaffolds the dogfood workflow into a consumer repo (`--check` audits an existing onboarding). |
+| `report` | An **npx default-bin alias only** (F-74883f98): `npx @dogfood-lab/report` resolves the bin matching the unscoped package name, so this alias is what makes the bare `npx` invocation work. It is deliberately generic — on a global or local install it claims the common executable name `report` in `.bin/` and can collide with other tooling. Do not depend on `report` by name; call `dogfood-report` (or `npx -p @dogfood-lab/report dogfood-report`) instead. |
+
 ## Error shape
 
 `buildSubmission` throws a plain `Error` on a contract violation — a missing required param (`buildSubmission: missing required param "commitSha"`) or a non-string `overallVerdict`. These are programmer errors at the call site, not operator-facing structured rejections; fix the call. (Submission-level validation problems surface as the `errors[]` array from `precheckSubmission`, not as throws.)

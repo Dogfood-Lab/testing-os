@@ -53,6 +53,19 @@ function publishablePackages() {
   return out;
 }
 
+/**
+ * A test script that is a no-op or coverage-defeating shape (e.g. `exit 0`,
+ * `true`, the npm default "Error: no test specified" placeholder) defeats the
+ * floor. F-02b2ec03: `--passWithNoTests` (removed by F-cc9f0603 — a zero-test
+ * vitest run reports success) and a bare `echo ...` with no runner after it
+ * are rejected alongside the original shapes so neither can silently return.
+ */
+function isVacuousTestScript(script) {
+  return /^(exit 0|true|:|echo\b[^&|;]*(?:&&\s*exit 0)?)\s*$/.test(script.trim())
+    || /no test specified/i.test(script)
+    || /--passWithNoTests\b/.test(script);
+}
+
 test('PB-CI-004: at least one publishable workspace exists (the floor itself is non-vacuous)', () => {
   const pkgs = publishablePackages();
   assert.ok(
@@ -68,13 +81,8 @@ test('PB-CI-004: every publishable workspace declares a non-skip test script (su
       typeof script === 'string' && script.trim().length > 0,
       `publishable workspace ${name} (packages/${dir}) has no \`test\` script — \`npm test --workspaces --if-present\` would SILENTLY skip it and the root suite would pass vacuously for this package (PB-CI-004). Add a real \`node --test\` (or vitest) script.`,
     );
-    // A test script that is a no-op (e.g. `exit 0`, `true`, or the npm default
-    // "Error: no test specified" placeholder) defeats the floor. Reject the
-    // known vacuous shapes.
-    const vacuous = /^(exit 0|true|:|echo[^&|]*&&\s*exit 0)\s*$/.test(script.trim())
-      || /no test specified/i.test(script);
     assert.ok(
-      !vacuous,
+      !isVacuousTestScript(script),
       `publishable workspace ${name} (packages/${dir}) has a vacuous test script (${JSON.stringify(script)}) — a no-op test script reports success without running any test (PB-CI-004).`,
     );
   }
@@ -104,7 +112,15 @@ test('PB-CI-004: root test script fans out across workspaces (the floor is wired
 // regression-pin-allowlist discipline).
 // ─────────────────────────────────────────────────────────────────────────────
 
-const TEST_FILE_RE = /\.test\.(?:js|mjs|cjs|ts|tsx)$/;
+// F-113b0115: include `.spec.` — the other standard naming convention (and
+// part of this repo's swarm-domain ownership globs). A spec file invisible to
+// the sweep recreates the file-level silent-skip class one convention over.
+const TEST_FILE_RE = /\.(?:test|spec)\.(?:js|mjs|cjs|ts|tsx)$/;
+// What a bare `node --test` ACTUALLY discovers on Node >= 22: .test.{js,mjs,cjs}
+// files anywhere, plus runnable-extension files under a directory named test/.
+// NOT .ts/.tsx (no transpiler) and NOT .spec. naming — claiming those covered
+// is the F-4d5e0db4 / F-113b0115 over-claim.
+const NODE_BARE_DISCOVERY_RE = /(?:\.test\.(?:js|mjs|cjs)$)|(?:(?:^|\/)test\/.*\.(?:js|mjs|cjs)$)/;
 // Directory names never walked: generated/vendored trees, plus swarm run
 // artifacts (swarms/ can hold agent worktrees — full repo copies whose test
 // files are counted in their own checkouts, not this one).
@@ -142,21 +158,56 @@ function globToRe(glob) {
   return new RegExp(`^${p}$`);
 }
 
-/** Extract the quoted glob arguments of a `node --test "g1" "g2"` script. */
-function quotedGlobs(script) {
-  return [...script.matchAll(/"([^"]+)"|'([^']+)'/g)].map((m) => m[1] ?? m[2]);
+/**
+ * Extract the path/glob arguments of a `node --test ...` invocation — quoted
+ * OR unquoted. F-654a84e6/F-789ca80f: quoted-only extraction made an unquoted
+ * `node --test cli.test.js` read as zero args = bare recursive discovery,
+ * silently claiming full-package coverage for a script that runs exactly one
+ * file. `--flags` are skipped; a trailing-slash directory arg is treated as
+ * the recursive discovery Node performs inside it (`dir/**`).
+ */
+function nodeTestPathArgs(script) {
+  const m = /\bnode\s+--test\b([^|&;]*)/.exec(script);
+  if (!m) return [];
+  const args = [];
+  for (const t of m[1].matchAll(/"([^"]+)"|'([^']+)'|(\S+)/g)) {
+    const tok = t[1] ?? t[2] ?? t[3];
+    if (tok.startsWith('-')) continue;
+    args.push(tok.endsWith('/') ? `${tok}**` : tok);
+  }
+  return args;
+}
+
+/** vitest config files that can narrow the default discovery `include`. */
+function vitestConfigFiles(pkgDir) {
+  return [
+    'vitest.config.js', 'vitest.config.mjs', 'vitest.config.cjs',
+    'vitest.config.ts', 'vitest.config.mts', 'vitest.config.cts',
+    'vitest.workspace.js', 'vitest.workspace.ts',
+  ].filter((n) => existsSync(join(pkgDir, n)));
 }
 
 /** Does this package-level test script run `relInPkg`? */
-function scriptCoversFile(script, relInPkg) {
+function scriptCoversFile(script, relInPkg, pkgDir) {
   if (typeof script !== 'string' || script.trim().length === 0) return false;
-  // vitest discovers *.test.* under the package (schemas). Treat as full coverage.
-  if (/\bvitest\b/.test(script)) return true;
+  if (/\bvitest\b/.test(script)) {
+    // vitest's DEFAULT include discovers *.{test,spec}.* under the package
+    // (schemas). F-4d5e0db4: fail CLOSED on the two coverage-defeating shapes
+    // — a re-added --passWithNoTests, and a committed vitest config that can
+    // narrow `include` below the default glob (none exists today; if one
+    // lands, the sweep flags the package's test files and forces an explicit
+    // review/allowlist instead of silently trusting the default).
+    if (/--passWithNoTests\b/.test(script)) return false;
+    if (pkgDir && vitestConfigFiles(pkgDir).length > 0) return false;
+    return true;
+  }
   if (/\bnode\s+--test\b/.test(script)) {
-    const globs = quotedGlobs(script);
+    const globs = nodeTestPathArgs(script);
     // Bare `node --test` (no path args) = recursive discovery from the
-    // package root on Node >= 22 (this repo's engines floor) — full coverage.
-    if (globs.length === 0) return true;
+    // package root on Node >= 22 (this repo's engines floor) — but only for
+    // the shapes Node's runner actually discovers. A .test.ts or .spec.* file
+    // in a node-runner package NEVER RUNS (F-4d5e0db4 / F-113b0115).
+    if (globs.length === 0) return NODE_BARE_DISCOVERY_RE.test(relInPkg);
     return globs.some((g) => globToRe(g).test(relInPkg));
   }
   return false;
@@ -174,7 +225,7 @@ function findUncoveredTests(root) {
     : [];
   const allowed = new Map(allowlist.map((e) => [e.path, e.reason]));
   const rootPkg = readPkg(root) ?? {};
-  const rootScriptGlobs = quotedGlobs((rootPkg.scripts ?? {})['test:scripts'] ?? '');
+  const rootScriptGlobs = nodeTestPathArgs((rootPkg.scripts ?? {})['test:scripts'] ?? '');
 
   const problems = [];
   for (const [p, reason] of allowed) {
@@ -192,7 +243,7 @@ function findUncoveredTests(root) {
     if (pkgMatch) {
       const pkg = readPkg(join(root, 'packages', pkgMatch[1]));
       const script = pkg?.scripts?.test;
-      if (!scriptCoversFile(script ?? '', pkgMatch[2])) {
+      if (!scriptCoversFile(script ?? '', pkgMatch[2], join(root, 'packages', pkgMatch[1]))) {
         problems.push({
           file: rel,
           why: `not matched by packages/${pkgMatch[1]}'s test script (${JSON.stringify(script ?? '<none>')}) — this file NEVER RUNS`,
@@ -262,6 +313,179 @@ test('F-8125c01b META: a bare `node --test` package script covers nested test fi
   }, null, 2));
   writeFileSync(join(dir, 'packages/bare/lib/deep/nested.test.js'), '');
   assert.deepEqual(findUncoveredTests(dir), [], 'bare `node --test` discovers recursively on Node >= 22 — nested files are covered');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-654a84e6 / F-789ca80f: scriptCoversFile must not treat a `node --test`
+// script with UNQUOTED positional args as bare recursive discovery. Quoted-only
+// extraction made `node --test cli.test.js` read as full-package coverage when
+// it runs exactly one file — the sweep's central claim silently inverted.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-654a84e6/F-789ca80f META: an UNQUOTED single-file `node --test cli.test.js` script covers only that file, not the whole package', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'test-floor-unquoted-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    name: 'fx', version: '1.0.0', scripts: { 'test:scripts': 'node --test "scripts/*.test.mjs"' },
+  }, null, 2));
+  mkdirSync(join(dir, 'packages/uq/lib'), { recursive: true });
+  writeFileSync(join(dir, 'packages/uq/package.json'), JSON.stringify({
+    name: 'uq', version: '1.0.0', scripts: { test: 'node --test cli.test.js' },
+  }, null, 2));
+  writeFileSync(join(dir, 'packages/uq/cli.test.js'), '');
+  writeFileSync(join(dir, 'packages/uq/lib/orphan.test.js'), '');
+  const files = findUncoveredTests(dir).map((p) => p.file);
+  assert.deepEqual(
+    files,
+    ['packages/uq/lib/orphan.test.js'],
+    'the unquoted single-file script runs ONLY cli.test.js — the sibling must be flagged, not silently claimed covered',
+  );
+});
+
+test('F-654a84e6 META: `node --test lib/` covers files under lib/ but flags a test file outside it', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'test-floor-dirarg-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    name: 'fx', version: '1.0.0', scripts: { 'test:scripts': 'node --test "scripts/*.test.mjs"' },
+  }, null, 2));
+  mkdirSync(join(dir, 'packages/da/lib'), { recursive: true });
+  writeFileSync(join(dir, 'packages/da/package.json'), JSON.stringify({
+    name: 'da', version: '1.0.0', scripts: { test: 'node --test lib/' },
+  }, null, 2));
+  writeFileSync(join(dir, 'packages/da/lib/inside.test.js'), '');
+  writeFileSync(join(dir, 'packages/da/outside.test.js'), '');
+  const files = findUncoveredTests(dir).map((p) => p.file);
+  assert.deepEqual(
+    files,
+    ['packages/da/outside.test.js'],
+    '`node --test lib/` runs only under lib/ — outside.test.js NEVER RUNS and must be flagged',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-4d5e0db4: two coverage over-claims. (1) bare `node --test` cannot execute
+// .ts files; (2) any script containing "vitest" was trusted as full recursive
+// coverage even with coverage-defeating shapes present.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-4d5e0db4 META: a .test.ts file in a bare `node --test` package is flagged (the node runner cannot execute TypeScript)', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'test-floor-ts-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    name: 'fx', version: '1.0.0', scripts: { 'test:scripts': 'node --test "scripts/*.test.mjs"' },
+  }, null, 2));
+  mkdirSync(join(dir, 'packages/nr'), { recursive: true });
+  writeFileSync(join(dir, 'packages/nr/package.json'), JSON.stringify({
+    name: 'nr', version: '1.0.0', scripts: { test: 'node --test' },
+  }, null, 2));
+  writeFileSync(join(dir, 'packages/nr/runs.test.js'), '');
+  writeFileSync(join(dir, 'packages/nr/stray.test.ts'), '');
+  const files = findUncoveredTests(dir).map((p) => p.file);
+  assert.deepEqual(
+    files,
+    ['packages/nr/stray.test.ts'],
+    'bare `node --test` discovers .test.{js,mjs,cjs} only — a .test.ts file NEVER RUNS in a node-runner package',
+  );
+});
+
+test('F-4d5e0db4 META: a vitest script with --passWithNoTests re-added is NOT trusted as coverage (fail closed)', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'test-floor-pwnt-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    name: 'fx', version: '1.0.0', scripts: { 'test:scripts': 'node --test "scripts/*.test.mjs"' },
+  }, null, 2));
+  mkdirSync(join(dir, 'packages/vt'), { recursive: true });
+  writeFileSync(join(dir, 'packages/vt/package.json'), JSON.stringify({
+    name: 'vt', version: '1.0.0', scripts: { test: 'vitest run --passWithNoTests' },
+  }, null, 2));
+  writeFileSync(join(dir, 'packages/vt/some.test.ts'), '');
+  const files = findUncoveredTests(dir).map((p) => p.file);
+  assert.deepEqual(
+    files,
+    ['packages/vt/some.test.ts'],
+    'a vitest script carrying --passWithNoTests defeats the floor — coverage must not be trusted (F-4d5e0db4 fail-closed)',
+  );
+});
+
+test('F-4d5e0db4 META: a vitest package with a committed vitest.config fails closed (include may be narrowed)', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'test-floor-vtcfg-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    name: 'fx', version: '1.0.0', scripts: { 'test:scripts': 'node --test "scripts/*.test.mjs"' },
+  }, null, 2));
+  mkdirSync(join(dir, 'packages/vc'), { recursive: true });
+  writeFileSync(join(dir, 'packages/vc/package.json'), JSON.stringify({
+    name: 'vc', version: '1.0.0', scripts: { test: 'vitest run' },
+  }, null, 2));
+  writeFileSync(join(dir, 'packages/vc/vitest.config.ts'), 'export default {};\n');
+  writeFileSync(join(dir, 'packages/vc/some.test.ts'), '');
+  const files = findUncoveredTests(dir).map((p) => p.file);
+  assert.deepEqual(
+    files,
+    ['packages/vc/some.test.ts'],
+    'a vitest.config can narrow `include` below the default discovery glob — the sweep must fail closed and force explicit review/allowlist',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-113b0115: the sweep must SEE `.spec.` files — the other standard naming
+// convention. Bare `node --test` does not discover spec naming, so a spec file
+// in a node-runner package is an orphan and must be flagged.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-113b0115 META: a .spec. file in a bare `node --test` package is visible to the sweep and flagged', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'test-floor-spec-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(join(dir, 'package.json'), JSON.stringify({
+    name: 'fx', version: '1.0.0', scripts: { 'test:scripts': 'node --test "scripts/*.test.mjs"' },
+  }, null, 2));
+  mkdirSync(join(dir, 'packages/sp'), { recursive: true });
+  writeFileSync(join(dir, 'packages/sp/package.json'), JSON.stringify({
+    name: 'sp', version: '1.0.0', scripts: { test: 'node --test' },
+  }, null, 2));
+  writeFileSync(join(dir, 'packages/sp/runs.test.js'), '');
+  writeFileSync(join(dir, 'packages/sp/orphan.spec.js'), '');
+  const files = findUncoveredTests(dir).map((p) => p.file);
+  assert.deepEqual(
+    files,
+    ['packages/sp/orphan.spec.js'],
+    'bare `node --test` does not discover .spec. naming — the file NEVER RUNS and must be flagged (F-113b0115)',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-02b2ec03: pin the F-cc9f0603 fix (--passWithNoTests removal) and close the
+// bare-echo hole in the vacuous-shape rejection.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-02b2ec03: the vacuous-script rejection catches --passWithNoTests and bare echo shapes', () => {
+  assert.ok(isVacuousTestScript('vitest run --passWithNoTests'), '--passWithNoTests reports success with zero tests — vacuous');
+  assert.ok(isVacuousTestScript('echo ok'), 'a bare echo is a zero-test success script — vacuous');
+  assert.ok(isVacuousTestScript('echo hi && exit 0'), 'the original echo-and-exit shape stays rejected');
+  assert.ok(isVacuousTestScript('exit 0'), 'original shape stays rejected');
+  assert.ok(!isVacuousTestScript('node --test'), 'a real runner is not vacuous');
+  assert.ok(!isVacuousTestScript('vitest run'), 'plain vitest run is not vacuous');
+  assert.ok(!isVacuousTestScript('echo starting && node --test'), 'an echo FOLLOWED by a real runner is not vacuous');
+});
+
+test('F-02b2ec03: no root or workspace script reintroduces --passWithNoTests (pin for the F-cc9f0603 removal)', () => {
+  const offenders = [];
+  const rootPkg = readPkg(repoRoot) ?? {};
+  for (const [k, v] of Object.entries(rootPkg.scripts ?? {})) {
+    if (/--passWithNoTests\b/.test(v)) offenders.push(`<root>:${k}`);
+  }
+  for (const entry of readdirSync(packagesDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue;
+    const pkg = readPkg(join(packagesDir, entry.name));
+    for (const [k, v] of Object.entries(pkg?.scripts ?? {})) {
+      if (/--passWithNoTests\b/.test(v)) offenders.push(`packages/${entry.name}:${k}`);
+    }
+  }
+  assert.deepEqual(
+    offenders,
+    [],
+    `--passWithNoTests defeats the test floor (a zero-test run reports success) and was removed by F-cc9f0603 — it must not return: ${offenders.join(', ')}`,
+  );
 });
 
 test('F-8125c01b META: allowlist entries need a reason and a live path (no allowlist rot)', (t) => {

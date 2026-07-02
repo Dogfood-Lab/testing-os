@@ -432,6 +432,11 @@ function saltByContent(base, member, ordinal) {
  * @param {Array} currentFindings — findings from the current wave (with fingerprints)
  * @param {Map<string, object>} priorFingerprints — fingerprint → finding from prior waves
  * @param {object} [scope] — what the current wave actually examined
+ * @param {boolean} [scope.full] — CP4-SCOPE-WIRING: the wave's agent set
+ *   covered EVERY agent-bearing domain in the frozen map, so everything —
+ *   including file-less repo-level priors — is in scope and an absent prior
+ *   is positive evidence of `fixed`. The caller asserts coverage; this flag
+ *   is never inferred here.
  * @param {string[]} [scope.scopePaths] — path prefixes covered by the current wave.
  *   A prior finding's path is "in scope" iff it starts with one of these prefixes.
  *   Path comparison is normalized via normalizePath() (forward slashes, lowercase).
@@ -465,6 +470,9 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
     }
   }
 
+  // CP4-SCOPE-WIRING: an explicit full-coverage assertion covers everything,
+  // including priors with no file path (isPathInScope can never prove those).
+  const fullScope = scope?.full === true;
   const scopePaths = Array.isArray(scope?.scopePaths)
     ? scope.scopePaths.map(normalizePath).filter(Boolean)
     : null;
@@ -476,7 +484,7 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
     if (prior.status === 'deferred' || prior.status === 'rejected' || prior.status === 'fixed') continue;
 
     const priorPath = normalizePath(prior.file_path || prior.file || '');
-    const inScope = isPathInScope(priorPath, scopePaths);
+    const inScope = fullScope || isPathInScope(priorPath, scopePaths);
 
     if (inScope) {
       result.fixed.push({ ...prior, fingerprint: fp });

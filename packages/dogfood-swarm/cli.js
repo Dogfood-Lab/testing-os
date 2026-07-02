@@ -543,6 +543,13 @@ function cmdDispatch(args) {
   // no-glob-match) silently block the finding-severity gate forever if the
   // operator never learns about them. Loud on BOTH the dry-run and apply
   // paths, before the per-agent listing.
+  // F-7970a30b: dispatching over a failed wave with blocked agents closes the
+  // `swarm revalidate` window (revalidate reads the LATEST wave). Warn before
+  // the per-agent listing so the narrowing recovery path is never silent.
+  if (result.supersededFailedWave) {
+    console.log(`\n[!] ${result.supersededFailedWave.message}`);
+  }
+
   const unrouted = result.unroutedApprovedFindings || [];
   if (unrouted.length > 0) {
     console.log(`\n===== [!] ${unrouted.length} APPROVED FINDING(S) ROUTED TO NO AGENT [!] =====`);

@@ -59,11 +59,11 @@ testing-os processes dogfood submissions dispatched via `repository_dispatch` fr
 
 **Record integrity is tamper-EVIDENT, not tamper-proof.** Every persisted record carries an `integrity` block (`submission_digest` + `prev_digest`) forming an append-only hash chain that `node packages/ingest/run.js --verify-chain` validates fully offline — detecting out-of-band tampering, disk corruption, and partial restores. It does **not** defend against the ingest credential itself, which can rewrite both a record and the chain; closing that needs an anchor outside the writer's control. An **optional, off-by-default XRPL anchor** (`node packages/ingest/run.js --anchor-*`) witnesses the chain head to the public XRP Ledger, making any truncation or rewrite below an anchored point detectable — the second disclosed non-GitHub call, and only when an operator enables it.
 
-**What testing-os touches:** the submission JSON in each `repository_dispatch` payload; `policies/`, `fixtures/`, `records/`, and `indexes/` in this repo; outbound calls to `api.github.com` for provenance verification.
+**What testing-os touches:** the submission JSON in each `repository_dispatch` payload; `policies/`, `fixtures/`, `records/`, and `indexes/` in this repo; outbound calls to `api.github.com` for provenance verification; and — for `github` submissions only — a read-only fetch of the submitting repo's `dogfood/scenarios/<scenario_id>.yaml` at the attested commit (the scenario definition that powers required-steps enforcement; size-capped and schema-validated before use, absent files simply leave that check unenforced with a visible warning).
 
-**What testing-os does NOT touch:** consumer source code, secrets in consumer repos beyond the dispatch envelope, or anything outside this repo's working tree.
+**What testing-os does NOT touch:** consumer source code beyond the declared `dogfood/scenarios/` definition files, secrets in consumer repos beyond the dispatch envelope, or anything outside this repo's working tree.
 
-**Network surface.** By default the only egress is `api.github.com` (read-only provenance). The two exceptions are both opt-in and disclosed above: a GitLab-provider submission (`gitlab.com/api`), and an operator-enabled XRPL anchor run. **No telemetry, no analytics — this codebase never phones home; absent those two opt-in paths it exposes no network surface beyond GitHub.** The receiver workflow runs with `contents: write` scoped to this repo only.
+**Network surface.** By default the only egress is `api.github.com` (read-only: provenance confirmation + the scenario-definition fetch above). The two exceptions are both opt-in and disclosed above: a GitLab-provider submission (`gitlab.com/api`), and an operator-enabled XRPL anchor run. **No telemetry, no analytics — this codebase never phones home; absent those two opt-in paths it exposes no network surface beyond GitHub.** The receiver workflow runs with `contents: write` scoped to this repo only.
 
 ## Packages
 
@@ -86,7 +86,7 @@ testing-os/
 ├── packages/                  # 7 workspace packages (@dogfood-lab/*)
 ├── site/                      # Astro Starlight handbook → dogfood-lab.github.io/testing-os/handbook/
 ├── swarms/                    # Swarm-run artifacts + control-plane.db
-├── indexes/                   # Generated read API: latest-by-repo.json, failing.json, stale.json
+├── indexes/                   # Generated read API: latest-by-repo.json, failing.json, stale.json, trends.json, badges/ (shields.io endpoints)
 ├── policies/                  # Policy YAML by repo
 ├── records/                   # Submission landing pad (ingest.yml writes here)
 ├── fixtures/                  # Test/example fixtures
@@ -104,7 +104,7 @@ cd testing-os
 npm install
 npm run build       # tsc --build across all packages
 npm test            # vitest for schemas, node --test for the rest
-npm run verify      # build + test (canonical pre-commit check)
+npm run verify      # version-sync + doc-drift + regression-pin gates + build + tests (canonical pre-commit check — NOT the same as build && test)
 ```
 
 Requires Node ≥ 22. CI matrix runs Node 22 + 24 on `ubuntu-latest`; locally validated on Node 25.

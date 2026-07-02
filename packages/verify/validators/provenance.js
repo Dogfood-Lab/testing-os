@@ -199,6 +199,14 @@ export function githubProvenance(token, opts = {}) {
           });
         } catch (err) {
           if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+            // F-8e72d0de: a per-request timeout is at least as transient as a
+            // connection refusal — retry within the same budget as the
+            // transport-reject branch below (mirrors the scenario fetcher's
+            // retryable-timeout discipline), then throw on exhaustion.
+            if (attempt < retries) {
+              await sleep(nextBackoffMs(null, attempt + 1, backoffMs));
+              continue;
+            }
             throw new Error(`provenance: GitHub API timeout after ${timeoutMs}ms`);
           }
           // F-dac7e08c: a transport reject (DNS failure, ECONNREFUSED) means the
@@ -371,6 +379,12 @@ export function gitlabProvenance(token, opts = {}) {
           });
         } catch (err) {
           if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+            // F-8e72d0de: retry timeouts within the shared budget — peer
+            // discipline with githubProvenance (see that adapter's note).
+            if (attempt < retries) {
+              await sleep(nextBackoffMs(null, attempt + 1, backoffMs));
+              continue;
+            }
             throw new Error(`provenance: GitLab API timeout after ${timeoutMs}ms`);
           }
           // F-dac7e08c: transport reject = operational, retried then thrown —

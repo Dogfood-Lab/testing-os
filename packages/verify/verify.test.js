@@ -341,40 +341,38 @@ describe('full verifier pipeline (pilot 0)', () => {
     assert.ok(record.verification.rejection_reasons.some(r => r.includes('provenance')));
   });
 
-  it('classifies a thrown provenance fault as operational, not submission-bad [F-VERIFY-001]', async () => {
+  it('propagates a thrown provenance fault as a coded operational error [F-VERIFY-001 / F-82429f90]', async () => {
     // verify-A-002: the real adapters THROW on operational provider faults
-    // (429 rate-limit, 5xx outage, 401/403 token). End-to-end, the verifier must
-    // record that as a `provenance-fault:` reason so routing pages ops — NOT as a
-    // `provenance:` reason the submitter is told to fix. A thrown fault must also
-    // NOT additionally append the submission-bad 'source run could not be
-    // confirmed' reason for the same failure.
+    // (429 rate-limit, 5xx outage, 401/403 token). F-82429f90 (wave 4):
+    // verify() must NOT convert that throw into a persisted `_rejected`
+    // record — during an outage window the duplicate guard would then block
+    // a clean resubmission under the same run_id FOREVER. The fault
+    // propagates as a coded PROVENANCE_FAULT error whose message keeps the
+    // `provenance-fault:` prefix parseRejectionReason classifies as
+    // operational (page ops, never bounce to the submitter).
     const faultingProvenance = {
       async confirm() {
         throw new Error('provenance: GitHub API returned 503');
       }
     };
-    const record = await verify(pilot0, {
-      globalPolicy,
-      repoPolicy,
-      provenance: faultingProvenance,
-      policyVersion: '1.0.0'
-    });
-
-    assert.equal(record.verification.status, 'rejected');
-    assert.equal(record.verification.provenance_confirmed, false);
-
-    const provReasons = record.verification.rejection_reasons.filter(r => r.startsWith('provenance'));
-    assert.equal(
-      provReasons.length, 1,
-      `expected exactly one provenance reason, got ${JSON.stringify(provReasons)}`
-    );
-    const [reason] = provReasons;
-    assert.equal(parseRejectionReason(reason).class, 'operational',
-      `thrown provenance fault must classify operational, got: ${reason}`);
-    // The submission-bad not-confirmed reason must NOT also be present for a fault.
-    assert.ok(
-      !record.verification.rejection_reasons.includes('provenance: source run could not be confirmed'),
-      'a thrown fault must not also bounce a submission-bad not-confirmed reason'
+    await assert.rejects(
+      verify(pilot0, {
+        globalPolicy,
+        repoPolicy,
+        provenance: faultingProvenance,
+        policyVersion: '1.0.0'
+      }),
+      (err) => {
+        assert.equal(err.code, 'PROVENANCE_FAULT',
+          `expected code PROVENANCE_FAULT; got ${err.code} (${err.message})`);
+        assert.match(err.message, /^provenance-fault: verification failed: /);
+        assert.ok(err.message.includes('GitHub API returned 503'),
+          'underlying adapter detail must be carried');
+        assert.equal(parseRejectionReason(err.message).class, 'operational',
+          `thrown provenance fault must classify operational, got: ${err.message}`);
+        return true;
+      },
+      'an operational provider fault must propagate out of verify(), never assemble a rejected record'
     );
   });
 

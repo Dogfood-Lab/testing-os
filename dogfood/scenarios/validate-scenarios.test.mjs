@@ -30,7 +30,12 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import yaml from 'js-yaml';
-import Ajv from 'ajv';
+// scenario.schema.json declares 2020-12; compiling its sub-schema with the
+// default draft-07 Ajv would silently ignore 2020-12-only keywords
+// (prefixItems, unevaluatedProperties, dependentSchemas) under strict:false —
+// the gate would weaken without signal. Same dialect-matched import as
+// packages/schemas/src/validate.ts and dogfood-swarm/lib/validate-agent-output.js.
+import Ajv2020 from 'ajv/dist/2020.js';
 import { scenarioSchema } from '@dogfood-lab/schemas';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -49,9 +54,24 @@ function loadScenarios() {
 // test stays in lockstep with the source of truth — if the schema relaxes its
 // shape, this test relaxes with it automatically.
 function buildAutomationValidator() {
-  const ajv = new Ajv({ allErrors: true, strict: false });
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
   return ajv.compile(scenarioSchema.properties.automation);
 }
+
+// Negative-case pin (F-6d1573dc): prove the gate can go RED for the right
+// reason under the 2020-12 compiler. `retry_on_failure` is the exact field the
+// original D5B-004 seed carried; if additionalProperties enforcement ever
+// stops firing (dialect drift, strict-mode change, sub-schema extraction bug),
+// this fails before a real scenario regression can slip through green.
+test('the automation sub-schema validator rejects a schema-violating block', () => {
+  const validate = buildAutomationValidator();
+  const valid = validate({ script: 'node run.js', retry_on_failure: false });
+  assert.equal(valid, false, 'validator accepted an automation block with an undeclared field — the D5B-004 gate cannot go RED');
+  assert.ok(
+    validate.errors.some(e => e.keyword === 'additionalProperties'),
+    `expected an additionalProperties violation, got: ${JSON.stringify(validate.errors)}`
+  );
+});
 
 test('every committed dogfood scenario has a schema-clean automation block', () => {
   const scenarios = loadScenarios();

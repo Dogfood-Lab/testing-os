@@ -561,12 +561,19 @@ export function collect(opts) {
     // reverted edits before reporting). When git is unavailable (no .git), we
     // fall back to the agent's self-report and surface the degradation in
     // the report.
+    // F-0e55b5ca: the non-isolated base is the PER-WAVE dispatch-time HEAD
+    // (waves.dispatch_sha), not runs.commit_sha — the init-time sha goes
+    // stale as waves land commits, so diffing against it attributed every
+    // prior wave's landed edits to this agent (false divergence alarms; the
+    // prior waves' in-domain files INSERTed into file_claims under this
+    // agent's identity). Legacy waves (dispatched before the v8 column) fall
+    // back to runs.commit_sha, the historical behavior.
     if (isAmend && output.files_changed !== undefined) {
       const isolated = !!ar.worktree_path;
       const worktree = ar.worktree_path || run.local_path;
       const baseRef = isolated
         ? resolveWorktreeBaseRef(worktree, run.branch)
-        : run.commit_sha;
+        : (wave.dispatch_sha || run.commit_sha);
       const actualTouched = getActualTouchedFiles(worktree, { baseRef });
       const reported = Array.isArray(output.files_changed) ? output.files_changed : [];
 
@@ -641,17 +648,24 @@ export function collect(opts) {
             : 'ensure runs.commit_sha is a resolvable ref in the local repo',
         });
       }
-      // Degradation note: without --isolate the independent probe cannot
-      // attribute cross-domain edits to a single agent, so its coverage is
-      // narrowed to this domain's own files. Operator-visible so the weakened
-      // guarantee is never silent.
+      // Degradation note (F-c5eb20ef rewording): the narrowed probe keeps
+      // only files this domain EXCLUSIVELY OWNS, and checkOwnership then
+      // classifies exactly those as valid — so in non-isolated mode the
+      // independent contribution is structurally incapable of producing a
+      // violation. Say the true property (zero independent cross-domain
+      // coverage; enforcement rests on self-report), not "restricted to this
+      // domain's globs", which read as partial coverage. The narrowed files
+      // still add forensic file_claims rows. Operator-visible so the
+      // weakened guarantee is never silent.
       if (!isolated && !actualTouched.unavailable) {
         agentReport.ownership_probe_degraded = {
           isolated: false,
           reason:
-            'non-isolated wave: shared worktree diff cannot be attributed per-agent; ' +
-            'independent ownership probe restricted to this domain\'s globs. ' +
-            'Re-dispatch with --isolate for full cross-domain attribution.',
+            'non-isolated wave: the shared-worktree diff cannot be attributed per-agent, ' +
+            'so the independent probe cannot catch ANY cross-domain edit — ' +
+            'ownership enforcement for this wave rests entirely on the agent\'s ' +
+            'files_changed self-report. ' +
+            'Re-dispatch with --isolate for independent cross-domain attribution.',
         };
         ownershipDegradedDomains.push(domain.name);
         // swarm-cli-B-001 (Stage C carry-over): emit a structured event at the
@@ -667,7 +681,10 @@ export function collect(opts) {
           waveId: wave.id,
           waveNumber: wave.wave_number,
           isolated: false,
-          reason: 'probe_restricted_to_domain_globs',
+          // F-c5eb20ef: the old code 'probe_restricted_to_domain_globs' read
+          // as partial coverage; the true property is that the independent
+          // probe contributes ZERO cross-domain enforcement here.
+          reason: 'self_report_only_cross_domain',
           remediation: '--isolate',
         });
       }
@@ -762,14 +779,16 @@ export function collect(opts) {
 
   // Fingerprint + dedup.
   //
-  // Note: classifyFindings is called WITHOUT a `scope` argument here — that is
-  // the strictly-safe default per B-BACK-003. Without scope info, every prior
-  // finding not rediscovered this wave is classified `unverified` rather than
-  // `fixed`. A follow-up wave will wire wave-bound domain globs into a scope
-  // descriptor (minimatch → path-prefix conversion is non-trivial and out of
-  // scope for the wave 8 self-inspection slice). Until then, the digest will
-  // surface `unverified` counts so operators have an explicit "agent did not
-  // look at this" signal instead of a silent false-fix claim.
+  // Scope (B-BACK-003, CP4-SCOPE-WIRING): the trivial-but-honest coverage
+  // case is wired — when this wave's agent set covers EVERY agent-bearing
+  // (non-shared) domain in the frozen map, the wave examined the whole owned
+  // surface, so `scope = { full: true }` and a prior finding not rediscovered
+  // is positively `fixed`. Any PARTIAL coverage keeps the strictly-safe
+  // default: no scope info → every non-rediscovered prior is `unverified`
+  // rather than `fixed` (we do not invent fixed verdicts). The finer-grained
+  // per-domain scope descriptor (minimatch → path-prefix conversion) remains
+  // future work; partial-coverage waves surface `unverified` counts so
+  // operators keep the explicit "agent did not look at this" signal.
   // F-693631-002 (wave-12): upsertFindings was previously unguarded. Its
   // inner db.transaction() guarantees atomicity at the SQLite level — a
   // throw rolls back every INSERT/UPDATE inside the tx — but that throw
@@ -789,7 +808,22 @@ export function collect(opts) {
   // no finding_events row recording that the clean wave looked at all.
   if (allFindings.length > 0 || isAudit) {
     const priorMap = buildPriorMap(db, opts.runId);
-    const classified = classifyFindings(allFindings, priorMap);
+    // CP4-SCOPE-WIRING: full coverage iff every agent-bearing domain in the
+    // frozen map has an agent that COMPLETED in this wave (dispatch never
+    // creates an agent for a `shared` domain, so `shared` is excluded). An
+    // agent whose output was missing/invalid/violating did NOT audit its
+    // domain — its absence-of-priors is not evidence of anything, so any
+    // non-complete agent demotes the wave to partial coverage and the safe
+    // unverified default.
+    const completedDomains = new Set(
+      report.agents.filter(a => a.status === 'complete').map(a => a.domain)
+    );
+    const agentBearing = domains.filter(d => d.ownership_class !== 'shared');
+    const fullCoverage = agentBearing.length > 0
+      && agentBearing.every(d => completedDomains.has(d.name));
+    const classified = classifyFindings(
+      allFindings, priorMap, fullCoverage ? { full: true } : null
+    );
     let stats;
     try {
       stats = upsertFindings(db, opts.runId, wave.id, classified);

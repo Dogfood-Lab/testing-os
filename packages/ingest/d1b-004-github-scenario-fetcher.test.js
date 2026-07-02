@@ -19,7 +19,12 @@
  * typed (failure-class discriminable).
  *
  * Invariant (all four mode-cases enforced):
- *   - mock fetch hangs past timeout → result.reason === 'timeout'
+ *   - mock fetch hangs past timeout → exhausted-timeout THROWS a
+ *     `scenario-fetch-fault:` whose detail keeps the literal word 'timeout'
+ *     (F-07ab7f86 superseded the original typed-reason return: a sustained
+ *     slow-API window is outage-class, and returning 'timeout' made run.js
+ *     persist a rejected record whose run_id the duplicate guard then
+ *     poisoned)
  *   - mock fetch returns 404         → result.reason === 'not_found'
  *   - mock fetch returns 200 + bad JSON → result.reason === 'parse_error'
  *   - mock fetch returns 200 + good YAML → scenario returned as before
@@ -54,9 +59,11 @@ async function withMockFetch(mock, fn) {
 }
 
 describe('D1B-004 — githubScenarioFetcher AbortController + typed reason', () => {
-  it('POSITIVE timeout: a hang past the AbortController deadline yields reason="timeout"', async () => {
+  it('POSITIVE timeout: exhausting every attempt on a hang THROWS scenario-fetch-fault with "timeout" in the detail (F-07ab7f86)', async () => {
     // Mock fetch that never resolves UNTIL aborted — mimicking a hung
-    // upstream. The fetcher must abort and surface reason="timeout".
+    // upstream. The fetcher must abort every attempt, then classify the
+    // exhaustion as OPERATIONAL (outage-class), keeping the word 'timeout'
+    // in the thrown detail so the operator pivot key survives.
     const hangingFetch = (_url, { signal } = {}) => new Promise((_resolve, reject) => {
       // When AbortController fires, throw a real AbortError so the
       // fetcher's catch can pivot on err.name === 'AbortError'.
@@ -70,13 +77,61 @@ describe('D1B-004 — githubScenarioFetcher AbortController + typed reason', () 
     await withMockFetch(hangingFetch, async () => {
       // Pass an artificially short timeout to keep the test runtime bounded
       // (production default is 30s) and attempts:1 so this case isolates the
-      // single-attempt timeout classification — the retry path is covered in
-      // f-ingest-003-scenario-fetch-retry.test.js.
+      // exhaustion classification — the retry path is covered in
+      // ingest-proact-003-scenario-fetch-retry.test.js.
       const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'deadbeef', { timeoutMs: 50, attempts: 1 });
+      await assert.rejects(
+        fetcher.fetchWithReason('sanity'),
+        /scenario-fetch-fault: timeout/,
+        'exhausted timeout must throw the classified operational fault, not return a typed reason'
+      );
+    });
+  });
+
+  it('POSITIVE timeout retry: a single timeout followed by a 200 still returns the scenario', async () => {
+    // The timeout stays RETRYABLE mid-budget — only exhaustion throws.
+    let n = 0;
+    const flakyFetch = (_url, { signal } = {}) => {
+      n += 1;
+      if (n === 1) {
+        return new Promise((_resolve, reject) => {
+          signal?.addEventListener('abort', () => {
+            const e = new Error('aborted');
+            e.name = 'AbortError';
+            reject(e);
+          });
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        status: 200,
+        async text() {
+          return [
+            'scenario_id: sanity',
+            'scenario_name: Sanity smoke',
+            'scenario_version: 1.0.0',
+            'product_surface: cli',
+            'execution_mode: bot',
+            'description: Smoke-checks the CLI happy path.',
+            'steps:',
+            '  - id: one',
+            '    action: run the CLI once',
+            'success_criteria:',
+            '  required_steps:',
+            '    - one',
+            ''
+          ].join('\n');
+        }
+      });
+    };
+
+    await withMockFetch(flakyFetch, async () => {
+      const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'deadbeef', {
+        timeoutMs: 50, attempts: 2, sleepImpl: () => {}
+      });
       const result = await fetcher.fetchWithReason('sanity');
-      assert.equal(result.scenario, null);
-      assert.equal(result.reason, 'timeout',
-        `expected reason="timeout"; got ${JSON.stringify(result)}`);
+      assert.ok(result.scenario, `a mid-budget timeout must be retried; got ${JSON.stringify(result)}`);
+      assert.equal(n, 2);
     });
   });
 
@@ -160,9 +215,32 @@ describe('D1B-004 — githubScenarioFetcher AbortController + typed reason', () 
 
   it('L1-007: loadScenarios propagates typed reason when fetcher exposes fetchWithReason', async () => {
     // The typed reason MUST reach the consumer (errors[]) so an operator
-    // diagnosing a stale scenario chain can distinguish timeout from 404
-    // from parse_error. Pre-fix: loadScenarios consumed only the legacy
-    // .fetch(id) truthiness, dropping the discriminator.
+    // diagnosing a stale scenario chain can distinguish 404 from
+    // parse_error. Pre-fix: loadScenarios consumed only the legacy
+    // .fetch(id) truthiness, dropping the discriminator. (This pin
+    // originally used the timeout class; F-07ab7f86 migrated exhausted
+    // timeout to a thrown operational fault, so parse_error carries the
+    // typed-reason-propagation invariant now.)
+    const badYamlFetch = async () => ({
+      ok: true,
+      status: 200,
+      async text() { return 'this: is\n  not: yaml\n - {[\n'; }
+    });
+
+    await withMockFetch(badYamlFetch, async () => {
+      const fetcher = githubScenarioFetcher('test-token', 'org/repo', 'deadbeef', { timeoutMs: 50, attempts: 1 });
+      const submission = {
+        scenario_results: [{ scenario_id: 'sanity', product_surface: 'cli' }]
+      };
+      const result = await loadScenarios(submission, fetcher);
+      assert.equal(result.scenarios.size, 0, 'unloadable scenario must not appear in scenarios map');
+      assert.equal(result.errors.length, 1, 'one failed fetch produces one error entry');
+      assert.match(result.errors[0], /reason: parse_error/,
+        `error string must surface the typed reason; got ${JSON.stringify(result.errors[0])}`);
+    });
+  });
+
+  it('L1-007 exhaustion: a timed-out fetch inside loadScenarios PROPAGATES as scenario-fetch-fault (F-07ab7f86)', async () => {
     const timeoutFetch = (_url, { signal } = {}) => new Promise((_resolve, reject) => {
       signal?.addEventListener('abort', () => {
         const e = new Error('aborted');
@@ -176,11 +254,11 @@ describe('D1B-004 — githubScenarioFetcher AbortController + typed reason', () 
       const submission = {
         scenario_results: [{ scenario_id: 'sanity', product_surface: 'cli' }]
       };
-      const result = await loadScenarios(submission, fetcher);
-      assert.equal(result.scenarios.size, 0, 'timed-out scenario must not appear in scenarios map');
-      assert.equal(result.errors.length, 1, 'one timed-out fetch produces one error entry');
-      assert.match(result.errors[0], /reason: timeout/,
-        `error string must surface the typed reason; got ${JSON.stringify(result.errors[0])}`);
+      await assert.rejects(
+        loadScenarios(submission, fetcher),
+        /scenario-fetch-fault: timeout/,
+        'a sustained slow-API window must surface operational (exit 2, nothing persisted), never as a scenario-load rejection'
+      );
     });
   });
 });

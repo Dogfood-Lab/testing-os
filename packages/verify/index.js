@@ -36,23 +36,32 @@ export { provenanceForProvider, PROVENANCE_ADAPTERS } from './validators/provena
 const RECORD_SCHEMA_VERSION = SUPPORTED_SCHEMA_VERSIONS.record.current;
 
 /**
- * D1B-003 (Stage C humanization): the SOLE catch wrapper for synchronous
- * validator calls. Distinguishes operator-actionable signals:
+ * D1B-003 (Stage C humanization) + F-82429f90 (wave 4): the SOLE catch
+ * wrapper for synchronous validator calls. Distinguishes operator-actionable
+ * signals:
  *
  *   - Validator returned a structured result → caller pushes the existing
  *     `'<class>: <details>'` prefix into `rejection_reasons` (unchanged
  *     submission-bad path; back-compat is preserved).
  *   - Validator THREW (operational incident — ajv compile fault, policy
- *     merge cycle, out-of-memory) → wrapper synthesizes a STABLE coded
- *     prefix `'VALIDATOR_FAULT_<NAME>: <details>'` for the caller to push.
- *     The prefix is greppable across runner logs:
- *       `grep -E '"VALIDATOR_FAULT_' …`  → every operational incident
+ *     merge cycle, out-of-memory) → wrapper RETHROWS a classified error
+ *     whose message carries the STABLE coded prefix
+ *     `'VALIDATOR_FAULT_<NAME>: <details>'` and whose `.code` is
+ *     `VALIDATOR_FAULT_<NAME>`. The prefix is greppable across runner logs:
+ *       `grep -E 'VALIDATOR_FAULT_' …`  → every operational incident
  *       `grep -E '^(schema|policy|steps): ' …` → every submission-bad signal
  *
+ * F-82429f90 changed the fault path from push-a-rejection-reason to
+ * propagate-the-throw: a validator crash is an OPERATIONAL incident, and
+ * persisting it as a `_rejected` record permanently poisoned the run_id via
+ * ingest's duplicate guard (the exact V2-CROSS-BO-001 pattern the sibling
+ * scenario-fetch path already fixed). Both production callers
+ * (packages/ingest/run.js's outer catch and cli.js's run() catch) map a
+ * verify() throw to exit 2 with NOTHING persisted, so a clean resubmission
+ * after recovery is accepted.
+ *
  * `name` is upper-cased to match the prefix vocabulary documented in
- * verify/README.md (SCHEMA / POLICY / STEPS). Returns:
- *   { ok: true, result }   when fn() returned cleanly
- *   { ok: false, faultReason } when fn() threw
+ * verify/README.md (SCHEMA / POLICY / STEPS).
  *
  * The helper is the canonical seam for any new synchronous validator
  * — adding a 4th validator class becomes a one-call site, not a
@@ -60,16 +69,20 @@ const RECORD_SCHEMA_VERSION = SUPPORTED_SCHEMA_VERSIONS.record.current;
  *
  * @param {string} name - Validator class name (will be upper-cased).
  * @param {() => T} fn - The validator call.
- * @returns {{ ok: true, result: T } | { ok: false, faultReason: string }}
+ * @returns {T} fn()'s result when it returned cleanly.
+ * @throws {Error} classified `VALIDATOR_FAULT_<NAME>` error when fn() threw.
  * @template T
  */
 function runValidator(name, fn) {
   try {
-    return { ok: true, result: fn() };
+    return fn();
   } catch (e) {
     const cls = name.toUpperCase();
     const detail = e && e.message ? e.message : String(e);
-    return { ok: false, faultReason: `VALIDATOR_FAULT_${cls}: ${detail}` };
+    const fault = new Error(`VALIDATOR_FAULT_${cls}: ${detail}`);
+    fault.code = `VALIDATOR_FAULT_${cls}`;
+    fault.cause = e;
+    throw fault;
   }
 }
 
@@ -161,18 +174,12 @@ export async function verify(submission, options) {
   }
 
   // 1. Schema validation
-  // D1B-003: route both happy + fault paths through `runValidator` so
-  // submission-bad (`'schema: …'`) and operational incidents
-  // (`'VALIDATOR_FAULT_SCHEMA: …'`) emit DISTINCT, greppable prefixes.
-  let schemaResult = { valid: false, errors: [] };
-  const schemaRun = runValidator('schema', () => validateSubmissionSchema(submission));
-  if (schemaRun.ok) {
-    schemaResult = schemaRun.result;
-    if (!schemaResult.valid) {
-      reasons.push(...schemaResult.errors.map(e => `schema: ${e}`));
-    }
-  } else {
-    reasons.push(schemaRun.faultReason);
+  // D1B-003 / F-82429f90: submission-bad results push the `'schema: …'`
+  // prefix; a validator CRASH propagates out of verify() as a classified
+  // VALIDATOR_FAULT_SCHEMA throw (operational — exit 2, nothing persisted).
+  const schemaResult = runValidator('schema', () => validateSubmissionSchema(submission));
+  if (!schemaResult.valid) {
+    reasons.push(...schemaResult.errors.map(e => `schema: ${e}`));
   }
 
   // 1b. schema_version VALUE gate (F1-CONTRACTS-001)
@@ -184,15 +191,12 @@ export async function verify(submission, options) {
   // a future-major payload may also fail shape, but the version refusal is the
   // operator-actionable signal and must land regardless. The validator emits a
   // fully-prefixed `CONTRACT_SCHEMA_TOO_NEW:` / `CONTRACT_SCHEMA_TOO_OLD:`
-  // reason; an unknown-contract throw surfaces as
-  // `VALIDATOR_FAULT_CONTRACT_SCHEMA_VERSION` via the same runValidator seam.
-  const versionRun = runValidator('contract_schema_version', () => validateSchemaVersion(submission, 'recordSubmission'));
-  if (versionRun.ok) {
-    if (!versionRun.result.valid) {
-      reasons.push(...versionRun.result.errors);
-    }
-  } else {
-    reasons.push(versionRun.faultReason);
+  // reason; an unknown-contract throw propagates as a classified
+  // `VALIDATOR_FAULT_CONTRACT_SCHEMA_VERSION` fault via the same
+  // runValidator seam (F-82429f90: operational, never persisted).
+  const versionResult = runValidator('contract_schema_version', () => validateSchemaVersion(submission, 'recordSubmission'));
+  if (!versionResult.valid) {
+    reasons.push(...versionResult.errors);
   }
 
   // 2. Reject if submission includes verifier-owned fields
@@ -219,16 +223,25 @@ export async function verify(submission, options) {
         refCommitSha: submission.ref?.commit_sha
       });
     } catch (err) {
-      // verify-A-002: the adapter THROWS on operational provider faults
-      // (429 rate-limit, 5xx outage, 401/403 token, exhausted-retry transport
-      // errors — F-dac7e08c) and returns false only for a genuinely-absent run
-      // (HTTP 404). Emit a DISTINCT `provenance-fault:`
-      // prefix here so parseRejectionReason routes the incident to ops instead of
-      // bouncing an outage back to the submitter as submission-bad. The not-confirmed
-      // case below keeps the bare `provenance:` prefix (still submission-bad).
-      reasons.push(`provenance-fault: verification failed: ${err.message}`);
+      // verify-A-002 + F-82429f90: the adapter THROWS on operational provider
+      // faults (429 rate-limit, 5xx outage, 401/403 token, exhausted-retry
+      // transport errors — F-dac7e08c) and returns false only for a
+      // genuinely-absent run (HTTP 404). RETHROW as a classified
+      // PROVENANCE_FAULT so the incident propagates out of verify() —
+      // mirroring SCENARIO_FETCH_FAULT — and is NEVER assembled into a
+      // persisted `_rejected` record: persisting an outage-window rejection
+      // permanently blocked the run_id via ingest's duplicate guard. Both
+      // production callers (ingest run.js outer catch; verify cli.js run()
+      // catch) map the throw to exit 2 with nothing persisted. The message
+      // keeps the `provenance-fault:` prefix parseRejectionReason classifies
+      // as operational. The not-confirmed case below keeps the bare
+      // `provenance:` prefix (still submission-bad).
+      const fault = new Error(`provenance-fault: verification failed: ${err.message}`);
+      fault.code = 'PROVENANCE_FAULT';
+      fault.cause = err;
+      throw fault;
     }
-    if (!provenanceConfirmed && !reasons.some(r => r.startsWith('provenance'))) {
+    if (!provenanceConfirmed) {
       reasons.push('provenance: source run could not be confirmed');
     }
   }
@@ -237,12 +250,8 @@ export async function verify(submission, options) {
   // D1B-003: same submission-bad-vs-operational-fault split as schema.
   if (schemaResult.valid && submission.scenario_results) {
     for (const scenario of submission.scenario_results) {
-      const stepsRun = runValidator('steps', () => validateStepResults(scenario));
-      if (stepsRun.ok) {
-        reasons.push(...stepsRun.result.map(e => `steps[${scenario.scenario_id}]: ${e}`));
-      } else {
-        reasons.push(stepsRun.faultReason);
-      }
+      const stepsErrors = runValidator('steps', () => validateStepResults(scenario));
+      reasons.push(...stepsErrors.map(e => `steps[${scenario.scenario_id}]: ${e}`));
 
       // F-3bfc2885: enforce success_criteria.required_steps when the caller
       // loaded the scenario definition. This is the enforcement behind the
@@ -256,12 +265,8 @@ export async function verify(submission, options) {
         const definition = scenarios.get(scenario.scenario_id);
         const requiredSteps = definition?.success_criteria?.required_steps ?? [];
         if (requiredSteps.length > 0) {
-          const requiredRun = runValidator('steps', () => validateRequiredSteps(scenario, requiredSteps));
-          if (requiredRun.ok) {
-            reasons.push(...requiredRun.result.map(e => `steps[${scenario.scenario_id}]: ${e}`));
-          } else {
-            reasons.push(requiredRun.faultReason);
-          }
+          const requiredErrors = runValidator('steps', () => validateRequiredSteps(scenario, requiredSteps));
+          reasons.push(...requiredErrors.map(e => `steps[${scenario.scenario_id}]: ${e}`));
         }
       }
     }
@@ -293,19 +298,16 @@ export async function verify(submission, options) {
       reasons.push(`policy: repo policy unreadable — ${detail}`);
       // policyValid stays false.
     } else {
-      const policyRun = runValidator('policy', () => validatePolicy(submission, { globalPolicy, repoPolicy }));
-      if (policyRun.ok) {
-        policyValid = policyRun.result.valid;
-        reasons.push(...policyRun.result.errors.map(e => `policy: ${e}`));
-        // VERIFY-F1: a malformed REPO custom-rule predicate is a distinct
-        // `policy-config:` rejection (submission-bad — the repo authored the bad
-        // rule). A malformed GLOBAL predicate never reaches here; it throws and
-        // surfaces as VALIDATOR_FAULT_POLICY (operational) via the else branch.
-        reasons.push(...(policyRun.result.configErrors || []).map(e => `policy-config: ${e}`));
-        warnings.push(...(policyRun.result.warnings || []).map(w => `policy: ${w}`));
-      } else {
-        reasons.push(policyRun.faultReason);
-      }
+      const policyResult = runValidator('policy', () => validatePolicy(submission, { globalPolicy, repoPolicy }));
+      policyValid = policyResult.valid;
+      reasons.push(...policyResult.errors.map(e => `policy: ${e}`));
+      // VERIFY-F1: a malformed REPO custom-rule predicate is a distinct
+      // `policy-config:` rejection (submission-bad — the repo authored the bad
+      // rule). A malformed GLOBAL predicate never reaches here; it throws and
+      // propagates as a classified VALIDATOR_FAULT_POLICY (operational,
+      // F-82429f90 — exit 2, nothing persisted) via runValidator.
+      reasons.push(...(policyResult.configErrors || []).map(e => `policy-config: ${e}`));
+      warnings.push(...(policyResult.warnings || []).map(w => `policy: ${w}`));
     }
   }
 

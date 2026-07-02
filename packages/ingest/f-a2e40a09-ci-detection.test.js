@@ -58,4 +58,28 @@ describe('F-a2e40a09: both CI branches agree on what "in CI" means', () => {
     assert.equal(child.status, 2);
     assert.match(child.stderr, /--provenance flag is required/);
   });
+
+  // F-5ca6c91a: CI=false / CI=0 are explicit OPT-OUTS (a convention many
+  // tools respect), not truthy CI signals. Pre-fix the bare truthiness check
+  // classified them as CI: stub forbidden + real-by-default token demand,
+  // against the operator's stated intent.
+  it('CI=false is NOT CI — the no-flag path demands a flag, not a token', () => {
+    const child = runCliRaw([], pilot0, { CI: 'false' });
+    assert.equal(child.status, 2);
+    assert.match(child.stderr, /--provenance flag is required/,
+      'CI=false must be treated as an explicit opt-out of CI classification');
+    assert.doesNotMatch(child.stderr, /GITHUB_TOKEN or GH_TOKEN/);
+  });
+
+  it('CI=0 is NOT CI — stub provenance is allowed', () => {
+    const child = runCliRaw(['--provenance', 'stub', '--verify-only'], pilot0, { CI: '0' });
+    assert.doesNotMatch(child.stderr, /stub is not allowed in CI/,
+      'CI=0 must not trip the stub-forbidden CI guard');
+  });
+
+  it('GITHUB_ACTIONS=false is NOT CI either (both variables honor the opt-out)', () => {
+    const child = runCliRaw([], pilot0, { GITHUB_ACTIONS: 'false' });
+    assert.equal(child.status, 2);
+    assert.match(child.stderr, /--provenance flag is required/);
+  });
 });

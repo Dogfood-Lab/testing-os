@@ -248,10 +248,11 @@ describe('F4-CP-04 — ordered/versioned control-plane migration-runner', () => 
         tableColumns(db, 'waves').includes('ownership_probe_degraded'),
         'the v7 migration must add waves.ownership_probe_degraded',
       );
-      // The ledger records the v7 migration as applied.
+      // The ledger records the v7 migration as applied. (Its target_version
+      // is its OWN version, 7 — SCHEMA_VERSION has since moved past it.)
       const row = ledgerRows(db).find((r) => r.migration_id === 'v7-waves-ownership-probe-degraded');
       assert.ok(row, 'the v7 migration must be recorded in the ledger');
-      assert.equal(row.target_version, SCHEMA_VERSION);
+      assert.equal(row.target_version, 7);
       db.close();
     });
 
@@ -267,12 +268,15 @@ describe('F4-CP-04 — ordered/versioned control-plane migration-runner', () => 
       // Roll the waves table back to its pre-v7 shape. SQLite supports
       // DROP COLUMN (>=3.35); better-sqlite3 ships a modern SQLite.
       db.exec('ALTER TABLE waves DROP COLUMN ownership_probe_degraded');
+      // A v6-era DB predates the v8 dispatch_sha column too.
+      db.exec('ALTER TABLE waves DROP COLUMN dispatch_sha');
       assert.ok(
         !tableColumns(db, 'waves').includes('ownership_probe_degraded'),
         'precondition: the v7 column must be absent',
       );
-      // Apply every flat migration except the v7 ADD COLUMN the old way.
-      for (const sql of MIGRATIONS_SQL.slice(0, -1)) {
+      // Apply every flat migration except the v7 and v8 ADD COLUMNs the old
+      // way (a v6-era build predates both).
+      for (const sql of MIGRATIONS_SQL.slice(0, -2)) {
         try { db.exec(sql); } catch (e) {
           if (!e.message.includes('duplicate column')) throw e;
         }
@@ -299,6 +303,42 @@ describe('F4-CP-04 — ordered/versioned control-plane migration-runner', () => 
       const plan2 = migrateDb(db, SCHEMA_VERSION);
       assert.equal(plan2.applied.length, 0);
       assert.equal(plan2.bootstrapped.length, 0);
+      db.close();
+    });
+  });
+
+  describe('F-0e55b5ca — v8 waves.dispatch_sha migration', () => {
+    it('a fresh DB has the waves.dispatch_sha column after migrate, recorded at target_version 8', () => {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(SCHEMA_SQL);
+      migrateDb(db, 0);
+      assert.ok(
+        tableColumns(db, 'waves').includes('dispatch_sha'),
+        'the v8 migration must add waves.dispatch_sha',
+      );
+      const row = ledgerRows(db).find((r) => r.migration_id === 'v8-waves-dispatch-sha');
+      assert.ok(row, 'the v8 migration must be recorded in the ledger');
+      assert.equal(row.target_version, SCHEMA_VERSION);
+      db.close();
+    });
+
+    it('a pre-v8 DB (column absent, no ledger row) APPLIES the v8 ADD COLUMN', () => {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(SCHEMA_SQL);
+      db.exec('ALTER TABLE waves DROP COLUMN dispatch_sha');
+      db.exec('DROP TABLE IF EXISTS migrations_ledger');
+
+      const plan = migrateDb(db, 7);
+      assert.ok(
+        tableColumns(db, 'waves').includes('dispatch_sha'),
+        'migrate must add the v8 column to a pre-v8 DB',
+      );
+      assert.ok(
+        plan.applied.some((m) => m.id === 'v8-waves-dispatch-sha'),
+        'the v8 migration must be APPLIED (not bootstrapped) when the column is missing',
+      );
       db.close();
     });
   });

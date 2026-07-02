@@ -103,6 +103,44 @@ test('PB-CI-001: a named-compensator note for the irreversible publish is presen
   );
 });
 
+test('F-60f0c4f5 pin (F-32c517c4): release concurrency group normalizes BOTH trigger forms to the same bare-tag group', () => {
+  const text = readFileSync(releasePath, 'utf8');
+  const jobsIdx = text.indexOf('\njobs:');
+  const concIdx = text.indexOf('concurrency:');
+  assert.ok(concIdx >= 0 && jobsIdx > concIdx, 'release.yml must declare a workflow-level concurrency block before jobs:');
+  const conc = text.slice(concIdx, jobsIdx);
+  // The group must derive from `github.event.inputs.tag || github.ref_name`.
+  // `github.ref` is `refs/tags/v1.8.0` on a tag push while the dispatch input
+  // is `v1.8.0` — different groups, so a manual re-fire mid-publish races the
+  // npm-view/npm-publish and gh-release check-then-act pairs (the exact defect
+  // F-60f0c4f5 closed). A revert to `github.ref` must go RED here.
+  const groupMatch = /group:\s*release-\$\{\{\s*(.+?)\s*\}\}/.exec(conc);
+  assert.ok(
+    groupMatch,
+    'release.yml concurrency group must be `release-${{ github.event.inputs.tag || github.ref_name }}` (F-60f0c4f5 same-tag serialization)',
+  );
+  assert.equal(
+    groupMatch[1],
+    'github.event.inputs.tag || github.ref_name',
+    'the concurrency group expression must normalize to the BARE tag on both triggers (github.ref would put the same tag in two different groups — F-60f0c4f5)',
+  );
+  // Prove the normalization: evaluate the expression under both trigger
+  // contexts and assert the group string is identical.
+  const evalExpr = (ctx) => groupMatch[1]
+    .split('||')
+    .map((s) => s.trim().split('.').reduce((o, p) => (o == null ? o : o[p]), ctx))
+    .find((v) => v) ?? '';
+  const tagPush = evalExpr({ github: { event: { inputs: {} }, ref_name: 'v9.9.9', ref: 'refs/tags/v9.9.9' } });
+  const dispatch = evalExpr({ github: { event: { inputs: { tag: 'v9.9.9' } }, ref_name: 'main', ref: 'refs/heads/main' } });
+  assert.equal(tagPush, 'v9.9.9', 'a tag push must resolve the group to the bare tag');
+  assert.equal(tagPush, dispatch, 'tag-push and workflow_dispatch runs for the SAME tag must land in the SAME concurrency group');
+  assert.match(
+    conc,
+    /cancel-in-progress:\s*false/,
+    'release concurrency must NOT cancel in progress — cancelling a mid-publish run strands a partial npm publish (F-60f0c4f5)',
+  );
+});
+
 test('PB-CI-002: a per-package version guard asserts each publishable package version equals TAG_VERSION', () => {
   const text = readFileSync(releasePath, 'utf8');
   // The guard must read EACH publishable packages/*/package.json (not only the

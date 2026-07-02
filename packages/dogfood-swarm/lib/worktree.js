@@ -17,8 +17,15 @@
  * Lifecycle:
  *   dispatch → create worktree per agent
  *   agent works in its worktree
- *   collect  → read diff from worktree, validate ownership, merge to main
- *   cleanup  → remove worktree after successful merge or on discard
+ *   collect  → read diff from worktree, validate ownership. Collect does NOT
+ *              merge: merging an isolated branch back is an out-of-band
+ *              coordinator step (mergeWorktree below has no production
+ *              callers today — F-1ab3fd1f corrected the earlier "collect
+ *              merges to main" claim in this header).
+ *   cleanup  → the run's terminal promotion removes worktrees that are CLEAN
+ *              and MERGED; dirty or unmerged worktrees are skipped with a
+ *              worktree_unmerged_skipped breadcrumb, and `swarm clean --apply`
+ *              is the only verb that may force-remove preserved work.
  */
 
 import { execSync, execFileSync } from 'node:child_process';
@@ -59,11 +66,22 @@ export function isSafeDomainName(name) {
  * truth — commands/clean.js and commands/dispatch.js#previewWorktree must
  * derive the same slug byte-for-byte.
  *
+ * F-7e2dbf43: the slug keeps the TAIL of the id, not the head. init.js run
+ * ids are `swarm-<10-digit-epoch-seconds>-<4 hex>`; the old `slice(0, 12)`
+ * kept the full epoch but only ONE of the four random hex chars, so two runs
+ * initialized in the same second collided on the slug with probability 1/16
+ * — collapsing the F-527dc73e collision defense (shared worktree dir names +
+ * branch prefixes let one run's cleanup destroy the sibling's live
+ * worktrees). `slice(-12)` keeps the epoch tail + the full random suffix.
+ * Worktrees created by runs under the OLD slug are orphaned by this change
+ * (their branch prefix no longer matches); `git worktree prune` + manual
+ * removal reclaims them — new runs only going forward.
+ *
  * @param {string} runId
  * @returns {string}
  */
 export function runShortOf(runId) {
-  return runId.replace(/^swarm-/, '').slice(0, 12);
+  return runId.replace(/^swarm-/, '').slice(-12);
 }
 
 /**
@@ -270,6 +288,48 @@ export function cleanupAllWorktrees(repoPath) {
 }
 
 /**
+ * Inspect a worktree for at-risk agent work before any destructive removal.
+ *
+ * F-1ab3fd1f: `git worktree remove --force` discards uncommitted edits and
+ * `git branch -D` force-deletes unmerged branches — and nothing in the
+ * production pipeline ever merges isolated agent branches (mergeWorktree has
+ * no production callers; merging is an out-of-band coordinator step). Two
+ * signals mark preserved-work states:
+ *
+ *   - dirty:    the worktree has uncommitted/untracked edits (`git status
+ *               --porcelain` non-empty). The highest-value at-risk state —
+ *               agents typically never commit.
+ *   - unmerged: the worktree branch has commits that are NOT an ancestor of
+ *               the run's main branch (`git merge-base --is-ancestor` fails).
+ *
+ * Failure posture is conservative: if the merge-base probe itself errors
+ * (unknown branch, detached state), the branch is reported unmerged so the
+ * caller preserves rather than destroys.
+ *
+ * @param {string} repoPath — main repo path (branch probes run here)
+ * @param {string} worktreePath — the worktree to inspect (dirty probe runs here)
+ * @param {string} [branch] — worktree branch name
+ * @param {string} [mainBranch] — merged-check baseline (runs.branch); HEAD fallback
+ * @returns {{ dirty: boolean, unmerged: boolean }}
+ */
+export function worktreeDisposition(repoPath, worktreePath, branch, mainBranch = 'HEAD') {
+  let dirty = false;
+  try {
+    dirty = gitArgs(worktreePath, ['status', '--porcelain']).trim().length > 0;
+  } catch { /* worktree path gone / not a repo — nothing to preserve there */ }
+
+  let unmerged = false;
+  if (branch) {
+    try {
+      gitArgs(repoPath, ['merge-base', '--is-ancestor', branch, mainBranch]);
+    } catch {
+      unmerged = true;
+    }
+  }
+  return { dirty, unmerged };
+}
+
+/**
  * Clean up the swarm worktrees belonging to ONE run.
  *
  * F-e7369293: the run's terminal 'complete' promotion previously called
@@ -281,11 +341,22 @@ export function cleanupAllWorktrees(repoPath) {
  * worktrees are removed. The prune step and its worktree_prune_failed
  * breadcrumb mirror cleanupAllWorktrees.
  *
+ * F-1ab3fd1f: before each removal the worktree is checked for UNMERGED agent
+ * work (dirty tree or unmerged branch commits — see worktreeDisposition).
+ * Preserved-work worktrees are SKIPPED with a loud worktree_unmerged_skipped
+ * breadcrumb naming the surviving path + branch; `swarm clean --apply`
+ * (dry-run-default, operator-explicit) is the only verb that force-removes
+ * them. Pre-wave-2 the accidental ABSENCE of terminal cleanup preserved this
+ * work; the F-e7369293 fix removed that safety margin — this guard restores
+ * it deliberately.
+ *
  * @param {string} repoPath
  * @param {string} runId
- * @returns {{ removed: number, stranded: number, total: number }}
+ * @param {object} [opts]
+ * @param {string} [opts.mainBranch] — merged-check baseline (runs.branch)
+ * @returns {{ removed: number, stranded: number, skipped: number, total: number }}
  */
-export function cleanupRunWorktrees(repoPath, runId) {
+export function cleanupRunWorktrees(repoPath, runId, opts = {}) {
   const branchPrefix = `swarm/${runShortOf(runId)}/`;
   const worktrees = listWorktrees(repoPath).filter(w => {
     const branch = (w.branch || '').replace(/^refs\/heads\//, '');
@@ -293,8 +364,24 @@ export function cleanupRunWorktrees(repoPath, runId) {
   });
   let removed = 0;
   let stranded = 0;
+  let skipped = 0;
   for (const wt of worktrees) {
     const branch = (wt.branch || '').replace(/^refs\/heads\//, '');
+    const disposition = worktreeDisposition(repoPath, wt.path, branch, opts.mainBranch || 'HEAD');
+    if (disposition.dirty || disposition.unmerged) {
+      skipped++;
+      logStage('worktree_unmerged_skipped', {
+        component: 'dogfood-swarm',
+        repoPath,
+        worktreePath: wt.path,
+        branch,
+        dirty: disposition.dirty,
+        unmerged: disposition.unmerged,
+        remediation:
+          'merge or export the surviving branch, then dispose of it explicitly with `swarm clean <run-id> --apply`',
+      });
+      continue;
+    }
     const outcome = removeWorktree(repoPath, wt.path, branch);
     if (outcome.stranded) stranded++;
     else removed++;
@@ -308,7 +395,7 @@ export function cleanupRunWorktrees(repoPath, runId) {
       err: e.message,
     });
   }
-  return { removed, stranded, total: worktrees.length };
+  return { removed, stranded, skipped, total: worktrees.length };
 }
 
 // ── Internal ──

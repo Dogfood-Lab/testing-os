@@ -245,6 +245,17 @@ function loadSubmission({ file, payload }) {
  * @param {string} repoRoot
  * @returns {{ globalPolicy: object, repoPolicy: object|null, policyVersion: string }}
  */
+/**
+ * Collapse validatePayload errors into the same first-3 single-line summary
+ * production's loadGlobalPolicy uses (D2B-005), so preview and production
+ * name the offending YAML key identically.
+ */
+function summarizePolicySchemaErrors(errors) {
+  const trimmed = errors.slice(0, 3).map(e => `${e.path || '/'} ${e.message}`);
+  const ellipsis = errors.length > 3 ? `; (+${errors.length - 3} more)` : '';
+  return trimmed.join('; ') + ellipsis;
+}
+
 function loadPolicies(submission, repoRoot) {
   const globalPath = join(repoRoot, 'policies', 'global-policy.yaml');
   let globalPolicy;
@@ -253,6 +264,19 @@ function loadPolicies(submission, repoRoot) {
   } catch (e) {
     throw new OperatorError(`global policy unreadable: ${globalPath} — ${e.message}`,
       'run from the testing-os repo root, or set VERIFY_REPO_ROOT to it');
+  }
+
+  // F-99aa42bc: mirror production loadGlobalPolicy's fail-loud schema gate.
+  // Pre-fix the preview applied a parses-but-schema-invalid (or null/empty)
+  // global policy as-is — production ingest would refuse the same file, and
+  // a null policy surfaced downstream as a confusing VALIDATOR_FAULT_POLICY.
+  // Same divergence class F-65d4d6dd closed for the repo-policy half.
+  const globalValidation = validatePayload('policy', globalPolicy);
+  if (!globalValidation.valid) {
+    throw new OperatorError(
+      `global policy schema-invalid: ${globalPath} — ${summarizePolicySchemaErrors(globalValidation.errors)}`,
+      'fix the policy to conform to policy.schema.json — production ingest refuses this file too'
+    );
   }
 
   let repoPolicy = null;
@@ -286,12 +310,11 @@ function loadPolicies(submission, repoRoot) {
         if (repoPolicy && repoPolicy.__torn !== true) {
           const validation = validatePayload('policy', repoPolicy);
           if (!validation.valid) {
-            const detail = validation.errors
-              .slice(0, 3)
-              .map(e => `${e.path || '/'} ${e.message}`)
-              .join('; ');
-            const ellipsis = validation.errors.length > 3 ? `; (+${validation.errors.length - 3} more)` : '';
-            repoPolicy = { __torn: true, reason: `schema-invalid — ${detail}${ellipsis}`, path: repoPath };
+            repoPolicy = {
+              __torn: true,
+              reason: `schema-invalid — ${summarizePolicySchemaErrors(validation.errors)}`,
+              path: repoPath
+            };
           }
         }
       }

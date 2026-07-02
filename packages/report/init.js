@@ -35,7 +35,7 @@
  * report/cli.js and report/build-submission.js.
  */
 
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, readdirSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { execFileSync } from 'node:child_process';
@@ -239,8 +239,13 @@ function nextSteps({ workflowPath, slug, slugDetected }) {
     `    policies/repos/<org>/<repo>.yaml. Open a PR there starting from the`,
     `    local policy.example.yaml this command just wrote.`,
     '',
+    ' 4. OPTIONAL — turn on required-steps enforcement: commit a scenario',
+    '    definition at dogfood/scenarios/<scenario_id>.yaml in THIS repo.',
+    '    Without one, the receiver accepts your submission with a warning and',
+    '    skips required-steps enforcement for that scenario.',
+    '',
     ' ─────────────────────────────────────────────────────────────────── ',
-    ' 4. *** THE STEP EVERYONE FORGETS — DO NOT SKIP *** ',
+    ' 5. *** THE STEP EVERYONE FORGETS — DO NOT SKIP *** ',
     ' ─────────────────────────────────────────────────────────────────── ',
     '    Set the DOGFOOD_TOKEN secret, or the dispatch silently records nothing:',
     '',
@@ -441,6 +446,47 @@ function checkUpstreamPolicy(dir) {
 }
 
 /**
+ * Check: scenario definitions are committed at dogfood/scenarios/*.yaml.
+ * WARN-class — enforcement is OPT-IN (the fleet is mixed: some consumers
+ * commit definitions, some don't). Without a definition the receiver accepts
+ * the submission with a warning and skips required-steps enforcement for
+ * that scenario; the consumer should know which posture they're in.
+ *
+ * @param {string} dir
+ * @returns {{id,status,message,hint?}}
+ */
+function checkScenarioDefinitions(dir) {
+  const scenariosDir = join(dir, 'dogfood', 'scenarios');
+  if (!existsSync(scenariosDir)) {
+    return {
+      id: 'scenario-definitions',
+      status: 'warn',
+      message: 'no dogfood/scenarios/ directory — required-steps enforcement is skipped (submissions accepted with a warning)',
+      hint: 'to opt in, commit dogfood/scenarios/<scenario_id>.yaml for each scenario you report.',
+    };
+  }
+  let count = 0;
+  try {
+    count = readdirSync(scenariosDir).filter((f) => /\.ya?ml$/.test(f)).length;
+  } catch {
+    count = 0;
+  }
+  if (count === 0) {
+    return {
+      id: 'scenario-definitions',
+      status: 'warn',
+      message: 'dogfood/scenarios/ exists but holds no .yaml scenario definitions',
+      hint: 'add dogfood/scenarios/<scenario_id>.yaml to enable required-steps enforcement.',
+    };
+  }
+  return {
+    id: 'scenario-definitions',
+    status: 'pass',
+    message: `${count} scenario definition${count === 1 ? '' : 's'} committed — required-steps enforcement active for matching ids`,
+  };
+}
+
+/**
  * Audit a consumer's onboarding end-to-end and roll up an exit code. Mirrors
  * `swarm doctor`'s contract: exit non-zero ONLY on a hard FAIL; a WARN exits 0.
  * Slug and env are injectable so tests drive every branch deterministically.
@@ -462,6 +508,7 @@ export function runOnboardingDoctor(opts) {
     checkRepoSlug(slug),
     checkWorkflowTrigger(dir),
     checkUpstreamPolicy(dir),
+    checkScenarioDefinitions(dir),
   ];
 
   const anyFail = checks.some((c) => c.status === 'fail');
