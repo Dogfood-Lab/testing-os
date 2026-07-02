@@ -332,6 +332,12 @@ export function advance(db, runId, opts = {}) {
   // F-5a251061 semantics preserved: overriding a failed finding gate (the
   // AMEND verdict) promotes PAST the gate to the phase's `next` stage — not
   // into the amend loop the operator explicitly chose to skip.
+  // F-1c0188c9: an override that is REFUSED because a non-overridable gate
+  // dominates must be distinguishable at the operator surface from a plain
+  // block where no override was attempted. Capture the refusal here so the
+  // non-promoted returns below carry an explicit marker; cmdAdvance surfaces
+  // it. Observability only — the promotion decision is unchanged.
+  let refusal = null;
   if (opts.override && opts.overrideReason) {
     const failedGates = gateResult.gates.filter(g => !g.passed);
     const nonOverridable = failedGates.filter(g => !g.overridable);
@@ -353,8 +359,11 @@ export function advance(db, runId, opts = {}) {
         gates: gatesChecked,
       };
     }
-    // A non-overridable gate failed — the override is refused; fall through
-    // to the non-promoted return carrying the true verdict.
+    if (nonOverridable.length > 0) {
+      // A non-overridable gate outranked the override — refused. Fall through
+      // to the non-promoted return, now carrying the refusal trail.
+      refusal = { overrideRefused: true, refusedBy: nonOverridable.map(g => g.name) };
+    }
   }
 
   if (gateResult.verdict === 'AMEND') {
@@ -365,6 +374,7 @@ export function advance(db, runId, opts = {}) {
       nextPhase: gateResult.nextPhase,
       reason: gateResult.reason,
       gates: gateResult.gates,
+      ...refusal,
     };
   }
 
@@ -373,6 +383,7 @@ export function advance(db, runId, opts = {}) {
     verdict: gateResult.verdict,
     reason: gateResult.reason,
     gates: gateResult.gates,
+    ...refusal,
   };
 }
 

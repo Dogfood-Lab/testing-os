@@ -242,9 +242,9 @@ For resuming a **failed** wave (not just incomplete agents), see [`swarm redrive
 
 ## swarm clean
 
-Reclaim the stranded `--isolate` worktrees + `swarm/<run>/...` branches a run left behind. The forward journey only auto-cleans worktrees when a run promotes all the way to phase `complete` (`swarm advance`) or when you `swarm rewind --apply`; a run you stop after `collect` — or any single-purpose audit run that never promotes — leaves its per-agent worktrees on disk. `swarm clean` is the operator-facing reclaim for exactly that case, run-scoped by the run's branch prefix so it never sweeps a sibling run.
+Reclaim the stranded `--isolate` worktrees + `swarm/<run>/...` branches a run left behind. Two things leave worktrees on disk: (1) a run you stop after `collect` — or any single-purpose audit run that never promotes — never reaches the teardown at all; and (2) as of the wave-4 hardening, even a run that promotes all the way to phase `complete` (`swarm advance`) — or a `swarm rewind --apply` — now **preserves** (and loudly names) any worktree with uncommitted edits or unmerged commits, rather than force-destroying agent work that never merged. So a `complete` run can still leave per-agent worktrees on disk when their work was never merged. `swarm clean` is the operator-facing reclaim for both cases, run-scoped by the run's branch prefix so it never sweeps a sibling run — and `swarm clean --apply` is the only verb that removes such preserved work.
 
-Like the [Three R's recovery verbs](../recovery/), it is **dry-run by default** — it lists what it *would* remove (with the `{removed, stranded, total}` rollup) and only acts with `--apply`. Supports `--format=json`.
+Like the [Three R's recovery verbs](../recovery/), it is **dry-run by default** — it lists what it *would* remove (with the `{removed, stranded, total}` rollup) and only acts with `--apply`. Each at-risk entry in the preview is annotated inline — `[!] DIRTY: uncommitted edits + UNMERGED commits — --apply destroys this work` — so `--apply` is informed consent, never a blind force-delete. Supports `--format=json`.
 
 ```text
 Usage: swarm clean <run-id> [--apply] [--format=text|json]

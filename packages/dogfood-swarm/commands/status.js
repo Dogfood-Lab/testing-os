@@ -198,6 +198,12 @@ export function status(opts) {
         status: currentWave.status,
         domainSnapshotId: currentWave.domain_snapshot_id,
         serialVerifyRequired: !!currentWave.serial_verify_required,
+        // F-f3c729eb: mirror serialVerifyRequired's dual-surface treatment. The
+        // persisted wave-level degraded-attribution signal (set by collect.js
+        // for a non-isolated amend wave) reached the receipt but not this
+        // at-a-glance surface, so an operator whose ownership check rested on
+        // agent self-report alone got no signal here. Observability only.
+        ownershipProbeDegraded: !!currentWave.ownership_probe_degraded,
         history: waveHistorySummary,
       } : null,
     },
@@ -266,6 +272,13 @@ export function formatStatus(s) {
     const w = s.waves.current;
     lines.push(`Wave ${w.number}/${s.waves.total} — ${w.phase} [${w.status}]`);
     if (w.domainSnapshotId) lines.push(`  Snapshot: ${w.domainSnapshotId}`);
+    // F-f3c729eb: render the degraded-attribution breadcrumb at the same
+    // surface where the operator reads gate state — using the `[!]` content
+    // sigil the assessment frames use for obligation states, and the same
+    // re-dispatch remediation the receipt renders (receipt.js:287).
+    if (w.ownershipProbeDegraded) {
+      lines.push('  [!] ownership probe DEGRADED — re-dispatch with --isolate for full attribution');
+    }
     if (w.history && w.history.interesting) {
       lines.push(`  History: ${w.history.count} ${w.history.count === 1 ? 'transition' : 'transitions'}${w.history.lastReason ? ` (last reason: "${w.history.lastReason}")` : ''} — see \`swarm history ${w.id}\``);
     }

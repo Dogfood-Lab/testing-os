@@ -277,6 +277,27 @@ function resolveCorrelationId(submission) {
 }
 
 /**
+ * F-41872706: count how many loaded scenario definitions actually carry an
+ * enforceable required_steps gate. `scenarios.size` alone answers "how many
+ * definitions were fetched"; this answers "how many of those could fire the
+ * step-results-present / step-verdict-consistent reject rules" — a definition
+ * with no (or empty) success_criteria.required_steps enforces nothing (see
+ * verify/index.js: requiredSteps defaults to [] and the loop no-ops).
+ *
+ * @param {Map|null} scenarios - the Map returned by loadScenarios, or null
+ * @returns {number}
+ */
+function countRequiredStepsGates(scenarios) {
+  if (!scenarios || typeof scenarios.values !== 'function') return 0;
+  let gates = 0;
+  for (const definition of scenarios.values()) {
+    const steps = definition?.success_criteria?.required_steps;
+    if (Array.isArray(steps) && steps.length > 0) gates++;
+  }
+  return gates;
+}
+
+/**
  * Run the full ingestion pipeline.
  *
  * @param {object} submission - Source-authored submission payload
@@ -392,7 +413,17 @@ export async function ingest(submission, options) {
     correlation_id,
     status: record.verification?.status ?? null,
     rejection_reason_count: record.verification?.rejection_reasons?.length ?? 0,
-    verdict: record.overall_verdict?.verified ?? null
+    verdict: record.overall_verdict?.verified ?? null,
+    // F-41872706: the scenario_enforcement event (CLI wrapper, pre-load) logs
+    // scenario_count = how many scenarios the submission DECLARED. These three
+    // are the post-load breakdown so an operator can tell "N gates enforced"
+    // from "N scenarios, all true-404, enforcement skipped". scenarios_loaded
+    // is the Map size (definitions actually fetched); required_steps_gates_fired
+    // is the subset that carried a non-empty required_steps.
+    scenarios_loaded: scenarios ? scenarios.size : 0,
+    required_steps_gates_fired: countRequiredStepsGates(scenarios),
+    scenarios_warned: scenarioWarnings.length,
+    scenarios_errored: scenarioErrors.length
   });
 
   // 4b. Surface scenario loading outcomes: warnings (true-404 definitions) go
@@ -592,7 +623,14 @@ export async function verifyOnly(submission, options) {
     correlation_id,
     status: record.verification?.status ?? null,
     rejection_reason_count: record.verification?.rejection_reasons?.length ?? 0,
-    verdict: record.overall_verdict?.verified ?? null
+    verdict: record.overall_verdict?.verified ?? null,
+    // F-41872706: same post-load scenario breakdown as ingest()'s
+    // verify_complete, so verify-only and real ingest produce identical NDJSON
+    // observability for the same submission.
+    scenarios_loaded: scenarios ? scenarios.size : 0,
+    required_steps_gates_fired: countRequiredStepsGates(scenarios),
+    scenarios_warned: scenarioWarnings.length,
+    scenarios_errored: scenarioErrors.length
   });
 
   // 4b. Mirror ingest's scenario-error verdict downgrade so verify-only and

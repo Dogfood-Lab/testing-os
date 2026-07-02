@@ -40,6 +40,14 @@ const REQUIRED_PATHS = [
   'CLAUDE.md',
   'HANDOFF.md',
   'swarms/__schema-fixtures__/**',
+  // F-f2058e44: VERIFY-F3 added 'policies/**' to both ci.yml paths legs so a
+  // policy-only edit fires scripts/lint-policies.test.mjs (the author-time
+  // policy lint, run via test:scripts). Pin it here too: without this entry a
+  // future ci.yml edit could drop 'policies/**' from a trigger leg and a
+  // malformed/schema-invalid policy would land on main with no lint run, while
+  // this very guard — built to catch that trigger-gap class — stayed green
+  // because the dropped path was never in its list.
+  'policies/**',
   // F-CI-001: live-run wave outputs. The agent-output-schema conformance gate
   // is meant to catch the fixes_applied-vs-fixes drift on real wave outputs at
   // push time, but a push touching ONLY these files ran no CI — green-by-absence.

@@ -34,6 +34,8 @@ import { openDb, closeDb, openMemoryDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains } from './lib/domains.js';
 import { verify as runVerify, formatVerify } from './commands/verify.js';
 import { formatPersist } from './commands/persist.js';
+import { status, formatStatus } from './commands/status.js';
+import { advance } from './lib/advance.js';
 import { buildRunExport, computeRunVerdict } from './lib/persist/export.js';
 import { buildDogfoodSubmission } from './lib/persist/dogfood-bridge.js';
 
@@ -400,5 +402,115 @@ describe('cli-r-002: main() extraction keeps the help + usage contract intact', 
     const r = runCli(['persist']);
     assert.equal(r.status, 1, `persist no-args must exit 1; got ${r.status}`);
     assert.match(r.stderr, /Usage: swarm persist/);
+  });
+});
+
+// ═══════════════════════════════════════════
+// F-f3c729eb — `swarm status` surfaces ownership_probe_degraded
+// ═══════════════════════════════════════════
+
+describe('F-f3c729eb: `swarm status` surfaces the persisted ownership_probe_degraded signal', () => {
+  // The wave-level ownership_probe_degraded column appears in the receipt but
+  // not in `swarm status` — the primary at-a-glance operator surface — while
+  // its lockstep sibling serial_verify_required appears in BOTH. This pins the
+  // status side into symmetry: the degraded attribution must read at the same
+  // surface where the operator reads gate state.
+  let tempDir;
+  let dbPath;
+
+  beforeEach(() => {
+    tempDir = mkdtempSync(join(tmpdir(), 'amendB-probe-status-'));
+    dbPath = join(tempDir, 'control-plane.db');
+  });
+  afterEach(() => {
+    if (dbPath) { try { closeDb(dbPath); } catch { /* */ } }
+    if (tempDir) { try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* */ } }
+  });
+
+  function seedWave(degraded) {
+    const db = openDb(dbPath);
+    db.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+      .run('r1', 'org/r', tempDir, 'a'.repeat(40));
+    db.prepare(`
+      INSERT INTO waves (run_id, phase, wave_number, status, ownership_probe_degraded)
+      VALUES ('r1', 'health-amend-b', 1, 'collected', ?)
+    `).run(degraded);
+    closeDb(dbPath);
+  }
+
+  it('a degraded wave sets waves.current.ownershipProbeDegraded AND renders the breadcrumb', () => {
+    seedWave(1);
+    const s = status({ runId: 'r1', dbPath });
+    assert.equal(s.waves.current.ownershipProbeDegraded, true,
+      'pre-fix: status() read serial_verify_required but omitted ownership_probe_degraded');
+    const out = formatStatus(s);
+    assert.match(out, /ownership probe DEGRADED/,
+      'the degraded attribution must read at the status surface, not only in the receipt');
+    assert.match(out, /--isolate/,
+      'the breadcrumb must name the remediation (mirrors the receipt wording)');
+  });
+
+  it('an isolated (non-degraded) wave leaves the flag false and renders NO breadcrumb', () => {
+    seedWave(0);
+    const s = status({ runId: 'r1', dbPath });
+    assert.equal(s.waves.current.ownershipProbeDegraded, false,
+      'the default-quiet state must stay false');
+    const out = formatStatus(s);
+    assert.doesNotMatch(out, /ownership probe DEGRADED/,
+      'steady-state status output must not gain a per-wave line when attribution is full');
+  });
+});
+
+// ═══════════════════════════════════════════
+// F-1c0188c9 — `swarm advance` distinguishes override-refused from plain-blocked
+// ═══════════════════════════════════════════
+
+describe('F-1c0188c9: advance() marks an override refused by a non-overridable gate', () => {
+  // When `--override --reason` is refused because a non-overridable gate
+  // dominates (serial-verify VERIFY, or a BLOCK from gates 1/2), advance() fell
+  // through to the plain non-promoted return with NO field distinguishing
+  // "blocked, no override attempted" from "blocked, override refused". The
+  // operator who explicitly consented saw an identical BLOCKED with no
+  // acknowledgement. This pins an explicit overrideRefused marker + the
+  // refusedBy gate name(s). Observability-only — the promotion decision is
+  // unchanged.
+  let db;
+  beforeEach(() => { db = openMemoryDb(); });
+  afterEach(() => { db.close(); });
+
+  function seedSerialVerifyWave(runId) {
+    db.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+      .run(runId, 'org/r', '/tmp/r', 'a'.repeat(40));
+    saveDomainDraft(db, runId, [{ name: 'backend', globs: ['src/**'], ownership_class: 'owned' }]);
+    freezeDomains(db, runId);
+    const wave = db.prepare(
+      "INSERT INTO waves (run_id, phase, wave_number, status, serial_verify_required) VALUES (?, 'health-amend-a', 1, 'collected', 1)"
+    ).run(runId);
+    const dom = db.prepare('SELECT id FROM domains WHERE run_id = ?').get(runId);
+    db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'complete')")
+      .run(Number(wave.lastInsertRowid), dom.id);
+  }
+
+  it('override refused by a non-overridable gate returns overrideRefused + refusedBy', () => {
+    seedSerialVerifyWave('r-refused');
+    const result = advance(db, 'r-refused', {
+      override: true,
+      overrideReason: 'operator consented to advance',
+    });
+    assert.equal(result.promoted, false);
+    assert.equal(result.verdict, 'VERIFY');
+    assert.equal(result.overrideRefused, true,
+      'pre-fix: no field distinguished a refused override from a plain block');
+    assert.ok(Array.isArray(result.refusedBy) && result.refusedBy.includes('verification'),
+      'refusedBy must name the non-overridable gate that outranked the override');
+  });
+
+  it('a plain block with NO override attempted carries no overrideRefused marker', () => {
+    seedSerialVerifyWave('r-plain');
+    const result = advance(db, 'r-plain'); // no override
+    assert.equal(result.promoted, false);
+    assert.equal(result.verdict, 'VERIFY');
+    assert.ok(!result.overrideRefused,
+      'the marker must be absent/false when the operator never passed --override');
   });
 });

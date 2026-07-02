@@ -41,7 +41,7 @@ import { collect } from './commands/collect.js';
 import { revalidate } from './commands/revalidate.js';
 import { status } from './commands/status.js';
 import { buildReceipt } from './commands/receipt.js';
-import { clean } from './commands/clean.js';
+import { clean, formatClean } from './commands/clean.js';
 import { checkGates, advance, recordPromotion, getPromotions } from './lib/advance.js';
 import { createWorktree, listWorktrees, cleanupRunWorktrees, runShortOf } from './lib/worktree.js';
 import { loadDomainOutputs, renderWithStatus } from './lib/findings-digest.js';
@@ -294,6 +294,40 @@ describe('F-1ab3fd1f — terminal worktree cleanup skips dirty / unmerged work',
       assert.equal(report.worktrees[0].dirty, true,
         'pre-fix: the preview gave no signal that --apply would destroy uncommitted work');
       assert.equal(report.worktrees[0].unmerged, false);
+    } finally {
+      closeDb(dbPath);
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it('`swarm clean` DRY-RUN preview surfaces UNMERGED branch commits (the merge-base half)', () => {
+    // F-81fe8ae0: the sibling dirty-case pin above only exercises the
+    // `git status --porcelain` half of worktreeDisposition. If the
+    // `merge-base --is-ancestor` probe regressed (or the branch side of
+    // worktreeDisposition always returned unmerged:false), the preview would
+    // under-report the UNMERGED work `--apply` is about to force-destroy and
+    // this describe block would stay GREEN. This case commits to the branch
+    // WITHOUT dirtying the tree, isolating the merge-base signal.
+    const tmp = mkdtempSync(join(tmpdir(), 'w4-clean-unmerged-'));
+    const dbPath = join(tmp, 'control-plane.db');
+    try {
+      const fdb = openDb(dbPath);
+      fdb.prepare("INSERT INTO runs (id, repo, local_path, commit_sha, branch) VALUES (?, ?, ?, ?, 'main')")
+        .run('swarm-cleanunmerged1', 'org/r', repo, 'a'.repeat(40));
+      const wt = createWorktree(repo, { runId: 'swarm-cleanunmerged1', waveNumber: 1, domainName: 'backend' });
+      writeFileSync(join(wt.worktreePath, 'agent-fix.js'), 'committed but never merged\n');
+      git(wt.worktreePath, ['add', '.']);
+      git(wt.worktreePath, ['commit', '-q', '-m', 'agent fix']);
+
+      const report = clean({ runId: 'swarm-cleanunmerged1', dbPath });
+      assert.equal(report.dryRun, true);
+      assert.equal(report.worktrees.length, 1);
+      assert.equal(report.worktrees[0].unmerged, true,
+        'RED if worktreeDisposition\'s merge-base probe always reported merged (unmerged:false)');
+      assert.equal(report.worktrees[0].dirty, false,
+        'the commit was clean — this isolates the merge-base signal from the dirty-tree signal');
+      assert.match(formatClean(report), /UNMERGED commits/,
+        'the risk banner must name UNMERGED so --apply is informed consent');
     } finally {
       closeDb(dbPath);
       rmSync(tmp, { recursive: true, force: true });

@@ -381,6 +381,18 @@ The steps validator itself threw an internal exception. Same operational-fault c
 - **Hint:** as above — verifier-side incident.
 - **Operator action:** triage as a system incident, patch the steps validator.
 
+### `VALIDATOR_FAULT_CONTRACT_SCHEMA_VERSION`
+
+:::caution[Severity: HIGH]
+The contract-schema-version gate threw while checking the submission's declared schema version. Same operational-fault class as the three above — a verifier-side incident, NOT a submission-bad signal. This is the fourth `VALIDATOR_FAULT_*` sibling; all four share one prefix family.
+:::
+
+- **Class:** template-literal `\`VALIDATOR_FAULT_${cls}\`` emitted by the `runValidator('contract_schema_version', fn)` catch — `packages/verify/index.js`
+- **Trigger:** `validateSchemaVersion(submission, 'recordSubmission')` threw — reached when the gate is invoked with an **unknown contract key** (a programmer error at the call site, not a submission fault). The version *mismatch* cases are the submission-bad `CONTRACT_SCHEMA_TOO_NEW:` / `CONTRACT_SCHEMA_TOO_OLD:` reasons below; only a genuine throw from the gate surfaces here.
+- **Message shape:** `VALIDATOR_FAULT_CONTRACT_SCHEMA_VERSION: <thrown message>` in `rejection_reasons[]`.
+- **Hint:** as above — verifier-side incident; matched by the same `VALIDATOR_FAULT_*` prefix family (F-82429f90: operational, thrown-not-persisted).
+- **Operator action:** triage as a system incident, patch the version gate / its contract-key wiring.
+
 ### Consuming `rejection_reasons[]` — `parseRejectionReason`
 
 :::note[Severity: MEDIUM]
@@ -389,7 +401,7 @@ The `verification.rejection_reasons[]` entries above are stable **prefixed strin
 
 - **Class:** `parseRejectionReason(reason)` — `packages/verify/parse-rejection.js` (re-exported from the package root `index.js`).
 - **Returns:** `{ class, prefix, detail }` where `class` is one of:
-  - **`submission-bad`** — the submitter fixes the payload (`schema:`, `policy:`, `steps[<id>]:`, `provenance:`, `repo:`, `submission-contains-verifier-field:`, `CONTRACT_SCHEMA_TOO_NEW:`, `CONTRACT_SCHEMA_TOO_OLD:`). Here `provenance:` is the genuine-absence case only — a 404 / not-confirmable run, i.e. the submitted run does not exist or does not bind.
+  - **`submission-bad`** — the submitter fixes the payload (`schema:`, `policy:`, `policy-config:`, `steps[<id>]:`, `provenance:`, `repo:`, `submission-contains-verifier-field:`, `CONTRACT_SCHEMA_TOO_NEW:`, `CONTRACT_SCHEMA_TOO_OLD:`). Here `provenance:` is the genuine-absence case only — a 404 / not-confirmable run, i.e. the submitted run does not exist or does not bind. `policy-config:` (VERIFY-F1, v1.7.0) is a **repo** custom-rule predicate that hit an eval-time semantic fault the schema could not catch — an unknown leading field, a numeric operator over a non-number, or a depth/width budget overrun; the repo authored the bad rule YAML, so the submitter fixes it. Its **global** counterpart is operational — a malformed global predicate surfaces as `VALIDATOR_FAULT_POLICY` above.
   - **`operational`** — the verifier/tooling faulted; page ops, do NOT bounce to the submitter (the `VALIDATOR_FAULT_*` family above, matched by prefix family so a future fault class needs no parser edit; `provenance-fault:` for a provider 429/5xx/401/403 fault confirming the run; `scenario-fetch-fault:` for the same fault classes — including exhausted timeouts — while fetching a scenario definition; and `submission-malformed:` for a null/non-object payload from a malfunctioning dispatcher). As of the wave-4 hardening these faults are **thrown, not persisted**: production ingest exits 2 with no `_rejected` record, so an outage window never poisons a `run_id` against clean resubmission — you will only see the `VALIDATOR_FAULT_*` / `provenance-fault:` string forms in records persisted before that change.
   - **`ingest`** — an ingest-side load fault (`scenario-load:`), with typed reasons `parse_error | invalid_id | too_large | schema_invalid | malformed_entry | fetch_cap`. A missing definition file (`not_found`) is NOT in this set — it is not a rejection at all; the submission is accepted and the record carries a `verification.warnings` entry (`scenario definition not found for "<id>" — required_steps unenforced`). More than 20 scenario-load reasons collapse into a count summary in the persisted record.
   - **`unknown`** — unrecognized prefix (including the prefix-less null-submission reason); log + surface raw.

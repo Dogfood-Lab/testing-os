@@ -1472,6 +1472,14 @@ function cmdAdvance(args) {
   } else {
     console.log(`BLOCKED: ${result.verdict}`);
     if (result.reason) console.log(`Reason: ${result.reason}`);
+    // F-1c0188c9: an operator who explicitly passed --override and expected
+    // promotion must see that their override was honored-then-refused because a
+    // non-overridable gate outranked it — not the same BLOCKED an operator who
+    // never attempted an override sees. advance() marks the refusal; surface it.
+    if (result.overrideRefused) {
+      const gates = (result.refusedBy || []).join(', ') || 'a gate';
+      console.log(`Override refused — ${gates} is non-overridable; the block stands.`);
+    }
     console.log('');
     console.log('Gates:');
     for (const g of (result.gates || [])) {
