@@ -134,7 +134,11 @@ jobs:
           else
             VERDICT=fail
           fi
-          npx --yes @dogfood-lab/report \
+          # Run the published `dogfood-report` bin explicitly via --package: the
+          # published @dogfood-lab/report exposes `dogfood-report` / `dogfood-init`,
+          # not a bare `report` bin, so `npx @dogfood-lab/report` (which resolves the
+          # package-basename bin `report`) exits 127 with "report: not found".
+          npx --yes --package @dogfood-lab/report dogfood-report \
             --scenario-file scenario-results.json \
             --verdict "$VERDICT" \
             --precheck \
@@ -159,4 +163,4 @@ jobs:
       - name: Confirm dispatch landed (best-effort)
         continue-on-error: true
         run: |
-          npx --yes @dogfood-lab/report --status --repo "${GITHUB_REPOSITORY}"
+          npx --yes --package @dogfood-lab/report dogfood-report --status --repo "${GITHUB_REPOSITORY}"
