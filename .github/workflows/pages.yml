@@ -206,6 +206,7 @@ jobs:
             "${base}handbook/architecture/"
             "${base}handbook/state-machines/"
             "${base}handbook/cli-reference/"
+            "${base}dashboard/"
           )
 
           cat > /tmp/pa11y-ci.json <<'EOF'
