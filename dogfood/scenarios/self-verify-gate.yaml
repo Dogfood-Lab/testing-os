@@ -1,0 +1,72 @@
+scenario_id: self-verify-gate
+scenario_name: "testing-os self-verification gate"
+scenario_version: "1.0.0"
+
+product_surface: cli
+
+execution_mode: bot
+
+description: >
+  testing-os proving itself. The repo's own pre-commit gate (`npm run verify`)
+  is treated as a dogfood scenario: each required step mirrors one stage of the
+  serial verify chain the repo runs on every push — version-sync, doc-drift,
+  regression-pins, the composite build, the scripts suite, and the per-package
+  workspace suites. The self-dogfood workflow derives the verdict from the real
+  CI conclusion: a green CI run submits an accepted self-record, a red one
+  submits verdict: fail. An evidence platform that only reports its wins is
+  worthless — so a failing gate is recorded as honestly as a passing one.
+
+preconditions:
+  - "Dependencies install cleanly (npm ci)"
+  - "The commit under test is the head of the CI workflow_run that triggered submission"
+
+steps:
+  - id: version-sync-gate
+    action: "Run `npm run sync-version:check` — README + lockfile versions match package.json"
+    verifiable: true
+    expected: "sync-version:check exits 0 (README block and lockfile in sync at the workspace version)"
+
+  - id: doc-drift-gate
+    action: "Run `npm run check-doc-drift` — every tracked code↔doc cross-reference resolves"
+    verifiable: true
+    expected: "check-doc-drift reports zero drift across all configured checks"
+
+  - id: regression-pins-gate
+    action: "Run `npm run check-regression-pins` — every required regression pin is present"
+    verifiable: true
+    expected: "check-regression-pins finds no missing pins"
+
+  - id: build
+    action: "Run `npm run build` — the composite `tsc --build` over all workspace packages"
+    verifiable: true
+    expected: "the build exits 0 with no type errors"
+
+  - id: scripts-suite
+    action: "Run `npm run test:scripts` — scripts, committed-scenario, and site-component tests"
+    verifiable: true
+    expected: "every scripts / scenario / component test passes"
+
+  - id: workspace-suites
+    action: "Run `npm test` — the per-package workspace suites (vitest for schemas, node --test for the rest)"
+    verifiable: true
+    expected: "every workspace package's test suite passes"
+
+success_criteria:
+  required_steps:
+    - version-sync-gate
+    - doc-drift-gate
+    - regression-pins-gate
+    - build
+    - scripts-suite
+    - workspace-suites
+  minimum_evidence:
+    - kind: log
+      description: "The CI workflow_run log for the commit under test"
+
+tags:
+  - self-dogfood
+  - ci
+  - meta
+
+automation:
+  timeout_ms: 600000

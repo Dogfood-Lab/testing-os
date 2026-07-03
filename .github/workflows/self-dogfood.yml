@@ -1,0 +1,162 @@
+# self-dogfood.yml — testing-os dogfoods ITSELF (F-CI-SELF-DOGFOOD-001)
+#
+# This is the FIFTH workflow in this repo. CLAUDE.md ("adding a fifth workflow
+# needs explicit justification") — the justification is self-dogfooding: the
+# evidence platform must prove its own gate through its own pipeline. After CI
+# completes, this packages the REAL CI conclusion into a dogfood submission
+# ABOUT testing-os and dispatches it to testing-os's OWN ingest.yml. It is the
+# consumer template (examples/dogfood.yml) turned inward. Structural pins live
+# in scripts/self-dogfood-workflow.test.mjs.
+#
+# ── ONE-TIME SETUP (Mike-side prerequisite) ─────────────────────────────────
+# Mint a fine-grained PAT with `contents: write` on dogfood-lab/testing-os and
+# add it to THIS repo as the secret DOGFOOD_TOKEN
+# (Settings → Secrets and variables → Actions → New repository secret).
+#
+# Why a PAT and not the default GITHUB_TOKEN: GitHub's recursive-workflow
+# prevention means a repository_dispatch sent with the default GITHUB_TOKEN does
+# NOT start a new workflow run — so a GITHUB_TOKEN dispatch would silently fail
+# to trigger ingest.yml. A dedicated PAT is mandatory; there is no shortcut.
+# Until the secret exists this workflow FAILS LOUD at the preflight step below —
+# that red-until-token state is the designed honest signal, not a defect.
+# ─────────────────────────────────────────────────────────────────────────────
+
+name: self-dogfood
+
+on:
+  # Primary: run after this repo's own CI workflow completes, so the submitted
+  # verdict reflects the REAL gate result. Manual fallback for re-fires.
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+  workflow_dispatch:
+
+concurrency:
+  group: self-dogfood-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  self-dogfood:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # Loop-safety guard (belt-and-braces). ingest.yml commits records/+indexes/
+    # with an `ingest: ...` subject. That commit does NOT match ci.yml's paths
+    # filter, so no CI run fires off it and no loop exists today — but if a future
+    # ci.yml paths edit ever caught records/ or indexes/, an ingest commit could
+    # trigger CI → this workflow → another ingest → ... . Skip any workflow_run
+    # triggered by an ingest commit, and gate the workflow_run leg to main.
+    # workflow_dispatch (manual re-fire) is always allowed through.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.head_branch == 'main' &&
+       !startsWith(github.event.workflow_run.head_commit.message, 'ingest:'))
+    steps:
+      # Fail LOUD if the token is missing — the #1 silent-failure mode. Without
+      # DOGFOOD_TOKEN the dispatch below cannot authenticate AND (per the header)
+      # GITHUB_TOKEN cannot substitute, so a missing secret means nothing is ever
+      # recorded. This turns that into a red run instead of a silent green.
+      - name: Preflight — DOGFOOD_TOKEN must be set
+        env:
+          DOGFOOD_TOKEN: ${{ secrets.DOGFOOD_TOKEN }}
+        run: |
+          if [ -z "$DOGFOOD_TOKEN" ]; then
+            echo "::error title=DOGFOOD_TOKEN missing::Add a fine-grained PAT with contents:write on dogfood-lab/testing-os as the secret DOGFOOD_TOKEN. The default GITHUB_TOKEN cannot trigger ingest.yml (recursive-workflow prevention), so the self-submission cannot run without this PAT."
+            exit 1
+          fi
+
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3 (node24 runtime)
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+
+      # Build scenario-results.json for the committed self-verify-gate scenario
+      # from the REAL CI conclusion. NEVER hardcode passes: a green CI run submits
+      # every step pass; a red one submits verdict: fail with every step fail. An
+      # evidence platform that only reports its wins is worthless. The array holds
+      # ONE scenario_result whose step_results cover ALL SIX declared step ids, so
+      # the receiver's required-steps enforcement (against
+      # dogfood/scenarios/self-verify-gate.yaml) passes. On workflow_dispatch
+      # there is no triggering run, so treat a missing conclusion as success
+      # (a human re-firing the manual fallback is asserting the current state).
+      - name: Build scenario results from CI conclusion
+        env:
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
+        run: |
+          node <<'NODE' > scenario-results.json
+          const conclusion = process.env.CI_CONCLUSION || 'success';
+          const runUrl = process.env.CI_RUN_URL
+            || `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+          const verdict = conclusion === 'success' ? 'pass' : 'fail';
+          const status = verdict; // per-step status mirrors the gate outcome
+          const stepIds = [
+            'version-sync-gate',
+            'doc-drift-gate',
+            'regression-pins-gate',
+            'build',
+            'scripts-suite',
+            'workspace-suites',
+          ];
+          const result = [{
+            scenario_id: 'self-verify-gate',
+            scenario_name: 'testing-os self-verification gate',
+            scenario_version: '1.0.0',
+            product_surface: 'cli',
+            execution_mode: 'bot',
+            verdict,
+            notes: `Derived from the testing-os CI workflow_run conclusion: ${conclusion}.`,
+            step_results: stepIds.map((step_id) => ({ step_id, status })),
+            evidence: [{
+              kind: 'log',
+              description: 'The testing-os CI workflow_run log for the commit under test',
+              url: runUrl,
+            }],
+          }];
+          process.stdout.write(JSON.stringify(result, null, 2) + '\n');
+          NODE
+          echo "Built scenario-results.json for CI conclusion: ${CI_CONCLUSION:-success}"
+
+      # Build the submission envelope with the shipped report CLI. It reads
+      # repo / commit / run-id / run-url / actor from the standard GITHUB_* env
+      # vars; we supply only the scenario file and the derived verdict. --precheck
+      # runs the SAME schema validation the receiver will, so a malformed envelope
+      # fails HERE, in-workflow, not after a wasted dispatch.
+      - name: Build submission
+        env:
+          CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+        run: |
+          if [ "${CI_CONCLUSION:-success}" = "success" ]; then
+            VERDICT=pass
+          else
+            VERDICT=fail
+          fi
+          npx --yes @dogfood-lab/report \
+            --scenario-file scenario-results.json \
+            --verdict "$VERDICT" \
+            --precheck \
+            --output submission.json
+
+      # Dispatch to testing-os ITSELF (self-submission) with the PAT — NOT the
+      # default GITHUB_TOKEN, which cannot trigger ingest.yml. No third-party
+      # action: gh api is built in.
+      - name: Dispatch to testing-os (self)
+        env:
+          GH_TOKEN: ${{ secrets.DOGFOOD_TOKEN }}
+        run: |
+          jq -n --slurpfile s submission.json \
+            '{event_type: "dogfood_submission", client_payload: {submission: $s[0]}}' \
+            | gh api repos/dogfood-lab/testing-os/dispatches --input -
+          echo "Dispatched self-submission. Watch ingest: https://github.com/dogfood-lab/testing-os/actions/workflows/ingest.yml"
+
+      # Confirm the dispatch landed. Best-effort: the receiver ingests
+      # ASYNCHRONOUSLY, so a fresh record may not be served yet when this runs
+      # (hence continue-on-error). Reads the receiver's PUBLIC served index
+      # (no auth) and reports whether this repo's latest run is recorded.
+      - name: Confirm dispatch landed (best-effort)
+        continue-on-error: true
+        run: |
+          npx --yes @dogfood-lab/report --status --repo "${GITHUB_REPOSITORY}"
