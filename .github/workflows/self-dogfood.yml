@@ -72,6 +72,23 @@ jobs:
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
           node-version: 22
+          cache: npm
+
+      # Install deps + build so the submission is produced by the LOCAL report
+      # CLI (packages/report/cli.js) against THIS commit's code — the honest
+      # self-dogfood. An earlier version shelled out to the PUBLISHED
+      # @dogfood-lab/report package (npm-exec) from $RUNNER_TEMP, but that both
+      # (1) tested a published artifact that can lag the commit CI just gated, and
+      # (2) silently produced no submission.json — from the repo root the package
+      # name resolves to this monorepo's own uninstalled workspace package and
+      # no-ops. `npm ci` provides the @dogfood-lab/* workspace symlinks the local
+      # CLI resolves through; `npm run build` produces @dogfood-lab/schemas' dist/,
+      # which the local --precheck path (precheckSubmission -> validatePayload)
+      # requires.
+      - name: Install and build
+        run: |
+          npm ci
+          npm run build
 
       # Build scenario-results.json for the committed self-verify-gate scenario
       # from the REAL CI conclusion. NEVER hardcode passes: a green CI run submits
@@ -128,24 +145,39 @@ jobs:
       - name: Build submission
         env:
           CI_CONCLUSION: ${{ github.event.workflow_run.conclusion }}
+          CI_HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+          CI_RUN_URL: ${{ github.event.workflow_run.html_url }}
+          CI_RUN_ID: ${{ github.event.workflow_run.id }}
         run: |
           if [ "${CI_CONCLUSION:-success}" = "success" ]; then
             VERDICT=pass
           else
             VERDICT=fail
           fi
-          # Run the report CLI from OUTSIDE the repo checkout ($RUNNER_TEMP), with
-          # absolute file paths, so npx fetches the PUBLISHED @dogfood-lab/report
-          # from the registry. Run from the repo root, npx resolves the name to
-          # THIS monorepo's own workspace package — which has no node_modules here
-          # (no `npm ci`) — and exits 127 "not found" without ever fetching. The
-          # explicit `--package … dogfood-report` also names the published bin
-          # (the published package exposes `dogfood-report`, not a bare `report`).
-          ( cd "$RUNNER_TEMP" && npx --yes --package @dogfood-lab/report dogfood-report \
-            --scenario-file "$GITHUB_WORKSPACE/scenario-results.json" \
+          # The submission is evidence ABOUT the commit CI actually gated. Under a
+          # workflow_run event $GITHUB_SHA is the DEFAULT-BRANCH head, NOT the
+          # tested commit — so pin --commit to workflow_run.head_sha, and point
+          # source.run_url / provider_run_id at the CI run that produced the
+          # verdict. All three fall back to this run's own env on workflow_dispatch
+          # (manual re-fire), which has no triggering workflow_run.
+          COMMIT="${CI_HEAD_SHA:-$GITHUB_SHA}"
+          RUN_URL="${CI_RUN_URL:-https://github.com/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID}"
+          PROVIDER_RUN_ID="${CI_RUN_ID:-$GITHUB_RUN_ID}"
+          # Build with the LOCAL CLI: self-contained, and it exercises THIS commit's
+          # builder rather than a published artifact. --precheck runs the SAME
+          # schema validation the receiver will, so a malformed envelope fails HERE,
+          # in-workflow, not after a wasted dispatch. Output goes to submission.json
+          # in $GITHUB_WORKSPACE — the same relative path the Dispatch step slurps
+          # below (every step shares that working directory).
+          node packages/report/cli.js \
+            --scenario-file scenario-results.json \
+            --commit "$COMMIT" \
+            --run-url "$RUN_URL" \
+            --provider-run-id "$PROVIDER_RUN_ID" \
+            --workflow CI \
             --verdict "$VERDICT" \
             --precheck \
-            --output "$GITHUB_WORKSPACE/submission.json" )
+            --output submission.json
 
       # Dispatch to testing-os ITSELF (self-submission) with the PAT — NOT the
       # default GITHUB_TOKEN, which cannot trigger ingest.yml. No third-party
@@ -165,5 +197,8 @@ jobs:
       # (no auth) and reports whether this repo's latest run is recorded.
       - name: Confirm dispatch landed (best-effort)
         continue-on-error: true
-        run: |
-          ( cd "$RUNNER_TEMP" && npx --yes --package @dogfood-lab/report dogfood-report --status --repo "${GITHUB_REPOSITORY}" )
+        # Local CLI again (self-contained). --status reads the receiver's PUBLIC
+        # served index over the network — no auth — and is best-effort because the
+        # receiver ingests ASYNCHRONOUSLY: a fresh record may not be served yet
+        # when this runs (hence continue-on-error).
+        run: node packages/report/cli.js --status --repo "${GITHUB_REPOSITORY}"

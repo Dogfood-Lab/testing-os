@@ -8,7 +8,7 @@
  * the REAL CI conclusion into a dogfood submission about ITSELF and dispatches
  * it to its own ingest pipeline. It is the consumer template (examples/dogfood.yml)
  * turned inward — the evidence platform proving its own gate through its own
- * pipeline. Four properties are load-bearing and nothing else pins them:
+ * pipeline. Five properties are load-bearing and nothing else pins them:
  *
  * 1. Preflight fails LOUD on a missing DOGFOOD_TOKEN. GitHub's recursive-workflow
  *    prevention means the default GITHUB_TOKEN's repository_dispatch does NOT
@@ -31,6 +31,17 @@
  *    must pass the wave-12 author-time lint verb (`dogfood-verify lint --scenario`).
  *    Dogfooding the dogfood: the self-submission scenario is itself linted by the
  *    tool it exercises. A malformed scenario definition must go RED here.
+ *
+ * 5. The submission handoff is self-contained and path-consistent. The FIRST
+ *    live run of this workflow never completed a self-submission because the
+ *    build step shelled out to the PUBLISHED @dogfood-lab/report from a
+ *    different cwd and silently produced no submission.json — the dispatch's
+ *    `--slurpfile s submission.json` then errored "No such file or directory".
+ *    The fix builds with the LOCAL CLI (`node packages/report/cli.js`) against
+ *    THIS commit's code, writes and reads the same submission.json, and stamps
+ *    the commit CI actually gated (workflow_run.head_sha, not $GITHUB_SHA). A
+ *    revert to the npm-exec-the-published-package path, a write/read path
+ *    mismatch, or a drop back to $GITHUB_SHA must go RED here.
  *
  * Why a real YAML parse (js-yaml) and not text-token scans like the sibling
  * workflow tests: self-dogfood.yml builds scenario-results.json inline and
@@ -201,5 +212,63 @@ test('F-CI-SELF-DOGFOOD-001: the self-verify-gate scenario passes the wave-12 au
     res.status,
     0,
     `dogfood-verify lint must exit 0 on ${scenarioPath}\nstdout:\n${res.stdout}\nstderr:\n${res.stderr}`,
+  );
+});
+
+test('F-CI-SELF-DOGFOOD-001: the submission is built by the LOCAL CLI and dispatched from the same path', () => {
+  const text = readFileSync(workflowPath, 'utf8');
+  // Regression guard for the observed handoff bug (property 5). The build step
+  // must invoke the LOCAL CLI (packages/report/cli.js) and write to
+  // submission.json. The prior npm-exec-from-$RUNNER_TEMP path silently
+  // produced nothing.
+  assert.match(
+    text,
+    /node packages\/report\/cli\.js[\s\S]*?--output\s+submission\.json/,
+    'the build step must run the local report CLI (node packages/report/cli.js) and write --output submission.json',
+  );
+  // The dispatch step must slurp the SAME file the build step wrote — a
+  // write/read path mismatch is the exact defect that broke the first live run.
+  assert.match(
+    text,
+    /--slurpfile\s+s\s+submission\.json/,
+    'the dispatch step must read the same submission.json the build step wrote',
+  );
+  // Self-contained: no npm-exec of the published package anywhere. Self-
+  // dogfooding must exercise THIS commit's builder, not a registry artifact that
+  // can lag the commit CI just gated (and that no-ops from the repo root).
+  assert.doesNotMatch(
+    text,
+    /\bnpx\b/,
+    'self-dogfood must build + confirm with the local CLI, never npm-exec (npx) the published package',
+  );
+});
+
+test('F-CI-SELF-DOGFOOD-001: the workflow installs + builds so the local --precheck has the schemas dist', () => {
+  const text = readFileSync(workflowPath, 'utf8');
+  // precheckSubmission imports validatePayload from @dogfood-lab/schemas, whose
+  // package `main` is dist/index.js — so the local --precheck path needs the TS
+  // build. `npm ci` provides the @dogfood-lab/* workspace symlinks the local CLI
+  // resolves through.
+  assert.match(
+    text,
+    /npm ci/,
+    'must `npm ci` so the local report CLI resolves its @dogfood-lab/* workspace deps',
+  );
+  assert.match(
+    text,
+    /npm run build/,
+    'must `npm run build` so @dogfood-lab/schemas dist/ exists for the local --precheck',
+  );
+});
+
+test('F-CI-SELF-DOGFOOD-001: the submission is stamped with the commit CI actually gated (workflow_run.head_sha)', () => {
+  const text = readFileSync(workflowPath, 'utf8');
+  // Under a workflow_run event $GITHUB_SHA is the default-branch head, NOT the
+  // tested commit; ref.commit_sha must be the commit CI gated so the evidence is
+  // about the right revision.
+  assert.match(
+    text,
+    /workflow_run\.head_sha/,
+    'the build step must pin --commit to github.event.workflow_run.head_sha (the tested commit), not rely on $GITHUB_SHA',
   );
 });
