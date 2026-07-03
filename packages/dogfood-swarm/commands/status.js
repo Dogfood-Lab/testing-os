@@ -13,6 +13,7 @@ import { getWaveTransitionHistory, BLOCKED_STATUSES } from '../lib/wave-state-ma
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { FINDING_GATED_PHASES, PHASE_MAP } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
+import { formatDomainRow } from '../lib/domain-row.js';
 
 /**
  * @param {object} opts
@@ -262,8 +263,11 @@ export function formatStatus(s) {
   const allFrozen = s.domains.every(d => d.frozen);
   lines.push(`Domains [${allFrozen ? 'FROZEN' : 'DRAFT'}]:`);
   for (const d of s.domains) {
-    const cls = d.ownership.padEnd(6);
-    lines.push(`  ${cls}  ${d.name}${d.description ? ' — ' + d.description : ''}`);
+    // F-a35340ef: render ownership_class as a trailing parenthetical via the
+    // shared formatDomainRow, so the class sits in the same position here as on
+    // `swarm domains`. Frozen state stays hoisted to the section header above,
+    // so no per-row bracket (frozen omitted).
+    lines.push(formatDomainRow({ name: d.name, ownership: d.ownership, description: d.description }));
   }
   lines.push('');
 

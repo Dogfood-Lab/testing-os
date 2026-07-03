@@ -244,6 +244,10 @@ For resuming a **failed** wave (not just incomplete agents), see [`swarm redrive
 
 Reclaim the stranded `--isolate` worktrees + `swarm/<run>/...` branches a run left behind. Two things leave worktrees on disk: (1) a run you stop after `collect` — or any single-purpose audit run that never promotes — never reaches the teardown at all; and (2) as of the wave-4 hardening, even a run that promotes all the way to phase `complete` (`swarm advance`) — or a `swarm rewind --apply` — now **preserves** (and loudly names) any worktree with uncommitted edits or unmerged commits, rather than force-destroying agent work that never merged. So a `complete` run can still leave per-agent worktrees on disk when their work was never merged. `swarm clean` is the operator-facing reclaim for both cases, run-scoped by the run's branch prefix so it never sweeps a sibling run — and `swarm clean --apply` is the only verb that removes such preserved work.
 
+:::caution[`--apply` removes preserved work — no undo]
+`swarm clean --apply` is the **only** verb that deletes worktrees the promotion/rewind cleanup deliberately preserved — including branches carrying **unmerged commits**. Run the dry-run first (the default) and read the `[!] DIRTY / UNMERGED` annotations before you `--apply`; the deletion is irreversible.
+:::
+
 Like the [Three R's recovery verbs](../recovery/), it is **dry-run by default** — it lists what it *would* remove (with the `{removed, stranded, total}` rollup) and only acts with `--apply`. Each at-risk entry in the preview is annotated inline — `[!] DIRTY: uncommitted edits + UNMERGED commits — --apply destroys this work` — so `--apply` is informed consent, never a blind force-delete. Supports `--format=json`.
 
 ```text

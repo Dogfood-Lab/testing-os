@@ -328,3 +328,131 @@ test('apply-finding-migration: a manifest whose F-id is present applies and exit
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// ── F-bc3ea257: `--help`/`-h` must print the documented Usage block, exit 0 ──
+//
+// The script's Usage block lived only in the header comment; `--help` reached
+// the `else if (a.startsWith('--')) throw` branch and exited 1 with "Unknown
+// flag: --help". An operator reaching for the near-universal --help convention
+// got an error exit instead of usage. The fix routes -h/--help to the Usage
+// block and exits 0 BEFORE any migration runs, matching the sibling
+// check-finding-regression-pins.mjs printHelp()/exit-0 path.
+
+test('apply-finding-migration: --help prints the Usage block and exits 0 (F-bc3ea257)', () => {
+  const result = spawnSync(process.execPath, [targetScript, '--help'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(
+    result.status,
+    0,
+    `--help must exit 0, not hit the Unknown-flag path.\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+  );
+  assert.match(
+    result.stdout,
+    /Usage:/,
+    '--help must print the Usage block to stdout',
+  );
+  assert.match(
+    result.stdout,
+    /apply-finding-migration\.mjs/,
+    'the Usage block must name the script',
+  );
+  assert.doesNotMatch(
+    `${result.stdout}\n${result.stderr}`,
+    /Unknown flag/,
+    '--help must not fall through to the unknown-flag rejection',
+  );
+});
+
+test('apply-finding-migration: -h is an alias for --help (F-bc3ea257)', () => {
+  const result = spawnSync(process.execPath, [targetScript, '-h'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `-h must exit 0.\n  stderr: ${result.stderr}`);
+  assert.match(result.stdout, /Usage:/, '-h must print the Usage block');
+});
+
+test('apply-finding-migration: an unrecognized flag is still rejected after the --help branch (F-bc3ea257 guard)', () => {
+  const result = spawnSync(process.execPath, [targetScript, '--nope'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.notEqual(result.status, 0, 'an unknown flag must still be a non-zero exit');
+  assert.match(
+    result.stderr,
+    /Unknown flag/,
+    'the unknown-flag rejection must survive the added --help branch',
+  );
+});
+
+// ── F-f6d570aa: operator-facing status lines carry the [gate-name] prefix ────
+//
+// apply-finding-migration was the only gate script emitting ERROR:/WARN: status
+// lines WITHOUT the shared `[gate-name]` bracket convention every sibling uses
+// (sync-version, check-doc-drift, check-finding-regression-pins, build). In an
+// interleaved `npm run verify` transcript a bare `ERROR:` line was unattributable
+// at a glance. The fix namespaces the human-readable ERROR/WARN lines; the
+// `coordinator_scope_expansion:` telemetry token deliberately stays bare.
+
+test('apply-finding-migration: the missing-finding ERROR lines carry the [apply-finding-migration] prefix (F-f6d570aa)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afm-prefix-'));
+  try {
+    const runId = 'swarm-test-prefix-0001';
+    const dbPath = await seedDb(dir, { runId, seedFindingId: 'F-present-01' });
+    const manifestPath = writeManifest(dir, {
+      runId,
+      crossRefFindingId: 'F-typo-99',
+    });
+
+    const result = runMigration(['--db', dbPath, manifestPath], dir);
+
+    assert.equal(result.status, 1, 'missing-finding path still hard-fails');
+    // Every human-readable ERROR line must be namespaced; no bare `ERROR:` at
+    // line start survives.
+    for (const line of result.stderr.split(/\r?\n/)) {
+      if (/(^|\s)ERROR:/.test(line)) {
+        assert.match(
+          line,
+          /\[apply-finding-migration\] ERROR:/,
+          `ERROR status line must carry the [apply-finding-migration] prefix — got: ${line}`,
+        );
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('apply-finding-migration: the --allow-missing WARN lines carry the [apply-finding-migration] prefix (F-f6d570aa)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afm-warn-'));
+  try {
+    const runId = 'swarm-test-warn-0001';
+    const dbPath = await seedDb(dir, { runId, seedFindingId: 'F-present-01' });
+    const manifestPath = writeManifest(dir, {
+      runId,
+      crossRefFindingId: 'F-typo-99',
+    });
+
+    const result = runMigration(['--db', dbPath, '--allow-missing', manifestPath], dir);
+
+    assert.equal(result.status, 0, '--allow-missing keeps exit 0');
+    assert.match(
+      result.stderr,
+      /\[apply-finding-migration\] WARN:/,
+      'the --allow-missing partial-miss WARN line must carry the [apply-finding-migration] prefix',
+    );
+    for (const line of result.stderr.split(/\r?\n/)) {
+      if (/(^|\s)WARN:/.test(line)) {
+        assert.match(
+          line,
+          /\[apply-finding-migration\] WARN:/,
+          `WARN status line must carry the [apply-finding-migration] prefix — got: ${line}`,
+        );
+      }
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

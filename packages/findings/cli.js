@@ -45,7 +45,8 @@ import {
   performAction,
   performMerge,
   getReviewQueue,
-  getEventsForFinding
+  getEventsForFinding,
+  EDITABLE_FIELDS
 } from './review/index.js';
 import {
   reviewArtifact,
@@ -291,7 +292,8 @@ Commands:
   accept <id>          Accept a finding (--actor, --reason)
   reject <id>          Reject a finding (--actor, --reason, --reject-reason)
   review <id>          Move finding to reviewed (--actor)
-  edit <id>            Edit finding fields (--actor, --set field=value)
+  edit <id>            Edit finding fields (--actor, --set field=value).
+                       Editable fields: ${EDITABLE_FIELDS.join(', ')}.
   merge <ids...>       Merge findings (--into <id>, --actor, --reason)
   reopen <id>          Reopen a rejected/accepted finding (--actor, --reason)
   invalidate <id>      Invalidate an accepted finding (--actor, --reason)
@@ -744,6 +746,7 @@ Structured output:
     const findingId = positional[0];
     if (!findingId) {
       console.error('Usage: dogfood findings edit <finding_id> --actor <name> --set field=value [--set field=value]');
+      console.error(`Editable fields: ${EDITABLE_FIELDS.join(', ')}`);
       process.exit(2);
     }
     // Parse --set flags

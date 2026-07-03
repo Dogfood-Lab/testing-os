@@ -24,7 +24,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runDriftChecks, expandGlobs, REGISTERED_HANDLERS, parseCheckId, countCommandMapEntries } from './check-doc-drift.mjs';
+import { runDriftChecks, expandGlobs, REGISTERED_HANDLERS, parseCheckId, parseConfigPath, parseCliArgs, printHelp, countCommandMapEntries } from './check-doc-drift.mjs';
+import { spawnSync } from 'node:child_process';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, '..');
@@ -1818,6 +1819,135 @@ test('parseCheckId: `--check` immediately followed by another flag returns an er
   const result = parseCheckId(['--check', '--json']);
   assert.equal(result.checkId, undefined);
   assert.match(result.error, /--check requires a check id/);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// CLI arg contract — --help, --config, unknown-flag rejection (F-7ec7e283,
+// F-eda5a0db).
+//
+// Before this, the CLI read only `args.includes('--json')` + parseCheckId, so:
+//   - `--help` ran a full drift pass instead of printing usage,
+//   - a mistyped `--josn` for `--json` was swallowed with no signal,
+//   - and the config-not-found hint promised a `--config` flag the CLI never
+//     parsed (dead affordance). doc-drift was the last gate script without the
+//     sibling check-finding-regression-pins.mjs help/argument contract.
+//
+// F-eda5a0db choice: --config was WIRED (the programmatic runDriftChecks already
+// accepts configPath), making the line-96 hint honest — not deleted.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const driftScript = resolve(repoRoot, 'scripts/check-doc-drift.mjs');
+
+test('parseConfigPath: `--config <path>` returns the path', () => {
+  assert.deepEqual(parseConfigPath(['--config', 'other.json']), { configPath: 'other.json' });
+});
+
+test('parseConfigPath: no `--config` flag returns undefined (default-config path)', () => {
+  assert.deepEqual(parseConfigPath(['--json']), { configPath: undefined });
+});
+
+test('parseConfigPath: bare trailing `--config` (no path) returns an error', () => {
+  const result = parseConfigPath(['--config']);
+  assert.equal(result.configPath, undefined);
+  assert.match(result.error, /--config requires a path/);
+});
+
+test('parseCliArgs: recognized flags parse into a normalized bag', () => {
+  const cli = parseCliArgs(['--json', '--check', 'error-codes', '--config', 'c.json']);
+  assert.equal(cli.error, undefined);
+  assert.equal(cli.json, true);
+  assert.equal(cli.checkId, 'error-codes');
+  assert.equal(cli.configPath, 'c.json');
+  assert.equal(cli.help, false);
+});
+
+test('parseCliArgs: -h and --help set the help flag', () => {
+  assert.equal(parseCliArgs(['-h']).help, true);
+  assert.equal(parseCliArgs(['--help']).help, true);
+});
+
+test('parseCliArgs: an unknown flag is rejected (fail loud, not swallowed) (F-7ec7e283)', () => {
+  const cli = parseCliArgs(['--josn']);
+  assert.match(cli.error, /unknown argument '--josn'/);
+  assert.match(cli.error, /see --help/);
+});
+
+test('parseCliArgs: --check and --config consume their value token, not treated as unknown', () => {
+  // The value 'foo.json' after --config, and 'error-codes' after --check, must
+  // not be mistaken for unknown positionals.
+  assert.equal(parseCliArgs(['--config', 'foo.json']).error, undefined);
+  assert.equal(parseCliArgs(['--check', 'error-codes']).error, undefined);
+});
+
+test('printHelp: emits a Usage block naming purpose, every flag, the config file, and the exit contract (F-7ec7e283)', () => {
+  const chunks = [];
+  const original = process.stdout.write;
+  process.stdout.write = (s) => { chunks.push(String(s)); return true; };
+  try {
+    printHelp();
+  } finally {
+    process.stdout.write = original;
+  }
+  const out = chunks.join('');
+  assert.match(out, /Usage:/);
+  assert.match(out, /--json/);
+  assert.match(out, /--check <id>/);
+  assert.match(out, /--config <path>/);
+  assert.match(out, /-h, --help/);
+  assert.match(out, /doc-drift-patterns\.json/);
+  assert.match(out, /Exit codes:/);
+});
+
+test('CLI: --help prints usage and exits 0 (F-7ec7e283)', () => {
+  const result = spawnSync(process.execPath, [driftScript, '--help'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(
+    result.status,
+    0,
+    `--help must exit 0, not run a drift pass.\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+  );
+  assert.match(result.stdout, /Usage:/, '--help must print the Usage block to stdout');
+  assert.match(result.stdout, /--config <path>/, 'usage must document the --config flag');
+});
+
+test('CLI: an unknown flag fails loud with exit 2, not a silent full run (F-7ec7e283)', () => {
+  const result = spawnSync(process.execPath, [driftScript, '--josn'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 2, 'a mistyped flag must exit 2, not run to a normal green/red exit');
+  assert.match(result.stderr, /unknown argument '--josn'/);
+});
+
+test('CLI: --config <path> is honored — a nonexistent path yields the config-not-found error, proving the flag reached runDriftChecks (F-eda5a0db)', () => {
+  // The hint at the config-not-found path promises `--config`; this proves the
+  // flag is actually wired through to runDriftChecks({ configPath }). Pointing
+  // it at a path that does not exist must surface the config-not-found report
+  // naming THAT path — not the default doc-drift-patterns.json.
+  const bogus = join(tmpdir(), 'no-such-doc-drift-config-xyz.json');
+  const result = spawnSync(process.execPath, [driftScript, '--config', bogus, '--json'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  const combined = `${result.stdout}\n${result.stderr}`;
+  assert.match(combined, /config file not found/, '--config must route the override into runDriftChecks');
+  assert.match(
+    combined,
+    /no-such-doc-drift-config-xyz\.json/,
+    'the error must name the operator-supplied --config path, proving it was honored (not silently ignored)',
+  );
+});
+
+test('CLI: the config-not-found hint promises --config, and that flag now exists (F-eda5a0db honesty pin)', () => {
+  // Read the source: the hint that says "pass --config explicitly" must be
+  // matched by a real parser. We assert both the hint text and the parser are
+  // present, so a future edit that drops one without the other is caught.
+  const src = readFileSync(driftScript, 'utf8');
+  assert.match(src, /pass --config explicitly/, 'the config-not-found hint still names --config');
+  assert.match(src, /export function parseConfigPath/, 'a --config parser must back the hint');
+  assert.match(src, /--config/, 'the CLI recognizes --config');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

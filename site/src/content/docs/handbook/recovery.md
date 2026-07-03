@@ -50,6 +50,10 @@ Behavior (per `packages/dogfood-swarm/commands/revalidate.js`):
 
 Restore the working tree to a named save-point AND lawfully tear down any orphaned in-flight rows that pre-date the save-point.
 
+:::danger[Destructive — can discard uncommitted work]
+`swarm rewind` runs `git reset --hard <save-point>`. With `--force` it discards **uncommitted working-tree changes irreversibly** — the same blast radius as `git reset --hard`. Without `--force` a dirty tree is refused (the safe default). Always run the dry-run first (omit `--apply`) to preview exactly what is reset and what is preserved before you commit to it.
+:::
+
 ```text
 Usage: swarm rewind <save-point-tag> --reason "<text>"
   [--apply]

@@ -54,6 +54,8 @@ import { setTimeoutPolicy, getTimeoutPolicy } from './lib/state-machine.js';
 import { buildDigest } from './lib/findings-digest.js';
 import { renderTopLevelError } from './lib/error-render.js';
 import { CliInvalidGlobsError } from './lib/errors.js';
+import { renderPhaseList, renderPhaseColumns } from './lib/phases.js';
+import { formatDomainRow } from './lib/domain-row.js';
 import {
   queryRecurringFindings,
   queryPerRepoRunHistory,
@@ -363,7 +365,7 @@ function cmdInit(args) {
 
   console.log('Domain draft (review before freezing):');
   for (const d of result.domains) {
-    console.log(`  ${d.name} (${d.ownership_class}) — ${d.matched_files} files`);
+    console.log(formatDomainRow(d, { trailer: `${d.matched_files} files` }));
   }
   if (result.unmatched.length > 0) {
     console.log(`\n  ${result.unmatched.length} unmatched files (will go to "shared" or remain unassigned)`);
@@ -386,7 +388,7 @@ function cmdDomains(args) {
     const domains = getDomains(db, runId);
     console.log(`Domains frozen for ${runId}:`);
     for (const d of domains) {
-      console.log(`  [FROZEN] ${d.name} (${d.ownership_class})${d.description ? ' — ' + d.description : ''}`);
+      console.log(formatDomainRow(d, { frozen: true }));
     }
     console.log('\nNext: swarm dispatch ' + runId + ' health-audit-a');
     return;
@@ -489,8 +491,7 @@ function cmdDomains(args) {
 
   console.log(`Domains for ${runId} [${frozen ? 'FROZEN' : 'DRAFT'}]:\n`);
   for (const d of domains) {
-    const icon = d.frozen ? 'FROZEN' : 'DRAFT';
-    console.log(`  [${icon.padEnd(6)}] ${d.name} (${d.ownership_class})${d.description ? ' — ' + d.description : ''}`);
+    console.log(formatDomainRow(d, { frozen: !!d.frozen }));
     if (d.globs.length <= 5) {
       for (const g of d.globs) console.log(`           ${g}`);
     } else {
@@ -509,7 +510,7 @@ function cmdDispatch(args) {
   const phase = args[1];
   if (!runId || !phase) {
     console.error('Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview]');
-    console.error('Phases: health-audit-a, health-audit-b, health-audit-c, health-amend-a, health-amend-b, health-amend-c, stage-d-audit, stage-d-amend, feature-audit, feature-execute');
+    console.error(`Phases: ${renderPhaseList()}`);
     process.exit(1);
   }
 
@@ -2062,11 +2063,7 @@ Domain commands:
   domains <run-id> --history                Show change events
 
 Phases:
-  health-audit-a   health-amend-a
-  health-audit-b   health-amend-b
-  health-audit-c   health-amend-c
-  stage-d-audit    stage-d-amend
-  feature-audit    feature-execute`);
+${renderPhaseColumns('  ')}`);
     process.exit(command ? 1 : 0);
   }
 

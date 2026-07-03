@@ -60,11 +60,12 @@ const DEFAULT_MANIFEST = join(
 );
 
 function parseArgs(argv) {
-  const args = { check: false, allowMissing: false, dbPath: null, manifest: null };
+  const args = { check: false, allowMissing: false, dbPath: null, manifest: null, help: false };
   const rest = argv.slice(2);
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
-    if (a === '--check') args.check = true;
+    if (a === '-h' || a === '--help') args.help = true;
+    else if (a === '--check') args.check = true;
     else if (a === '--allow-missing') args.allowMissing = true;
     else if (a === '--db') {
       args.dbPath = rest[++i];
@@ -77,6 +78,27 @@ function parseArgs(argv) {
   }
   return args;
 }
+
+const USAGE = `Usage:
+  node scripts/apply-finding-migration.mjs <manifest.json>
+  node scripts/apply-finding-migration.mjs --check <manifest.json>   (no-op preview)
+  node scripts/apply-finding-migration.mjs --db <path> <manifest.json>  (target a specific DB)
+  node scripts/apply-finding-migration.mjs --allow-missing <manifest.json>  (accept a partial miss)
+
+Applies finding-record migrations from a JSON manifest into the swarm
+control-plane DB.
+
+Default manifest path: swarms/migrations/wave-30-incidental-cross-refs.json
+Default DB path:       swarms/control-plane.db
+
+Options:
+  --check           preview only — report what would change without writing
+  --db <path>       target a specific control-plane DB
+  --allow-missing   exit 0 on a partial miss (manifest F-id absent from the DB)
+  -h, --help        this message
+
+Exit codes: 0 (applied / idempotent no-op) | 1 (read/DB/missing-finding error) | 2 (manifest validation error)
+`;
 
 function loadManifest(path) {
   if (!existsSync(path)) {
@@ -222,6 +244,10 @@ async function applyMigration(manifestPath, opts = {}) {
 
 function main() {
   const args = parseArgs(process.argv);
+  if (args.help) {
+    process.stdout.write(USAGE);
+    process.exit(0);
+  }
   const manifestPath = args.manifest
     ? resolve(process.cwd(), args.manifest)
     : DEFAULT_MANIFEST;
@@ -250,16 +276,16 @@ function main() {
       if (missing.length > 0 && !args.allowMissing) {
         if (result.cross_ref_missing_finding.length > 0) {
           console.error(
-            `ERROR: cross_ref findings not in DB: ${result.cross_ref_missing_finding.join(', ')}`
+            `[apply-finding-migration] ERROR: cross_ref findings not in DB: ${result.cross_ref_missing_finding.join(', ')}`
           );
         }
         if (result.coordinator_resolved_missing_finding.length > 0) {
           console.error(
-            `ERROR: coordinator_resolved findings not in DB: ${result.coordinator_resolved_missing_finding.join(', ')}`
+            `[apply-finding-migration] ERROR: coordinator_resolved findings not in DB: ${result.coordinator_resolved_missing_finding.join(', ')}`
           );
         }
         console.error(
-          `ERROR: the manifest run_id "${result.run_id}" matched ${result.matched}/${result.targeted} target findings in ${result.db_path} — ` +
+          `[apply-finding-migration] ERROR: the manifest run_id "${result.run_id}" matched ${result.matched}/${result.targeted} target findings in ${result.db_path} — ` +
           `${missing.length} migration${missing.length === 1 ? '' : 's'} backfilled nothing. ` +
           `Verify the run exists (\`swarm status ${result.run_id}\`) and that the manifest F-ids match that run, then re-run against the correct DB. ` +
           `If a partial miss is intentional, pass --allow-missing to accept it.`
@@ -272,12 +298,12 @@ function main() {
       if (missing.length > 0) {
         if (result.cross_ref_missing_finding.length > 0) {
           console.error(
-            `WARN: cross_ref findings not in DB (--allow-missing): ${result.cross_ref_missing_finding.join(', ')}`
+            `[apply-finding-migration] WARN: cross_ref findings not in DB (--allow-missing): ${result.cross_ref_missing_finding.join(', ')}`
           );
         }
         if (result.coordinator_resolved_missing_finding.length > 0) {
           console.error(
-            `WARN: coordinator_resolved findings not in DB (--allow-missing): ${result.coordinator_resolved_missing_finding.join(', ')}`
+            `[apply-finding-migration] WARN: coordinator_resolved findings not in DB (--allow-missing): ${result.coordinator_resolved_missing_finding.join(', ')}`
           );
         }
       }
@@ -286,7 +312,7 @@ function main() {
       process.exit(0);
     })
     .catch((e) => {
-      console.error(`ERROR: ${e.message}`);
+      console.error(`[apply-finding-migration] ERROR: ${e.message}`);
       process.exit(e.message.includes('schema mismatch') ? 2 : 1);
     });
 }

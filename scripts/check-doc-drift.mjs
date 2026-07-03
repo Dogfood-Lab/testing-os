@@ -1543,6 +1543,75 @@ export function parseCheckId(args) {
   return { checkId: value };
 }
 
+/**
+ * Resolve the `--config <path>` override from a raw argv slice.
+ *
+ * Returns `{ configPath }` (undefined when the flag is absent, so the default
+ * scripts/doc-drift-patterns.json applies) or `{ error }` when `--config` was
+ * passed without a usable value. The config-not-found hint promises this flag;
+ * without a parser the promise was dead — an operator whose config lived
+ * elsewhere read the hint, passed --config, and had it silently ignored.
+ */
+export function parseConfigPath(args) {
+  const idx = args.indexOf('--config');
+  if (idx === -1) return { configPath: undefined };
+  const value = args[idx + 1];
+  if (value === undefined || value.startsWith('--')) {
+    return { error: 'error: --config requires a path' };
+  }
+  return { configPath: value };
+}
+
+/**
+ * Parse the whole recognized flag set, rejecting anything unknown.
+ *
+ * The sibling gate check-finding-regression-pins.mjs throws on the first
+ * unrecognized token; before this, doc-drift dropped unknown flags silently,
+ * so a fat-fingered `--josn` for `--json` ran a full green/red drift pass with
+ * no signal the flag was wrong. This brings doc-drift to the same fail-loud
+ * standard. `--check <id>` and `--config <path>` each consume the following
+ * token; a bare positional or unrecognized `--flag` is an error.
+ */
+export function parseCliArgs(args) {
+  const known = new Set(['--json', '--check', '--config', '-h', '--help']);
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === '--check' || a === '--config') {
+      i++;
+      continue;
+    }
+    if (!known.has(a)) {
+      return { error: `error: unknown argument '${a}' (see --help)` };
+    }
+  }
+  const help = args.includes('-h') || args.includes('--help');
+  const json = args.includes('--json');
+  const { checkId, error: checkError } = parseCheckId(args);
+  if (checkError) return { error: checkError };
+  const { configPath, error: configError } = parseConfigPath(args);
+  if (configError) return { error: configError };
+  return { help, json, checkId, configPath };
+}
+
+export function printHelp() {
+  process.stdout.write(`Usage: node scripts/check-doc-drift.mjs [options]
+
+Source-of-truth <-> documentation cross-reference drift gate. Reads a config of
+checks (each a source/target pair) and reports where a doc has drifted from the
+code, config, or handbook it claims to mirror. Wired into \`npm run verify\` and
+ci.yml.
+
+Options:
+  --json              machine-readable JSON output (clean flag + reports[])
+  --check <id>        run a single check by its config id instead of all
+  --config <path>     use a config file other than the default
+                      (default: scripts/doc-drift-patterns.json)
+  -h, --help          this message
+
+Exit codes: 0 (no drift) | 1 (drift found) | 2 (config error / bad arguments)
+`);
+}
+
 // F-W1-CI-005: previous heuristic compared `resolve(fileURLToPath(import.meta.url))`
 // to `resolve(process.argv[1])`. That mostly works but is the same fragile
 // path-string class apply-finding-migration.mjs already fixed in W31-BACK-001:
@@ -1557,16 +1626,18 @@ if (isMain) {
   const here = dirname(fileURLToPath(import.meta.url));
   const repoRoot = resolve(here, '..');
 
-  const args = process.argv.slice(2);
-  const json = args.includes('--json');
-  const parsed = parseCheckId(args);
-  if (parsed.error) {
-    console.error(parsed.error);
+  const cli = parseCliArgs(process.argv.slice(2));
+  if (cli.error) {
+    console.error(cli.error);
     process.exit(2);
   }
-  const checkId = parsed.checkId;
+  if (cli.help) {
+    printHelp();
+    process.exit(0);
+  }
+  const { json, checkId, configPath } = cli;
 
-  runDriftChecks({ repoRoot, checkId })
+  runDriftChecks({ repoRoot, checkId, configPath })
     .then((result) => {
       if (json) {
         console.log(JSON.stringify(result, null, 2));

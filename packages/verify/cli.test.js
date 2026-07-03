@@ -173,8 +173,23 @@ describe('verify --help', () => {
     const { io, stdout } = makeIo();
     const code = await run(['--help'], io);
     assert.equal(code, 0);
-    assert.match(stdout(), /USAGE:/);
-    assert.match(stdout(), /EXIT CODES:/);
+    assert.match(stdout(), /Usage:/);
+    assert.match(stdout(), /Exit codes:/);
+  });
+
+  it('uses Title-case section headers, matching the three sibling bins', async () => {
+    // F-ac2ba3b1: verify was the lone ALL-CAPS outlier among the four backend
+    // bins (dogfood-report / dogfood-init / findings all use Title-case). Pin the
+    // converged headers so the family stays consistent.
+    const { io, stdout } = makeIo();
+    await run(['--help'], io);
+    const help = stdout();
+    for (const header of ['Usage:', 'Input', 'Output mode', 'Provenance', 'Not checked in preview:', 'Exit codes:']) {
+      assert.match(help, new RegExp(header.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `expected Title-case header "${header}" in --help`);
+    }
+    for (const capsHeader of ['USAGE:', 'OUTPUT MODE', 'PROVENANCE', 'NOT CHECKED IN PREVIEW:', 'EXIT CODES:']) {
+      assert.doesNotMatch(help, new RegExp(capsHeader.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `ALL-CAPS header "${capsHeader}" must be gone`);
+    }
   });
 });
 

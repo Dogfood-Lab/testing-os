@@ -27,9 +27,7 @@ import { IsolationError, DispatchPreconditionError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
-
-const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
-const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
+import { AUDIT_PHASES, AMEND_PHASES, renderPhaseList } from '../lib/phases.js';
 
 /**
  * D3B-003 (Wave A2 Stage C): emit a structured NDJSON event for a
@@ -159,7 +157,7 @@ export function dispatch(opts) {
   // typed-throw shape as the run-not-found / domains-not-frozen / no-domains
   // guards below.
   if (!AUDIT_PHASES.includes(opts.phase) && !AMEND_PHASES.includes(opts.phase)) {
-    const validPhases = [...AUDIT_PHASES, ...AMEND_PHASES].join(', ');
+    const validPhases = renderPhaseList();
     emitPreconditionFailed({
       runId: opts.runId,
       phase: opts.phase,

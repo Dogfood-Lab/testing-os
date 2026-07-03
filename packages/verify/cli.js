@@ -69,21 +69,21 @@ class OperatorError extends Error {
 
 const USAGE = `verify — local dry-run / explain for dogfood submissions
 
-USAGE:
+Usage:
   verify --file <path> [--explain | --json] [--provenance=stub|github]
   verify --payload '<json>' [--explain | --json] [--provenance=stub|github]
 
-INPUT (exactly one required):
+Input (exactly one required):
   --file <path>        Read the submission JSON from a file.
   --payload <json>     Pass the submission JSON inline.
 
-OUTPUT MODE (default: --explain):
+Output mode (default: --explain):
   --explain            Human-readable verdict breakdown with each rejection
                        reason classified (who must fix it). [default]
   --json               Machine-readable result for tooling. Mutually exclusive
                        with --explain.
 
-PROVENANCE (default: stub):
+Provenance (default: stub):
   --provenance=stub    No-network local check; provenance is always confirmed.
                        This is a LOCAL DRY-RUN — a real ingest re-checks
                        provenance against the source run. [default]
@@ -92,12 +92,12 @@ PROVENANCE (default: stub):
 
   -h, --help           Show this help.
 
-NOT CHECKED IN PREVIEW:
+Not checked in preview:
   not checked in preview: required_steps (needs scenario definitions).
   Scenario definitions live in the source repo; only a real ingest fetches
   them and enforces success_criteria.required_steps.
 
-EXIT CODES:
+Exit codes:
   0  accepted     1  rejected     2  operator error (bad flags / IO / JSON)`;
 
 /**

@@ -24,6 +24,8 @@
  * CLI's argv dispatch on module load.
  */
 
+import { renderPhaseList } from './phases.js';
+
 /**
  * Render a thrown error to stderr at the CLI top-level seam.
  * @param {*} e — anything thrown
@@ -82,7 +84,7 @@ function deriveHintForCode(e) {
     // enumerating the valid phases (e.runId/e.phase too); this derived fallback
     // covers any DISPATCH_INVALID_PHASE error that surfaces without a `.hint`.
     case 'DISPATCH_INVALID_PHASE':
-      return `\`${e.phase ?? '<phase>'}\` is not a known phase — valid phases: health-audit-a, health-audit-b, health-audit-c, stage-d-audit, feature-audit, health-amend-a, health-amend-b, health-amend-c, stage-d-amend, feature-execute`;
+      return `\`${e.phase ?? '<phase>'}\` is not a known phase — valid phases: ${renderPhaseList()}`;
     // D3B-004 (Wave A2 Stage C): CLI globs JSON parse / shape failure.
     case 'CLI_INVALID_GLOBS_JSON':
       return 'pass --globs \'["packages/foo/**"]\' — wrap the JSON in single quotes so the shell preserves it, and use double quotes for each glob string';

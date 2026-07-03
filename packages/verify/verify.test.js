@@ -136,7 +136,10 @@ describe('policy validation', () => {
     // no attested_by
     const result = validatePolicy(bad, { globalPolicy, repoPolicy });
     assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('attested-if-human')));
+    assert.ok(
+      result.errors.some(e => e.includes('attested-if-human')),
+      `expected an attested-if-human policy error, got: ${JSON.stringify(result.errors)}`
+    );
   });
 
   it('passes human execution_mode with attested_by', () => {
@@ -154,7 +157,10 @@ describe('policy validation', () => {
     bad.scenario_results[0].verdict = 'blocked';
     const result = validatePolicy(bad, { globalPolicy, repoPolicy });
     assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('blocked-needs-reason')));
+    assert.ok(
+      result.errors.some(e => e.includes('blocked-needs-reason')),
+      `expected a blocked-needs-reason policy error, got: ${JSON.stringify(result.errors)}`
+    );
   });
 
   it('rejects when evidence requirements not met', () => {
@@ -162,7 +168,10 @@ describe('policy validation', () => {
     bad.scenario_results[0].evidence = [];
     const result = validatePolicy(bad, { globalPolicy, repoPolicy });
     assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('evidence')));
+    assert.ok(
+      result.errors.some(e => e.includes('evidence')),
+      `expected an evidence-requirement policy error, got: ${JSON.stringify(result.errors)}`
+    );
   });
 
   it('rejects disallowed execution_mode per surface policy', () => {
@@ -171,7 +180,10 @@ describe('policy validation', () => {
     bad.scenario_results[0].attested_by = 'mike';
     const result = validatePolicy(bad, { globalPolicy, repoPolicy });
     assert.equal(result.valid, false);
-    assert.ok(result.errors.some(e => e.includes('execution_mode')));
+    assert.ok(
+      result.errors.some(e => e.includes('execution_mode')),
+      `expected an execution_mode policy error, got: ${JSON.stringify(result.errors)}`
+    );
   });
 
   it('enforces min_evidence_count PER scenario, not aggregated across scenarios [F-VERIFY-002]', () => {

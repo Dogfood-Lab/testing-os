@@ -209,28 +209,17 @@ describe('schema.js STATUS.run — wave-10 enum coverage', () => {
     // directly, so STATUS.run MUST be a superset of dispatch.js's
     // AUDIT_PHASES + AMEND_PHASES + the fixed lifecycle states.
     //
-    // We import from the source of truth (commands/dispatch.js) rather than
-    // duplicating the lists in the test, so a future phase addition that
-    // forgets schema.js will fail HERE instead of silently in production.
-    const dispatchModule = await import('./commands/dispatch.js');
-    const dispatchSrc = (await import('node:fs')).readFileSync(
-      new URL('./commands/dispatch.js', import.meta.url),
-      'utf-8'
-    );
+    // dispatch.js sets runs.status = opts.phase directly, so STATUS.run MUST be
+    // a superset of the phase vocabulary. As of the wave-10 refactor the phase
+    // lists are EXPORTED from the shared lib/phases.js (dispatch.js imports them
+    // from there — the fourth private copy this module used to guard against is
+    // gone). Import the exported constants from that single source of truth so a
+    // future phase addition that forgets schema.js fails HERE, not in production.
+    // (The test author invited exactly this: "A future refactor that exports
+    // them is welcome.")
+    const { AUDIT_PHASES, AMEND_PHASES } = await import('./lib/phases.js');
 
-    // Extract AUDIT_PHASES and AMEND_PHASES via a regex on the source.
-    // (They aren't exported — this is a deliberate consistency check, not a
-    // public API.) A future refactor that exports them is welcome; the
-    // regex-based extraction is the strict-safe minimum here.
-    const auditMatch = dispatchSrc.match(/const AUDIT_PHASES\s*=\s*\[([^\]]+)\]/);
-    const amendMatch = dispatchSrc.match(/const AMEND_PHASES\s*=\s*\[([^\]]+)\]/);
-    assert.ok(auditMatch, 'AUDIT_PHASES must be defined in dispatch.js');
-    assert.ok(amendMatch, 'AMEND_PHASES must be defined in dispatch.js');
-
-    const auditPhases = auditMatch[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
-    const amendPhases = amendMatch[1].split(',').map(s => s.trim().replace(/^['"]|['"]$/g, ''));
-
-    for (const phase of [...auditPhases, ...amendPhases]) {
+    for (const phase of [...AUDIT_PHASES, ...AMEND_PHASES]) {
       assert.ok(
         STATUS.run.includes(phase),
         `STATUS.run must include "${phase}" (dispatch.js writes it directly to runs.status)`

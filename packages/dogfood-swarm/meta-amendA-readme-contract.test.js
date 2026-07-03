@@ -292,19 +292,21 @@ function exampleInvocationsFor(cmd) {
 }
 
 /**
- * Extract AUDIT_PHASES + AMEND_PHASES from commands/dispatch.js source — the
- * authoritative phase vocabulary. Same regex-over-source approach as
- * wave10-docs-identity-drift.test.js (the lists aren't exported).
+ * Extract AUDIT_PHASES + AMEND_PHASES from lib/phases.js source — the
+ * authoritative phase vocabulary. As of the wave-10 refactor the phase lists
+ * live in the shared lib/phases.js (dispatch.js and every render site import
+ * them from there); this reads that single source of truth. Same regex-over-
+ * source approach as wave10-docs-identity-drift.test.js.
  */
 function phasesFromDispatchSource() {
   const src = readFileSync(
-    new URL('./commands/dispatch.js', import.meta.url),
+    new URL('./lib/phases.js', import.meta.url),
     'utf-8'
   );
   const auditMatch = src.match(/const AUDIT_PHASES\s*=\s*\[([^\]]+)\]/);
   const amendMatch = src.match(/const AMEND_PHASES\s*=\s*\[([^\]]+)\]/);
   assert.ok(auditMatch && amendMatch,
-    'dispatch.js must define AUDIT_PHASES and AMEND_PHASES');
+    'lib/phases.js must define AUDIT_PHASES and AMEND_PHASES');
   const parse = (s) => s.split(',').map((x) => x.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
   return new Set([...parse(auditMatch[1]), ...parse(amendMatch[1])]);
 }

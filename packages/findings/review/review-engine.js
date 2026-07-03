@@ -16,6 +16,29 @@ import { findById, loadFindings } from '../reader.js';
 import { atomicWriteFileSync } from '../lib/atomic-write.js';
 
 /**
+ * The prose + classification fields an operator may safely target with
+ * `edit --set field=value`. This is the human-facing subset of the finding
+ * contract: free-text prose and the four classification enums. Identity,
+ * lineage, and evidence fields (finding_id, schema_version, source_record_ids,
+ * evidence, status, …) are excluded — they are set by the pipeline, not edited
+ * in place. The downstream write gate (dogfood-finding.schema.json's
+ * additionalProperties:false + enum checks) is the enforcement boundary; this
+ * list is what the CLI help renders so the documented set and the gate's
+ * intent share one source. Editing an unlisted field is still refused post-hoc
+ * by the schema gate — this constant narrows the help, not the enforcement.
+ */
+export const EDITABLE_FIELDS = Object.freeze([
+  'title',
+  'summary',
+  'doctrine_statement',
+  'notes',
+  'issue_kind',
+  'root_cause_kind',
+  'remediation_kind',
+  'transfer_scope'
+]);
+
+/**
  * Perform a review action on a finding.
  *
  * @param {string} rootDir - dogfood-labs repo root
