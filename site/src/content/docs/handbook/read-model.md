@@ -19,6 +19,12 @@ commits the regenerated indexes back to `main`, so the raw URLs below always ref
 latest accepted corpus. The source of truth for every shape is the code that writes it —
 this page documents the **shipped** shapes only.
 
+:::tip[See it live]
+The **[fleet dashboard](https://dogfood-lab.github.io/testing-os/dashboard/)** renders this
+read model in a browser — every index below, fetched client-side from the same public raw
+URLs, no auth. It is itself a consumer of this contract.
+:::
+
 ## Raw URL pattern
 
 Fetch any served artifact at
