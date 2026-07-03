@@ -72,9 +72,13 @@ jobs:
       # supply the scenario file and the verdict. --precheck runs the SAME schema
       # validation the receiver will, so a malformed envelope fails here, not
       # after a wasted dispatch.
+      #
+      # Invoke the dogfood-report bin explicitly (`--package @dogfood-lab/report
+      # dogfood-report`): the published @dogfood-lab/report ships multiple bins,
+      # so a bare `npx @dogfood-lab/report` cannot pick one and fails with exit 127.
       - name: Build submission
         run: |
-          npx --yes @dogfood-lab/report \
+          npx --yes --package @dogfood-lab/report dogfood-report \
             --scenario-file scenario-results.json \
             --verdict pass \
             --precheck \
@@ -100,4 +104,4 @@ jobs:
       - name: Confirm dispatch landed (best-effort)
         continue-on-error: true
         run: |
-          npx --yes @dogfood-lab/report --status --repo "${GITHUB_REPOSITORY}"
+          npx --yes --package @dogfood-lab/report dogfood-report --status --repo "${GITHUB_REPOSITORY}"

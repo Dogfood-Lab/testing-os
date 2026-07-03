@@ -50,7 +50,7 @@ npm install -g @dogfood-lab/dogfood-swarm
 swarm --help
 ```
 
-Want your own repo's test evidence recorded here? The **[`examples/` starter kit](examples/)** gets you dispatching in five minutes (`npx @dogfood-lab/report` builds the submission; `dogfood-init` scaffolds the workflow). The operator's guide, CLI reference, schema reference, and integration recipes live in the **[handbook](https://dogfood-lab.github.io/testing-os/handbook/)**. Per-version detail is in [CHANGELOG.md](CHANGELOG.md).
+Want your own repo's test evidence recorded here? The **[`examples/` starter kit](examples/)** gets you dispatching in five minutes (`dogfood-report` builds the submission; `dogfood-init` scaffolds the workflow). The operator's guide, CLI reference, schema reference, and integration recipes live in the **[handbook](https://dogfood-lab.github.io/testing-os/handbook/)**. Per-version detail is in [CHANGELOG.md](CHANGELOG.md).
 
 ## Threat Model
 

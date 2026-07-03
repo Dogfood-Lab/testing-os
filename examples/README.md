@@ -21,7 +21,7 @@ template — copy it into your repo and fill in the blanks.
 
 4. **Check it locally first (optional).** Build a submission and dry-run it against the contract before you ever dispatch:
    ```bash
-   npx @dogfood-lab/report --scenario-file scenario-results.json --verdict pass --output submission.json
+   npx --package @dogfood-lab/report dogfood-report --scenario-file scenario-results.json --verdict pass --output submission.json
    npx @dogfood-lab/verify --file submission.json --explain
    ```
    `--explain` tells you whether it would be accepted and, if not, classifies each rejection as *your* problem (submission-bad) or *ours* (operational). One boundary: the preview cannot check `required_steps` (that needs your committed scenario definitions — see step 6); it says so in its output.
