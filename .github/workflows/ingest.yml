@@ -46,6 +46,16 @@ jobs:
 
       - run: npm ci
 
+      # The verify path imports the @dogfood-lab/schemas package ROOT, whose
+      # entry point is dist/index.js — a BUILD artifact. Without this step
+      # run.js dies at import time (ERR_MODULE_NOT_FOUND) before persisting
+      # anything, so the receiver drops the submission with the runner. CI
+      # never catches this class: `npm run verify` always builds before
+      # testing, so the unbuilt-receiver vantage exists only here. Found live
+      # by the first self-dogfood dispatch (2026-07-03); pinned in
+      # scripts/stageC-ingest-rejected-exit.test.mjs.
+      - run: npm run build
+
       - name: Run ingestion (repository_dispatch)
         id: ingest_rd
         if: github.event_name == 'repository_dispatch'

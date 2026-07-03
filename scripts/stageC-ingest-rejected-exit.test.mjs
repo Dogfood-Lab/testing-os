@@ -254,6 +254,20 @@ const CAN_EXEC = bashCanExec();
 // exit 2 (genuine fault) FAILS the job with a structured ::error::.
 // ─────────────────────────────────────────────────────────────────────────────
 
+test('receiver builds before ingesting: npm run build follows npm ci (self-dogfood live catch 2026-07-03)', () => {
+  const text = readFileSync(ingestYml, 'utf8');
+  // run.js's verify path imports the @dogfood-lab/schemas package ROOT, whose
+  // entry is dist/index.js — a build artifact. An unbuilt receiver dies at
+  // import time (ERR_MODULE_NOT_FOUND) BEFORE persisting, silently dropping
+  // the consumer's submission with the runner. CI cannot catch this vantage
+  // (npm run verify always builds first); only this structural pin does.
+  const ci = text.indexOf('npm ci');
+  const build = text.indexOf('npm run build');
+  assert.ok(ci !== -1, 'ingest.yml must npm ci');
+  assert.ok(build !== -1, 'ingest.yml must npm run build — the receiver imports build artifacts (schemas dist/)');
+  assert.ok(build > ci, 'the build step must come after npm ci');
+});
+
 test('d6-infra-B001: repository_dispatch leg — node exit 1 (rejected) does NOT fail the step', (t) => {
   if (!CAN_EXEC) return t.skip('bash-stub execution is Linux-CI-targeted; structural test below covers win32');
   const h = makeHarness(t);
