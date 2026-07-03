@@ -374,6 +374,29 @@ For the record (so they don't get lost):
 
 ---
 
+## Feature pass — waves 12–13 (run `swarm-1783007856-9fdb`, 2026-07-02/03)
+
+The approved P0 feature cut, executed as two feature-execute waves after the health pass closed. Both waves: dispatched → 5 agent outputs collected (0 ownership violations) → serial `npm run verify` green → `swarm verify` receipt → committed → pushed → CI green.
+
+**Shipped:**
+- **swarm-cp (wave 12, commit 9d6e404):** `swarm defer` / `swarm reject` terminal-disposition verbs (targeted `--ids` + mandatory `--reason`, reason-bearing `finding_events` row, mirroring cmdApprove); `deferred`/`rejected` are CLOSED for the gate so a conscious defer is no longer laundered into `fixed`-by-absence (closes the F-2c6d825d advisor wrinkle noted in Stage B/C above). collect's `buildSummary` byStatus rollup made dynamic (was dropping `unverified`/`rejected`). revalidate now re-runs the full-coverage by-absence classification when a repaired audit wave flips `failed→collected` (closes the Stage-B "revalidate does not re-run classification" gap noted above). Pins in `packages/dogfood-swarm/wave12-swarm-cp-pins.test.js`.
+- **backend (wave 12, 9d6e404):** `dogfood-verify lint --scenario <file>` — structural `validatePayload('scenario')` gate + author-time checks (required_step_undeclared, duplicate_step_id) + advisory filename↔scenario_id footgun, mirroring the VERIFY-F3 policy-lint UX.
+- **docs (wave 12, 9d6e404):** new Read Model Reference handbook page (served consumer read API). CLI reference + SHIP_GATE + 3 handbook count-refs reconciled 24→26 for the new verbs.
+- **self-dogfooding (wave 13, f8f2f76):** `.github/workflows/self-dogfood.yml` (5th workflow), `dogfood/scenarios/self-verify-gate.yaml`, README dogfood badge, structural pins in `scripts/self-dogfood-workflow.test.mjs`.
+
+**Corners cut / carried forward:**
+- **self-dogfood does NOT yet activate — TWO blockers (task_9a11fd60).** (1) The `DOGFOOD_TOKEN` secret on testing-os is INVALID — the dispatch step got `401 Bad credentials` (the secret is set, preflight passed, but the value is not a valid PAT). Mike must set a fresh fine-grained PAT (`contents: write`). (2) The Build-submission→Dispatch `submission.json` handoff failed in CI (`jq: Could not open submission.json`): running the report CLI via `npx` in the monorepo checkout shadows to the repo's own uninstalled workspace package; fixes 5ae690a/53d6427 got it past the `report`-bin-127 and workspace-shadow, but the submission still isn't produced — needs the local-CLI (`npm ci` + `node packages/report/cli.js`) or a consistent-path npx approach. Both are token-gated for end-to-end verification, so I stopped iterating (the prompt deferred self-dogfood activation to "after the secret lands"). The workflow is shipped + structurally pinned; the README badge shows its honest missing state until a self-record lands.
+- **Consumer template `examples/dogfood.yml` has the same latent npx bug (task_171ad1f7).** `npx @dogfood-lab/report` resolves a `report` bin that the PUBLISHED @dogfood-lab/report@1.8.0 does not expose (only `dogfood-report`/`dogfood-init` — the `report` alias is committed locally but never republished). Fix: republish report with the alias, or switch the template + integration docs to `dogfood-report`. A release/docs decision, left for follow-up.
+- **Wave-12 cross-domain adoption.** The backend scenario-lint golden pin required all committed scenarios to be schema-clean, which surfaced a dead undocumented `success_criteria.all_steps_pass` on `swarm-audit.yaml` (rejected by the schema). The fix (drop the field + tighten `validate-scenarios.test.mjs` to whole-document validation) was applied and adopted as coordinator-authored cross-domain work (`dogfood/**` is unowned; the test is tests-domain), re-attributed honestly in the tests-domain output. The backend agent's summary described this as deferred, but its code had actually applied it — reconciled at collect.
+- **stageD-output-dir-tracks-db.test.js is flaky under parallel `npm test`.** It snapshots the repo `swarms/` dir around a subprocess and fails if a concurrent test process's WAL sidecars (`control-plane.db-{shm,wal}`) appear in the window. Passes in isolation; unrelated to any feature code. Surfaced twice during serial verify; each time a checkpoint + sidecar cleanup + re-run went green. Candidate hardening: the test should ignore `control-plane.db-*` sidecars (they are transient SQLite artifacts, already git-ignored).
+- **Removed a dead fixture:** `packages/verify/fixtures/scenarios/invalid/not-yaml.yaml` (committed by the backend agent but referenced by no test — the parse-failure test writes its own temp file).
+- **`CLAUDE.md` still says "Four workflows"** — now five with self-dogfood.yml. Ungated (no doc-drift/test enforces the count), left as a deliberate doc-staleness rather than edit the repo's own rules file mid-feature-pass; worth a one-line reconciliation in a docs follow-up.
+- **README front-door lint advisory** flags a pre-existing line ("dogfood swarm (internal process)") as internal-status-report tone — pre-existing, not touched by the badge edit; a marketing-tone cleanup out of this pass's scope.
+
+Ledger at close: `swarm findings` shows 0 open CRIT/HIGH. The 12 open MED/LOW rows (all `unverified`) are the health-pass residuals; feature-execute waves don't reclassify findings, so they settle at the next audit-type collect (the proven fixed-by-absence flow).
+
+---
+
 ## Notes for Claude picking this up
 
 Read [CLAUDE.md](CLAUDE.md) **first**. Then pick the lowest-numbered unchecked session above and finish it. Don't skip ahead. Don't bundle sessions unless they share genuine work — each session is sized to be a clean unit.
