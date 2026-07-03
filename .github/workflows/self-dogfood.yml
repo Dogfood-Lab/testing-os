@@ -134,15 +134,18 @@ jobs:
           else
             VERDICT=fail
           fi
-          # Run the published `dogfood-report` bin explicitly via --package: the
-          # published @dogfood-lab/report exposes `dogfood-report` / `dogfood-init`,
-          # not a bare `report` bin, so `npx @dogfood-lab/report` (which resolves the
-          # package-basename bin `report`) exits 127 with "report: not found".
-          npx --yes --package @dogfood-lab/report dogfood-report \
-            --scenario-file scenario-results.json \
+          # Run the report CLI from OUTSIDE the repo checkout ($RUNNER_TEMP), with
+          # absolute file paths, so npx fetches the PUBLISHED @dogfood-lab/report
+          # from the registry. Run from the repo root, npx resolves the name to
+          # THIS monorepo's own workspace package — which has no node_modules here
+          # (no `npm ci`) — and exits 127 "not found" without ever fetching. The
+          # explicit `--package … dogfood-report` also names the published bin
+          # (the published package exposes `dogfood-report`, not a bare `report`).
+          ( cd "$RUNNER_TEMP" && npx --yes --package @dogfood-lab/report dogfood-report \
+            --scenario-file "$GITHUB_WORKSPACE/scenario-results.json" \
             --verdict "$VERDICT" \
             --precheck \
-            --output submission.json
+            --output "$GITHUB_WORKSPACE/submission.json" )
 
       # Dispatch to testing-os ITSELF (self-submission) with the PAT — NOT the
       # default GITHUB_TOKEN, which cannot trigger ingest.yml. No third-party
@@ -163,4 +166,4 @@ jobs:
       - name: Confirm dispatch landed (best-effort)
         continue-on-error: true
         run: |
-          npx --yes --package @dogfood-lab/report dogfood-report --status --repo "${GITHUB_REPOSITORY}"
+          ( cd "$RUNNER_TEMP" && npx --yes --package @dogfood-lab/report dogfood-report --status --repo "${GITHUB_REPOSITORY}" )
