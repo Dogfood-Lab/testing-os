@@ -9,9 +9,9 @@
     "preview": "astro preview"
   },
   "dependencies": {
-    "@astrojs/starlight": "^0.40.0",
+    "@astrojs/starlight": "^0.41.2",
     "@mcptoolshop/site-theme": "^1.1.0",
-    "@tailwindcss/vite": "~4.3.1",
+    "@tailwindcss/vite": "~4.3.2",
     "astro": "^6.3.3",
     "tailwindcss": "~4.3.1",
     "testing-os": "file:..",
