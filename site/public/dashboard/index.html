@@ -3,15 +3,17 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>dogfood-dashboard-v0.3</title>
+<title>dogfood-dashboard-v1.0</title>
 <!--
-  dogfood-dashboard v0.3 — single-file fleet status for testing-os.
+  dogfood-dashboard v1.0 — single-file fleet status for testing-os.
   All data URLs live in CONFIG below (first script block). Re-point `base`
   and `paths` when mounting into the Astro site; nothing else hardcodes a URL.
   v0.2 adds: per-row run-history modal, badge deep-links (shields, modal-only),
   shareable URL-hash state (#q/f/s/r), stricter no-recent-sample chip, self marker.
   v0.3 adds: fleet run-history strip (unwindowed, honest), relAge band fixes + year
   ages, status tab-title prefix, live auto-refresh countdown.
+  v1.0: nits ledger closed (deep-link race, skeleton cursor), auto-refresh persisted
+  (dogfood-dashboard.autorefresh; legacy .auto read as fallback), release stamp.
 -->
 <script>
 "use strict";
@@ -138,10 +140,11 @@ h1 .hd-sep { color: var(--faint); font-weight: 400; }
 .chip {
   display: flex; align-items: baseline; gap: 9px; text-align: left;
   background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-  padding: 12px 14px; cursor: pointer;
+  padding: 12px 14px;
   transition: background-color .15s, border-color .15s;
 }
-.chip:hover { border-color: var(--border2); }
+button.chip { cursor: pointer; }                            /* v1.0: skeleton chips are spans — no pointer/hover affordance */
+button.chip:hover { border-color: var(--border2); }
 .chip:disabled { cursor: default; opacity: .6; }
 .chip .cnum { font-size: 21px; font-weight: 650; line-height: 1; }
 .chip .clab { font-size: 12px; color: var(--dim); }
@@ -231,6 +234,7 @@ footer { border-top: 1px solid var(--border); margin-top: 26px; padding: 14px 0 
 .stamp .sname { color: var(--faint); }
 .fok { color: var(--ok-text); }
 .ferr { color: var(--bad-text); }
+.credit { margin-top: 6px; color: var(--faint); }
 
 /* skeletons */
 .skel { display: inline-block; height: 12px; border-radius: 4px; background: linear-gradient(90deg, var(--neu-tint) 25%, var(--shimmer-hi) 50%, var(--neu-tint) 75%); background-size: 200% 100%; animation: shimmer 1.2s linear infinite; vertical-align: middle; }
@@ -378,6 +382,7 @@ dialog::backdrop { background: rgba(5, 9, 14, .62); }
   <div class="wrap">
     <p>reads the public testing-os read-model · no auth, no telemetry · <a id="rmLink" href="#" target="_blank" rel="noopener">read-model handbook ↗</a></p>
     <p id="fetchStamps" class="stamps num"></p>
+    <p class="credit">v1.0 · built in Claude Design · verified &amp; shipped by Claude Code · <a id="repoLink" href="#" target="_blank" rel="noopener">dogfood-lab/testing-os ↗</a></p>
   </div>
 </footer>
 
@@ -466,7 +471,7 @@ async function refreshAll() {
   btn.disabled = false; btn.removeAttribute("aria-busy"); btn.textContent = "↻ refresh";
   if (pendingRowLink && state.ep.latest.status !== "pending") {   // v0.2: #r= deep-link, silently ignored if row is gone
     const key = pendingRowLink; pendingRowLink = null;
-    if (state.rows.some(x => x.key === key)) {
+    if (!$("#runModal").open && state.rows.some(x => x.key === key)) {   // v1.0: a user-opened modal wins over the deep-link
       openModal(key, $('#tbody .trendbtn[data-modal="' + cssEsc(key) + '"]'));
     }
   }
@@ -892,6 +897,7 @@ function modalBodyHtml(r) {
 function openModal(key, opener) {
   const dlg = $("#runModal");
   if (!dlg || !dlg.showModal) return;
+  if (dlg.open) return;                                     // v1.0: never swap the content of an open dialog
   const r = state.rows.find(x => x.key === key);
   if (!r) return;
   modalOpener = opener || null; modalKey = key;
@@ -1216,6 +1222,7 @@ function sanitizeSort(s) {
 function init() {
   $("#rmLink").href = CONFIG.links.readModel;
   $("#integrationLink").href = CONFIG.links.integration;
+  $("#repoLink").href = CONFIG.links.repoBase + (CONFIG.selfRepo || "");   // v1.0: footer credit link, CONFIG-derived
   $("#autoLbl").textContent = "auto-refresh · " + intervalLabel();
 
   const hs = readHash();                                   // v0.2: hash wins over localStorage
@@ -1225,7 +1232,8 @@ function init() {
   state.sort = hs.s || sanitizeSort(store.get("sort", null)) || { key: "worst", dir: 1 };
   if (hs.f) hs.f.forEach(c => state.chips.add(c));
   pendingRowLink = hs.r || null;
-  state.auto = store.get("auto", false) === true;
+  const storedAuto = store.get("autorefresh", null);       // v1.0: canonical key; legacy .auto read as fallback
+  state.auto = storedAuto === null ? store.get("auto", false) === true : storedAuto === true;
   $("#autoTgl").checked = state.auto;
   syncThemeBtn();
 
@@ -1270,7 +1278,7 @@ function init() {
   $("#retryBtn").addEventListener("click", refreshAll);
   $("#autoTgl").addEventListener("change", () => {
     state.auto = $("#autoTgl").checked;
-    store.set("auto", state.auto);
+    store.set("autorefresh", state.auto);                  // v1.0: dogfood-dashboard.autorefresh
     applyAuto();
   });
 
