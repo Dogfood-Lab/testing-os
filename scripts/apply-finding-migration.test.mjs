@@ -31,8 +31,15 @@
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { spawnSync } from 'node:child_process';
-import { readFileSync, existsSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdtempSync,
+  rmSync,
+} from 'node:fs';
+import { dirname, resolve, join } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -156,4 +163,168 @@ test('apply-finding-migration: guard line uses the canonical `process.argv[1] &&
     /pathToFileURL\(\s*process\.argv\[1\]\s*\)\.href\s*===\s*import\.meta\.url|import\.meta\.url\s*===\s*pathToFileURL\(\s*process\.argv\[1\]\s*\)\.href/,
     'main-entry guard must compare pathToFileURL(process.argv[1]).href against import.meta.url',
   );
+});
+
+// ── F-6042850f: missing-finding path must HARD-FAIL, not report SUCCESS ──────
+//
+// Pre-fix, applyMigration() silently `continue`d past any manifest finding_id
+// absent from the DB, main() emitted only a `WARN:` line, and the process
+// exited 0 with the "APPLIED" summary. An operator running a migration against
+// the wrong DB, a stale run_id, or a manifest with a typo'd F-id therefore saw
+// a green run while the Class #14b backfill landed nothing.
+//
+// These tests seed a REAL control-plane DB via the production openDb path
+// (CLAUDE.md rule 6 — real fixtures, no mocks), then drive the CLI with a
+// `--db <path>` targeting that temp DB:
+//
+//   RED   — a manifest whose finding_id is not in the DB exits 0 / "APPLIED".
+//   GREEN — same manifest exits 1, and the message names the missing F-id,
+//           the resolved DB path, and the manifest run_id.
+//   ESCAPE — `--allow-missing` restores exit 0 for the intentional partial-miss.
+//   CONTROL — a manifest whose finding_id IS present exits 0 without the flag.
+
+const MIGRATION_SCHEMA = 'finding-migration/v1';
+
+/**
+ * Seed a fresh control-plane DB under `dir` with one run and, optionally, one
+ * finding for that run. Returns the DB path. Uses the production openDb so the
+ * schema (including the wave-30 cross_ref / coordinator_resolved columns) is
+ * created exactly as it is in production.
+ */
+async function seedDb(dir, { runId, seedFindingId }) {
+  const { openDb, closeDb } = await import(
+    '../packages/dogfood-swarm/db/connection.js'
+  );
+  const dbPath = join(dir, 'control-plane.db');
+  const db = openDb(dbPath);
+  db.prepare(
+    `INSERT INTO runs (id, repo, local_path, commit_sha, status)
+     VALUES (?, ?, ?, ?, ?)`,
+  ).run(runId, 'dogfood-lab/testing-os', dir, 'deadbeef', 'complete');
+  if (seedFindingId) {
+    db.prepare(
+      `INSERT INTO findings
+         (run_id, finding_id, fingerprint, severity, category, description)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    ).run(runId, seedFindingId, `fp-${seedFindingId}`, 'MEDIUM', 'bug', 'seed');
+  }
+  // Release the handle so the spawned CLI process opens its own connection
+  // against the same file without WAL-writer contention on Windows.
+  closeDb(dbPath);
+  return dbPath;
+}
+
+function writeManifest(dir, { runId, crossRefFindingId }) {
+  const manifestPath = join(dir, 'manifest.json');
+  writeFileSync(
+    manifestPath,
+    JSON.stringify({
+      schema: MIGRATION_SCHEMA,
+      run_id: runId,
+      cross_ref_migrations: [
+        {
+          finding_id: crossRefFindingId,
+          cross_ref: { file: 'x.js', symbol: 'y', line: 1 },
+          verified_via_evidence: 'test',
+        },
+      ],
+      coordinator_resolved_migrations: [],
+    }),
+    'utf8',
+  );
+  return manifestPath;
+}
+
+function runMigration(args, cwd) {
+  return spawnSync(process.execPath, [targetScript, ...args], {
+    cwd,
+    encoding: 'utf8',
+  });
+}
+
+test('apply-finding-migration: a manifest F-id absent from the DB hard-fails (exit 1) naming the F-id, DB path, and run_id (F-6042850f)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afm-missing-'));
+  try {
+    const runId = 'swarm-test-missing-0001';
+    const dbPath = await seedDb(dir, { runId, seedFindingId: 'F-present-01' });
+    // Manifest targets a finding_id that was NOT seeded → missing in the DB.
+    const manifestPath = writeManifest(dir, {
+      runId,
+      crossRefFindingId: 'F-typo-99',
+    });
+
+    const result = runMigration(['--db', dbPath, manifestPath], dir);
+
+    assert.equal(
+      result.status,
+      1,
+      `missing-finding migration must exit 1, not report SUCCESS (F-6042850f). ` +
+        `Got exit ${result.status}.\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+    );
+    const combined = `${result.stdout}\n${result.stderr}`;
+    assert.match(
+      combined,
+      /F-typo-99/,
+      'failure message must name the missing F-id (WHAT)',
+    );
+    assert.match(
+      combined,
+      /control-plane\.db/,
+      'failure message must name the resolved DB path (WHERE)',
+    );
+    assert.match(
+      combined,
+      /swarm-test-missing-0001/,
+      'failure message must name the manifest run_id (WHERE)',
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('apply-finding-migration: --allow-missing restores exit 0 for an intentional partial-miss (F-6042850f escape hatch)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afm-allow-'));
+  try {
+    const runId = 'swarm-test-allow-0001';
+    const dbPath = await seedDb(dir, { runId, seedFindingId: 'F-present-01' });
+    const manifestPath = writeManifest(dir, {
+      runId,
+      crossRefFindingId: 'F-typo-99',
+    });
+
+    const result = runMigration(
+      ['--db', dbPath, '--allow-missing', manifestPath],
+      dir,
+    );
+
+    assert.equal(
+      result.status,
+      0,
+      `--allow-missing must restore exit 0.\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('apply-finding-migration: a manifest whose F-id is present applies and exits 0 without --allow-missing (F-6042850f control)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afm-present-'));
+  try {
+    const runId = 'swarm-test-present-0001';
+    const dbPath = await seedDb(dir, { runId, seedFindingId: 'F-present-01' });
+    const manifestPath = writeManifest(dir, {
+      runId,
+      crossRefFindingId: 'F-present-01',
+    });
+
+    const result = runMigration(['--db', dbPath, manifestPath], dir);
+
+    assert.equal(
+      result.status,
+      0,
+      `all-present migration must exit 0.\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+    );
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

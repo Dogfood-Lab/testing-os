@@ -95,7 +95,19 @@ export function validateRequiredSteps(scenarioResult, requiredSteps) {
 
   if (!step_results) return ['[step-results-present] step_results missing'];
 
-  const resultMap = new Map(step_results.map(s => [s.step_id, s]));
+  // F-ad98b5ac: build the map defensively — the same floor the sibling
+  // validateStepResults applies (its verify-B-004 guard). A null / non-object /
+  // string-step_id-less element must not throw a TypeError here: that TypeError
+  // escapes to runValidator('steps', ...) which mislabels it as an operational
+  // VALIDATOR_FAULT_STEPS, inverting a submission-bad signal into an ops fault
+  // (the F-efe4f893 family inversion). Structural malformed-step *reporting*
+  // stays validateStepResults' job; this only stops the map build from throwing.
+  const resultMap = new Map();
+  for (const s of step_results) {
+    if (s != null && typeof s === 'object' && typeof s.step_id === 'string') {
+      resultMap.set(s.step_id, s);
+    }
+  }
 
   // Every required step must have a matching step_result
   for (const stepId of requiredSteps) {

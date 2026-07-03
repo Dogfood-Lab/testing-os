@@ -63,6 +63,10 @@ jobs:
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
+          # F-d31dfc55: runtime pin — keep in lockstep with the ci.yml node
+          # matrix (source of truth, currently [22, 24]; see ci.yml
+          # `node-version: [22, 24]`). Publish on the lower LTS; the npm >=11.5
+          # sandbox step below shadows Node 22's bundled npm for OIDC.
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
           cache: npm

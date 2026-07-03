@@ -66,3 +66,39 @@ test('PB-CI-003: a step emits a ::warning:: when run.js signals a stale index (d
     'ingest.yml must emit a ::warning:: when the stale-index signal is present so the degraded run shows on the summary (PB-CI-003) — mirroring the push-retry ::warning:: discipline.',
   );
 });
+
+test('F-f05363e2: a badge/trends regeneration failure ALSO writes a note to $GITHUB_STEP_SUMMARY (not just an inline ::warning::)', () => {
+  const text = readFileSync(ingestPath, 'utf8');
+  // The badge/trends regen step degrades a generate.js failure to a non-fatal
+  // ::warning:: (correct — a dropped record is worse than stale badges). But
+  // pre-fix that inline annotation was the ONLY signal; an operator scanning
+  // the run SUMMARY page saw green with no note that the served README badges
+  // are now stale. The fix mirrors the 'Warn on stale indexes' step: on the
+  // fallback branch it also appends a heading + note to $GITHUB_STEP_SUMMARY.
+  //
+  // Text-token assertions (no YAML parse), same rationale as the sibling
+  // PB-CI-003 checks above. Goes RED if the summary write is dropped.
+  assert.match(
+    text,
+    /### Badge\/trends regeneration skipped/,
+    'ingest.yml must append a "### Badge/trends regeneration skipped" heading to $GITHUB_STEP_SUMMARY on the badge/trends regen fallback branch (F-f05363e2).',
+  );
+  // Scope the summary-write assertion to the badge/trends context so a future
+  // edit that keeps the stale-index summary write but drops the badge one still
+  // fails: the heading and its GITHUB_STEP_SUMMARY redirect must co-occur in a
+  // window that also mentions the badge/trends generator.
+  const badgeWindow = text.slice(
+    text.indexOf('### Badge/trends regeneration skipped') - 400,
+    text.indexOf('### Badge/trends regeneration skipped') + 400,
+  );
+  assert.match(
+    badgeWindow,
+    /GITHUB_STEP_SUMMARY/,
+    'the "Badge/trends regeneration skipped" note must be written to $GITHUB_STEP_SUMMARY (F-f05363e2).',
+  );
+  assert.match(
+    badgeWindow,
+    /generate\.js|badge|trends/i,
+    'the badge/trends summary note must sit on the generate.js fallback branch (F-f05363e2).',
+  );
+});

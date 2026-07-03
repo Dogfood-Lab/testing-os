@@ -508,7 +508,7 @@ function cmdDispatch(args) {
   const runId = args[0];
   const phase = args[1];
   if (!runId || !phase) {
-    console.error('Usage: swarm dispatch <run-id> <phase>');
+    console.error('Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview]');
     console.error('Phases: health-audit-a, health-audit-b, health-audit-c, health-amend-a, health-amend-b, health-amend-c, stage-d-audit, stage-d-amend, feature-audit, feature-execute');
     process.exit(1);
   }
@@ -557,7 +557,7 @@ function cmdDispatch(args) {
       console.log(`  ${f.finding_id} [${f.severity}] ${f.file_path || '(no file_path — cannot match any domain glob)'}`);
     }
     console.log('  These findings stay OPEN and block the severity gate, but no amend agent will receive them.');
-    console.log('  Fix manually + verify via the coordinator_resolved path, or close with `swarm approve --defer/--reject`.');
+    console.log('  Close them via the coordinator_resolved path: land the fix yourself, and for anchorless (architectural/doc-level) ones attach `coordinator_resolved: true` + a one-line `verified_via_evidence` so `swarm verify-fixed <run-id>` classifies the closure as allowlist instead of unverifiable.');
   }
 
   if (result.dryRun) {
@@ -864,6 +864,20 @@ function cmdResume(args) {
     outputDir: getOutputDir(runId),
   });
   console.log(formatResume(r));
+
+  // F-3c489002 (Stage C): the SUCCESS actions used to end with no next verb,
+  // breaking the "every terminal surface hands the operator the next step"
+  // discipline `swarm dispatch` ("When done, run: swarm collect") and `swarm
+  // collect` ("Next: swarm status") uphold. Print an action-specific Next line
+  // so a just-resumed operator is told exactly what to run — the redispatched
+  // case additionally names the agent-execution step so collect is not run
+  // before the redispatched agents finish. Both route to `swarm collect`.
+  if (r.action === 'redispatched') {
+    const n = r.redispatch.length;
+    console.log(`\nNext: run the ${n} redispatched agent(s) with the prompts above, then swarm collect ${runId}`);
+  } else if (r.action === 'all_complete') {
+    console.log(`\nNext: swarm collect ${runId}`);
+  }
 
   // d5-swarm-cli-B002 (Stage C): `swarm resume` sits in the same scripted
   // operator chain as the verify/persist/findings gate verbs (`swarm resume &&
@@ -1885,6 +1899,16 @@ Commands:
   dispatch <run-id> <phase>  Create wave + agent prompts
                              Flags: --auto-freeze, --isolate, --skip-verify,
                              --dry-run (alias --preview)
+                             --isolate: give each agent its own git worktree so
+                             its edits are independently attributable (collect
+                             diffs the agent's branch, not just self-reported
+                             files_changed). This is the remediation for the
+                             OWNERSHIP PROBE DEGRADED banner: a non-isolated
+                             multi-domain amend wave cannot independently catch a
+                             cross-domain write, so re-dispatch with --isolate to
+                             restore full cross-domain ownership attribution.
+                             Requires git (see swarm doctor's git-available
+                             check).
                              --dry-run: preview the wave shape (which domains
                              become agents, the prompt paths that WOULD be
                              written, amend-phase approved-finding routing

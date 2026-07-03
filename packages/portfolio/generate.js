@@ -414,7 +414,18 @@ function main() {
   }
 
   if (!existsSync(INDEX_PATH)) {
+    // F-2130e264 (Stage C humanization): the missing-index branch is the most
+    // common first-run state (indexes/ is a generated runtime dir, not
+    // committed) yet was the only index-fault path with no recovery hint — its
+    // corrupt-index and wrong-shape siblings below both name the fix. Give it the
+    // same second line so a fresh-checkout operator knows an ingest must run
+    // first, not that the tool or their checkout is broken.
     console.error(`Index not found: ${INDEX_PATH}`);
+    console.error(
+      'The portfolio reads indexes/latest-by-repo.json, which ingest generates. ' +
+      'Run an ingest first (node packages/ingest/run.js ...) to create it — ' +
+      'the rebuild scans records/ end-to-end.'
+    );
     process.exit(1);
   }
 

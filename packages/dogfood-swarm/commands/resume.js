@@ -86,6 +86,7 @@ export function resume(opts) {
   `).all(wave.id);
 
   const report = {
+    runId: opts.runId,
     waveId: wave.id,
     waveNumber: wave.wave_number,
     phase: wave.phase,
@@ -349,6 +350,19 @@ export function formatResume(r) {
       lines.push(`  [STOP] ${a.domain} — ${a.status}: ${a.error || 'no details'}`);
     }
     lines.push(`  Recovery: \`swarm revalidate <run-id> --reason "<text>" --domain=<domain>:<corrected.json> --apply\` (lawful override; dry-run without --apply).`);
+  }
+
+  // F-1a094f15: `unknown` is the one terminal action that means "I cannot
+  // classify this wave" (cmdResume exits 1 on it), yet it alone had no recovery
+  // guidance — its `blocked` sibling names `swarm revalidate`, but the case that
+  // most warrants a next verb got the least help. Hand the operator the same
+  // paste-ready diagnostic chain the blocked branch does: `swarm status` (the
+  // assessment + next-verb router), `swarm history` (the transition chain that
+  // shows how the wave reached this state), and `swarm receipt` (the durable
+  // wave artifact). Interpolate the run/wave ids so each line runs as-is.
+  if (r.action === 'unknown') {
+    lines.push('');
+    lines.push(`Next: inspect with \`swarm status ${r.runId}\` (assessment + next verb), \`swarm history ${r.waveId}\` (transition chain), or \`swarm receipt ${r.runId} ${r.waveNumber}\`.`);
   }
 
   return lines.join('\n');

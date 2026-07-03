@@ -422,10 +422,27 @@ function extractStepSection(yamlText, stepName) {
 test('STRUCTURAL F-caeeacc3: badge/trends regeneration is non-fatal (commit step always reachable)', () => {
   const yaml = readFileSync(ingestYml, 'utf8');
   const block = extractRunBlock(yaml, 'Regenerate served badges \\+ trends');
+  // The generate.js invocation must be non-fatal so a portfolio bug cannot skip
+  // the commit step and drop the persisted record (F-caeeacc3). The fallback may
+  // be the single-line `|| echo "::warning::..."` OR a `|| { ...; }` block — the
+  // block form is required once the fallback also appends a $GITHUB_STEP_SUMMARY
+  // note (F-f05363e2). Both swallow the failure; assert the invariant, not the
+  // exact shape: generate.js is followed by a `||` fallback, that fallback still
+  // surfaces the ::warning:: signal, and nothing in it exits non-zero.
   assert.match(
     block,
-    /node packages\/portfolio\/generate\.js\s*\|\|\s*echo "::warning::/,
-    'the generate.js invocation must be non-fatal (`|| echo "::warning::..."`) so a portfolio bug cannot skip the commit step and drop the persisted record (F-caeeacc3)',
+    /node packages\/portfolio\/generate\.js\s*\|\|\s*(\{|echo "::warning::)/,
+    'the generate.js invocation must be non-fatal (`|| echo ...` or `|| { ... }`) so a portfolio bug cannot skip the commit step and drop the persisted record (F-caeeacc3)',
+  );
+  assert.match(
+    block,
+    /::warning::/,
+    'the non-fatal fallback must still surface a ::warning:: so a failed regeneration is not silent (F-caeeacc3)',
+  );
+  assert.doesNotMatch(
+    block,
+    /\bexit 1\b/,
+    'the badge/trends fallback must not exit 1 — a red step between persist and commit discards the persisted record (F-caeeacc3)',
   );
 });
 

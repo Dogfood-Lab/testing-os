@@ -659,11 +659,17 @@ export function upsertFindings(db, runId, waveId, classified) {
       }
     }
 
-    // Mark fixed findings
+    // Mark fixed findings.
+    // F-2c6d825d: classified.fixed holds priors that were IN a full-coverage
+    // wave's scope but NOT re-reported — closed by absence, not by a
+    // rediscovered-then-fixed event. Stamp the closure with a distinguishing
+    // note so an operator reading finding_events can tell a by-absence closure
+    // from a by-fix one. Observability only: status is still 'fixed', the
+    // bucketing and the gate are unchanged.
     for (const f of classified.fixed) {
       if (f.id) {
         updateFixed.run(waveId, f.id);
-        insertEvent.run(f.id, 'fixed', waveId, null);
+        insertEvent.run(f.id, 'fixed', waveId, 'closed by absence — not rediscovered in full-coverage re-audit');
         fixed++;
       }
     }

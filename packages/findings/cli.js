@@ -1323,6 +1323,20 @@ Structured output:
 }
 
 main().catch(err => {
-  console.error(err);
+  // F-26179cb8 (Stage C humanization): render the repo-wide structured envelope
+  // sibling bins use (report/cli.js emitError, report/init.js) instead of
+  // dumping the raw Error/stack. The raw stack is a triage aid, not a default —
+  // it stays behind DEBUG so a mis-rooted checkout or an un-caught throw gives
+  // the operator `ERROR [<CODE>]:` + a next step, not a bare Node stack.
+  const code = err && err.code ? err.code : 'UNEXPECTED';
+  const message = err && err.message ? err.message : String(err);
+  console.error(`ERROR [${code}]: ${message}`);
+  console.error(
+    '  Next: run from the testing-os repo root, or set FINDINGS_REPO_ROOT to it; ' +
+    'run `dogfood findings --help` for usage. Re-run with DEBUG=1 for the stack.'
+  );
+  if (process.env.DEBUG && err && err.stack) {
+    console.error(err.stack);
+  }
   process.exit(2);
 });

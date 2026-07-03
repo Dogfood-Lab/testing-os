@@ -18,6 +18,7 @@ import assert from 'node:assert/strict';
 import {
   validateFeatureOutput,
   validateAmendOutput,
+  validateAuditOutput,
 } from './lib/output-schema.js';
 
 describe('output-schema null array elements (F-VERIFYCLI-002)', () => {
@@ -69,5 +70,37 @@ describe('output-schema null array elements (F-VERIFYCLI-002)', () => {
     });
     assert.equal(result.valid, false);
     assert.ok(result.errors.some((e) => e.includes('fixes[1]')), `errors: ${result.errors.join('; ')}`);
+  });
+
+  // F-ff7d71b5: validateAuditOutput is the highest-traffic path (every audit
+  // wave routes through it), yet the null-element contract was only pinned for
+  // the feature/amend validators. validateAuditOutput hands each element to
+  // validateFinding, whose `!finding || typeof finding !== 'object'` guard is
+  // what keeps a [null] findings array on the {valid, errors} contract rather
+  // than a raw TypeError — pin it here so removing that guard fails loud.
+  it('validateAuditOutput returns {valid:false} on a [null] findings array (no throw)', () => {
+    let result;
+    assert.doesNotThrow(() => {
+      result = validateAuditOutput({ domain: 'backend', stage: 'A', summary: 'x', findings: [null] });
+    });
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes('findings[0]')), `errors: ${result.errors.join('; ')}`);
+  });
+
+  it('validateAuditOutput flags a null element among valid ones (no throw)', () => {
+    let result;
+    assert.doesNotThrow(() => {
+      result = validateAuditOutput({
+        domain: 'backend',
+        stage: 'A',
+        summary: 'x',
+        findings: [
+          { id: 'F-1', severity: 'HIGH', category: 'bug', description: 'ok' },
+          null,
+        ],
+      });
+    });
+    assert.equal(result.valid, false);
+    assert.ok(result.errors.some((e) => e.includes('findings[1]')), `errors: ${result.errors.join('; ')}`);
   });
 });

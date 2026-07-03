@@ -713,6 +713,43 @@ function emitCliErrorEvent({ failedStage, correlationId, submissionId = null, er
 // --- CLI entrypoint ---
 // When run directly, reads submission from stdin or file argument
 
+// F-9a65b10c (Stage C humanization): the write-path CLI ships a USAGE block like
+// every other bin (verify/cli.js, report/cli.js, portfolio/generate.js). This is
+// the only operator-facing entry point that writes records, so its reference has
+// to live IN the tool, not scattered across docs.
+const USAGE = `ingest — persist a dogfood submission (verify → policy → provenance → write)
+
+USAGE:
+  node packages/ingest/run.js --file <path>   --provenance=github|stub
+  node packages/ingest/run.js --payload '<json>' --provenance=github|stub
+  echo '<json>' | node packages/ingest/run.js --provenance=github|stub
+
+INPUT (exactly one; stdin used when neither flag is given):
+  --file <path>        Read the submission JSON from a file.
+  --payload <json>     Pass the submission JSON inline.
+  (stdin)              Pipe the submission JSON on stdin.
+
+PROVENANCE (required for an ingest):
+  --provenance=github  Confirm the source run via the GitHub API.
+  --provenance=stub    No-network local confirm (dry-run / dev only).
+
+MODES:
+  --verify-only        Run the full pipeline WITHOUT writing or rebuilding
+                       indexes; report where a real ingest WOULD have landed.
+
+STANDALONE AUDIT VERBS (no submission, no stdin, no --provenance):
+  --verify-chain       Verify the append-only integrity ledger (offline).
+    --reconcile        Also fail on on-disk records missing from the ledger.
+    --all              Report every independent break instead of the first.
+  --anchor-compute     Compute + write the next XRPL anchor manifest (offline).
+  --anchor-post        Compute if needed + post the anchor to XRPL (needs XRPL_SEED).
+  --anchor-verify      Verify local manifests + run the truncation check (offline).
+
+  -h, --help           Show this help.
+
+EXIT CODES:
+  0  success     1  integrity/audit break     2  operator error (flags / IO / JSON)`;
+
 const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(__dirname, 'run.js');
 
 if (isMain) {
@@ -743,6 +780,7 @@ if (isMain) {
   //     per-record-independent break and report every break in one pass.
   let reconcileFlag = false;
   let allBreaksFlag = false;
+  let helpFlag = false;
   // Anchor verbs (optional, off-by-default, operator-run). --anchor-compute and
   // --anchor-verify are fully offline (never import xrpl); --anchor-post lazily
   // loads the optional xrpl package and needs XRPL_SEED.
@@ -849,9 +887,18 @@ if (isMain) {
     } else if (arg === '--anchor-trusted' && hasValue) {
       // Comma-separated trusted anchor accounts (UNIONed with the bundled list).
       anchorTrustedAccounts = takeValue().split(',').map((s) => s.trim()).filter(Boolean);
+    } else if (arg === '-h' || arg === '--help' || arg === '--usage') {
+      helpFlag = true;
     } else {
       positionalArgs.push(args[i]);
     }
+  }
+
+  // F-9a65b10c: print USAGE and exit 0 before any input resolution — help must
+  // never block on stdin or demand a --provenance flag.
+  if (helpFlag) {
+    console.log(USAGE);
+    process.exit(0);
   }
 
   // --verify-chain is a standalone, side-effect-free audit: it reads only the
@@ -936,6 +983,19 @@ if (isMain) {
   }
 
   if (!submissionJson) {
+    // F-aa67ea9a (Stage C humanization): guard an interactive stdin. Without a
+    // piped payload, `for await (…process.stdin)` blocks forever at a TTY —
+    // exactly what a first-run operator who forgot to pipe input types — and
+    // looks like a hang. Fail fast with the same empty-state error verify/cli.js
+    // gives, naming the concrete input levers.
+    if (process.stdin.isTTY) {
+      console.error('ERROR: no submission provided');
+      console.error(
+        "  hint: pass --file <path> or --payload '<json>', or pipe JSON on stdin; " +
+        'run --help for usage.'
+      );
+      process.exit(2);
+    }
     // Read from stdin
     const chunks = [];
     for await (const chunk of process.stdin) {

@@ -25,12 +25,25 @@
  * Usage:
  *   node scripts/apply-finding-migration.mjs <manifest.json>
  *   node scripts/apply-finding-migration.mjs --check <manifest.json>   (no-op preview)
+ *   node scripts/apply-finding-migration.mjs --db <path> <manifest.json>  (target a specific DB)
+ *   node scripts/apply-finding-migration.mjs --allow-missing <manifest.json>  (see below)
  *
  * Default manifest path: swarms/migrations/wave-30-incidental-cross-refs.json
+ * Default DB path:       swarms/control-plane.db
+ *
+ * Missing-finding contract (F-6042850f):
+ *   If the manifest references a finding_id that is not present in the target
+ *   DB for the manifest's run_id, the migration for that finding is a no-op —
+ *   the field it was meant to backfill stays empty. This is almost always an
+ *   operator error (wrong DB, stale run_id, or a typo'd F-id), so by default
+ *   the script HARD-FAILS (exit 1) naming the missing F-ids, the resolved DB
+ *   path, and the run_id. Pass --allow-missing to opt into an intentional
+ *   partial-miss (exit 0 with the missing F-ids surfaced as a warning).
  *
  * Exit codes:
  *   0 — migrations applied (or already applied; idempotent no-op)
- *   1 — manifest read/parse error, finding not found, or DB error
+ *   1 — manifest read/parse error, DB error, or a manifest F-id was absent from
+ *       the DB and --allow-missing was not passed
  *   2 — manifest validation failed (schema mismatch)
  */
 
@@ -47,10 +60,16 @@ const DEFAULT_MANIFEST = join(
 );
 
 function parseArgs(argv) {
-  const args = { check: false, manifest: null };
-  for (const a of argv.slice(2)) {
+  const args = { check: false, allowMissing: false, dbPath: null, manifest: null };
+  const rest = argv.slice(2);
+  for (let i = 0; i < rest.length; i++) {
+    const a = rest[i];
     if (a === '--check') args.check = true;
-    else if (a.startsWith('--')) {
+    else if (a === '--allow-missing') args.allowMissing = true;
+    else if (a === '--db') {
+      args.dbPath = rest[++i];
+      if (!args.dbPath) throw new Error('--db requires a path argument');
+    } else if (a.startsWith('--')) {
       throw new Error(`Unknown flag: ${a}`);
     } else {
       args.manifest = a;
@@ -124,7 +143,18 @@ async function applyMigration(manifestPath, opts = {}) {
     WHERE run_id = ? AND finding_id = ?
   `);
 
+  const targeted =
+    manifest.cross_ref_migrations.length +
+    manifest.coordinator_resolved_migrations.length;
+
   const result = {
+    // F-6042850f: context the failure message needs to be self-contained —
+    // WHERE (db_path + run_id) and how many of the manifest's target findings
+    // were actually found in the DB (matched/targeted).
+    run_id: manifest.run_id,
+    db_path: resolvedDbPath,
+    targeted,
+    matched: 0,
     cross_ref_applied: 0,
     cross_ref_skipped_already_set: 0,
     cross_ref_missing_finding: [],
@@ -143,6 +173,7 @@ async function applyMigration(manifestPath, opts = {}) {
         result.cross_ref_missing_finding.push(m.finding_id);
         continue;
       }
+      result.matched++;
       const newJson = JSON.stringify(m.cross_ref);
       // Idempotent skip: if the existing cross_ref already matches the
       // new one, there's nothing to do. We compare on the parsed JSON to
@@ -170,6 +201,7 @@ async function applyMigration(manifestPath, opts = {}) {
         result.coordinator_resolved_missing_finding.push(m.finding_id);
         continue;
       }
+      result.matched++;
       const alreadySet =
         existing.coordinator_resolved === 1 &&
         existing.verified_via_evidence === m.verified_via_evidence;
@@ -193,8 +225,9 @@ function main() {
   const manifestPath = args.manifest
     ? resolve(process.cwd(), args.manifest)
     : DEFAULT_MANIFEST;
+  const dbPath = args.dbPath ? resolve(process.cwd(), args.dbPath) : null;
 
-  applyMigration(manifestPath, { check: args.check })
+  applyMigration(manifestPath, { check: args.check, dbPath })
     .then((result) => {
       const verb = args.check ? 'WOULD APPLY' : 'APPLIED';
       console.error(
@@ -202,16 +235,53 @@ function main() {
         `cross_ref(${result.cross_ref_applied}/${result.cross_ref_applied + result.cross_ref_skipped_already_set}), ` +
         `allowlist(${result.coordinator_resolved_applied}/${result.coordinator_resolved_applied + result.coordinator_resolved_skipped_already_set})`
       );
-      if (result.cross_ref_missing_finding.length > 0) {
+
+      const missing = [
+        ...result.cross_ref_missing_finding,
+        ...result.coordinator_resolved_missing_finding,
+      ];
+
+      // F-6042850f: a manifest F-id absent from the DB means the field this
+      // migration exists to backfill stayed empty. Emitting only a WARN and
+      // exiting 0 (the pre-fix behavior) let a run against the wrong DB, a
+      // stale run_id, or a typo'd F-id report SUCCESS while nothing landed.
+      // Fail closed by default — name WHAT is missing, WHERE, and the next
+      // command to verify — unless the operator opted into a partial-miss.
+      if (missing.length > 0 && !args.allowMissing) {
+        if (result.cross_ref_missing_finding.length > 0) {
+          console.error(
+            `ERROR: cross_ref findings not in DB: ${result.cross_ref_missing_finding.join(', ')}`
+          );
+        }
+        if (result.coordinator_resolved_missing_finding.length > 0) {
+          console.error(
+            `ERROR: coordinator_resolved findings not in DB: ${result.coordinator_resolved_missing_finding.join(', ')}`
+          );
+        }
         console.error(
-          `WARN: cross_ref findings not in DB: ${result.cross_ref_missing_finding.join(', ')}`
+          `ERROR: the manifest run_id "${result.run_id}" matched ${result.matched}/${result.targeted} target findings in ${result.db_path} — ` +
+          `${missing.length} migration${missing.length === 1 ? '' : 's'} backfilled nothing. ` +
+          `Verify the run exists (\`swarm status ${result.run_id}\`) and that the manifest F-ids match that run, then re-run against the correct DB. ` +
+          `If a partial miss is intentional, pass --allow-missing to accept it.`
         );
+        console.log(JSON.stringify(result, null, 2));
+        process.exit(1);
       }
-      if (result.coordinator_resolved_missing_finding.length > 0) {
-        console.error(
-          `WARN: coordinator_resolved findings not in DB: ${result.coordinator_resolved_missing_finding.join(', ')}`
-        );
+
+      // Partial miss accepted via --allow-missing: keep the gap loud but green.
+      if (missing.length > 0) {
+        if (result.cross_ref_missing_finding.length > 0) {
+          console.error(
+            `WARN: cross_ref findings not in DB (--allow-missing): ${result.cross_ref_missing_finding.join(', ')}`
+          );
+        }
+        if (result.coordinator_resolved_missing_finding.length > 0) {
+          console.error(
+            `WARN: coordinator_resolved findings not in DB (--allow-missing): ${result.coordinator_resolved_missing_finding.join(', ')}`
+          );
+        }
       }
+
       console.log(JSON.stringify(result, null, 2));
       process.exit(0);
     })
