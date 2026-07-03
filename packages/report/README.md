@@ -69,7 +69,7 @@ The package ships three bins:
 |-----|------------|
 | `dogfood-report` | The **canonical** CLI name — use this in scripts and docs. |
 | `dogfood-init` | Scaffolds the dogfood workflow into a consumer repo (`--check` audits an existing onboarding). |
-| `report` | A **latent npx default-bin alias** (F-74883f98). It is **not in the currently-published package** — `@dogfood-lab/report@1.8.0` on npm exposes only `dogfood-report` + `dogfood-init` — so a bare `npx @dogfood-lab/report` fails with "could not determine executable to run" (exit 127) today. Even once published it is deliberately generic: it claims the common executable name `report` in `.bin/` and can collide with other tooling. **Do not depend on it.** Always call the canonical bin explicitly — `npx --package @dogfood-lab/report dogfood-report` (or `dogfood-report` on an install). The starter-kit templates use exactly that explicit form. |
+| `report` | An **npx default-bin alias** (F-74883f98), **published since v1.9.0** — a bare `npx @dogfood-lab/report` resolves against the registry (it exited 127 on ≤1.8.0, which never shipped the alias). It remains deliberately generic: it claims the common executable name `report` in `.bin/` and can collide with other tooling. **Do not depend on it.** Always call the canonical bin explicitly — `npx --package @dogfood-lab/report dogfood-report` (or `dogfood-report` on an install). The starter-kit templates use exactly that explicit form. |
 
 ## Error shape
 

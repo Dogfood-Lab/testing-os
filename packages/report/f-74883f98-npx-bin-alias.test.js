@@ -3,20 +3,20 @@
  *
  * `npx @dogfood-lab/report` only resolves when the package declares a bin whose
  * name matches the UNSCOPED package name — npm's multi-bin rule. The source
- * declares `dogfood-report`, `dogfood-init`, and a generic `report` alias, so a
- * bare `npx @dogfood-lab/report` resolves ONLY if that alias is actually
- * PUBLISHED. It is not: `@dogfood-lab/report@1.8.0` on npm exposes only
- * `dogfood-report` + `dogfood-init`, so a bare invocation fails with exit 127
- * ("could not determine executable to run") for every consumer copying the
- * template.
+ * declares `dogfood-report`, `dogfood-init`, and a generic `report` alias.
+ * History: releases ≤1.8.0 never shipped the alias, so a bare invocation
+ * failed with exit 127 ("could not determine executable to run") for every
+ * consumer copying the template; the v1.9.0 lockstep publish shipped it, and
+ * the bare form resolves against the registry from then on (verified live
+ * 2026-07-03: `npx --yes @dogfood-lab/report@1.9.0 --help` → exit 0).
  *
- * Resolution (task_171ad1f7, Option 2 — docs/template fix, no republish): the
- * shipped consumer template and the onboarding docs invoke the canonical bin
- * explicitly via `npx --yes --package @dogfood-lab/report dogfood-report`. That
- * form works against the published package regardless of the alias AND never
- * claims the generic `report` name in `.bin/` (a documented collision footgun —
- * see README.md). The `report` alias stays declared in package.json as a latent
- * convenience a future republish would activate; nothing depends on it.
+ * Resolution (task_171ad1f7, Option 2 — chosen BEFORE the 1.9.0 publish and
+ * still binding after it): the shipped consumer template and the onboarding
+ * docs invoke the canonical bin explicitly via
+ * `npx --yes --package @dogfood-lab/report dogfood-report`. That form works
+ * against every published version AND never claims the generic `report` name
+ * in `.bin/` (a documented collision footgun — see README.md). The alias is a
+ * convenience for humans at a shell; nothing shipped depends on it.
  *
  * This suite therefore pins BOTH the alias's continued presence (a structural
  * fact — assertions 1–2) AND the template's use of the explicit, collision-proof
