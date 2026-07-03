@@ -1,4 +1,27 @@
 {
+  "dogfood-lab/testing-os": {
+    "cli": {
+      "current": {
+        "finished_at": "2026-07-03T07:45:48.966Z",
+        "run_id": "00mr4mppk6--2hX7t9BkzZGxQ",
+        "verified": "pass"
+      },
+      "history": [
+        {
+          "finished_at": "2026-07-03T07:45:48.966Z",
+          "run_id": "00mr4mppk6--2hX7t9BkzZGxQ",
+          "verified": "pass"
+        }
+      ],
+      "latest_path": "records/dogfood-lab/testing-os/2026/07/03/run-00mr4mppk6--2hX7t9BkzZGxQ.json",
+      "pass_rate": 1,
+      "pass_rate_sample": 1,
+      "pass_rate_window_days": 30,
+      "previous": null,
+      "recovered": false,
+      "regressed": false
+    }
+  },
   "mcp-tool-shop-org/a11y-demo-site": {
     "web": {
       "current": {
