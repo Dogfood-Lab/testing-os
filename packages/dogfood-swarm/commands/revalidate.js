@@ -489,6 +489,54 @@ export function revalidate(opts) {
           true,
         );
         report.waveStatusAfter = 'collected';
+
+        // Advisor (wave-12): a repaired AUDIT wave that flips to 'collected'
+        // now represents FULL coverage iff every agent-bearing domain
+        // COMPLETED. The POINT-repair upsert above intentionally ran
+        // { fixed:[], unverified:[] } because a single corrected output is not
+        // whole-wave coverage — but once the LAST blocked agent is repaired the
+        // wave IS whole-wave coverage, and priors not rediscovered ANYWHERE in
+        // the wave must be closed by absence, exactly as collect.js:809-826
+        // does. Skipping this stranded the ledger: an earlier-wave open prior
+        // that nobody rediscovered kept its status forever (fired in Stage B
+        // and again at the feature audit). This runs INSIDE the same tx as the
+        // wave flip, so the closures are atomic with the recovery.
+        if (isAudit) {
+          const completedDomains = new Set(
+            db.prepare(`
+              SELECT d.name AS name FROM agent_runs ar
+              JOIN domains d ON ar.domain_id = d.id
+              WHERE ar.wave_id = ?
+                ${LATEST_AGENT_RUN_PER_DOMAIN}
+                AND ar.status = 'complete'
+            `).all(wave.id).map(r => r.name)
+          );
+          const agentBearing = domains.filter(d => d.ownership_class !== 'shared');
+          const fullCoverage = agentBearing.length > 0
+            && agentBearing.every(d => completedDomains.has(d.name));
+
+          if (fullCoverage) {
+            // The FULL set of findings seen this wave: sibling-collected by the
+            // earlier failed collect PLUS the just-repaired-and-upserted ones,
+            // both carry last_seen_wave = wave.id. buildPriorMap already
+            // excludes 'rejected'; current-wave rows appear in BOTH the prior
+            // map and the current set, so classifyFindings skips them and
+            // terminal priors are skipped at fingerprint.js:484 — only OPEN
+            // earlier-wave priors not rediscovered land in classified.fixed.
+            const priorMap = buildPriorMap(db, runId);
+            const currentFindings = db.prepare(
+              'SELECT * FROM findings WHERE run_id = ? AND last_seen_wave = ?'
+            ).all(runId, wave.id);
+            const classified = classifyFindings(currentFindings, priorMap, { full: true });
+            const stats = upsertFindings(db, runId, wave.id, {
+              new: [], recurring: [], fixed: classified.fixed, unverified: [],
+            });
+            report.findings = {
+              ...(report.findings || {}),
+              fixed: stats.fixed,
+            };
+          }
+        }
       } else {
         report.waveStatusAfter = wave.status;
       }

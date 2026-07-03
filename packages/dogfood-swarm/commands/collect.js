@@ -930,17 +930,25 @@ export function collect(opts) {
 /**
  * Build a human-readable wave summary.
  */
-function buildSummary(db, runId, wave, report) {
+export function buildSummary(db, runId, wave, report) {
   const allFindings = db.prepare(
     "SELECT severity, status FROM findings WHERE run_id = ?"
   ).all(runId);
 
+  // F-SWARMCP-004: roll up by status dynamically (mirrors status.js). The prior
+  // hard-coded literal { new, recurring, approved, fixed, deferred } + `!= null`
+  // guard SILENTLY DROPPED any status outside the set — notably `unverified`
+  // and `rejected` — so the summary undercounted the finding population and
+  // hid whole disposition buckets from the operator.
   const bySeverity = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
-  const byStatus = { new: 0, recurring: 0, approved: 0, fixed: 0, deferred: 0 };
+  const byStatus = {};
   for (const f of allFindings) {
     if (bySeverity[f.severity] != null) bySeverity[f.severity]++;
-    if (byStatus[f.status] != null) byStatus[f.status]++;
+    byStatus[f.status] = (byStatus[f.status] || 0) + 1;
   }
+  const statusLine = Object.keys(byStatus).sort()
+    .map(s => `${s}: ${byStatus[s]}`)
+    .join('  ');
 
   const agentSummary = report.agents
     .map(a => `  ${a.domain}: ${a.status}${a.findings_count ? ` (${a.findings_count} findings)` : ''}${a.errors.length ? ` [ERRORS: ${a.errors.length}]` : ''}`)
@@ -957,9 +965,11 @@ function buildSummary(db, runId, wave, report) {
     ? `\n  Recovery: \`swarm revalidate ${runId} --reason "<text>" --domain=<name>:<corrected.json> --apply\` (dry-run without --apply).`
     : '';
 
+  const statusRollup = statusLine ? `\n  Status: ${statusLine}` : '';
+
   return `Wave ${wave.wave_number} (${wave.phase}):${transitionLine}
   CRITICAL: ${bySeverity.CRITICAL}  HIGH: ${bySeverity.HIGH}  MEDIUM: ${bySeverity.MEDIUM}  LOW: ${bySeverity.LOW}
-  New: ${report.findings.new}  Recurring: ${report.findings.recurring}  Fixed: ${report.findings.fixed}
+  New: ${report.findings.new}  Recurring: ${report.findings.recurring}  Fixed: ${report.findings.fixed}${statusRollup}
   Violations: ${report.violations.length}${revalidateHint}
 
 Agents:

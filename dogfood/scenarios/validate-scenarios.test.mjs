@@ -1,26 +1,28 @@
 /**
- * Invariant: the `automation` block of every committed scenario under
- * dogfood/scenarios/ conforms to `scenario.schema.json`.
+ * Invariant: every committed scenario under dogfood/scenarios/ validates clean
+ * against the WHOLE `scenario.schema.json` — the same registered schema that
+ * production ingest fetches and validates a committed scenario with, run here
+ * through the canonical `validatePayload('scenario', …)` entry point.
  *
- * `scenario.schema.json` declares `automation` with `additionalProperties:
- * false` and only allows `script` + `timeout_ms`. It is otherwise easy to add
- * a field that "feels reasonable" (retry policy, env vars, working dir) and
- * have the YAML look fine to a reader while silently failing any code path
- * that runs the schema validator in strict mode. This test makes that drift
- * fail loudly.
+ * scenario.schema.json declares the document and several nested objects
+ * (`success_criteria`, `automation`, each `steps[]` entry) with
+ * `additionalProperties: false`. It is otherwise easy to add a field that
+ * "feels reasonable" — a retry policy on `automation`, an `all_steps_pass`
+ * flag on `success_criteria`, a working dir — and have the YAML look fine to a
+ * reader while silently failing any code path that runs the schema validator in
+ * strict mode. This test makes that drift fail loudly, across the whole document.
  *
- * Seeded by Stage C amend D5B-004 (advisor-verified MED): the committed
- * `swarm-audit.yaml` carried `automation.retry_on_failure: false`, which
- * violates the schema. The fix dropped the field; this test prevents
- * regression.
- *
- * Scope note: this test intentionally probes the `automation` block in
- * isolation (against an automation-block-shaped sub-schema) rather than the
- * whole scenario document. Other schema-mismatch siblings in committed
- * scenarios — e.g. `success_criteria.all_steps_pass` not being a documented
- * field — are out-of-domain for D5B-004 and should be filed separately.
- * Tightening to the full document is a one-line change (validatePayload
- * 'scenario', payload) once those siblings are reconciled.
+ * History — this test used to probe the `automation` block in isolation because
+ * a committed scenario carried an out-of-domain schema violation elsewhere:
+ *   - Stage C amend D5B-004: `swarm-audit.yaml` carried
+ *     `automation.retry_on_failure: false`. The fix dropped the field.
+ *   - task_321f8a44: `swarm-audit.yaml` carried `success_criteria.all_steps_pass:
+ *     true` — a redundant, unread field the scenario schema rejects (required_steps
+ *     already listed all six steps). It was the last sibling forcing this test to
+ *     validate a sub-schema rather than the whole document. With it reconciled, the
+ *     scope note that lived here ("tightening to the full document is a one-line
+ *     change once those siblings are reconciled") is now realized: this test
+ *     validates the full scenario document.
  */
 
 import { test } from 'node:test';
@@ -30,13 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 import yaml from 'js-yaml';
-// scenario.schema.json declares 2020-12; compiling its sub-schema with the
-// default draft-07 Ajv would silently ignore 2020-12-only keywords
-// (prefixItems, unevaluatedProperties, dependentSchemas) under strict:false —
-// the gate would weaken without signal. Same dialect-matched import as
-// packages/schemas/src/validate.ts and dogfood-swarm/lib/validate-agent-output.js.
-import Ajv2020 from 'ajv/dist/2020.js';
-import { scenarioSchema } from '@dogfood-lab/schemas';
+import { validatePayload } from '@dogfood-lab/schemas';
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -50,51 +46,53 @@ function loadScenarios() {
     });
 }
 
-// Pull the `automation` sub-schema directly out of scenario.schema.json so the
-// test stays in lockstep with the source of truth — if the schema relaxes its
-// shape, this test relaxes with it automatically.
-function buildAutomationValidator() {
-  const ajv = new Ajv2020({ allErrors: true, strict: false });
-  return ajv.compile(scenarioSchema.properties.automation);
-}
-
-// Negative-case pin (F-6d1573dc): prove the gate can go RED for the right
-// reason under the 2020-12 compiler. `retry_on_failure` is the exact field the
-// original D5B-004 seed carried; if additionalProperties enforcement ever
-// stops firing (dialect drift, strict-mode change, sub-schema extraction bug),
-// this fails before a real scenario regression can slip through green.
-test('the automation sub-schema validator rejects a schema-violating block', () => {
-  const validate = buildAutomationValidator();
-  const valid = validate({ script: 'node run.js', retry_on_failure: false });
-  assert.equal(valid, false, 'validator accepted an automation block with an undeclared field — the D5B-004 gate cannot go RED');
+// Negative-case pin: prove the full-document gate can go RED for the right
+// reason. `success_criteria.all_steps_pass` is the exact field task_321f8a44
+// removed from swarm-audit.yaml; if additionalProperties enforcement on
+// success_criteria ever stops firing (dialect drift, strict-mode change), this
+// fails before a real scenario regression can slip through green. The sibling
+// case — `automation.retry_on_failure` from D5B-004 — is guarded by the same
+// additionalProperties mechanism one object over.
+test('validatePayload rejects a scenario carrying an undeclared success_criteria field', () => {
+  const doc = {
+    scenario_id: 'neg-pin',
+    scenario_name: 'Negative pin',
+    scenario_version: '1.0.0',
+    product_surface: 'cli',
+    execution_mode: 'bot',
+    description: 'A structurally valid scenario with one undeclared field.',
+    steps: [{ id: 'only-step', action: 'do the thing' }],
+    success_criteria: {
+      required_steps: ['only-step'],
+      all_steps_pass: true, // the undeclared field
+    },
+  };
+  const res = validatePayload('scenario', doc);
+  assert.equal(
+    res.valid,
+    false,
+    'validatePayload accepted a scenario with an undeclared success_criteria field — the schema gate cannot go RED'
+  );
   assert.ok(
-    validate.errors.some(e => e.keyword === 'additionalProperties'),
-    `expected an additionalProperties violation, got: ${JSON.stringify(validate.errors)}`
+    res.errors.some(e => e.keyword === 'additionalProperties'),
+    `expected an additionalProperties violation, got: ${JSON.stringify(res.errors)}`
   );
 });
 
-test('every committed dogfood scenario has a schema-clean automation block', () => {
+test('every committed dogfood scenario validates clean against scenario.schema.json', () => {
   const scenarios = loadScenarios();
+  // Vacuity floor: the invariant is only guarded if at least one committed
+  // scenario actually exists. If the directory emptied, the loop below would
+  // validate zero documents and pass forever — the same zero-matched-inputs
+  // failure class D4-004 closed for schema-conformance fixtures.
   assert.ok(scenarios.length > 0, 'expected at least one scenario file under dogfood/scenarios/');
-  const validate = buildAutomationValidator();
 
   for (const { name, payload } of scenarios) {
-    if (payload.automation === undefined) continue; // automation is optional
-    const valid = validate(payload.automation);
+    const res = validatePayload('scenario', payload);
     assert.equal(
-      valid,
+      res.valid,
       true,
-      `${name} has an invalid automation block. Errors: ${JSON.stringify(validate.errors, null, 2)}`
+      `${name} does not validate against scenario.schema.json. Errors: ${JSON.stringify(res.errors, null, 2)}`
     );
   }
-
-  // Vacuity floor: the D5B-004 invariant is only guarded if at least one
-  // committed scenario actually carries an automation block. If every scenario
-  // dropped (or renamed) the field, the loop above would validate zero blocks
-  // and pass forever — the same zero-matched-inputs failure class D4-004
-  // closed for schema-conformance fixtures.
-  assert.ok(
-    scenarios.some(s => s.payload.automation !== undefined),
-    'D5B-004 invariant unguarded: no committed scenario under dogfood/scenarios/ has an automation block — the schema-conformance loop above validated nothing'
-  );
 });

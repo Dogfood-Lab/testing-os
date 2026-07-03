@@ -5,7 +5,7 @@ sidebar:
   order: 6.7
 ---
 
-`swarm` is the control-plane CLI shipped by `@dogfood-lab/dogfood-swarm`. The full source of truth is `packages/dogfood-swarm/cli.js`; this page is a per-verb quick-reference so you can scan all 24 verbs without `swarm --help`-ing your way through them.
+`swarm` is the control-plane CLI shipped by `@dogfood-lab/dogfood-swarm`. The full source of truth is `packages/dogfood-swarm/cli.js`; this page is a per-verb quick-reference so you can scan all 26 verbs without `swarm --help`-ing your way through them.
 
 For verbs that already have a dedicated handbook page, this page lists the synopsis and a one-line summary, then links out. Those deep-dive pages are:
 
@@ -270,6 +270,28 @@ Usage: swarm approve <run-id>
 Example:
   $ swarm approve <run-id> --all
   $ swarm approve <run-id> --ids F-091578-034,F-091578-042
+```
+
+## swarm defer
+
+Give a targeted set of findings the terminal `deferred` disposition — consciously accepted or postponed work that does **not** block the stage. `--ids` and a non-empty `--reason` are both required (there is no `--all`: disposition is deliberate, per-finding). The flip is recorded as a reason-bearing `finding_events` row, and `deferred` is a **closed** status for the advancement gate — so deferred work stops being silently re-closed as "fixed-by-absence" by a later full-coverage audit. Idempotent over already-terminal findings.
+
+```text
+Usage: swarm defer <run-id> --ids F-001,F-002 --reason "<text>"
+
+Example:
+  $ swarm defer <run-id> --ids F-001 --reason "accepted risk"
+```
+
+## swarm reject
+
+Give a targeted set of findings the terminal `rejected` disposition — triaged away as not-a-defect. Same shape as `swarm defer`: `--ids` + non-empty `--reason` required, reason recorded in `finding_events`, `rejected` counts as closed for the gate, idempotent over terminal findings.
+
+```text
+Usage: swarm reject <run-id> --ids F-001,F-002 --reason "<text>"
+
+Example:
+  $ swarm reject <run-id> --ids F-002 --reason "not a defect"
 ```
 
 ## swarm persist

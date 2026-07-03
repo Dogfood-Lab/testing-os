@@ -559,6 +559,7 @@ function cmdDispatch(args) {
     }
     console.log('  These findings stay OPEN and block the severity gate, but no amend agent will receive them.');
     console.log('  Close them via the coordinator_resolved path: land the fix yourself, and for anchorless (architectural/doc-level) ones attach `coordinator_resolved: true` + a one-line `verified_via_evidence` so `swarm verify-fixed <run-id>` classifies the closure as allowlist instead of unverifiable.');
+    console.log('  Or dispose without a fix: `swarm defer <run-id> --ids F-001,F-002 --reason "<text>"` (accepted/postponed) / `swarm reject <run-id> --ids F-001,F-002 --reason "<text>"` (not-a-defect) — both close the finding for the gate.');
   }
 
   if (result.dryRun) {
@@ -1615,6 +1616,91 @@ function cmdPersist(args) {
   }
 }
 
+/**
+ * F-SWARMCP-001 / F-SWARMCP-002: shared core for the two terminal-disposition
+ * verbs `swarm defer` and `swarm reject`. Both take a targeted `--ids` set plus
+ * a MANDATORY `--reason` and flip the named findings to a terminal status,
+ * writing one reason-bearing finding_events row per finding actually moved.
+ *
+ * These are STANDALONE verbs, deliberately NOT disposition flags on
+ * `swarm approve` — the honesty pin (wave8-approve-disposition-honesty.test.js)
+ * requires cmdApprove to stay disposition-flag-free and every operator hint to
+ * name the standalone `swarm defer` / `swarm reject` verbs.
+ *
+ * `deferred`/`rejected` are already canonical (STATUS.finding / finding_event)
+ * and already CLOSED (finding-status.js) + terminal in classifyFindings, so
+ * this is purely the lawful WRITE path onto that existing foundation.
+ *
+ * Only OPEN rows (new/recurring/approved/unverified) are captured and flipped;
+ * rows already in a terminal state are skipped, so a re-run is idempotent — no
+ * duplicate event, matching cmdApprove's capture-before-update discipline
+ * (Stripe Ledger pattern: the audit row lands in the same transaction as the
+ * UPDATE).
+ *
+ * @param {string} verb — 'defer' | 'reject'
+ * @param {string} status — 'deferred' | 'rejected'
+ * @param {string} label — 'Deferred' | 'Rejected' (stdout verb)
+ * @param {string[]} args
+ */
+function disposeFindings(verb, status, label, args) {
+  const runId = args[0];
+  if (!runId) {
+    console.error(`Usage: swarm ${verb} <run-id> --ids F-001,F-002 --reason "<text>"`);
+    process.exit(1);
+  }
+
+  // Same shared value-flag parser as cmdApprove: equals-form, space-form, and
+  // the `--`-swallow guard (a swallowed `--ids --reason` reads as missing).
+  const idsArg = parseValueFlag(args, '--ids');
+  const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
+
+  if (ids.length === 0) {
+    console.error('Specify --ids F-001,F-002 (defer/reject are targeted — there is no --all)');
+    process.exit(1);
+  }
+
+  const reason = parseValueFlag(args, '--reason');
+  if (!reason || !reason.trim()) {
+    console.error(`${verb}: --reason "<text>" is required (non-empty)`);
+    process.exit(1);
+  }
+
+  const db = openDb(getDbPath());
+
+  const placeholders = ids.map(() => '?').join(',');
+  // Open statuses only — terminal fixed/deferred/rejected are skipped so the
+  // flip is idempotent and never re-events an already-disposed finding.
+  const selectOpen = db.prepare(
+    `SELECT id FROM findings WHERE run_id = ? AND finding_id IN (${placeholders}) ` +
+    `AND status IN ('new', 'recurring', 'approved', 'unverified')`
+  );
+  const update = db.prepare(
+    `UPDATE findings SET status = ? WHERE run_id = ? AND finding_id IN (${placeholders}) ` +
+    `AND status IN ('new', 'recurring', 'approved', 'unverified')`
+  );
+  const insertEvent = db.prepare(
+    `INSERT INTO finding_events (finding_id, event_type, notes) VALUES (?, ?, ?)`
+  );
+
+  const tx = db.transaction(() => {
+    const pending = selectOpen.all(runId, ...ids);
+    const updated = update.run(status, runId, ...ids);
+    for (const f of pending) insertEvent.run(f.id, status, reason);
+    return updated.changes;
+  });
+
+  const changes = tx();
+  console.log(`${label} ${changes} findings for ${runId}`);
+}
+
+function cmdDefer(args) {
+  disposeFindings('defer', 'deferred', 'Deferred', args);
+}
+
+function cmdReject(args) {
+  disposeFindings('reject', 'rejected', 'Rejected', args);
+}
+
 function cmdFindings(args) {
   const runId = args[0];
   if (!runId) {
@@ -1851,6 +1937,8 @@ const commands = {
   resume: cmdResume,
   history: cmdHistory,
   approve: cmdApprove,
+  defer: cmdDefer,
+  reject: cmdReject,
   persist: cmdPersist,
   findings: cmdFindings,
   runs: cmdRuns,
@@ -2036,7 +2124,17 @@ Commands:
                              status\` surfaces a one-line breadcrumb pointing at
                              this verb when the wave has interesting history.
                              --format=json emits the {waveId,wave,events} report.
-  approve <run-id> [opts]    Approve findings for amend
+  approve <run-id> [opts]    Approve findings for amend (--all | --ids). To
+                             DISPOSE of a finding without a fix, use the
+                             standalone \`swarm defer\` / \`swarm reject\` verbs.
+  defer <run-id> --ids F-001,F-002 --reason "<text>"
+                             Mark targeted findings 'deferred' (consciously
+                             accepted/postponed — closed for the gate). --ids
+                             and --reason both required; no --all. Idempotent.
+  reject <run-id> --ids F-001,F-002 --reason "<text>"
+                             Mark targeted findings 'rejected' (triaged away as
+                             not-a-defect — closed for the gate). Same contract
+                             as defer.
   findings <run-id> [wave] [--format=text|markdown|json]
                              Findings digest for a wave (default: latest).
                              Format auto-detects: text on TTY, markdown when

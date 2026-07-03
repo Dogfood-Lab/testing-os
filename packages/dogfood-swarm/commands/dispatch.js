@@ -359,7 +359,7 @@ export function dispatch(opts) {
         waveNumber,
         count: unroutedApprovedFindings.length,
         finding_ids: unroutedApprovedFindings.map(f => f.finding_id),
-        hint: 'close via the coordinator_resolved path (land the fix; for anchorless findings attach coordinator_resolved:true + verified_via_evidence so `swarm verify-fixed <run-id>` classifies the closure as allowlist); these findings block the severity gate but are routed to zero agents',
+        hint: 'these findings block the severity gate but are routed to zero agents. To CLOSE them: land the fix and use the coordinator_resolved path (for anchorless findings attach coordinator_resolved:true + verified_via_evidence so `swarm verify-fixed <run-id>` classifies the closure as allowlist); or DISPOSE without a fix via `swarm defer <run-id> --ids F-001,F-002 --reason "<text>"` (accepted/postponed) / `swarm reject <run-id> --ids F-001,F-002 --reason "<text>"` (not-a-defect) — both close the finding for the gate.',
       });
     }
   }

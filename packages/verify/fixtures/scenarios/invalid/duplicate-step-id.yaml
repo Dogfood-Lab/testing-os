@@ -1,0 +1,31 @@
+# A scenario with two steps sharing the id "build". The scenario schema validates
+# each step in isolation and cannot see that an id repeats across the array, so a
+# duplicate id validates clean structurally but is ambiguous at runtime: a
+# step_result keyed by "build" cannot say which step it satisfied. lintScenario's
+# duplicate_step_id check catches it at author time.
+scenario_id: duplicate-step-id
+scenario_name: "Scenario with a duplicated step id"
+scenario_version: "1.0.0"
+
+product_surface: cli
+
+execution_mode: bot
+
+description: >
+  A scenario whose steps declare the same id twice. Exercises the
+  duplicate_step_id author-time check.
+
+steps:
+  - id: build
+    action: "Build the CLI from a clean checkout"
+    verifiable: true
+    expected: "Build exits zero"
+
+  - id: build
+    action: "Build the docs from a clean checkout"
+    verifiable: true
+    expected: "Docs build exits zero"
+
+success_criteria:
+  required_steps:
+    - build

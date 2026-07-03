@@ -57,7 +57,6 @@ success_criteria:
     - remediate-findings
     - verify-fixes
     - persist-evidence
-  all_steps_pass: true
 
 tags:
   - swarm

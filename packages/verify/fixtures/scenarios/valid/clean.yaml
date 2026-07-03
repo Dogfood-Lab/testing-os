@@ -1,0 +1,31 @@
+# A schema-clean scenario whose required_steps all reference declared step ids and
+# whose step ids are unique. The basename ("clean") does NOT match scenario_id
+# ("clean-cli-smoke"), so this fixture also exercises the advisory
+# filename_scenario_id_mismatch WARNING — which must NOT set ok:false.
+scenario_id: clean-cli-smoke
+scenario_name: "Clean CLI smoke scenario"
+scenario_version: "1.0.0"
+
+product_surface: cli
+
+execution_mode: bot
+
+description: >
+  A well-formed scenario: unique step ids, and required_steps that all point at
+  declared steps. Lints clean of errors.
+
+steps:
+  - id: build
+    action: "Build the CLI from a clean checkout"
+    verifiable: true
+    expected: "Build exits zero"
+
+  - id: run-help
+    action: "Run the built CLI with --help"
+    verifiable: true
+    expected: "--help prints usage and exits zero"
+
+success_criteria:
+  required_steps:
+    - build
+    - run-help

@@ -1,0 +1,33 @@
+# A schema-valid scenario whose success_criteria.required_steps names a step id
+# ("verify-output") that no steps[].id declares. The scenario schema comment says
+# required_steps "Must reference valid step IDs" but cannot enforce it — the
+# lintScenario required_step_undeclared check does. The receiver would fetch this
+# definition and enforce a step the exercise never runs, so the scenario can never
+# pass; that is an author-time bug, not a submission bug.
+scenario_id: required-step-undeclared
+scenario_name: "Scenario naming an undeclared required step"
+scenario_version: "1.0.0"
+
+product_surface: cli
+
+execution_mode: bot
+
+description: >
+  A scenario whose required_steps references a step id that no declared step
+  provides. Exercises the required_step_undeclared author-time check.
+
+steps:
+  - id: build
+    action: "Build the CLI from a clean checkout"
+    verifiable: true
+    expected: "Build exits zero"
+
+  - id: run-help
+    action: "Run the built CLI with --help"
+    verifiable: true
+    expected: "--help prints usage and exits zero"
+
+success_criteria:
+  required_steps:
+    - build
+    - verify-output

@@ -1,18 +1,25 @@
 /**
- * cli-lint.js (VERIFY-F3) — the `dogfood-verify lint <policy-file>` subcommand.
+ * cli-lint.js (VERIFY-F3) — the `dogfood-verify lint <file>` subcommand.
  *
- * A SEPARATE parse/render path from the verify CLI (cli.js): it takes a policy YAML
- * (not a submission JSON) and reports static lint findings, so it does not share the
- * verify arg parser or output. cli.js's `main` dispatcher routes the `lint` verb here
- * and leaves the verify `run` path untouched. The exit contract mirrors that path:
+ * A SEPARATE parse/render path from the verify CLI (cli.js): it takes a policy YAML or
+ * (with --scenario) a scenario YAML — not a submission JSON — and reports static lint
+ * findings, so it does not share the verify arg parser or output. cli.js's `main`
+ * dispatcher routes the `lint` verb here and leaves the verify `run` path untouched. The
+ * exit contract mirrors that path, identically for both modes:
  *
  *   0 — clean, or warnings-only (footgun advisories never block).
- *   1 — one or more errors (schema-invalid, a static predicate fault, or unparseable YAML).
+ *   1 — one or more errors (schema-invalid, a static fault, or unparseable YAML).
  *   2 — operator error (file missing/unreadable, or a malformed invocation).
  *
- * YAML that fails to parse is exit 1 (a lint FINDING about the policy the author must fix —
+ * YAML that fails to parse is exit 1 (a lint FINDING about the file the author must fix —
  * surfacing "line 4: bad indentation" is the lint's job), not exit 2. A file that does not
  * exist is exit 2 (the author pointed at the wrong path). See docs/policy-lint.md.
+ *
+ * Two modes share the whole render/exit machinery (F-BACKEND-003):
+ *   - default (policy):  lintPolicy(doc, { origin })      → origin global|repo|unknown
+ *   - --scenario:        lintScenario(doc, { file })      → origin 'scenario'
+ * Both return the same { ok, origin, errors, warnings, coverageNote } shape, so
+ * renderLintText / buildLintJson are reused unchanged.
  */
 
 import { readFileSync } from 'node:fs';
@@ -20,6 +27,7 @@ import { resolve } from 'node:path';
 import yaml from 'js-yaml';
 
 import { lintPolicy, COVERAGE_NOTE } from './validators/lint-policy.js';
+import { lintScenario, SCENARIO_COVERAGE_NOTE } from './validators/lint-scenario.js';
 
 /** Operator-error sentinel → exit 2 (distinct from a lint finding, which is exit 1). */
 class LintOperatorError extends Error {
@@ -30,20 +38,33 @@ class LintOperatorError extends Error {
   }
 }
 
-const LINT_USAGE = `dogfood-verify lint — author-time static check for a policy file
+const LINT_USAGE = `dogfood-verify lint — author-time static check for a policy or scenario file
 
 USAGE:
   dogfood-verify lint <policy-file> [--json]
+  dogfood-verify lint --scenario <scenario-file> [--json]
 
-WHAT IT CHECKS (no submission needed):
+WHAT IT CHECKS — policy mode (default, no submission needed):
   - structural validity against policy.schema.json
   - every predicate's known leading field, combinator depth, and node budget
   - an ADVISORY warning on the [] footgun (a negative op over a [] path fails open)
 
-It CANNOT statically catch a type_mismatch or a fanout_budget overrun — those depend
-on submission data. Run \`dogfood-verify --file <submission> --explain\` for that.
+  It CANNOT statically catch a type_mismatch or a fanout_budget overrun — those depend
+  on submission data. Run \`dogfood-verify --file <submission> --explain\` for that.
+
+WHAT IT CHECKS — --scenario mode (no submission needed):
+  - structural validity against scenario.schema.json
+  - every success_criteria.required_steps entry references a declared steps[].id
+  - step ids are unique
+  - an ADVISORY warning when the file basename does not match scenario_id (the
+    receiver fetches dogfood/scenarios/<scenario_id>.yaml, so a mismatch makes the
+    committed definition unreachable and required-steps enforcement fails open)
+
+  It CANNOT verify that a real submission's step_results satisfy required_steps, nor
+  that the receiver can fetch the file at the attested commit — run a real ingest.
 
 OPTIONS:
+  --scenario    Lint the file as a scenario definition (default: policy).
   --json        Machine-readable result for CI.
   -h, --help    Show this help.
 
@@ -52,34 +73,40 @@ EXIT CODES:
 
 /**
  * Parse the lint argv (everything AFTER the `lint` verb). Accepts exactly one positional
- * policy-file path plus optional `--json` / `--help`. Throws LintOperatorError (→ exit 2)
- * on any malformed invocation.
+ * file path plus optional `--scenario` / `--json` / `--help`. Throws LintOperatorError
+ * (→ exit 2) on any malformed invocation.
+ *
+ * `--scenario` is a boolean MODE flag (default: policy mode). It selects which linter runs
+ * over the one positional file; it never consumes the path itself.
  *
  * @param {string[]} argv
- * @returns {{ help: boolean, file: string|null, json: boolean }}
+ * @returns {{ help: boolean, file: string|null, json: boolean, scenario: boolean }}
  */
 export function parseLintArgs(argv) {
   let file = null;
   let json = false;
   let help = false;
+  let scenario = false;
 
   for (const arg of argv) {
     if (arg === '-h' || arg === '--help') { help = true; continue; }
     if (arg === '--json') { json = true; continue; }
+    if (arg === '--scenario') { scenario = true; continue; }
     if (arg.startsWith('-')) {
       throw new LintOperatorError(`unknown argument: ${arg}`, 'run `dogfood-verify lint --help` for usage');
     }
     if (file !== null) {
-      throw new LintOperatorError('more than one policy file given', 'lint one file at a time');
+      throw new LintOperatorError('more than one file given', 'lint one file at a time');
     }
     file = arg;
   }
 
-  if (help) return { help: true, file: null, json: false };
+  if (help) return { help: true, file: null, json: false, scenario: false };
   if (file === null) {
-    throw new LintOperatorError('no policy file provided', 'dogfood-verify lint <policy-file>');
+    const usage = scenario ? 'dogfood-verify lint --scenario <scenario-file>' : 'dogfood-verify lint <policy-file>';
+    throw new LintOperatorError(`no ${scenario ? 'scenario' : 'policy'} file provided`, usage);
   }
-  return { help: false, file, json };
+  return { help: false, file, json, scenario };
 }
 
 /**
@@ -172,11 +199,12 @@ export async function runLint(argv, io = {}) {
   }
 
   const path = resolve(opts.file);
+  const kind = opts.scenario ? 'scenario' : 'policy';
   let raw;
   try {
     raw = readFileSync(path, 'utf-8');
   } catch (e) {
-    err(`ERROR: could not read policy file: ${path} — ${e.message}`);
+    err(`ERROR: could not read ${kind} file: ${path} — ${e.message}`);
     err('  hint: check the path exists and is readable');
     return 2;
   }
@@ -185,25 +213,42 @@ export async function runLint(argv, io = {}) {
   try {
     doc = yaml.load(raw);
   } catch (e) {
-    // A YAML parse failure is a lint finding about the policy (exit 1), not an operator error.
+    // A YAML parse failure is a lint finding about the file (exit 1), not an operator error.
+    // Mirrors the policy path exactly, only differing in the origin/label/coverageNote so the
+    // scenario report reads as a scenario report.
     const where = e && e.mark ? ` at line ${e.mark.line + 1}, column ${e.mark.column + 1}` : '';
-    const result = {
-      ok: false,
-      origin: originForPath(path),
-      errors: [{
-        label: 'policy-schema:',
-        code: 'yaml_parse',
-        location: '/',
-        message: `policy YAML failed to parse${where} — ${e.message}`,
-      }],
-      warnings: [],
-      coverageNote: COVERAGE_NOTE,
-    };
+    const result = opts.scenario
+      ? {
+          ok: false,
+          origin: 'scenario',
+          errors: [{
+            label: 'scenario-schema:',
+            code: 'yaml_parse',
+            location: '/',
+            message: `scenario YAML failed to parse${where} — ${e.message}`,
+          }],
+          warnings: [],
+          coverageNote: SCENARIO_COVERAGE_NOTE,
+        }
+      : {
+          ok: false,
+          origin: originForPath(path),
+          errors: [{
+            label: 'policy-schema:',
+            code: 'yaml_parse',
+            location: '/',
+            message: `policy YAML failed to parse${where} — ${e.message}`,
+          }],
+          warnings: [],
+          coverageNote: COVERAGE_NOTE,
+        };
     out(opts.json ? JSON.stringify(buildLintJson(result, path)) : renderLintText(result, path));
     return 1;
   }
 
-  const result = lintPolicy(doc, { origin: originForPath(path) });
+  const result = opts.scenario
+    ? lintScenario(doc, { file: path })
+    : lintPolicy(doc, { origin: originForPath(path) });
   out(opts.json ? JSON.stringify(buildLintJson(result, path)) : renderLintText(result, path));
   return result.ok ? 0 : 1;
 }

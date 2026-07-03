@@ -1956,20 +1956,20 @@ test('CLI: the config-not-found hint promises --config, and that flag now exists
 // The verbCount resolver used to count `^function cmd[A-Z]` definitions, which
 // is NOT the authoritative verb count — the authority is the keys of the
 // `commands = { ... }` dispatch map in packages/dogfood-swarm/cli.js. The two
-// happen to agree today (24 == 24), but they diverge the moment a cmd*
+// happen to agree today (26 == 26), but they diverge the moment a cmd*
 // function exists that isn't wired into the map, or two verbs alias one
 // handler. These tests pin the resolver to the map and exercise the
 // relative-count claims (sibling = total-1, "the other N" = total-K).
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('FT-g: countCommandMapEntries counts the real cli.js commands map as 24', () => {
+test('FT-g: countCommandMapEntries counts the real cli.js commands map as 26', () => {
   const cliSrc = readFileSync(
     resolve(repoRoot, 'packages/dogfood-swarm/cli.js'),
     'utf8',
   );
   assert.equal(
     countCommandMapEntries(cliSrc, 'commands', 'packages/dogfood-swarm/cli.js'),
-    24,
+    26,
     'The authoritative verb count is the key count of the `commands` dispatch map. ' +
       'If this changed, every prose surface stating the count (and its offsets) must follow.',
   );
