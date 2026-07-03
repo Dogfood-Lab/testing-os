@@ -2,6 +2,34 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.9.0] — 2026-07-03
+
+The full-dogfood-swarm release: a four-stage health pass (bug/security → proactive → humanization → visual polish, ~162 verified fixes, every one pinned by a RED-then-GREEN test) followed by an approved feature pass. The suite grew from ~2,106 to ~2,700+ tests.
+
+### Added
+
+- **`swarm defer` / `swarm reject`** — the two missing finding-disposition verbs. Both take `--ids` + a mandatory `--reason` recorded in the finding's event history. A deferred finding is now terminal for classification, so a full-coverage re-audit no longer silently closes deferred work as "fixed."
+- **`dogfood-verify lint --scenario <file>`** — author-time scenario linting (the companion to policy lint): structural schema gate + `required_step_undeclared` / `duplicate_step_id` checks + an advisory filename↔`scenario_id` match, with the same honest static-coverage note.
+- **Required-steps enforcement, wired end-to-end.** For `github` submissions the receiver fetches your committed `dogfood/scenarios/<scenario_id>.yaml` at the attested commit (size-capped, schema-validated) and enforces `required_steps` / verdict consistency. **Opt-in by absence:** no committed definition → the submission is still accepted, with a visible `required_steps unenforced` warning. The starter kit ships `scenario.example.yaml`.
+- **testing-os dogfoods itself.** A `self-dogfood.yml` workflow submits this repo's own CI verdict through the same public dispatch path consumers use (honest `fail` submissions included), and the README wears its own dogfood badge.
+- **Read-model reference** — a new handbook page documenting every served consumer surface: `latest-by-repo.json`, `failing.json`, `stale.json`, `trends.json`, and the shields.io badge endpoints.
+- **`swarm revalidate` now re-runs full-coverage classification** when its repair flips an audit wave to `collected`, so a repaired wave settles the findings ledger the same way a clean collect does.
+
+### Fixed
+
+- **Operational faults no longer persist rejected records.** Provider outages during provenance or scenario fetches (including exhausted timeouts) now exit 2 without writing `records/_rejected/` — an outage window can no longer poison a `run_id` against clean resubmission. New operational classes: `scenario-fetch-fault:`, `PROVENANCE_FAULT`, and the `VALIDATOR_FAULT_*` family are thrown, not persisted.
+- **Consumer onboarding actually works.** The documented `npx` invocation now uses the explicit `npx --yes --package @dogfood-lab/report dogfood-report` form (the published package ships multiple bins, so the bare form exited 127), and the scenario-fetch wiring no longer rejects consumers who haven't committed scenario definitions.
+- **`@dogfood-lab/findings` runs its whole suite.** The hand-enumerated test script silently skipped 16 committed test files (73 tests, including path-traversal and DoS regression pins); bare `node --test` discovery plus a repo-wide orphaned-test floor prevent the class.
+- **Evidence preservation in `ingest.yml`.** Every pipeline fault now defers past the record-commit step — a badge-generation crash or unparseable result can no longer discard a consumer's already-persisted submission with the runner.
+- **Swarm control-plane trust gates hardened**: the serial-verify gate is non-overridable and wave-scoped; `advance --override` is consent to one named overridable gate (never a master key) with a complete `gates_checked` audit trail; the independent ownership probe sees committed edits (diff against the dispatch base) and attributes by glob specificity; terminal cleanup skips dirty/unmerged worktrees instead of destroying work.
+- **Portfolio freshness reads the schema-nested policy thresholds** — per-repo `freshness.max_age_days` now actually applies, so staleness is honestly reported (13 stale repos surfaced the day of the fix); trends + badge endpoints are seeded and committed.
+- Scores of smaller fixes across error messages, `--help` surfaces, recovery-verb guidance, handbook accuracy, and CI workflow hardening — see the swarm records for the full audit trail.
+
+### Changed
+
+- `swarm advance` prints refused overrides with the refusing gate; `swarm status` surfaces ownership-probe degradation; collect summaries report every finding status dynamically.
+- The error-code reference, recovery guide, state-machines page, architecture page, and threat model are trued to shipped behavior (scenario-fetch disclosure included).
+
 ## [1.8.0] — 2026-06-30
 
 **VERIFY-F3: `policy-lint` — an author-time static check for policy files.** VERIFY-F1 (v1.7.0) validated predicates at policy *load* and at *eval* (against a real submission); an operator editing a policy only learned a rule was malformed when a submission hit it — and for a repo predicate, not until their CI dispatched. `dogfood-verify lint <policy-file>` closes that loop: load the YAML, run the structural gate + the data-independent predicate checks over every `when`, batch-report every fault — no submission needed. It is the `opa check` analogue this engine's docs already promised. Lockstep minor bump across all seven `@dogfood-lab/*` packages.

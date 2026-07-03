@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/verify",
-  "version": "1.8.0",
+  "version": "1.9.0",
   "type": "module",
   "description": "Central verifier for testing-os. Validates submissions against schema and policy, produces persisted records.",
   "main": "index.js",

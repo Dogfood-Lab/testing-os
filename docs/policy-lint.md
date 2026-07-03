@@ -1,6 +1,6 @@
 # Policy lint (VERIFY-F3)
 
-> **Status:** contract spec for testing-os v1.8.0. The author-time companion to the
+> **Status:** contract spec for testing-os v1.9.0. The author-time companion to the
 > declarative policy engine ([`policy-dsl.md`](policy-dsl.md)). Read that first — this file
 > assumes the predicate grammar, the operator set, the `[]` field-selector semantics, and the
 > `policy-config:` diagnostic class.

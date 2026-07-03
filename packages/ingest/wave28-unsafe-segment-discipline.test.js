@@ -32,7 +32,7 @@ function listJsFiles(root) {
   const out = [];
   const skip = new Set([
     'node_modules', 'dist', 'build', 'coverage',
-    '.git', '.cache', '__test_root__', '__test_advise__',
+    '.git', '.cache',
   ]);
   function walk(dir) {
     let entries;
@@ -42,7 +42,10 @@ function listJsFiles(root) {
       return;
     }
     for (const name of entries) {
-      if (skip.has(name)) continue;
+      // Any __test_* dir is a sibling test's transient scratch tree; a hard-
+      // coded name list raced __test_root_d1b001__ mid-cleanup under the
+      // parallel runner (ENOENT at readFileSync — HANDOFF 2026-07-03).
+      if (skip.has(name) || name.startsWith('__test_')) continue;
       const full = join(dir, name);
       let st;
       try {
@@ -81,7 +84,16 @@ describe('F-916867-005 — only the shared helper defines unsafeSegment', () => 
       // the description above to explain the helper's contract).
       if (file === fileURLToPath(import.meta.url)) continue;
 
-      const src = readFileSync(file, 'utf-8');
+      // Tolerate a file deleted between enumeration and read — sibling tests
+      // write-then-remove transient modules under the package tree; a vanished
+      // file cannot be an offender.
+      let src;
+      try {
+        src = readFileSync(file, 'utf-8');
+      } catch (e) {
+        if (e.code === 'ENOENT') continue;
+        throw e;
+      }
       if (NAMED_DEFINITION.test(src) || LITERAL_BODY.test(src)) {
         offenders.push(file.replace(PACKAGES_DIR + sep, ''));
       }
