@@ -3,13 +3,15 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>dogfood-dashboard-v0.2</title>
+<title>dogfood-dashboard-v0.3</title>
 <!--
-  dogfood-dashboard v0.2 — single-file fleet status for testing-os.
+  dogfood-dashboard v0.3 — single-file fleet status for testing-os.
   All data URLs live in CONFIG below (first script block). Re-point `base`
   and `paths` when mounting into the Astro site; nothing else hardcodes a URL.
   v0.2 adds: per-row run-history modal, badge deep-links (shields, modal-only),
   shareable URL-hash state (#q/f/s/r), stricter no-recent-sample chip, self marker.
+  v0.3 adds: fleet run-history strip (unwindowed, honest), relAge band fixes + year
+  ages, status tab-title prefix, live auto-refresh countdown.
 -->
 <script>
 "use strict";
@@ -260,6 +262,20 @@ dialog::backdrop { background: rgba(5, 9, 14, .62); }
 .badgebtns { display: flex; flex-wrap: wrap; gap: 8px; }
 .mnote { color: var(--dim); font-size: 13px; padding: 10px 0 2px; }
 
+/* v0.3: fleet run-history strip */
+.strip-panel { margin: 0 0 18px; padding: 10px 14px 2px; }
+#stripNav { border-radius: 8px; }
+#stripSvg { display: block; max-width: 100%; }
+.mk { cursor: pointer; outline: none; }
+.mk circle { transition: filter .15s; }
+.mk .hit { fill: transparent; }
+.mk:hover circle, .mk:focus circle { filter: brightness(1.18); }
+.mk:focus .hit { stroke: var(--focus); stroke-width: 2; }
+.stick { fill: var(--dim); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.snote { margin: 4px 0 10px; font-size: 12.5px; color: var(--dim); }
+.serrs { color: var(--bad-text); font-weight: 650; }
+.scap { margin: 2px 0 8px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
+
 @media (max-width: 820px) {
   .chips { grid-template-columns: 1fr 1fr; }
   .rail { grid-template-columns: 1fr; }
@@ -279,7 +295,7 @@ dialog::backdrop { background: rgba(5, 9, 14, .62); }
       <span class="lastev">last evidence <b id="lastEv" class="num">—</b></span>
       <span class="spacer"></span>
       <button id="refreshBtn" class="btn" type="button">↻ refresh</button>
-      <label class="switch"><input type="checkbox" id="autoTgl"><span id="autoLbl">auto-refresh</span></label>
+      <label class="switch"><input type="checkbox" id="autoTgl"><span id="autoLbl">auto-refresh</span><span id="autoTick" class="num" aria-hidden="true"></span></label>
       <button id="themeBtn" class="btn" type="button">☀ light</button>
     </div>
     <p id="live" class="live" role="status" aria-live="polite"></p>
@@ -290,6 +306,12 @@ dialog::backdrop { background: rgba(5, 9, 14, .62); }
   <noscript><section class="hero"><h2>JavaScript required</h2><p>this dashboard renders live JSON from the testing-os read-model — it has no static fallback and no sample data.</p></section></noscript>
 
   <section class="chips" id="chipsRow" role="group" aria-label="surface counts — toggle to filter the fleet table"></section>
+
+  <section class="panel strip-panel" id="stripPanel" aria-label="fleet run history">
+    <div id="stripNav" tabindex="0" role="group" aria-label="fleet run history strip — Arrow keys browse runs, Enter opens a surface's run history">
+      <div id="stripBody"><p class="snote" aria-hidden="true"><span class="skel" style="width:min(420px,70%)"></span></p></div>
+    </div>
+  </section>
 
   <section class="panel" id="tablePanel" aria-label="fleet table">
     <div class="tbar">
@@ -377,11 +399,15 @@ const dayMs = 86400000;
 const ageDays = (t, now) => t == null ? null : Math.floor(((now || Date.now()) - t) / dayMs);
 function relAge(t, now) {
   if (t == null) return null;
-  const s = Math.max(0, ((now || Date.now()) - t) / 1000);
-  if (s < 50) return "just now";
-  if (s < 3000) return Math.round(s / 60) + "m ago";
-  if (s < 48 * 3600) return Math.round(s / 3600) + "h ago";
-  return Math.round(s / dayMs * 1000) + "d ago";
+  const s = Math.max(0, ((now || Date.now()) - t) / 1000);   // v0.3: contiguous bands — every duration in exactly one
+  if (s < 60) return "just now";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m ago";
+  const h = Math.floor(s / 3600);
+  if (h < 48) return h + "h ago";
+  const d = Math.floor(s / 86400);
+  if (d <= 365) return d + "d ago";
+  return (d / 365).toFixed(1) + "y ago";
 }
 const clock = ts => new Date(ts).toLocaleTimeString([], { hour12: false });
 const cssEsc = s => (window.CSS && CSS.escape) ? CSS.escape(s) : s.replace(/["\\]/g, "\\$&");
@@ -406,7 +432,7 @@ const VERDICT = {
 const state = {
   ep: {}, rows: [], staleFallback: false,
   sort: { key: "worst", dir: 1 }, filter: "", chips: new Set(),
-  auto: false, timer: null, refreshing: false
+  auto: false, timer: null, ticker: null, nextAt: null, refreshing: false
 };
 Object.keys(EP).forEach(k => { state.ep[k] = { status: "pending", data: null, error: null, okAt: null }; });
 
@@ -545,7 +571,7 @@ function renderLastEvidence() {
   if (!state.ep.latest.data) { el.textContent = "—"; el.removeAttribute("title"); return; }
   const ts = state.rows.map(r => r.ts).filter(t => t != null);
   if (!ts.length) { el.textContent = "no records"; el.removeAttribute("title"); return; }
-  const m = Math.max.apply(null, ts);
+  const m = ts.reduce((a, b) => (b > a ? b : a), -Infinity);   // v0.3: no arg-spread stack risk
   el.textContent = relAge(m);
   el.title = new Date(m).toISOString();
 }
@@ -789,6 +815,7 @@ function renderModes() {
   $("#emptyFleet").hidden = !emptyFleet;
   const showMain = !allFailed && !emptyFleet;
   $("#chipsRow").hidden = !showMain;
+  $("#stripPanel").hidden = !showMain;
   $("#tablePanel").hidden = !showMain;
   $("#rail").hidden = !showMain;
   if (allFailed) {
@@ -797,7 +824,7 @@ function renderModes() {
   }
 }
 function renderAll() {
-  renderPill(); renderLastEvidence(); renderChips(); renderTablePanel(); renderRail(); renderFooter(); renderModes();
+  renderPill(); renderLastEvidence(); renderChips(); renderStrip(); renderTablePanel(); renderRail(); renderFooter(); renderModes(); updateTitle();
 }
 
 /* ---------- diff flash ---------- */
@@ -959,6 +986,192 @@ function readHash() {
   return out;
 }
 
+/* ---------- v0.3: fleet run-history strip + tab title ---------- */
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+const isoDate = t => new Date(t).toISOString().slice(0, 10);
+const BASE_TITLE = document.title;
+
+function updateTitle() {
+  let prefix = "";
+  if (state.ep.latest.data) {
+    const f = state.rows.filter(r => r.verified === "fail").length;
+    const st = state.rows.filter(r => r.stale).length;
+    if (f) prefix = "✕" + f + " · ";
+    else if (st) prefix = "⚠" + st + " · ";
+  }
+  document.title = prefix + BASE_TITLE;
+}
+
+function stripRuns() {
+  const d = state.ep.trends.data;
+  const runs = [];
+  let undated = 0;
+  if (d) {
+    for (const repo of Object.keys(d)) {
+      const rr = d[repo];
+      if (!rr || typeof rr !== "object" || Array.isArray(rr)) continue;
+      for (const surface of Object.keys(rr)) {
+        const t = rr[surface];
+        if (!t || typeof t !== "object" || !Array.isArray(t.history)) continue;
+        for (const h of t.history) {
+          if (!h || typeof h !== "object") continue;
+          const ts = parseISO(h.finished_at);
+          if (ts == null) { undated++; continue; }
+          runs.push({ repo, surface, key: repo + "|" + surface, verified: h.verified, ts });
+        }
+      }
+    }
+  }
+  runs.sort((a, b) => a.ts - b.ts);
+  return { runs, undated };
+}
+function windowDaysOf() {
+  const d = state.ep.trends.data;
+  if (d) {
+    for (const repo of Object.keys(d)) {
+      const rr = d[repo];
+      if (!rr || typeof rr !== "object") continue;
+      for (const s of Object.keys(rr)) {
+        const t = rr[s];
+        if (t && typeof t.pass_rate_window_days === "number") return t.pass_rate_window_days;
+      }
+    }
+  }
+  return CONFIG.staleDaysFallback;
+}
+function stripTicks(t0, t1) {
+  const span = t1 - t0;
+  let ticks = [];
+  if (span > 92 * dayMs) {                                  // month granularity
+    const d0 = new Date(t0);
+    const d = new Date(d0.getFullYear(), d0.getMonth() + 1, 1);
+    while (d.getTime() <= t1) {
+      ticks.push({ t: d.getTime(), label: MONTHS[d.getMonth()] + (d.getMonth() === 0 ? " " + d.getFullYear() : "") });
+      d.setMonth(d.getMonth() + 1);
+    }
+  } else {                                                  // week granularity (Mondays)
+    const d = new Date(t0); d.setHours(0, 0, 0, 0);
+    const dow = (d.getDay() + 6) % 7;
+    d.setDate(d.getDate() + (dow ? 7 - dow : 7));
+    while (d.getTime() <= t1) {
+      ticks.push({ t: d.getTime(), label: MONTHS[d.getMonth()] + " " + d.getDate() });
+      d.setDate(d.getDate() + 7);
+    }
+  }
+  if (ticks.length > 5) {
+    const step = Math.ceil(ticks.length / 5);
+    ticks = ticks.filter((_, i) => i % step === 0);
+  }
+  if (ticks.length < 3) {
+    ticks = [];
+    for (let i = 0; i <= 2; i++) {
+      const t = t0 + span * (i / 2);
+      const dd = new Date(t);
+      ticks.push({ t, label: MONTHS[dd.getMonth()] + " " + dd.getDate() });
+    }
+  }
+  return ticks;
+}
+function clusterRuns(runs, xOf) {
+  const out = [];
+  for (const r of runs) {
+    const px = xOf(r.ts);
+    const last = out[out.length - 1];
+    if (last && px - last.px2 < 4) { last.items.push(r); last.px2 = px; }
+    else out.push({ px, px2: px, items: [r] });
+  }
+  return out;
+}
+function clusterColor(items) {
+  let anyFail = false, anyOther = false;
+  for (const r of items) {
+    if (r.verified === "fail") anyFail = true;
+    else if (r.verified !== "pass") anyOther = true;
+  }
+  return anyFail ? "var(--bad)" : (anyOther ? "var(--wrn)" : "var(--ok)");
+}
+function clusterBreakdown(items) {
+  let p = 0, f = 0, o = 0;
+  for (const r of items) { if (r.verified === "pass") p++; else if (r.verified === "fail") f++; else o++; }
+  const bits = [];
+  if (p) bits.push(p + " pass");
+  if (f) bits.push(f + " fail");
+  if (o) bits.push(o + " other");
+  return bits.join(", ");
+}
+function stripMarkHtml(c) {
+  const n = c.items.length;
+  const newest = c.items[n - 1];
+  const cx = ((c.px + c.px2) / 2).toFixed(1);
+  const col = clusterColor(c.items);
+  const label = n === 1
+    ? newest.repo + " · " + newest.surface + " · " + (newest.verified == null ? "unknown" : newest.verified) + " · " + isoDate(newest.ts)
+    : n + " runs (" + clusterBreakdown(c.items) + ") · " + isoDate(c.items[0].ts) +
+      (isoDate(c.items[0].ts) === isoDate(newest.ts) ? "" : " → " + isoDate(newest.ts)) +
+      " · opens " + newest.repo + " · " + newest.surface;
+  return '<g class="mk" role="button" tabindex="-1" data-key="' + esc(newest.key) + '" aria-label="' + esc(label) + '">' +
+    "<title>" + esc(label) + "</title>" +
+    '<circle class="hit" cx="' + cx + '" cy="20" r="9"></circle>' +
+    '<circle cx="' + cx + '" cy="20" r="' + (n > 1 ? 4.5 : 3) + '" fill="' + col + '"></circle>' +
+    (n > 1 ? '<circle cx="' + cx + '" cy="20" r="7" fill="none" stroke="' + col + '" stroke-opacity=".4"></circle>' : "") +
+    "</g>";
+}
+function renderStrip() {
+  const box = $("#stripBody");
+  if (!box) return;
+  const ep = state.ep.trends;
+  if (!ep.data) {
+    box.innerHTML = ep.status === "error"
+      ? '<p class="snote"><strong class="serrs">⚠ couldn\'t fetch ' + esc(CONFIG.paths.trends) + "</strong> (" + esc(ep.error || "") + ") — fleet run history unavailable.</p>"
+      : '<p class="snote" aria-hidden="true"><span class="skel" style="width:min(420px,70%)"></span></p>';
+    return;
+  }
+  const agg = stripRuns();
+  const runs = agg.runs;
+  if (!runs.length) {
+    box.innerHTML = '<p class="snote">no dated run history recorded in ' + esc(CONFIG.paths.trends) +
+      (agg.undated ? " — " + agg.undated + " undated entr" + (agg.undated === 1 ? "y" : "ies") + " cannot be plotted" : "") + ".</p>";
+    return;
+  }
+  const now = Date.now();
+  const t0 = runs[0].ts;
+  const W = Math.max(320, Math.min(box.clientWidth || 900, 1600));
+  const pad = 12, H = 56;
+  const xOf = t => pad + (t - t0) / Math.max(1, now - t0) * (W - 2 * pad);
+  let svg = '<svg id="stripSvg" width="' + W + '" height="' + H + '" viewBox="0 0 ' + W + " " + H + '" role="group" aria-label="fleet run history — one mark per recorded run, oldest left">';
+  svg += '<line x1="' + pad + '" y1="34" x2="' + (W - pad) + '" y2="34" stroke="var(--border)"></line>';
+  for (const tk of stripTicks(t0, now)) {
+    const tx = xOf(tk.t).toFixed(1);
+    svg += '<line x1="' + tx + '" y1="31" x2="' + tx + '" y2="37" stroke="var(--border2)"></line>' +
+      '<text class="stick" x="' + tx + '" y="50" text-anchor="middle">' + esc(tk.label) + "</text>";
+  }
+  svg += clusterRuns(runs, xOf).map(stripMarkHtml).join("") + "</svg>";
+  const surfaces = new Set(runs.map(r => r.key)).size;
+  const wd = windowDaysOf();
+  const inWindow = runs.filter(r => r.ts >= now - wd * dayMs).length;
+  let cap = runs.length + " recorded run" + (runs.length === 1 ? "" : "s") + " across " + surfaces + " surface" + (surfaces === 1 ? "" : "s") + ", " + isoDate(t0) + " → now";
+  if (!inWindow) cap += " · no runs in the current " + wd + "-day window";
+  if (agg.undated) cap += " · " + agg.undated + " undated run" + (agg.undated === 1 ? "" : "s") + " not shown";
+  box.innerHTML = svg + '<p class="scap">' + esc(cap) + "</p>";
+}
+function stripKeydown(ev) {
+  const marks = Array.prototype.slice.call(document.querySelectorAll("#stripSvg .mk"));
+  if (!marks.length) return;
+  const cur = marks.indexOf(document.activeElement);
+  let idx = null;
+  if (ev.key === "ArrowRight") idx = cur < 0 ? 0 : Math.min(cur + 1, marks.length - 1);
+  else if (ev.key === "ArrowLeft") idx = cur < 0 ? marks.length - 1 : Math.max(cur - 1, 0);
+  else if (ev.key === "Home") idx = 0;
+  else if (ev.key === "End") idx = marks.length - 1;
+  else if ((ev.key === "Enter" || ev.key === " ") && cur >= 0) {
+    ev.preventDefault();
+    openModal(marks[cur].getAttribute("data-key"), marks[cur]);
+    return;
+  } else return;
+  ev.preventDefault();
+  marks[idx].focus();
+}
+
 /* ---------- controls ---------- */
 function setTheme(t) {
   document.documentElement.setAttribute("data-theme", t);
@@ -973,7 +1186,22 @@ function syncThemeBtn() {
 }
 function applyAuto() {
   if (state.timer) { clearInterval(state.timer); state.timer = null; }
-  if (state.auto) state.timer = setInterval(refreshAll, CONFIG.refreshMs);
+  if (state.ticker) { clearInterval(state.ticker); state.ticker = null; }   // v0.3: countdown ticker, cleaned on disarm
+  if (state.auto) {
+    state.nextAt = Date.now() + CONFIG.refreshMs;
+    state.timer = setInterval(() => { state.nextAt = Date.now() + CONFIG.refreshMs; refreshAll(); }, CONFIG.refreshMs);
+    state.ticker = setInterval(tickCountdown, 1000);
+  } else {
+    state.nextAt = null;
+  }
+  tickCountdown();
+}
+function tickCountdown() {
+  const el = $("#autoTick");
+  if (!el) return;
+  if (state.nextAt == null) { el.textContent = ""; return; }
+  const s = Math.max(0, Math.ceil((state.nextAt - Date.now()) / 1000));
+  el.textContent = " · " + String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
 }
 function intervalLabel() {
   return CONFIG.refreshMs >= 60000 ? Math.round(CONFIG.refreshMs / 60000) + "m" : Math.round(CONFIG.refreshMs / 1000) + "s";
@@ -1045,6 +1273,14 @@ function init() {
     store.set("auto", state.auto);
     applyAuto();
   });
+
+  $("#stripNav").addEventListener("click", ev => {         // v0.3: strip marks reuse the modal + #r wiring
+    const mk = ev.target.closest(".mk");
+    if (mk) openModal(mk.getAttribute("data-key"), mk);
+  });
+  $("#stripNav").addEventListener("keydown", stripKeydown);
+  let stripRsz = null;
+  window.addEventListener("resize", () => { clearTimeout(stripRsz); stripRsz = setTimeout(renderStrip, 150); });
 
   const dlg = $("#runModal");                              // v0.2: modal wiring
   dlg.addEventListener("click", ev => { if (ev.target === dlg) dlg.close(); });
