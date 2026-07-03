@@ -10,11 +10,14 @@
  * turned inward — the evidence platform proving its own gate through its own
  * pipeline. Five properties are load-bearing and nothing else pins them:
  *
- * 1. Preflight fails LOUD on a missing DOGFOOD_TOKEN. GitHub's recursive-workflow
- *    prevention means the default GITHUB_TOKEN's repository_dispatch does NOT
- *    start ingest.yml, so a dedicated PAT is mandatory — there is no shortcut.
- *    Without the loud preflight, the absence of the secret is a silent green run
- *    that records nothing. A revert dropping the preflight must go RED here.
+ * 1. The job carries `contents: write`. POST /repos/{o}/{r}/dispatches requires
+ *    it; a permissions narrowing (back to contents: read) turns every dispatch
+ *    into a 403. History: two revisions required a DOGFOOD_TOKEN PAT here on
+ *    the mistaken belief that recursion prevention blocks a GITHUB_TOKEN
+ *    repository_dispatch — the documented exception ("with the exception of
+ *    workflow_dispatch and repository_dispatch") makes same-repo dispatch the
+ *    officially supported path, and two rounds of fine-grained-PAT 403s
+ *    retired the PAT design. A revert narrowing permissions must go RED here.
  *
  * 2. The `ingest:` head-commit loop guard. ingest.yml commits records/+indexes/
  *    with an `ingest: ...` subject; that commit does NOT match ci.yml's paths
@@ -22,10 +25,11 @@
  *    job-level guard skips a run triggered by an ingest commit anyway. A revert
  *    dropping the guard must go RED here.
  *
- * 3. The dispatch authenticates with DOGFOOD_TOKEN, NOT GITHUB_TOKEN. Using
- *    GITHUB_TOKEN would make the dispatch a silent no-op (recursive-workflow
- *    prevention) — the workflow would go green having triggered nothing. A revert
- *    swapping the auth back to GITHUB_TOKEN must go RED here.
+ * 3. The dispatch authenticates with the workflow's own token (github.token)
+ *    and NO DOGFOOD_TOKEN reference remains anywhere in the file — the
+ *    long-lived-secret design is retired for the self case (consumers keep
+ *    their PAT: cross-repo dispatch has no workflow-local substitute). A
+ *    revert reintroducing the secret must go RED here.
  *
  * 4. The committed scenario definition (dogfood/scenarios/self-verify-gate.yaml)
  *    must pass the wave-12 author-time lint verb (`dogfood-verify lint --scenario`).
@@ -85,33 +89,20 @@ test('self-dogfood.yml parses as YAML', () => {
   assert.ok('workflow_dispatch' in on, 'must keep workflow_dispatch as a manual fallback');
 });
 
-test('F-CI-SELF-DOGFOOD-001: preflight fails LOUD on a missing DOGFOOD_TOKEN', () => {
+test('F-CI-SELF-DOGFOOD-001: job carries contents: write and no DOGFOOD_TOKEN remains', () => {
   const text = readFileSync(workflowPath, 'utf8');
-  // The preflight must reference the secret, emit a ::error annotation, and exit 1.
+  // POST /dispatches requires contents: write on the workflow token. A
+  // narrowing back to `contents: read` 403s every dispatch.
   assert.match(
+    text,
+    /permissions:\s*\n\s*contents:\s*write/,
+    'self-dogfood.yml must grant contents: write — the dispatches API requires it on the workflow token',
+  );
+  // The retired PAT design must not creep back in.
+  assert.doesNotMatch(
     text,
     /DOGFOOD_TOKEN/,
-    'self-dogfood.yml must reference the DOGFOOD_TOKEN secret',
-  );
-  assert.match(
-    text,
-    /if \[ -z "\$DOGFOOD_TOKEN" \]/,
-    'preflight must test for an EMPTY DOGFOOD_TOKEN (`if [ -z "$DOGFOOD_TOKEN" ]`) — the #1 silent-failure mode',
-  );
-  assert.match(
-    text,
-    /::error[^\n]*DOGFOOD_TOKEN|DOGFOOD_TOKEN[^\n]*::error/i,
-    'preflight must emit a ::error annotation naming DOGFOOD_TOKEN so the missing secret is loud, not silently green',
-  );
-  // The preflight run: block must exit 1 on the missing secret. Anchor the
-  // block to the shell `fi` keyword on its own line (^\s*fi\s*$) so the match
-  // does not stop at a "fi" substring inside the ::error message text.
-  const preflight = /if \[ -z "\$DOGFOOD_TOKEN" \][\s\S]*?^\s*fi\s*$/m.exec(text);
-  assert.ok(preflight, 'preflight guard block not found');
-  assert.match(
-    preflight[0],
-    /exit 1/,
-    'preflight must `exit 1` when DOGFOOD_TOKEN is unset',
+    'self-dogfood.yml must not reference DOGFOOD_TOKEN — the self case uses the workflow token (documented recursion-prevention exception); only CROSS-repo consumers need a PAT',
   );
 });
 
@@ -152,31 +143,12 @@ test('F-CI-SELF-DOGFOOD-001: the `ingest:` head-commit loop guard is present in 
   );
 });
 
-test('F-CI-SELF-DOGFOOD-001: the dispatch authenticates with DOGFOOD_TOKEN, NOT GITHUB_TOKEN', () => {
+test('F-CI-SELF-DOGFOOD-001: the dispatch authenticates with the workflow token', () => {
   const text = readFileSync(workflowPath, 'utf8');
-  // The dispatch step's auth env (GH_TOKEN / GITHUB_TOKEN) must be the PAT.
   assert.match(
     text,
-    /GH_TOKEN:\s*\$\{\{\s*secrets\.DOGFOOD_TOKEN\s*\}\}/,
-    'the dispatch step must set GH_TOKEN to secrets.DOGFOOD_TOKEN — GITHUB_TOKEN cannot trigger ingest.yml (recursive-workflow prevention)',
-  );
-  // Guard against a regression that reintroduces the default token for auth.
-  // A repository_dispatch sent with GITHUB_TOKEN does not start ingest.yml.
-  assert.doesNotMatch(
-    text,
-    /GH_TOKEN:\s*\$\{\{\s*secrets\.GITHUB_TOKEN\s*\}\}/,
-    'the dispatch must NOT authenticate with GITHUB_TOKEN — that makes the self-submission a silent no-op',
-  );
-  // The dispatch targets the SAME repo (self-submission).
-  assert.match(
-    text,
-    /repos\/dogfood-lab\/testing-os\/dispatches/,
-    'the dispatch must target repos/dogfood-lab/testing-os/dispatches (self-submission)',
-  );
-  assert.match(
-    text,
-    /event_type[^\n]*dogfood_submission/,
-    'the dispatch event_type must be dogfood_submission (matches ingest.yml repository_dispatch type)',
+    /GH_TOKEN:\s*\$\{\{\s*github\.token\s*\}\}/,
+    'the Dispatch step must authenticate with github.token — same-repo repository_dispatch is the documented recursion-prevention exception',
   );
 });
 

@@ -8,17 +8,18 @@
 # consumer template (examples/dogfood.yml) turned inward. Structural pins live
 # in scripts/self-dogfood-workflow.test.mjs.
 #
-# ── ONE-TIME SETUP (Mike-side prerequisite) ─────────────────────────────────
-# Mint a fine-grained PAT with `contents: write` on dogfood-lab/testing-os and
-# add it to THIS repo as the secret DOGFOOD_TOKEN
-# (Settings → Secrets and variables → Actions → New repository secret).
-#
-# Why a PAT and not the default GITHUB_TOKEN: GitHub's recursive-workflow
-# prevention means a repository_dispatch sent with the default GITHUB_TOKEN does
-# NOT start a new workflow run — so a GITHUB_TOKEN dispatch would silently fail
-# to trigger ingest.yml. A dedicated PAT is mandatory; there is no shortcut.
-# Until the secret exists this workflow FAILS LOUD at the preflight step below —
-# that red-until-token state is the designed honest signal, not a defect.
+# ── AUTH: the workflow's own GITHUB_TOKEN — no PAT, no secret ────────────────
+# GitHub's recursive-workflow prevention has a DOCUMENTED exception: events
+# created with the workflow's GITHUB_TOKEN do not start new workflow runs,
+# "with the exception of workflow_dispatch and repository_dispatch"
+# (docs: "Triggering a workflow from a workflow"). Same-repo repository_dispatch
+# is therefore the officially supported chaining path, and this workflow uses
+# it: job-scoped `contents: write` on the auto-rotating GITHUB_TOKEN, nothing
+# long-lived to mint, rotate, or 401/403. An earlier revision required a
+# consumer-style PAT here on the mistaken belief the exception did not exist;
+# two rounds of fine-grained-PAT 403s later, this is the corrected design.
+# CONSUMER repos still need a PAT (examples/dogfood.yml) — theirs is a
+# CROSS-repo dispatch, which no workflow-local token can perform.
 # ─────────────────────────────────────────────────────────────────────────────
 
 name: self-dogfood
@@ -35,8 +36,12 @@ concurrency:
   group: self-dogfood-${{ github.ref }}
   cancel-in-progress: true
 
+# contents: write is required by POST /repos/{owner}/{repo}/dispatches — the
+# same permission the fine-grained-PAT design needed, now carried by the
+# job-scoped auto-expiring GITHUB_TOKEN instead of a long-lived secret. This
+# workflow never pushes; the write scope exists solely for the dispatch API.
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   self-dogfood:
@@ -54,19 +59,10 @@ jobs:
       (github.event.workflow_run.head_branch == 'main' &&
        !startsWith(github.event.workflow_run.head_commit.message, 'ingest:'))
     steps:
-      # Fail LOUD if the token is missing — the #1 silent-failure mode. Without
-      # DOGFOOD_TOKEN the dispatch below cannot authenticate AND (per the header)
-      # GITHUB_TOKEN cannot substitute, so a missing secret means nothing is ever
-      # recorded. This turns that into a red run instead of a silent green.
-      - name: Preflight — DOGFOOD_TOKEN must be set
-        env:
-          DOGFOOD_TOKEN: ${{ secrets.DOGFOOD_TOKEN }}
-        run: |
-          if [ -z "$DOGFOOD_TOKEN" ]; then
-            echo "::error title=DOGFOOD_TOKEN missing::Add a fine-grained PAT with contents:write on dogfood-lab/testing-os as the secret DOGFOOD_TOKEN. The default GITHUB_TOKEN cannot trigger ingest.yml (recursive-workflow prevention), so the self-submission cannot run without this PAT."
-            exit 1
-          fi
-
+      # No token preflight: the dispatch authenticates with the workflow's own
+      # GITHUB_TOKEN (see header), which always exists. A permission regression
+      # (someone narrowing the permissions block) fails loud at the Dispatch
+      # step itself with the API's 403 — same honest signal, zero setup.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.3 (node24 runtime)
 
       - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
@@ -183,8 +179,11 @@ jobs:
       # default GITHUB_TOKEN, which cannot trigger ingest.yml. No third-party
       # action: gh api is built in.
       - name: Dispatch to testing-os (self)
+        # Same-repo repository_dispatch with the workflow's own token — the
+        # documented recursion-prevention exception (see header). Cross-repo
+        # consumers cannot do this; their template keeps the consumer PAT secret.
         env:
-          GH_TOKEN: ${{ secrets.DOGFOOD_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           jq -n --slurpfile s submission.json \
             '{event_type: "dogfood_submission", client_payload: {submission: $s[0]}}' \
