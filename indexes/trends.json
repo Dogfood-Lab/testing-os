@@ -294,8 +294,8 @@
   "mcp-tool-shop-org/shipcheck": {
     "cli": {
       "current": {
-        "finished_at": "2026-05-26T04:47:25Z",
-        "run_id": "shipcheck-26432510066-1",
+        "finished_at": "2026-07-07T19:10:02Z",
+        "run_id": "shipcheck-28891771103-1",
         "verified": "pass"
       },
       "history": [
@@ -333,15 +333,20 @@
           "finished_at": "2026-05-26T04:47:25Z",
           "run_id": "shipcheck-26432510066-1",
           "verified": "pass"
+        },
+        {
+          "finished_at": "2026-07-07T19:10:02Z",
+          "run_id": "shipcheck-28891771103-1",
+          "verified": "pass"
         }
       ],
-      "latest_path": "records/mcp-tool-shop-org/shipcheck/2026/05/26/run-shipcheck-26432510066-1.json",
-      "pass_rate": null,
-      "pass_rate_sample": 0,
+      "latest_path": "records/mcp-tool-shop-org/shipcheck/2026/07/07/run-shipcheck-28891771103-1.json",
+      "pass_rate": 1,
+      "pass_rate_sample": 1,
       "pass_rate_window_days": 30,
       "previous": {
-        "finished_at": "2026-05-26T04:34:54Z",
-        "run_id": "shipcheck-26432463348-1",
+        "finished_at": "2026-05-26T04:47:25Z",
+        "run_id": "shipcheck-26432510066-1",
         "verified": "pass"
       },
       "recovered": false,

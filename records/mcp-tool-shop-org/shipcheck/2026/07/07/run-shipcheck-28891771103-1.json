@@ -1,0 +1,91 @@
+{
+  "schema_version": "1.0.0",
+  "policy_version": "1.0.0",
+  "run_id": "shipcheck-28891771103-1",
+  "repo": "mcp-tool-shop-org/shipcheck",
+  "ref": {
+    "branch": "main",
+    "commit_sha": "0989098e91806ad3e6fd20043507d829c4f34cdc"
+  },
+  "source": {
+    "actor": "mcp-tool-shop",
+    "attempt": 1,
+    "provider": "github",
+    "provider_run_id": "28891771103",
+    "run_url": "https://github.com/mcp-tool-shop-org/shipcheck/actions/runs/28891771103",
+    "workflow": "ci.yml"
+  },
+  "timing": {
+    "duration_ms": 0,
+    "finished_at": "2026-07-07T19:10:02Z",
+    "started_at": "2026-07-07T15:09:38-04:00"
+  },
+  "ci_checks": [
+    {
+      "id": "unit-tests",
+      "kind": "test",
+      "status": "pass",
+      "value": 24
+    }
+  ],
+  "scenario_results": [
+    {
+      "evidence": [
+        {
+          "description": "CI run log with audit output",
+          "kind": "log",
+          "url": "https://github.com/mcp-tool-shop-org/shipcheck/actions/runs/28891771103"
+        },
+        {
+          "description": "Audit log artifact (dogfood-audit-log)",
+          "kind": "artifact",
+          "url": "https://github.com/mcp-tool-shop-org/shipcheck/actions/runs/28891771103/artifacts"
+        }
+      ],
+      "execution_mode": "bot",
+      "notes": "Self-gate audit exit code: 0",
+      "product_surface": "cli",
+      "scenario_id": "self-gate-real-repo",
+      "scenario_name": "Self-gate against real repo",
+      "scenario_version": "1.0.0",
+      "step_results": [
+        {
+          "status": "pass",
+          "step_id": "run-help"
+        },
+        {
+          "status": "pass",
+          "step_id": "run-init"
+        },
+        {
+          "status": "pass",
+          "step_id": "run-audit"
+        },
+        {
+          "status": "pass",
+          "step_id": "verify-output"
+        }
+      ],
+      "verdict": "pass"
+    }
+  ],
+  "overall_verdict": {
+    "proposed": "pass",
+    "verified": "pass",
+    "downgraded": false
+  },
+  "verification": {
+    "status": "accepted",
+    "verified_at": "2026-07-07T19:10:21.544Z",
+    "provenance_confirmed": true,
+    "schema_valid": true,
+    "policy_valid": true,
+    "rejection_reasons": []
+  },
+  "notes": "Pilot 1: shipcheck self-dogfood.",
+  "integrity": {
+    "submission_digest": "9a0c07471a21a7640610bf3aab5839dba91f7eed753fce9fb45d41db103ca100",
+    "prev_digest": "fbf3e36e701575fa6a7c4f6730830ccaa112410bb5d398789899329656999ff3",
+    "seq": 2
+  }
+}
