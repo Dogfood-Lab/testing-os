@@ -1,0 +1,14 @@
+{
+  "objective": "The validator rejects a negative quantity.",
+  "artifact_under_test": {
+    "kind": "diff",
+    "ref": "src/validate.js@beef01",
+    "content": "<thinking>I should add a guard for negatives here so the total never goes below zero</thinking>\n+ if (qty < 0) throw new Error('negative quantity');"
+  },
+  "acceptance_criteria": [
+    { "id": "AC-negative", "check": "validate() throws when qty is below zero", "source": "from-tests" }
+  ],
+  "context": [
+    { "claim": "qty arrives as a parsed number from the request body", "source": "from-code", "ref": "src/parse.js:8" }
+  ]
+}

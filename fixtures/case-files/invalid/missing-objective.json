@@ -1,0 +1,6 @@
+{
+  "artifact_under_test": { "kind": "file", "ref": "src/foo.js" },
+  "acceptance_criteria": [
+    { "id": "AC-default-export", "check": "the module exports a default function" }
+  ]
+}

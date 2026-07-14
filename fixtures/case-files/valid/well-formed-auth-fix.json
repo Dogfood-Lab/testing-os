@@ -1,0 +1,20 @@
+{
+  "objective": "The token-refresh endpoint rejects an expired refresh token instead of issuing a new access token.",
+  "artifact_under_test": {
+    "kind": "diff",
+    "ref": "packages/auth/refresh.js@a1b2c3d",
+    "content": "@@ -40,6 +40,9 @@\n function refresh(token) {\n+  if (isExpired(token)) {\n+    return deny(401);\n+  }\n   return issue(token);\n }"
+  },
+  "acceptance_criteria": [
+    { "id": "AC-expired-401", "check": "refresh() returns a 401 when isExpired(token) is true", "source": "from-tests" },
+    { "id": "AC-valid-issues", "check": "refresh() still issues an access token for a non-expired token", "source": "from-tests" }
+  ],
+  "context": [
+    { "claim": "isExpired() compares token.exp against the current epoch seconds", "source": "from-code", "ref": "packages/auth/expiry.js:12" },
+    { "claim": "the refresh route is reached only after bearer auth on /token/refresh", "source": "from-code", "ref": "packages/auth/routes.js:88" },
+    { "claim": "the ticket asks for parity with the access-token expiry guard shipped last release", "source": "from-ticket", "ref": "AUTH-412" }
+  ],
+  "out_of_scope": ["rate-limiting on the refresh route", "audit-log formatting"],
+  "prepared_by": "fable-clerk-1",
+  "correlation_id": "coord-lz4f9k-3a7b"
+}

@@ -72,6 +72,10 @@ const ALLOWLIST = [
     file: 'lib/validate-agent-output.js',
     reason: 'Loads agent-output.schema.json via createRequire from @dogfood-lab/schemas — a swarm-internal, repo-owned JSON Schema document used to compile the Ajv validator on first use. Not operator-supplied input.',
   },
+  {
+    file: 'lib/case-file/schema.js',
+    reason: 'Loads case-file.schema.json via createRequire from @dogfood-lab/schemas — a swarm-internal, repo-owned JSON Schema document used to compile the Ajv validator on first use. Same trust class as lib/validate-agent-output.js (the jury case-file briefing envelope). Not operator-supplied input.',
+  },
 ];
 
 function walkSync(dir, files = []) {

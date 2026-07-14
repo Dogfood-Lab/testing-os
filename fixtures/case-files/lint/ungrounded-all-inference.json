@@ -1,0 +1,11 @@
+{
+  "objective": "The cache invalidation runs when a record is updated.",
+  "artifact_under_test": { "kind": "module", "ref": "src/cache.js" },
+  "acceptance_criteria": [
+    { "id": "AC-invalidate", "check": "updating a record evicts its cache entry", "source": "fable-inference" }
+  ],
+  "context": [
+    { "claim": "the cache is a Map keyed by record id", "source": "fable-inference" },
+    { "claim": "invalidation happens in the update handler", "source": "fable-inference" }
+  ]
+}

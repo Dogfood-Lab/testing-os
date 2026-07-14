@@ -1,0 +1,116 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dogfood-lab/testing-os/packages/schemas/src/json/case-file.schema.json",
+  "title": "Jury Case-File (neutral verification briefing)",
+  "description": "The neutral briefing a planner-tier clerk (e.g. a Fable agent) assembles to PREPARE an external, family-different verification jury before it judges an artifact. It exists to fix under-abstention: a cold-dropped 'here are files, verify this' is under-specified, and an under-calibrated verifier hallucinates a confident verdict rather than abstaining. The case-file supplies the objective + falsifiable acceptance criteria + grounding evidence the jury judges AGAINST, so 'correct' is defined rather than guessed. Critically, the clerk renders NO verdict — this schema is SHAPE only, and carries no accept/reject/pass/fail/verdict field by construction (additionalProperties:false). The neutrality SEMANTICS the shape cannot express (no conclusion-words in a criterion; a grounding-extraction floor; no leaked producer reasoning) are enforced separately by the neutrality lint in packages/dogfood-swarm/lib/case-file/lint.js, exactly as policy.schema.json gates policy SHAPE while docs/policy-lint.md gates the data-independent semantics. This is a swarm-internal envelope (like agent-output.schema.json) resolved via the @dogfood-lab/schemas ./json/* subpath with a local Ajv — it is NOT one of the eight contract-spine payload schemas registered in validatePayload, and it carries no schema_version value gate.",
+  "type": "object",
+  "required": ["objective", "artifact_under_test", "acceptance_criteria"],
+  "additionalProperties": false,
+  "properties": {
+    "objective": {
+      "type": "string",
+      "minLength": 10,
+      "description": "What the artifact under test must accomplish — the intent the jury judges against, lifted from the ticket / spec / task. States the goal, never whether the artifact met it. A conclusion here ('correctly returns 401') is a neutrality violation the lint catches; the objective is 'the endpoint rejects expired tokens', a goal, not a grade."
+    },
+    "artifact_under_test": {
+      "type": "object",
+      "description": "The single artifact the jury renders a verdict on. Referenced by a stable handle; content is inlined when the jury cannot fetch it itself.",
+      "required": ["kind", "ref"],
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
+          "type": "string",
+          "enum": ["diff", "file", "finding", "module", "answer", "citation"],
+          "description": "What kind of artifact is being judged. Governs how the jury reads it."
+        },
+        "ref": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable pointer to the artifact — a file path, a finding id, a diff handle, a commit SHA. The jury and the deterministic floor resolve the same ref, so a verdict is anchored to a specific object."
+        },
+        "content": {
+          "type": "string",
+          "description": "Optional inline copy of the artifact the jury reads. Provided when the jury cannot resolve `ref` itself. MUST be free of the producer's reasoning trace (chain-of-thought, <thinking>/<reasoning>/<scratchpad>/<think> blocks, reasoning summaries) — the handoff refuses a case-file whose content leaks a producer trace, enforcing prism's reasoning-stripped boundary (Lock 2) at the briefing seam."
+        }
+      }
+    },
+    "acceptance_criteria": {
+      "type": "array",
+      "minItems": 1,
+      "description": "The falsifiable checks that define a pass. Each is a testable statement of expected behavior ('returns 401 on an expired token'), NOT a conclusion about the artifact ('correctly returns 401'). This is the rubric the jury judges against and the strongest form of grounding when the checks are extracted from the artifact's own test suite. A criterion the jury cannot evaluate from the case-file returns `insufficient_context` for that criterion — a first-class, non-penalized answer, not a failure.",
+      "items": {
+        "type": "object",
+        "required": ["id", "check"],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^AC-[A-Za-z0-9][A-Za-z0-9-]*$",
+            "description": "Stable id for the criterion (AC-<slug>), so the jury's per-criterion verdict (including `insufficient_context`) maps back to a specific check."
+          },
+          "check": {
+            "type": "string",
+            "minLength": 3,
+            "description": "The falsifiable statement of expected behavior. Phrase as a check the jury can evaluate against the artifact + evidence, never as a verdict on the artifact. Lexical conclusion-words here are a neutrality violation the lint reports."
+          },
+          "source": {
+            "$ref": "#/$defs/provenance",
+            "description": "Where this criterion came from. `from-tests` (the check is an existing test assertion) is the strongest, most-grounded form; `fable-inference` marks a criterion the clerk synthesized, which the jury weights more skeptically and the grounding floor counts against."
+          }
+        }
+      }
+    },
+    "context": {
+      "type": "array",
+      "description": "The grounding evidence pack: factual claims about the artifact and its surroundings the jury needs to judge, each tagged with its provenance. Fed to the jury RAG-style (the way prism feeds the retrieved source to its Groundedness lens) rather than left to the verifier's parametric recall. Every claim is provenance-tagged; the neutrality lint enforces an extraction floor so the pack is assembled from checkable sources, not authored from the clerk's imagination.",
+      "items": {
+        "type": "object",
+        "required": ["claim", "source"],
+        "additionalProperties": false,
+        "properties": {
+          "claim": {
+            "type": "string",
+            "minLength": 3,
+            "description": "A factual, verdict-free statement of context ('this module is called by the payment path'; 'the expiry guard was added at auth.js:42'). States a fact, never a judgment of correctness — a conclusion here is a neutrality violation the lint catches."
+          },
+          "source": {
+            "$ref": "#/$defs/provenance",
+            "description": "Provenance of the claim. Everything except `fable-inference` is EXTRACTED (lifted from a checkable artifact); `fable-inference` is the clerk's own synthesis and is what the extraction floor bounds."
+          },
+          "ref": {
+            "type": "string",
+            "description": "Optional pointer to where the claim was extracted from (a file:line, a test id, a ticket url) so a reviewer can check the extraction."
+          }
+        }
+      }
+    },
+    "out_of_scope": {
+      "type": "array",
+      "description": "What the jury should NOT flag — behavior, files, or concerns deliberately excluded from this verification. Bounds the judgment without asserting anything about the in-scope artifact. Note the rubric is a FLOOR, not a ceiling: the jury is licensed to flag out-of-brief defects it notices and mark them as not-in-brief, so an incomplete case-file does not make the clerk's blind spots the jury's.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "prepared_by": {
+      "type": "string",
+      "description": "Optional handle of the clerk that assembled this case-file (e.g. a Fable agent id). Provenance only — carries no authority; the clerk renders no verdict."
+    },
+    "correlation_id": {
+      "type": "string",
+      "description": "Optional forensic anchor tying this case-file to the swarm wave / dispatch that produced it, in the coord-<base36-ts>-<4-hex> shape the coordination commands emit."
+    },
+    "notes": {
+      "type": "string",
+      "maxLength": 2000,
+      "description": "Optional neutral context for a human reviewer of the case-file itself. Not shown to the jury as a criterion; subject to the same no-verdict neutrality expectation as every other field."
+    }
+  },
+  "$defs": {
+    "provenance": {
+      "type": "string",
+      "enum": ["from-spec", "from-ticket", "from-tests", "from-code", "fable-inference"],
+      "description": "Where a claim or criterion originated. The four `from-*` values are EXTRACTED (lifted from an externally-authored, checkable artifact); `fable-inference` is the clerk's own synthesis. The extraction floor in the neutrality lint bounds how much of a case-file may be `fable-inference`, minimizing the clerk's authorial surface — the part that could be slanted."
+    }
+  }
+}

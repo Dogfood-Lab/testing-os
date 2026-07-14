@@ -1,0 +1,12 @@
+{
+  "objective": "The exporter writes one output row per input record.",
+  "artifact_under_test": { "kind": "file", "ref": "src/export.js" },
+  "acceptance_criteria": [
+    { "id": "AC-rowcount", "check": "the output row count equals the input record count", "source": "from-tests" }
+  ],
+  "context": [
+    { "claim": "the exporter streams rows through a transform", "source": "from-code", "ref": "src/export.js:30" },
+    { "claim": "the transform batches in chunks of 100", "source": "fable-inference" },
+    { "claim": "downstream consumers expect CSV", "source": "fable-inference" }
+  ]
+}

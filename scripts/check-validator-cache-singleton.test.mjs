@@ -94,6 +94,12 @@ test('D2B-015 STATIC: no `new Ajv` outside @dogfood-lab/schemas (single canonica
   // instantiate one.
   const ALLOWLIST = new Set([
     'packages/dogfood-swarm/lib/validate-agent-output.js',
+    // The case-file neutrality lint compiles the case-file envelope with a local
+    // Ajv for the same reason agent-output does: the case-file is a swarm-internal
+    // briefing envelope (docs/case-file-contract.md), NOT one of the eight
+    // payload schemas wired through compileSchema/validatePayload. See that
+    // file's header comment.
+    'packages/dogfood-swarm/lib/case-file/schema.js',
   ]);
   const SCHEMA_PACKAGE_PREFIX = 'packages/schemas/';
 

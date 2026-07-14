@@ -1,0 +1,11 @@
+{
+  "objective": "The retry wrapper stops after the configured maximum attempts.",
+  "artifact_under_test": { "kind": "diff", "ref": "src/retry.js@ff00aa" },
+  "acceptance_criteria": [
+    { "id": "AC-max", "check": "the retry loop correctly stops after maxAttempts iterations", "source": "from-tests" },
+    { "id": "AC-backoff", "check": "each retry waits the backoff interval before the next attempt", "source": "from-tests" }
+  ],
+  "context": [
+    { "claim": "maxAttempts defaults to 3 in the config loader", "source": "from-code", "ref": "src/config.js:20" }
+  ]
+}

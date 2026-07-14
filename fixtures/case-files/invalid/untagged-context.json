@@ -1,0 +1,10 @@
+{
+  "objective": "The parser handles empty input without throwing.",
+  "artifact_under_test": { "kind": "file", "ref": "src/parse.js" },
+  "acceptance_criteria": [
+    { "id": "AC-empty", "check": "parse(\"\") returns an empty array" }
+  ],
+  "context": [
+    { "claim": "parse() is called by the ingest loop" }
+  ]
+}
