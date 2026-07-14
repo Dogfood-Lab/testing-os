@@ -187,29 +187,45 @@ smoke-tests):
 gate → build spec → run the injected jury → normalize. A biasing case-file throws
 `CaseFileNeutralityError` **before the jury is ever called**.
 
-## The remaining slice — the `swarm adjudicate` CLI verb
+## The wave-gated CLI verb (shipped)
 
-What's left is the live boundary and its wiring: the `runJury` adapter that shells
-`prism verify` per seat with the F-14 env, the `swarm adjudicate` dispatch-table
-entry, and persisting the adjudication + prism's signed receipt to the control
-plane. A wave then advances only on **deterministic floor + a prism receipt +
-Director disposition**. When it lands, `CaseFileNeutralityError` graduates from
-`lib/case-file/handoff.js` into the central `lib/errors.js` and earns an error-codes
-handbook entry (at which point the `check-doc-drift` error-code cross-ref gate
-begins asserting it).
+`swarm adjudicate <run-id> --case-file <path> [--cloud] [--format=json]`
+(`commands/adjudicate.js` + `cmdAdjudicate` in `cli.js`) dispatches a case-file to
+the jury and records the advisory verdict on the run's current wave. The
+`checkAdjudication` gate (schema v9, `lib/advance.js`) then gates advance:
+**corroborate** clears; a non-corroborate verdict is an overridable BLOCK requiring
+Director disposition (`swarm advance --override --reason`). The deterministic floor
+stays the only non-overridable gate, and outranks the jury in gate precedence.
+
+The `runJury` boundary is injected. The live default is the **free local-Ollama
+panel** (`lib/case-file/ollama-jury.js` — Mistral/Granite/Qwen/Gemma/Hermes, all
+non-Claude, zero cost); `--cloud` opts into the paid gpt-oss/glm seats. A
+prism-per-seat adapter (adding L3/L4 within each seat) plugs into the same boundary
+and is the documented stronger tier. The verb exits `0` only on corroborate
+(mirroring `swarm verify`), writes the full per-criterion receipt under
+`swarms/<run>/adjudications/`, and persists the gate-readable summary row.
+
+`CaseFileNeutralityError` is rendered directly by the handler (a biasing case-file
+prints `ADJUDICATION REFUSED` + hint and exits 1) rather than graduated to the
+central error table — the verb owns its error surface.
+
+Live-verified on-rig end to end: a corroborated case-file cleared all six advance
+gates; the neutrality gate refused a verdict-leaking case-file before any jury call.
 
 ### Compensators (owned by the `swarm adjudicate` slice — no skip)
 
-That verb is the first case-file surface to perform irreversible actions, so it
-carries the compensators table the workflow standards require:
+The verb performs irreversible actions, so it carries the compensators table the
+workflow standards require:
 
 | Irreversible action | Compensator | Post-rollback state | Owner |
 |---------------------|-------------|---------------------|-------|
-| Live jury dispatch (`prism verify` per seat — consumes Ollama-Cloud credits, writes a prism receipt) | `prism receipt delete <id>` for the receipt; the credit spend is sunk (bounded per run) | receipt removed from prism's store; spend not recoverable | `swarm adjudicate` |
-| Persist the adjudication + receipt ref to the control plane | reverse via the `transitionWave` state-machine seam (override + reason) — never raw SQL | wave returns to its pre-adjudication status; an audit row is appended | `swarm adjudicate` |
+| Persist the adjudication row to the control plane | `deleteAdjudication(db, id)` (`lib/adjudication-store.js`) — the named compensator, no raw SQL | the row is removed; the gate reads the prior latest adjudication (or none) | `swarm adjudicate` |
+| Write the receipt artifact under `swarms/<run>/adjudications/` | delete the receipt file (content-addressed name; safe to re-create) | receipt removed from disk | `swarm adjudicate` |
+| Live jury dispatch (default: **free local Ollama** — no spend; `--cloud` consumes Ollama-Cloud credits) | none for spend when `--cloud` (bounded per run); the local default has nothing to compensate | — | operator (via `--cloud` opt-in) |
 
-Until that verb exists, `adjudicate.js` performs **no** irreversible action — the
-jury boundary is injected, so the library writes no world-state.
+The pure library (`adjudicate.js`, `handoff.js`, `lint.js`) still performs **no**
+irreversible action — only the verb persists, and only the local jury runs by
+default (free).
 
 ## Standards compliance
 

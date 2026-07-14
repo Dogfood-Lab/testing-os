@@ -45,6 +45,11 @@ import { verifyUnverified as runVerifyUnverified } from './commands/verify-unver
 import { verifyApproved as runVerifyApproved } from './commands/verify-approved.js';
 import { advance as runAdvance, checkGates, getPromotions } from './lib/advance.js';
 import { persist as runPersist, formatPersist } from './commands/persist.js';
+import { runAdjudicate, formatAdjudication } from './commands/adjudicate.js';
+import { makeOllamaJury, LOCAL_JURY_SEATS } from './lib/case-file/ollama-jury.js';
+import { DEFAULT_JURY_SEATS } from './lib/case-file/adjudicate.js';
+import { CaseFileNeutralityError } from './lib/case-file/handoff.js';
+import { readBoundedJson } from './lib/bounded-json-read.js';
 import { openDb } from './db/connection.js';
 import {
   freezeDomains, unfreezeDomains, getDomains, aredomainsFrozen,
@@ -1415,6 +1420,54 @@ function buildCheckGatesJSON(g) {
   return g;
 }
 
+async function cmdAdjudicate(args) {
+  const runId = args[0];
+  const caseFilePath = parseValueFlag(args, '--case-file');
+  if (!runId || !caseFilePath) {
+    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--cloud] [--format=json]');
+    process.exit(1);
+  }
+
+  const db = openDb(getDbPath());
+  const caseFile = readBoundedJson(resolve(caseFilePath));
+
+  // Default to the FREE local non-Claude panel; --cloud opts into the paid
+  // gpt-oss / glm cloud seats (may incur Ollama Cloud cost).
+  const seats = args.includes('--cloud') ? DEFAULT_JURY_SEATS : LOCAL_JURY_SEATS;
+  const runJury = makeOllamaJury({ log: (m) => console.error(`  · ${m}`) });
+  const swarmDir = dirname(getDbPath());
+
+  let out;
+  try {
+    out = await runAdjudicate(db, { runId, caseFile, runJury, seats, swarmDir });
+  } catch (e) {
+    // A biasing case-file is refused before the jury runs — render it cleanly
+    // (the neutrality error is handled here rather than graduated to the central
+    // error table, since the verb renders it directly).
+    if (e instanceof CaseFileNeutralityError) {
+      console.error(`ADJUDICATION REFUSED: ${e.message}`);
+      if (e.hint) console.error(`Hint: ${e.hint}`);
+      process.exit(1);
+    }
+    throw e;
+  }
+
+  const format = parseFormatFlag(args);
+  if (format === 'json') {
+    console.log(JSON.stringify(
+      { adjudication_id: out.adjudicationId, receipt_path: out.receiptPath, ...out.result },
+      null,
+      2,
+    ));
+  } else {
+    console.log(formatAdjudication(out));
+  }
+  // Exit 0 ONLY on corroborate — a non-corroborate verdict is a non-zero signal
+  // for CI, mirroring `swarm verify`'s pass-only-exit-0 contract. The advisory
+  // nature lives in the (overridable) ADVANCE gate, not in this verb's exit code.
+  process.exitCode = out.result.overall === 'corroborate' ? 0 : 1;
+}
+
 function cmdAdvance(args) {
   const runId = args[0];
   if (!runId) {
@@ -1950,6 +2003,7 @@ const commands = {
   'verify-approved': cmdVerifyApproved,
   receipt: cmdReceipt,
   advance: cmdAdvance,
+  adjudicate: cmdAdjudicate,
   status: cmdStatus,
   resume: cmdResume,
   history: cmdHistory,
@@ -2126,6 +2180,11 @@ Commands:
                              advance --check-only --format=json emits the
                              checkGates() {verdict,nextPhase,reason,gates[],
                              overridable} object for machine consumers.
+  adjudicate <run-id> --case-file <path> [--cloud] [--format=json]
+                             Dispatch a case-file to the cross-family jury and
+                             record the advisory verdict on the current wave (the
+                             checkAdjudication gate reads it). Free local panel by
+                             default; --cloud opts into paid gpt-oss/glm seats.
   persist <run-id> [opts]    Export canonical truth to downstream systems
   status <run-id> [--format=text|json]
                              Control plane status. --format=json emits the
@@ -2183,7 +2242,13 @@ ${renderPhaseColumns('  ')}`);
   }
 
   try {
-    commands[command](commandArgs);
+    // Most verbs are synchronous. `adjudicate` is async (it awaits the
+    // cross-family jury), so route a returned promise's rejection through the
+    // same top-level renderer. A sync verb returns undefined and this is a no-op.
+    const ret = commands[command](commandArgs);
+    if (ret && typeof ret.then === 'function') {
+      ret.catch((e) => { renderTopLevelError(e); process.exit(1); });
+    }
   } catch (e) {
     renderTopLevelError(e);
     process.exit(1);
