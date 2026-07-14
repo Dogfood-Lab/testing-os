@@ -3,8 +3,9 @@
 > **Status:** contract spec for testing-os. The neutral briefing a planner-tier
 > clerk (a Fable agent) assembles to PREPARE an external, family-different
 > verification jury before it judges an artifact. Shape lives in
-> `packages/schemas/src/json/case-file.schema.json`; the neutrality lint + the
-> fail-closed handoff live in `packages/dogfood-swarm/lib/case-file/`.
+> `packages/schemas/src/json/case-file.schema.json`; the neutrality lint, the
+> fail-closed handoff, and the adjudication logic live in
+> `packages/dogfood-swarm/lib/case-file/`.
 
 ## Why this exists
 
@@ -154,17 +155,61 @@ case-file (or the spec) has a gap to fill.
 Only the deterministic floor is law; every model verdict — the clerk's (there is
 none), the jury's — is evidence, weighted by independence.
 
-## CLI shape (next slice — specified, not yet built)
+## Adjudication
 
-This slice ships the schema, the lint, the fail-closed handoff, and their tests.
-The verb that *dispatches* the neutral request to the jury is `swarm adjudicate`
-(the next slice): it wires prism's Ollama-Cloud cross-family seats via the F-14
-config registry (`PRISM_VERIFIER_MODEL_OPENAI=gpt-oss:120b-cloud`, …), records the
-signed receipt, and gates a wave on the deterministic floor **and** a prism receipt
-**and** Director disposition. When it lands, `CaseFileNeutralityError` graduates
-from `lib/case-file/handoff.js` into the central `lib/errors.js` and earns an
-error-codes handbook entry (at which point the `check-doc-drift` error-code
-cross-ref gate begins asserting it).
+`lib/case-file/adjudicate.js` dispatches a neutral case-file to the family-different
+jury and fuses the panel into an **advisory** verdict. Three pure, tested pieces
+behind an injected jury boundary (the live prism call is the boundary the CLI verb
+smoke-tests):
+
+- **`buildJurySpec(request)`** maps the neutral request to the cross-family
+  invocation spec and **enforces Lock 1**: it throws if any seat is the producer
+  family (`anthropic` / `claude`). Your whole crew is Claude-family, so only the
+  non-Claude roster (`gpt-oss` OpenAI · `glm` Zhipu · local mistral/granite/qwen/
+  gemma) can independently verify Claude work. It emits the F-14 env recipe
+  (`PRISM_VERIFIER_MODEL_OPENAI=gpt-oss:120b-cloud`, `PRISM_OPENAI_BASE_URL=…`,
+  `OPENAI_API_KEY=ollama`).
+- **`aggregateCriterion(answers)`** is abstention-aware panel fusion. A criterion
+  the panel could not reach quorum on (fewer than `minDecidingRatio` of jurors
+  decided) is `insufficient_context` — a **brief gap to fill, not a fail**. Among
+  the deciding jurors: unanimity → that verdict; disagreement → `contested`.
+- **`normalizeAdjudication(verdicts, request)`** produces the overall verdict by
+  precedence `refute > contested > insufficient_context > corroborate`, and is
+  explicitly **evidence, not law**: `authority: 'advisory'`, `law:
+  'deterministic-floor'`, `advances_wave_alone: false` — even a unanimous
+  corroborate does not advance a wave alone; the deterministic floor (`swarm
+  verify`) must pass too. Out-of-brief findings the jurors raise are aggregated
+  separately (the rubric is a floor, not a ceiling), and a panel that keeps
+  returning `insufficient_context` is the abstention-as-signal loop telling you the
+  case-file has a gap.
+
+`adjudicate(caseFile, { runJury })` is the fail-closed orchestrator: neutrality
+gate → build spec → run the injected jury → normalize. A biasing case-file throws
+`CaseFileNeutralityError` **before the jury is ever called**.
+
+## The remaining slice — the `swarm adjudicate` CLI verb
+
+What's left is the live boundary and its wiring: the `runJury` adapter that shells
+`prism verify` per seat with the F-14 env, the `swarm adjudicate` dispatch-table
+entry, and persisting the adjudication + prism's signed receipt to the control
+plane. A wave then advances only on **deterministic floor + a prism receipt +
+Director disposition**. When it lands, `CaseFileNeutralityError` graduates from
+`lib/case-file/handoff.js` into the central `lib/errors.js` and earns an error-codes
+handbook entry (at which point the `check-doc-drift` error-code cross-ref gate
+begins asserting it).
+
+### Compensators (owned by the `swarm adjudicate` slice — no skip)
+
+That verb is the first case-file surface to perform irreversible actions, so it
+carries the compensators table the workflow standards require:
+
+| Irreversible action | Compensator | Post-rollback state | Owner |
+|---------------------|-------------|---------------------|-------|
+| Live jury dispatch (`prism verify` per seat — consumes Ollama-Cloud credits, writes a prism receipt) | `prism receipt delete <id>` for the receipt; the credit spend is sunk (bounded per run) | receipt removed from prism's store; spend not recoverable | `swarm adjudicate` |
+| Persist the adjudication + receipt ref to the control plane | reverse via the `transitionWave` state-machine seam (override + reason) — never raw SQL | wave returns to its pre-adjudication status; an audit row is appended | `swarm adjudicate` |
+
+Until that verb exists, `adjudicate.js` performs **no** irreversible action — the
+jury boundary is injected, so the library writes no world-state.
 
 ## Standards compliance
 
