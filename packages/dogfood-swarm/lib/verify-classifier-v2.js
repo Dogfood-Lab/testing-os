@@ -72,8 +72,9 @@
  *     cleanup task post-collect. v2 reads whatever the records say.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve, isAbsolute } from 'node:path';
+import { MAX_AGENT_OUTPUT_BYTES } from './bounded-json-read.js';
 
 /**
  * Tolerance window (lines) around the recorded line where finding the
@@ -141,10 +142,20 @@ function escapeRegex(s) {
 
 /**
  * Default file reader. Tests inject a fake reader via opts.readLines.
+ *
+ * ds-verify-003: gate the read on file size BEFORE readFileSync. The finding's
+ * target file lives in the audited repo's checkout (run.local_path) and is
+ * fully untrusted — a huge committed blob (a minified vendor bundle, a
+ * generated lockfile, a data fixture) would otherwise be read whole into memory
+ * and, for a null-line finding, regex-scanned end to end. The probe adapters
+ * already bound their manifest reads on this same constant; the classification
+ * path lacked the guard. Over-cap ⇒ null, which the caller already treats as
+ * unreadable/skip (→ `unverifiable`), the safe direction.
  */
 function defaultReadLines(absolutePath) {
   if (!absolutePath || !existsSync(absolutePath)) return null;
   try {
+    if (statSync(absolutePath).size > MAX_AGENT_OUTPUT_BYTES) return null;
     return readFileSync(absolutePath, 'utf-8').split(/\r?\n/);
   } catch {
     return null;
@@ -240,6 +251,19 @@ function classifyByAnchor(finding, repoRoot, readLinesFn) {
       classification: 'verified',
       evidence: `anchor /${anchor.regex.source}/ no longer present at ${finding.file_path}:${start}-${end}`,
       matchedLine: null,
+    };
+  }
+  // ds-verify-002: a finding with NO recorded line (line is optional in
+  // agent-output.schema.json; DB line_number is nullable) scanned the WHOLE
+  // file, so an anchor hit ANYWHERE means "still present somewhere" — the
+  // finding is simply unfixed, not a move-distance regression. There is no
+  // recorded line to measure a move against, so `regressed` is a category
+  // error here. Treat it as still-present.
+  if (recordedLine <= 0) {
+    return {
+      classification: 'claimed-but-still-present',
+      evidence: `anchor /${anchor.regex.source}/ still present at ${finding.file_path}:${matchedLine} (no recorded line); fix never landed`,
+      matchedLine,
     };
   }
   if (recordedLine > 0 && Math.abs(matchedLine - recordedLine) <= EXACT_LINE_TOLERANCE) {

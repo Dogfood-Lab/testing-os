@@ -220,8 +220,28 @@ export function runSteps(repoPath, steps, opts = {}) {
   // passed but yielded no recognizable test count produced nothing we can
   // call a verified pass — surface `tests_ran: false` so the caller can
   // treat it as not-verified instead of a clean PASS.
+  //
+  // ds-verify-001: a POSITIVE count is required. extractTestCount returns 0
+  // (not null) for an explicit zero-test run — cargo `test result: ok. 0
+  // passed`, node `# tests 0` — so `testCount != null` alone let a run that
+  // exercised nothing count as "tests ran". Demand `testCount > 0`.
   const testStep = results.find(r => r.name === 'test');
-  const testsRan = testStep ? (testStep.passed && testCount != null) : false;
+  const testsRan = testStep ? (testStep.passed && testCount != null && testCount > 0) : false;
+
+  // ds-verify-001: lift the pass→no_tests downgrade OUT of the node adapter and
+  // into the runner so it fires uniformly for EVERY adapter. A required `test`
+  // step that PASSED but exercised zero tests (count 0 or unrecognized) is not
+  // a verified pass — there is no positive evidence the fix works. Previously
+  // this downgrade lived only in adapters/node.js, so a cargo `0 passed` or a
+  // node `# tests 0` scored a clean `pass`. The node adapter still refines the
+  // human-readable reason for its no-`test`-script case; the verdict decision
+  // is made here, once.
+  let noTests = false;
+  if (verdict === 'pass' && testStep && testStep.passed && !testsRan) {
+    verdict = 'no_tests';
+    noTests = true;
+    reason = 'test step ran zero tests — no positive evidence the fix works; not a verified pass';
+  }
 
   const out = {
     steps: results,
@@ -235,6 +255,7 @@ export function runSteps(repoPath, steps, opts = {}) {
     timed_out: results.some(r => r.timed_out),
     truncated: results.some(r => r.truncated),
   };
+  if (noTests) out.no_tests = true;
   // Only attach `reason` when there is one to report — keeps the `pass` shape
   // unchanged and lets the display layer treat its presence as "explain why".
   if (reason) out.reason = reason;

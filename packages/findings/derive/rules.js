@@ -228,7 +228,7 @@ const ruleScenarioStepFailure = {
       transfer_scope: 'surface_local',
       journey_stage: 'first_run',
       product_surface: surface,
-      slug: `${repoSlug}-step-failure-${stepIds[0]}`,
+      slug: `${repoSlug}-step-failure-${sid}-${stepIds[0]}`,
       title: `Scenario step(s) failed: ${stepIds.join(', ')} — ${surface} entrypoint or build output may be wrong`,
       summary: `The scenario failed at step(s): ${stepIds.join(', ')}. This typically indicates the entrypoint, build output path, or invocation contract differs from what the scenario expected. The scenario or build configuration needs correction.`,
       rationale: `scenario_results[0].verdict is "fail" with ${failed.length} failed step(s): ${stepIds.join(', ')}.`,

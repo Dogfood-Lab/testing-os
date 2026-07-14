@@ -596,22 +596,32 @@ export function checkOwnership(db, runId, domainName, changedFiles) {
       continue;
     }
 
-    const sharedDomain = domains.find(d =>
-      d.ownership_class === 'shared' &&
-      d.globs.some(g => minimatch(file, g, { dot: true }))
-    );
-    if (sharedDomain) {
-      valid.push({ file, reason: `shared via ${sharedDomain.name}` });
-      continue;
-    }
+    // DS-MUT-003: the shared/bridge fallback is ONLY for files with no
+    // exclusive owner. A file exclusively owned by a DIFFERENT owned domain is
+    // a VIOLATION even when a broad shared/bridge glob ALSO matches it — the
+    // classic case is a root `tsconfig.json` claimed by an owned `ci-tooling`
+    // domain (`tsconfig*.json`) AND the shared `*.json` glob. Letting the
+    // shared match win here would override the exclusive owner and rule agent
+    // A's edit of domain B's file "shared-valid", silently bypassing exclusive
+    // ownership. Only fall through when the file is genuinely unowned.
+    if (exclusiveOwner === null) {
+      const sharedDomain = domains.find(d =>
+        d.ownership_class === 'shared' &&
+        d.globs.some(g => minimatch(file, g, { dot: true }))
+      );
+      if (sharedDomain) {
+        valid.push({ file, reason: `shared via ${sharedDomain.name}` });
+        continue;
+      }
 
-    const bridgeDomain = domains.find(d =>
-      d.ownership_class === 'bridge' &&
-      d.globs.some(g => minimatch(file, g, { dot: true }))
-    );
-    if (bridgeDomain) {
-      valid.push({ file, reason: `bridge via ${bridgeDomain.name}` });
-      continue;
+      const bridgeDomain = domains.find(d =>
+        d.ownership_class === 'bridge' &&
+        d.globs.some(g => minimatch(file, g, { dot: true }))
+      );
+      if (bridgeDomain) {
+        valid.push({ file, reason: `bridge via ${bridgeDomain.name}` });
+        continue;
+      }
     }
 
     violations.push({

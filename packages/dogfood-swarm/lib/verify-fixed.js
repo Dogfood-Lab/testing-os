@@ -51,8 +51,9 @@
  * parse-regression-pins.js can pivot on it without sniffing field names.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve, isAbsolute } from 'node:path';
+import { MAX_AGENT_OUTPUT_BYTES } from './bounded-json-read.js';
 
 /**
  * Tolerance window (lines) around the recorded line where finding the
@@ -187,6 +188,13 @@ function escapeRegex(s) {
 function readLines(absolutePath) {
   if (!absolutePath || !existsSync(absolutePath)) return null;
   try {
+    // ds-verify-003: gate on size BEFORE readFileSync. The target file lives in
+    // the audited repo's checkout (run.local_path) and is fully untrusted — a
+    // huge committed blob (minified vendor bundle, generated lockfile) would
+    // otherwise be read whole into memory and, for a null-line finding, scanned
+    // end to end. Over-cap ⇒ null, which classifies `unverifiable` (the safe
+    // direction), mirroring the bounded reads in the verify probe adapters.
+    if (statSync(absolutePath).size > MAX_AGENT_OUTPUT_BYTES) return null;
     return readFileSync(absolutePath, 'utf-8').split(/\r?\n/);
   } catch {
     return null;
@@ -279,6 +287,18 @@ export function classifyFixedFinding(finding, repoRoot, opts = {}) {
     return {
       classification: 'verified',
       evidence: `anchor /${anchor.regex.source}/ no longer present at ${finding.file_path}:${bucketStart}-${bucketEnd}`,
+    };
+  }
+
+  // ds-verify-002: a finding with NO recorded line scanned the whole file, so
+  // any anchor hit is "still present somewhere" (unfixed), not a move-distance
+  // regression — there is no recorded line to measure a move against. The
+  // whole-file branch's own comment above documents this intent
+  // ("report claimed-but-still-present"); the code fell through to `regressed`.
+  if (recordedLine <= 0) {
+    return {
+      classification: 'claimed-but-still-present',
+      evidence: `anchor /${anchor.regex.source}/ still present at ${finding.file_path}:${matchedLine} (no recorded line); fix never landed`,
     };
   }
 

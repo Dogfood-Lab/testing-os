@@ -109,21 +109,20 @@ function run(repoPath, overrides) {
   const steps = commands(overrides);
   const result = runSteps(repoPath, steps, { continueOnError: true });
 
-  // ve-004: `npm test --if-present` exits 0 and runs nothing when the repo
-  // has no `test` script, which is indistinguishable from a real pass at the
-  // wave gate. Detect the no-test case and refuse to report it as a verified
-  // pass: the test step exists but exercised nothing, so there is no positive
-  // evidence the fix works. Only downgrade when the operator did NOT supply
-  // an explicit test override (an override means they deliberately chose the
-  // test command, and `tests_ran` already tracks whether it produced output).
+  // ve-004 / ds-verify-001: the runner now makes the pass→no_tests DECISION
+  // uniformly (a required `test` step that passed but exercised nothing is not
+  // a verified pass). The node adapter only REFINES the human-readable reason:
+  // when its probe proves the cause is a MISSING `test` script
+  // (evidence.hasTest === false), say so — a more actionable message than the
+  // generic "ran zero tests" (which also covers a present-but-empty suite).
+  // Only refine for the default test step; an explicit override is the
+  // operator's deliberate choice and keeps the runner's generic reason.
   const usingDefaultTest = !(overrides && overrides.test);
-  if (usingDefaultTest && result.verdict === 'pass' && !result.tests_ran) {
+  if (usingDefaultTest && result.verdict === 'no_tests') {
     const { evidence } = probe(repoPath);
     if (evidence && evidence.hasTest === false) {
       return {
         ...result,
-        verdict: 'no_tests',
-        no_tests: true,
         reason: 'no `test` script — `npm test --if-present` ran zero tests; not a verified pass',
       };
     }

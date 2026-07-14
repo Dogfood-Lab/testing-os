@@ -143,6 +143,50 @@ test('F-CI-SELF-DOGFOOD-001: the `ingest:` head-commit loop guard is present in 
   );
 });
 
+test('ci-self-dogfood-cancelled-fail: the workflow_run leg proceeds only on a CONCLUSIVE result (success|failure)', () => {
+  const text = readFileSync(workflowPath, 'utf8');
+  const doc = yaml.load(text);
+  const jobs = doc.jobs ?? {};
+  const guard = Object.values(jobs)
+    .map((j) => (j && typeof j.if === 'string' ? j.if : ''))
+    .filter(Boolean)
+    .join('\n');
+  // A `cancelled` run (cancel-in-progress superseded by a newer push) or a
+  // `skipped` run (paths filter) is NOT a gate outcome. Mapping every
+  // non-success conclusion to `fail` submits a FALSE fail record about this
+  // repo. The workflow_run leg must proceed only for success or failure; other
+  // conclusions skip the job. A revert dropping the conclusion gate goes RED here.
+  assert.match(
+    guard,
+    /workflow_run\.conclusion == 'success'/,
+    'the workflow_run leg must gate on conclusion == success (→ pass)',
+  );
+  assert.match(
+    guard,
+    /workflow_run\.conclusion == 'failure'/,
+    'the workflow_run leg must gate on conclusion == failure (→ an honest fail); cancelled/skipped/etc. are skipped, never reported as fail',
+  );
+});
+
+test('ci-self-dogfood-stale-comment: no comment claims the self-dispatch needs a PAT', () => {
+  const text = readFileSync(workflowPath, 'utf8');
+  // The reverted PAT design left a step comment ("with the PAT — NOT the default
+  // GITHUB_TOKEN, which cannot trigger ingest.yml") contradicting the code, which
+  // dispatches with github.token via the documented same-repo repository_dispatch
+  // exception (see header). A revert reintroducing that misleading comment — which
+  // would lead a maintainer to break the working design — goes RED here.
+  assert.doesNotMatch(
+    text,
+    /with the PAT/,
+    'no comment may claim the self-dispatch uses a PAT — it uses the workflow GITHUB_TOKEN (same-repo repository_dispatch exception)',
+  );
+  assert.doesNotMatch(
+    text,
+    /GITHUB_TOKEN, which cannot trigger ingest/,
+    'no comment may claim the default GITHUB_TOKEN cannot trigger ingest — same-repo repository_dispatch with github.token is the documented, working path',
+  );
+});
+
 test('F-CI-SELF-DOGFOOD-001: the dispatch authenticates with the workflow token', () => {
   const text = readFileSync(workflowPath, 'utf8');
   assert.match(

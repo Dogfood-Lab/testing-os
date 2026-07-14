@@ -92,6 +92,9 @@ export function resume(opts) {
     phase: wave.phase,
     timeoutPolicy: `${Math.round(timeoutMs / 1000)}s`,
     complete: [],
+    // ds-lib-002: aborted_for_rewind agents are terminal but NOT collectable —
+    // kept in a distinct bucket so a rewound wave never masquerades as complete.
+    rewound: [],
     redispatch: [],
     manual_fix: [],
     timed_out: timedOutAgents,
@@ -108,7 +111,15 @@ export function resume(opts) {
   // dispatch documents.
   const redispatchCandidates = [];
   for (const ar of agentRuns) {
-    // Terminal: skip
+    // Terminal: skip redispatch. But ONLY `complete` is collectable —
+    // ds-lib-002: isTerminal() also matches `aborted_for_rewind`, so bucketing
+    // every terminal status as complete made a rewound wave report all_complete
+    // and render its aborted agents as [OK], inviting a collect over a rewound
+    // tree. Route aborted_for_rewind to its own bucket + action instead.
+    if (ar.status === 'aborted_for_rewind') {
+      report.rewound.push({ domain: ar.domain_name, agentRunId: ar.id });
+      continue;
+    }
     if (isTerminal(ar.status)) {
       report.complete.push({ domain: ar.domain_name, agentRunId: ar.id });
       continue;
@@ -275,6 +286,14 @@ export function resume(opts) {
   } else if (report.still_running.length > 0) {
     report.action = 'waiting';
     report.reason = `${report.still_running.length} agents still in-flight`;
+  } else if (report.rewound.length > 0) {
+    // ds-lib-002: every non-terminal agent is accounted for and the remainder
+    // were aborted by `swarm rewind --apply`. The wave's tree was reset, so it
+    // is NOT collectable — name a distinct action instead of falling through to
+    // the 'unknown' dead-end, so the operator re-dispatches the phase rather
+    // than collecting over a rewound tree.
+    report.action = 'rewound';
+    report.reason = `${report.rewound.length} agent(s) aborted for rewind — re-dispatch the phase; this wave is not collectable.`;
   } else {
     report.action = 'unknown';
     report.reason = 'Unexpected state — inspect manually';
@@ -327,6 +346,13 @@ export function formatResume(r) {
     for (const a of r.complete) lines.push(`  [OK  ] ${a.domain}`);
   }
 
+  // ds-lib-002: aborted_for_rewind agents render under their own marker, never
+  // as [OK] — the wave was rewound and must not look collectable.
+  if (r.rewound && r.rewound.length > 0) {
+    lines.push(`Rewound — aborted by \`swarm rewind\`, not collectable (${r.rewound.length}):`);
+    for (const a of r.rewound) lines.push(`  [RWND] ${a.domain}`);
+  }
+
   if (r.still_running.length > 0) {
     lines.push(`In-flight (${r.still_running.length}):`);
     for (const a of r.still_running) lines.push(`  [RUN ] ${a.domain} — since ${a.started || '?'}`);
@@ -363,6 +389,14 @@ export function formatResume(r) {
   if (r.action === 'unknown') {
     lines.push('');
     lines.push(`Next: inspect with \`swarm status ${r.runId}\` (assessment + next verb), \`swarm history ${r.waveId}\` (transition chain), or \`swarm receipt ${r.runId} ${r.waveNumber}\`.`);
+  }
+
+  // ds-lib-002: the rewound wave is a known, recoverable state (unlike the
+  // 'unknown' dead-end) — hand the operator the re-dispatch verb, and warn off
+  // the collect that the pre-fix all_complete misclassification invited.
+  if (r.action === 'rewound') {
+    lines.push('');
+    lines.push(`Next: the wave's tree was reset by \`swarm rewind\` — re-dispatch with \`swarm dispatch ${r.runId} ${r.phase}\`. Do NOT \`swarm collect\` this wave.`);
   }
 
   return lines.join('\n');

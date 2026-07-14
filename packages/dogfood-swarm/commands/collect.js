@@ -699,11 +699,25 @@ export function collect(opts) {
           db.prepare('UPDATE agent_runs SET error_message = ? WHERE id = ?')
             .run(violMsg, ar.id);
 
-          // Record file claims with violations
+          // Record file claims with violations.
+          //
+          // DS-MUT-001: the violation write is idempotent — a re-collect that
+          // re-processes an agent still holding a committed violation claim (the
+          // `swarm redrive` re-open path: the wave flips back to 'dispatched'
+          // while the blocked agent's schema-valid output.json stays on disk)
+          // re-runs this INSERT for the SAME (agent_run_id, file_path). A plain
+          // INSERT hit UNIQUE(agent_run_id, file_path) and threw INSIDE the loop
+          // db.transaction, rolling back every sibling agent's fresh work and
+          // leaving the wave stuck 'dispatched' and un-collectable. The upsert
+          // re-affirms violation=1 (and refreshes the owning domain) instead —
+          // matching the INSERT OR IGNORE discipline the valid-claim write below
+          // already used.
           for (const v of ownership.violations) {
             db.prepare(`
               INSERT INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
               VALUES (?, ?, 'edit', ?, 1)
+              ON CONFLICT(agent_run_id, file_path)
+              DO UPDATE SET violation = 1, domain_id = excluded.domain_id
             `).run(ar.id, v.file, domain.id);
           }
           report.violations.push(...ownership.violations);
@@ -727,8 +741,17 @@ export function collect(opts) {
     const sourceRoot = ar.worktree_path || run.local_path;
     for (const f of findings) {
       const sourceText = readFindingSource(sourceRoot, f.file);
-      f.fingerprint = computeFingerprint(f, { sourceText });
-      allFindings.push(f);
+      // SCHEMA-A-001: feature-audit outputs carry `priority`, not `severity`
+      // (the CRITICAL/HIGH/MEDIUM/LOW enum is identical for both). findings.severity
+      // is TEXT NOT NULL, so a feature reaching upsertFindings without a severity
+      // is silently skipped by its INSERT OR IGNORE (changes=0) — the whole feature
+      // pass then persists zero approvable rows. Normalize severity from priority
+      // on a copy (audit findings already carry severity and pass through
+      // untouched; the on-disk feature object keeps its priority). severity is not
+      // folded into computeFingerprint, so this does not perturb the fingerprint.
+      const stored = f.severity == null ? { ...f, severity: f.priority } : f;
+      stored.fingerprint = computeFingerprint(stored, { sourceText });
+      allFindings.push(stored);
     }
 
     agentReport.findings_count = findings.length;

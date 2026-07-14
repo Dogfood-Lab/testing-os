@@ -53,11 +53,20 @@ jobs:
     # ci.yml paths edit ever caught records/ or indexes/, an ingest commit could
     # trigger CI → this workflow → another ingest → ... . Skip any workflow_run
     # triggered by an ingest commit, and gate the workflow_run leg to main.
-    # workflow_dispatch (manual re-fire) is always allowed through.
+    #
+    # Conclusion gate (honesty): only a CONCLUSIVE CI result is evidence about
+    # this repo's gate. Proceed for success (→ pass) and failure (→ fail) only.
+    # A `cancelled` run (cancel-in-progress superseded by a newer push), a
+    # `skipped` run (paths filter), or any other conclusion is NOT a gate
+    # outcome — the job is skipped rather than submit a FALSE `fail` record about
+    # testing-os. workflow_dispatch (manual re-fire) is always allowed through and
+    # asserts the current state (no triggering run → conclusion treated as pass).
     if: >-
       github.event_name == 'workflow_dispatch' ||
       (github.event.workflow_run.head_branch == 'main' &&
-       !startsWith(github.event.workflow_run.head_commit.message, 'ingest:'))
+       !startsWith(github.event.workflow_run.head_commit.message, 'ingest:') &&
+       (github.event.workflow_run.conclusion == 'success' ||
+        github.event.workflow_run.conclusion == 'failure'))
     steps:
       # No token preflight: the dispatch authenticates with the workflow's own
       # GITHUB_TOKEN (see header), which always exists. A permission regression
@@ -175,9 +184,9 @@ jobs:
             --precheck \
             --output submission.json
 
-      # Dispatch to testing-os ITSELF (self-submission) with the PAT — NOT the
-      # default GITHUB_TOKEN, which cannot trigger ingest.yml. No third-party
-      # action: gh api is built in.
+      # Dispatch to testing-os ITSELF (self-submission) using the workflow's own
+      # GITHUB_TOKEN via the documented same-repo repository_dispatch exception
+      # (see header) — no PAT, no secret. No third-party action: gh api is built in.
       - name: Dispatch to testing-os (self)
         # Same-repo repository_dispatch with the workflow's own token — the
         # documented recursion-prevention exception (see header). Cross-repo

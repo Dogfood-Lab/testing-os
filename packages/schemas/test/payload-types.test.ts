@@ -206,3 +206,50 @@ describe('FT-h payload-types — compile-time + runtime drift seal', () => {
     expect(result.errors.some(e => e.path.includes('/evidence'))).toBe(true);
   });
 });
+
+// ---------------------------------------------------------------------------
+// SCHEMA-A-002 — the two record.verification mirrors that had drifted from
+// dogfood-record.schema.json in spots the satisfies + validatePayload seal
+// could not catch, because EXAMPLE_RECORD exercised NEITHER field:
+//   (a) Verification OMITTED the optional `warnings?: string[]` the schema defines
+//   (b) ProvenanceRemediation.status was `status?` while the schema REQUIRES it
+// EXAMPLE_RECORD now references both, so both halves of the seal see them: the
+// compile-time `satisfies` (warnings excess-property pin + the status-required
+// pin in src/payload-types.ts) and the runtime validatePayload assertions here.
+// ---------------------------------------------------------------------------
+
+describe('SCHEMA-A-002 — record.verification TS mirror drift seal', () => {
+  it('SCHEMA-A-002: EXAMPLE_RECORD exercises verification.warnings + provenance_remediation.status and still validates', () => {
+    const v = EXAMPLE_PAYLOADS.record.verification;
+
+    // Before the fix these fields were absent from the example, so the interface
+    // could omit `warnings` and mark `status` optional with every check green.
+    expect(Array.isArray(v.warnings)).toBe(true);
+    expect(v.warnings?.length).toBeGreaterThan(0);
+    expect(v.provenance_remediation?.status).toBe('stub_verified');
+
+    // Runtime half: the JSON schema agrees the extended example is valid —
+    // `warnings` is an allowed optional array and the remediation block carries
+    // its schema-required `status` + `remediated_at`.
+    const result = validatePayload('record', EXAMPLE_PAYLOADS.record);
+    expect(result.valid, JSON.stringify(result.errors)).toBe(true);
+  });
+
+  it('SCHEMA-A-002: schema REQUIRES provenance_remediation.status (interface mirrors it non-optional)', () => {
+    const bad = structuredClone(EXAMPLE_PAYLOADS.record);
+    const remediation = bad.verification.provenance_remediation!;
+    delete (remediation as Partial<typeof remediation>).status;
+
+    const result = validatePayload('record', bad);
+    expect(result.valid).toBe(false);
+    expect(
+      result.errors.some(e => e.keyword === 'required' && e.params?.missingProperty === 'status'),
+    ).toBe(true);
+  });
+
+  it('SCHEMA-A-002: verification.warnings is schema-OPTIONAL (interface mirrors it as `warnings?`)', () => {
+    const withoutWarnings = structuredClone(EXAMPLE_PAYLOADS.record);
+    delete (withoutWarnings.verification as { warnings?: unknown }).warnings;
+    expect(validatePayload('record', withoutWarnings).valid).toBe(true);
+  });
+});

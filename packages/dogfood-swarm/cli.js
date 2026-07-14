@@ -879,6 +879,9 @@ function cmdResume(args) {
     console.log(`\nNext: run the ${n} redispatched agent(s) with the prompts above, then swarm collect ${runId}`);
   } else if (r.action === 'all_complete') {
     console.log(`\nNext: swarm collect ${runId}`);
+  } else if (r.action === 'rewound') {
+    // ds-lib-002: the wave was rewound — re-dispatch the phase, do NOT collect.
+    console.log(`\nNext: swarm dispatch ${runId} ${r.phase} (the rewound wave's tree was reset — not collectable)`);
   }
 
   // d5-swarm-cli-B002 (Stage C): `swarm resume` sits in the same scripted
@@ -891,7 +894,12 @@ function cmdResume(args) {
   // human, so this aligns the MACHINE signal with the human-readable one — the
   // same 'CI must see the gate fail' contract pinned for `swarm verify` by
   // cli-p-002. redispatched / waiting / all_complete / none stay at exit 0.
-  if (r.action === 'blocked' || r.action === 'unknown') {
+  // ds-lib-002: a `rewound` wave is not collectable (its tree was reset by
+  // `swarm rewind`), so — like `blocked`/`unknown` — its machine signal must
+  // halt a scripted `swarm resume && swarm collect` chain rather than let it
+  // proceed into a wave that cannot be collected. redispatched / waiting /
+  // all_complete / none stay at exit 0.
+  if (r.action === 'blocked' || r.action === 'unknown' || r.action === 'rewound') {
     process.exit(1);
   }
 }
@@ -1503,6 +1511,15 @@ function cmdAdvance(args) {
     }
     if (result.verdict === 'AMEND') {
       console.log(`\nNext: swarm approve ${args[0]} --all && swarm dispatch ${args[0]} ${result.nextPhase}`);
+    }
+    // advance-exit-0: a HARD block must surface as a non-zero exit so a scripted
+    // `swarm advance <run> && swarm dispatch <run> <next>` halts instead of
+    // proceeding past the block — matching cmdVerify (cli-p-002) and cmdResume
+    // (B002). BLOCK / VERIFY, and a refused override (a non-overridable gate
+    // outranked --override), are hard failures. AMEND is an actionable next-step
+    // verdict, not a failure, and stays at exit 0.
+    if (result.verdict === 'BLOCK' || result.verdict === 'VERIFY' || result.overrideRefused) {
+      process.exit(1);
     }
   }
 }

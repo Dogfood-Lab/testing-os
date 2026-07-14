@@ -21,11 +21,14 @@ import { atomicWriteFileSync } from '../lib/atomic-write.js';
  * contract: free-text prose and the four classification enums. Identity,
  * lineage, and evidence fields (finding_id, schema_version, source_record_ids,
  * evidence, status, …) are excluded — they are set by the pipeline, not edited
- * in place. The downstream write gate (dogfood-finding.schema.json's
- * additionalProperties:false + enum checks) is the enforcement boundary; this
- * list is what the CLI help renders so the documented set and the gate's
- * intent share one source. Editing an unlisted field is still refused post-hoc
- * by the schema gate — this constant narrows the help, not the enforcement.
+ * in place. This constant IS the enforcement boundary: performAction's edit
+ * loop refuses any `--set` field not listed here (fvr-002). The write-side
+ * schema gate (dogfood-finding.schema.json's additionalProperties:false + enum
+ * checks) is the SECOND line — it validates the VALUES of allowed fields — but
+ * it cannot be the identity gate, because a valid finding_id swapped for
+ * another valid finding_id is schema-valid yet breaks the id↔path invariant.
+ * The same list drives the CLI help so the documented set and the enforced set
+ * share one source.
  */
 export const EDITABLE_FIELDS = Object.freeze([
   'title',
@@ -110,6 +113,20 @@ export function performAction(rootDir, params) {
       // the operator sees a structured error instead of a poisoned process.
       if (field === '__proto__' || field === 'constructor' || field === 'prototype') {
         return { success: false, error: `Field "${field}" is not editable (reserved/unsafe key)` };
+      }
+      // fvr-002 — allowlist enforcement, not just help text. `finding_id` (and
+      // every other identity/lineage/provenance field) is a VALID schema field,
+      // so mutating it to another well-formed value sails through the write-side
+      // schema gate while re-homing the finding's identity off its file path
+      // (findById matches the id INSIDE the file; the file still lands at the
+      // OLD path). The schema gate can only catch unknown/enum-invalid values,
+      // never a valid identity swapped for another valid one — so the allowlist
+      // is the enforcement boundary here, refusing anything `edit` is not for.
+      if (!EDITABLE_FIELDS.includes(field)) {
+        return {
+          success: false,
+          error: `Field "${field}" is not editable. Editable fields: ${EDITABLE_FIELDS.join(', ')}`
+        };
       }
       const oldValue = finding[field];
       if (oldValue !== newValue) {

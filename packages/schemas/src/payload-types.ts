@@ -226,7 +226,8 @@ export interface RecordOverallVerdict {
  * `verification.provenance_remediation` in dogfood-record.schema.json.
  */
 export interface ProvenanceRemediation {
-  status?: 'stub_verified';
+  /** Schema-REQUIRED — `provenance_remediation.required` lists `status`. */
+  status: 'stub_verified';
   /** Schema maxLength: 500. */
   note?: string;
   remediated_at: string;
@@ -267,6 +268,13 @@ export interface Verification {
   policy_valid: boolean;
   /** Machine-readable rejection reasons. Empty/absent if accepted. */
   rejection_reasons?: string[];
+  /**
+   * Accepted-with-warning notes from warn-severity policy rules. A populated
+   * array does NOT imply rejection — the record was accepted. Optional and
+   * backward-compatible: records written before the accepted-with-warning
+   * channel existed have no warnings block. Mirrors the rejection_reasons shape.
+   */
+  warnings?: string[];
   provenance_remediation?: ProvenanceRemediation;
 }
 
@@ -643,8 +651,36 @@ const EXAMPLE_RECORD = {
     provenance_confirmed: true,
     schema_valid: true,
     policy_valid: true,
+    // Exercises the two verification fields the hand-authored mirror had drifted
+    // on (SCHEMA-A-002): the accepted-with-warning `warnings` channel and the
+    // stub_verified provenance_remediation block. Keying `warnings` here under
+    // `satisfies Record` also compile-pins its presence on Verification — an
+    // unknown key would be an excess-property error until the interface declares
+    // it. (status-required is pinned separately below.)
+    warnings: ['policy: [evidence-freshness] evidence older than the soft cap'],
+    provenance_remediation: {
+      status: 'stub_verified',
+      remediated_at: '2026-04-26T18:07:00Z',
+      note: 'Provenance API was unreachable; stub-verified per policy.',
+    },
   },
 } satisfies Record;
+
+// SCHEMA-A-002 compile-time pin — `verification.provenance_remediation.status`
+// is REQUIRED by dogfood-record.schema.json (that sub-object's
+// `required: ["status", "remediated_at"]`), so the mirror must type it
+// non-optionally. Annotating the source AS the interface (not `satisfies`) makes
+// `.status` reflect the INTERFACE's optionality rather than the literal's: if
+// `status?` ever drifts back to optional, `.status` widens to
+// `'stub_verified' | undefined` and this assignment to a non-optional target
+// stops compiling under `strict`/strictNullChecks. Presence in EXAMPLE_RECORD
+// alone cannot catch this — an optional field may still be supplied.
+const _schemaA002Remediation: ProvenanceRemediation = {
+  status: 'stub_verified',
+  remediated_at: '2026-04-26T18:07:00Z',
+};
+const _schemaA002StatusIsRequired: 'stub_verified' = _schemaA002Remediation.status;
+void _schemaA002StatusIsRequired;
 
 const EXAMPLE_FINDING = {
   schema_version: '1.0.0',
