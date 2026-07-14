@@ -1,11 +1,15 @@
 /**
  * schema.js — SQLite schema for the swarm control plane.
  *
- * 10 tables: runs, waves, domains, agent_runs, file_claims,
+ * Core 10 tables: runs, waves, domains, agent_runs, file_claims,
  * artifacts, findings, finding_events, verification_receipts, kv.
+ * Later versions add: agent_state_events, domain_events, wave_state_events,
+ * wave_receipts, promotions, migrations_ledger, and adjudications (v9 — the
+ * wave-gated cross-family jury verdict; see lib/adjudication-store.js and the
+ * checkAdjudication gate in lib/advance.js).
  */
 
-export const SCHEMA_VERSION = 8;
+export const SCHEMA_VERSION = 9;
 
 export const SCHEMA_SQL = `
 -- ───────────────────────────────────────────
@@ -298,6 +302,36 @@ CREATE INDEX IF NOT EXISTS idx_promotions_run  ON promotions(run_id);
 CREATE INDEX IF NOT EXISTS idx_promotions_wave ON promotions(wave_id);
 
 -- ───────────────────────────────────────────
+-- v9: Cross-family jury adjudications per wave.
+-- The advisory verdict a Fable-prepared case-file earns from the
+-- family-different jury (lib/case-file/adjudicate.js). Persisted so the
+-- checkAdjudication gate in lib/advance.js can read it: a wave with a
+-- non-corroborate verdict needs Director disposition (an --override --reason on
+-- advance) to promote. The jury is EVIDENCE, not law — this gate is overridable;
+-- only the deterministic verification floor is non-overridable. overall is one
+-- of corroborate | refute | contested | insufficient_context; authority is
+-- always advisory. The full per-criterion detail lives in the receipt artifact
+-- at receipt_path (content-addressed by receipt_hash); this row is the durable
+-- gate-readable summary. deleteAdjudication (the named compensator) removes a row.
+-- ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS adjudications (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  wave_id       INTEGER NOT NULL REFERENCES waves(id),
+  run_id        TEXT    NOT NULL REFERENCES runs(id),
+  overall       TEXT    NOT NULL,
+  authority     TEXT    NOT NULL DEFAULT 'advisory',
+  panel_size    INTEGER NOT NULL DEFAULT 0,
+  seats         TEXT,
+  case_file_ref TEXT,
+  receipt_path  TEXT,
+  receipt_hash  TEXT,
+  created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_adjudications_wave ON adjudications(wave_id);
+CREATE INDEX IF NOT EXISTS idx_adjudications_run  ON adjudications(run_id);
+
+-- ───────────────────────────────────────────
 -- F4-CP-04: ordered/versioned migration ledger.
 -- Records WHICH migrations have run, one row per migration_id, so the
 -- control plane has a per-migration audit trail instead of only the aggregate
@@ -378,6 +412,25 @@ export const MIGRATIONS_SQL = [
   // for the non-isolated committed-delta ownership probe. NULL on legacy
   // waves — collect/revalidate fall back to runs.commit_sha for those.
   "ALTER TABLE waves ADD COLUMN dispatch_sha TEXT",
+  // v9: adjudications table + indexes — the wave-gated cross-family jury
+  // verdict. CREATE IF NOT EXISTS so an existing v8 DB picks the table up on
+  // next openDb; SCHEMA_SQL already covers fresh DBs. The checkAdjudication gate
+  // in lib/advance.js reads the latest row per wave.
+  `CREATE TABLE IF NOT EXISTS adjudications (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    wave_id       INTEGER NOT NULL REFERENCES waves(id),
+    run_id        TEXT    NOT NULL REFERENCES runs(id),
+    overall       TEXT    NOT NULL,
+    authority     TEXT    NOT NULL DEFAULT 'advisory',
+    panel_size    INTEGER NOT NULL DEFAULT 0,
+    seats         TEXT,
+    case_file_ref TEXT,
+    receipt_path  TEXT,
+    receipt_hash  TEXT,
+    created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_adjudications_wave ON adjudications(wave_id)",
+  "CREATE INDEX IF NOT EXISTS idx_adjudications_run ON adjudications(run_id)",
 ];
 
 /**
@@ -428,6 +481,10 @@ export const MIGRATIONS_MANIFEST = [
   { id: 'v7-waves-ownership-probe-degraded', target_version: 7, sql: MIGRATIONS_SQL[13] },
   // F-0e55b5ca per-wave dispatch-time diff base (target_version 8)
   { id: 'v8-waves-dispatch-sha',             target_version: 8, sql: MIGRATIONS_SQL[14] },
+  // v9 adjudications table + indexes — the wave-gated cross-family jury verdict
+  { id: 'v9-adjudications-table',            target_version: 9, sql: MIGRATIONS_SQL[15] },
+  { id: 'v9-adjudications-wave-index',       target_version: 9, sql: MIGRATIONS_SQL[16] },
+  { id: 'v9-adjudications-run-index',        target_version: 9, sql: MIGRATIONS_SQL[17] },
 ];
 
 /**

@@ -152,8 +152,8 @@ describe('F-feb78e7b — advance --override cannot promote past an unevaluated n
     assert.equal(gateResult.verdict, 'VERIFY',
       'the non-overridable serial-verify failure must dominate the overridable ownership failure');
     assert.equal(gateResult.overridable, false);
-    assert.equal(gateResult.gates.length, 5,
-      'ALL five gates must be evaluated (pre-fix: checkGates returned at the first failure)');
+    assert.equal(gateResult.gates.length, 6,
+      'ALL gates must be evaluated (pre-fix: checkGates returned at the first failure); v9 added the adjudication gate');
 
     const result = advance(db, 'r-master-key', {
       override: true,
@@ -174,11 +174,11 @@ describe('F-feb78e7b — advance --override cannot promote past an unevaluated n
     assert.equal(result.toPhase, 'health-audit-b', 'F-5a251061 semantics preserved: past the gate, not into the amend loop');
 
     const [p] = getPromotions(db, 'r-audit-ov');
-    assert.equal(p.gates_checked.length, 5,
-      'pre-fix: gates_checked permanently omitted every gate after the first failure');
+    assert.equal(p.gates_checked.length, 6,
+      'pre-fix: gates_checked permanently omitted every gate after the first failure; v9 added the adjudication gate');
     const names = p.gates_checked.map(g => g.name).sort();
     assert.deepEqual(names,
-      ['agent_completion', 'finding_severity', 'ownership', 'verification', 'wave_status'].sort());
+      ['adjudication', 'agent_completion', 'finding_severity', 'ownership', 'verification', 'wave_status'].sort());
     const findingGate = p.gates_checked.find(g => g.name === 'finding_severity');
     assert.equal(findingGate.passed, false);
     assert.equal(findingGate.overridden, true, 'the masked gate must be marked overridden in the audit trail');

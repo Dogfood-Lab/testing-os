@@ -34,6 +34,7 @@ import { LATEST_AGENT_RUN_PER_DOMAIN } from './queries/latest-agent-runs.js';
 import { cleanupRunWorktrees } from './worktree.js';
 import { logStage } from './log-stage.js';
 import { CLOSED_FINDING_STATUSES_SQL } from './finding-status.js';
+import { getLatestAdjudication } from './adjudication-store.js';
 
 /**
  * Phase progression map.
@@ -120,7 +121,12 @@ export function checkGates(db, runId) {
   // overridable (matches the pre-fix BLOCK/overridable:true branch).
   const verifyGate = { ...verifyGateRaw, overridable: verifyGateRaw.verdict !== 'VERIFY' };
   const findingGate = { ...checkFindingSeverity(db, runId, wave.phase), overridable: true };
-  const gates = [waveGate, agentGate, violationGate, verifyGate, findingGate];
+  // v9: the cross-family jury gate. ADVISORY — evidence, not law — so it is
+  // overridable: an absent adjudication does not block (like verification), and a
+  // present NON-corroborate verdict blocks only until Director disposition
+  // (--override --reason). Only the deterministic verify floor is non-overridable.
+  const adjudicationGate = { ...checkAdjudication(db, wave), overridable: true };
+  const gates = [waveGate, agentGate, violationGate, verifyGate, findingGate, adjudicationGate];
 
   // Verdict precedence (F-feb78e7b): the first NON-overridable failure
   // dominates — BLOCK for gates 1-2, VERIFY for the serial-verify
@@ -150,6 +156,13 @@ export function checkGates(db, runId) {
   }
   if (!verifyGate.passed) {
     return { verdict: 'BLOCK', nextPhase: null, gates, overridable: true, reason: verifyGate.reason };
+  }
+  // The advisory jury gate is LAST among the overridable blocks — the
+  // deterministic floor (verifyGate) outranks it, because the jury is evidence
+  // and the floor is law. A non-corroborate verdict surfaces here for Director
+  // disposition; an --override --reason on advance consents to it.
+  if (!adjudicationGate.passed) {
+    return { verdict: 'BLOCK', nextPhase: null, gates, overridable: true, reason: adjudicationGate.reason };
   }
 
   // All gates passed — advance to next phase
@@ -504,6 +517,51 @@ function checkVerification(db, wave) {
     passed: false,
     verdict: 'BLOCK',
     reason: `Verification failed (${receipt.repo_type}, exit ${receipt.exit_code})`,
+  };
+}
+
+/**
+ * v9 adjudication gate — the cross-family jury verdict.
+ *
+ * ADVISORY by design (the jury is evidence, not law):
+ *   - No adjudication run  → PASS. Absence is not a blocker, exactly like
+ *     verification's optional-absence branch. Running `swarm adjudicate` is an
+ *     opt-in; a wave that never invoked the jury advances on the floor + findings.
+ *   - overall 'corroborate' → PASS. The family-different panel agrees the
+ *     artifact meets its criteria.
+ *   - overall refute / contested / insufficient_context → FAIL, OVERRIDABLE.
+ *     The jury flagged a problem (a decided failure, a split panel, or a
+ *     coverage gap). It never HARD-blocks — that would make the advisory jury
+ *     into law — but it requires Director disposition (`swarm advance --override
+ *     --reason "..."`) so the non-corroborate verdict is consciously dispositioned,
+ *     not silently rolled past. A recurring insufficient_context is the
+ *     abstention-as-signal loop: the case-file (or the spec) has a gap to fill.
+ */
+function checkAdjudication(db, wave) {
+  const adj = getLatestAdjudication(db, wave.id);
+  if (!adj) {
+    return {
+      name: 'adjudication',
+      passed: true,
+      verdict: null,
+      reason: 'No adjudication run (advisory gate — the jury is evidence, not law)',
+    };
+  }
+  if (adj.overall === 'corroborate') {
+    return {
+      name: 'adjudication',
+      passed: true,
+      reason: `Jury corroborates (advisory; ${adj.panel_size}-seat cross-family panel)`,
+    };
+  }
+  return {
+    name: 'adjudication',
+    passed: false,
+    verdict: 'BLOCK',
+    reason:
+      `Jury verdict '${adj.overall}' (advisory, ${adj.panel_size}-seat panel) needs Director disposition — ` +
+      'address the flagged criteria, or `swarm advance --override --reason "..."` to dispose. ' +
+      'The deterministic floor remains the only non-overridable gate.',
   };
 }
 

@@ -275,8 +275,13 @@ describe('F4-CP-04 — ordered/versioned control-plane migration-runner', () => 
         'precondition: the v7 column must be absent',
       );
       // Apply every flat migration except the v7 and v8 ADD COLUMNs the old
-      // way (a v6-era build predates both).
-      for (const sql of MIGRATIONS_SQL.slice(0, -2)) {
+      // way (a v6-era build predates both). Filter by column NAME, not position:
+      // later schema versions (v9 adjudications) append entries, so a positional
+      // slice would stop excluding v7/v8 the moment a newer migration lands.
+      const preV7V8 = MIGRATIONS_SQL.filter(
+        (s) => !s.includes('ownership_probe_degraded') && !s.includes('dispatch_sha'),
+      );
+      for (const sql of preV7V8) {
         try { db.exec(sql); } catch (e) {
           if (!e.message.includes('duplicate column')) throw e;
         }
@@ -319,7 +324,9 @@ describe('F4-CP-04 — ordered/versioned control-plane migration-runner', () => 
       );
       const row = ledgerRows(db).find((r) => r.migration_id === 'v8-waves-dispatch-sha');
       assert.ok(row, 'the v8 migration must be recorded in the ledger');
-      assert.equal(row.target_version, SCHEMA_VERSION);
+      // Its OWN version is 8 — SCHEMA_VERSION has since moved past it (v9
+      // adjudications), so this is hardcoded 8, matching the v7 test's pattern.
+      assert.equal(row.target_version, 8);
       db.close();
     });
 
@@ -338,6 +345,39 @@ describe('F4-CP-04 — ordered/versioned control-plane migration-runner', () => 
       assert.ok(
         plan.applied.some((m) => m.id === 'v8-waves-dispatch-sha'),
         'the v8 migration must be APPLIED (not bootstrapped) when the column is missing',
+      );
+      db.close();
+    });
+  });
+
+  describe('v9 — adjudications table migration', () => {
+    it('a fresh DB has the adjudications table after migrate, recorded at target_version 9 (== SCHEMA_VERSION)', () => {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(SCHEMA_SQL);
+      migrateDb(db, 0);
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
+      assert.ok(tables.includes('adjudications'), 'the v9 migration must add the adjudications table');
+      const row = ledgerRows(db).find((r) => r.migration_id === 'v9-adjudications-table');
+      assert.ok(row, 'the v9 migration must be recorded in the ledger');
+      assert.equal(row.target_version, 9);
+      assert.equal(row.target_version, SCHEMA_VERSION, 'v9 is the current SCHEMA_VERSION');
+      db.close();
+    });
+
+    it('a pre-v9 DB (adjudications absent, no ledger) APPLIES the v9 table migration', () => {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(SCHEMA_SQL);
+      db.exec('DROP TABLE IF EXISTS adjudications'); // auto-drops its indexes
+      db.exec('DROP TABLE IF EXISTS migrations_ledger');
+
+      const plan = migrateDb(db, 8);
+      const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((r) => r.name);
+      assert.ok(tables.includes('adjudications'), 'migrate must add the v9 table to a pre-v9 DB');
+      assert.ok(
+        plan.applied.some((m) => m.id === 'v9-adjudications-table'),
+        'the v9 table migration must be APPLIED (not bootstrapped) when the table is missing',
       );
       db.close();
     });

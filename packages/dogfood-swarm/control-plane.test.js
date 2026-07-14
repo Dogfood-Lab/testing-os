@@ -51,6 +51,7 @@ describe('Schema', () => {
     assert.ok(tables.includes('finding_events'));
     assert.ok(tables.includes('verification_receipts'));
     assert.ok(tables.includes('kv'));
+    assert.ok(tables.includes('adjudications')); // v9: the wave-gated jury verdict
     db.close();
   });
 
