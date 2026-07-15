@@ -47,6 +47,7 @@ import { advance as runAdvance, checkGates, getPromotions } from './lib/advance.
 import { persist as runPersist, formatPersist } from './commands/persist.js';
 import { runAdjudicate, formatAdjudication } from './commands/adjudicate.js';
 import { makeOllamaJury, LOCAL_JURY_SEATS } from './lib/case-file/ollama-jury.js';
+import { makePrismJury, PRISM_JURY_SEATS, PRISM_CLOUD_SEATS } from './lib/case-file/prism-jury.js';
 import { DEFAULT_JURY_SEATS } from './lib/case-file/adjudicate.js';
 import { CaseFileNeutralityError } from './lib/case-file/handoff.js';
 import { readBoundedJson } from './lib/bounded-json-read.js';
@@ -201,6 +202,34 @@ function formatError(raw) {
   e.received = raw;
   e.hint = `pass one of: ${VERIFY_FORMATS.join(', ')} — e.g. \`--format json\` or \`--format=markdown\``;
   return e;
+}
+
+const JURY_TIERS = ['local', 'prism'];
+
+/**
+ * Fail-loud error for an out-of-enum `--jury`, mirroring formatError: a typo'd tier
+ * must not silently fall back to the default panel, since the tier IS the strength of
+ * the evidence the wave gate then reads.
+ */
+function juryError(raw) {
+  const e = new Error(
+    `--jury expects one of ${JURY_TIERS.join('|')}; got '${raw}'`
+  );
+  e.code = 'CLI_INVALID_JURY';
+  e.received = raw;
+  e.hint = `pass one of: ${JURY_TIERS.join(', ')} — e.g. \`--jury prism\` or \`--jury=local\``;
+  return e;
+}
+
+/**
+ * Parse + enum-validate the `--jury` tier. Returns 'local' when absent — the free,
+ * fast, family-diverse default; `prism` is the stronger, slower per-criterion tier.
+ */
+export function parseJuryFlag(args) {
+  const raw = parseValueFlag(args, '--jury');
+  if (raw === undefined) return 'local';
+  if (!JURY_TIERS.includes(raw)) throw juryError(raw);
+  return raw;
 }
 
 /**
@@ -1424,18 +1453,27 @@ async function cmdAdjudicate(args) {
   const runId = args[0];
   const caseFilePath = parseValueFlag(args, '--case-file');
   if (!runId || !caseFilePath) {
-    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--cloud] [--format=json]');
+    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json]');
     process.exit(1);
   }
 
   const db = openDb(getDbPath());
   const caseFile = readBoundedJson(resolve(caseFilePath));
 
-  // Default to the FREE local non-Claude panel; --cloud opts into the paid
-  // gpt-oss / glm cloud seats (may incur Ollama Cloud cost).
-  const seats = args.includes('--cloud') ? DEFAULT_JURY_SEATS : LOCAL_JURY_SEATS;
-  const runJury = makeOllamaJury({ log: (m) => console.error(`  · ${m}`) });
+  // Two tiers behind ONE injected boundary. `local` is the free family-diverse panel
+  // (one judgment per seat). `prism` routes each seat through prism-verify per
+  // criterion, adding L3/L4 WITHIN the seat — stronger evidence, but slower and more
+  // abstention-prone (prism caps a call at 30s). Both default to free seats; --cloud
+  // opts into the paid cloud seats on either tier.
+  const cloud = args.includes('--cloud');
+  const tier = parseJuryFlag(args);
+  const seats = tier === 'prism'
+    ? (cloud ? PRISM_CLOUD_SEATS : PRISM_JURY_SEATS)
+    : (cloud ? DEFAULT_JURY_SEATS : LOCAL_JURY_SEATS);
+  const log = (m) => console.error(`  · ${m}`);
+  const runJury = tier === 'prism' ? makePrismJury({ log }) : makeOllamaJury({ log });
   const swarmDir = dirname(getDbPath());
+  console.error(`Jury tier: ${tier}${cloud ? ' (--cloud: paid seats)' : ' (free seats)'}`);
 
   let out;
   try {
@@ -2180,11 +2218,17 @@ Commands:
                              advance --check-only --format=json emits the
                              checkGates() {verdict,nextPhase,reason,gates[],
                              overridable} object for machine consumers.
-  adjudicate <run-id> --case-file <path> [--cloud] [--format=json]
+  adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json]
                              Dispatch a case-file to the cross-family jury and
                              record the advisory verdict on the current wave (the
                              checkAdjudication gate reads it). Free local panel by
                              default; --cloud opts into paid gpt-oss/glm seats.
+                             --jury=prism routes each seat through prism-verify per
+                             criterion, adding decorrelated multi-lens +
+                             submodularity within a seat: stronger evidence, but
+                             slower and more abstention-prone (prism caps a call at
+                             30s). Needs prism-verify importable by python
+                             (PRISM_PYTHON overrides the interpreter).
   persist <run-id> [opts]    Export canonical truth to downstream systems
   status <run-id> [--format=text|json]
                              Control plane status. --format=json emits the

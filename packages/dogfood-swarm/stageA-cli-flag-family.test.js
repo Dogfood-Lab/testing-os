@@ -32,7 +32,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openDb, closeDb } from './db/connection.js';
-import { parseVerifyFlags, parseValueFlag, parseFormatFlag } from './cli.js';
+import { parseVerifyFlags, parseValueFlag, parseFormatFlag, parseJuryFlag } from './cli.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, 'cli.js');
@@ -284,5 +284,36 @@ describe('d5-swarm-cli-NEW: `domains --unfreeze --reason <flag>` is a MISSING re
       closeDb(fx.dbPath);
       teardown(fx.tmp);
     }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// --jury tier selector — same enum-validated family as --format
+// ──────────────────────────────────────────────────────────────
+
+describe('--jury enum validation (the tier IS the strength of the evidence)', () => {
+  it('defaults to the free local panel when absent', () => {
+    assert.equal(parseJuryFlag([]), 'local');
+    assert.equal(parseJuryFlag(['r1', '--case-file', 'x.json']), 'local');
+  });
+
+  it('accepts both tiers, in both forms', () => {
+    assert.equal(parseJuryFlag(['--jury', 'prism']), 'prism');
+    assert.equal(parseJuryFlag(['--jury=prism']), 'prism');
+    assert.equal(parseJuryFlag(['--jury', 'local']), 'local');
+    assert.equal(parseJuryFlag(['--jury=local']), 'local');
+  });
+
+  it('throws on an out-of-enum tier rather than silently seating the default panel', () => {
+    assert.throws(
+      () => parseJuryFlag(['--jury', 'ollama']),
+      (e) => e.code === 'CLI_INVALID_JURY' && /local\|prism/.test(e.message),
+      'a typo’d tier must fail loud: it silently changes which evidence the wave gate reads',
+    );
+  });
+
+  it('does not swallow a following flag as the value', () => {
+    assert.equal(parseJuryFlag(['--jury', '--cloud']), 'local',
+      '--jury must not capture --cloud as its tier');
   });
 });

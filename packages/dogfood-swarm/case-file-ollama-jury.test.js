@@ -100,7 +100,10 @@ describe('LOCAL_JURY_SEATS — the free-local guarantee', () => {
     assert.ok(LOCAL_JURY_SEATS.length >= 3);
     for (const seat of LOCAL_JURY_SEATS) {
       assert.doesNotMatch(seat.family.toLowerCase(), /anthropic|claude/, 'no producer-family seat');
-      assert.doesNotMatch(seat.model.toLowerCase(), /:cloud/, 'the free-local roster carries no cloud seat');
+      // Match `cloud` loosely, not `:cloud` — Ollama's paid seats are named BOTH ways
+      // (`glm-4.6:cloud` but `gpt-oss:120b-cloud`), so a colon-anchored guard reads as
+      // a free-by-default proof while missing half the paid roster.
+      assert.doesNotMatch(seat.model.toLowerCase(), /cloud/, 'the free-local roster carries no cloud seat');
     }
   });
 });

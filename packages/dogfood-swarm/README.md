@@ -239,7 +239,7 @@ Read via `swarm status`, `swarm history`, `swarm receipt`. Never via raw SQL in 
 
 ## Environment variables
 
-Four environment variables are part of the scriptable surface:
+Five environment variables are part of the scriptable surface:
 
 | Variable | Accepted values | Effect |
 |---|---|---|
@@ -247,6 +247,7 @@ Four environment variables are part of the scriptable surface:
 | `DOGFOOD_FINDINGS_FORMAT` | `raw` \| `human` \| `json` | Forces the `swarm findings` output format, overriding both the `--format` flag and TTY auto-detection. `raw` → markdown, `human` → text, `json` → JSON. |
 | `DOGFOOD_LOG_HUMAN` | `0` \| `1` | Controls the human-readable companion banner printed alongside the NDJSON stage stream on **stderr**. `0` → never emit the banner (deterministic machine-readable stderr for CI), `1` → always emit it. Unset → emit only when stderr is a TTY. |
 | `INGEST_REPO_ROOT` | a filesystem path | Overrides the **data root** the dogfood ingest writes to when `swarm persist --ingest` (or `persist-results.js`) shells out to `packages/ingest/run.js`. Unset → the real repo root (the live `records/` + `indexes/` corpus). Point it at a scratch dir to ingest without touching the real tree — the test suite sets it so ingest stays side-effect-free. |
+| `PRISM_PYTHON` | a path to a Python interpreter | Selects the interpreter that runs the prism seat shim for `swarm adjudicate --jury=prism`. Unset → `python` on `PATH`. Set it to a full path when `python` is absent, ambiguous, or is not the interpreter that has `prism-verify` installed (the Windows PATHEXT trap). Ignored by the default `--jury=local` tier, which makes no prism calls. |
 
 Stage transitions are emitted as **NDJSON on stderr** — one JSON object per line, greppable — while stdout carries the command's parse target. Set `DOGFOOD_LOG_HUMAN=0` when you want a clean, machine-parseable stderr stream (e.g. `swarm collect ... 2>collect.ndjson`).
 
