@@ -411,22 +411,41 @@ export function revalidate(opts) {
         db.prepare('UPDATE agent_runs SET output_path = ?, error_message = NULL WHERE id = ?')
           .run(r.output_path, r.agent_run_id);
 
-        // Record file claims for amend (mirrors collect.js:288-294)
-        if (isAmend && r.ownership && Array.isArray(r.ownership.valid)) {
-          // F-67ddcd02: supersede this agent_run's PRIOR file_claims (e.g.
-          // the violation=1 rows from the earlier collect() attempt that
-          // originally blocked it as ownership_violation — the repair below
-          // only reaches r.ownership.valid when that recheck came back
-          // clean) before writing the corrected pass's claims. Mirrors
-          // collect.js's identical call; this is the revalidate half of the
-          // same write-path defect.
-          reconcileFileClaims(db, r.agent_run_id, r.ownership.valid.map(v => v.file));
-          for (const v of r.ownership.valid) {
-            const domain = domainByName.get(r.domain);
-            db.prepare(`
-              INSERT OR IGNORE INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
-              VALUES (?, ?, 'edit', ?, 0)
-            `).run(r.agent_run_id, v.file, domain.id);
+        // Record file claims for amend (mirrors collect.js:793-799 / 835-841).
+        //
+        // F-3ee5d050: reconcileFileClaims must run whenever isAmend is true
+        // for this repair, NOT only when r.ownership ended up truthy.
+        // r.ownership is null whenever the validation pass's union of
+        // reported + independently-observed files came back EMPTY
+        // (revalidate.js's filesForOwnership.length > 0 gate) — which is
+        // exactly the shape of a fully-reverted repair: the agent's entire
+        // contribution to the wave WAS the out-of-domain edit, so the lawful
+        // fix is to remove it, not replace it with something else, and its
+        // corrected output.json reports files_changed: []. Pre-fix, that
+        // left the earlier collect() attempt's violation=1 rows for this
+        // agent_run in place forever, even though the agent_run itself
+        // genuinely transitioned to 'complete' — the exact phantom-violation
+        // class F-67ddcd02 exists to close, reachable through the one
+        // asymmetric branch that fix's collect.js/revalidate.js call-site
+        // placement left behind. The keep-set for that case is simply [];
+        // reconcileFileClaims's own empty-array branch already deletes every
+        // row for this agent_run_id with no NOT IN clause, so this is purely
+        // a call-site placement fix — collect.js's equivalent call
+        // (collect.js:799) already runs unconditionally, before its own
+        // `if (filesForOwnership.length > 0)` gate, for the identical reason.
+        if (isAmend) {
+          const keep = (r.ownership && Array.isArray(r.ownership.valid))
+            ? r.ownership.valid.map(v => v.file)
+            : [];
+          reconcileFileClaims(db, r.agent_run_id, keep);
+          if (r.ownership && Array.isArray(r.ownership.valid)) {
+            for (const v of r.ownership.valid) {
+              const domain = domainByName.get(r.domain);
+              db.prepare(`
+                INSERT OR IGNORE INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
+                VALUES (?, ?, 'edit', ?, 0)
+              `).run(r.agent_run_id, v.file, domain.id);
+            }
           }
         }
 

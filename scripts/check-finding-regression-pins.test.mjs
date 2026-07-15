@@ -32,6 +32,10 @@ import {
   loadAllowlist,
   applyAllowlist,
   formatHuman,
+  findStructuralPinHits,
+  hasStructuralTestPin,
+  computeStructuralOrphans,
+  explainUnusedAllowEntry,
 } from './check-finding-regression-pins.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -138,6 +142,157 @@ test('orphan from one file does not mask a clean orphan elsewhere', async (t) =>
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// F-f0339e12 — structural test-pin filter (mutation-probe proof).
+//
+// PROVEN BY DIRECT MUTATION-PROBE AGAINST THE REAL PRODUCTION PARSER: before
+// this fix, extractPinsFromText() (parse-regression-pins.js) ran a whole-
+// file-text regex sweep with zero requirement that a test-file mention of an
+// F-id have any structural relationship to a real check — a narrative
+// cross-reference in a comment ("unlike F-deadbeef's approach...") cleared
+// Class #14 for F-deadbeef exactly as if a dedicated regression test
+// existed. This already happened for real: a wave-6 comment, narrating the
+// history of a sibling id inside a DIFFERENT test's explanation two
+// sections below (search this file for "wave 4) fixed the module
+// docstring"), made that still-genuinely-uncovered sibling id look newly
+// test-pinned, surfacing only as a misleadable "stale allowlist entry" WARN.
+//
+// NOTE for future editors: this block, and every test below it, deliberately
+// avoids spelling that sibling id as a bare leading-comment token, inside a
+// test()/it()/describe() title, or on a line containing "assert" — doing any
+// of those would hand it fresh structural credit under THIS FILE's own
+// fix, contaminating the "stays uncovered on the live tree" proof further
+// down. Where a test needs the literal string, it is assigned to a named
+// constant on its own undecorated, assert-free line and referenced by name
+// afterward — see LIVE_NARRATIVE_ONLY_ID below.
+//
+// The tests below prove the fix both directions per the finding's own
+// standard: the synthetic name-drop case must go RED (stay an orphan
+// despite the textual mention) and a genuinely-pinned id must stay GREEN.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-f0339e12 unit: findStructuralPinHits recognizes a leading-comment pin', () => {
+  const hits = findStructuralPinHits('// F-893adcd1 — the actual fix reason\n', 'F-893adcd1', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['leading-comment']);
+});
+
+test('F-f0339e12 unit: findStructuralPinHits recognizes a test()/it()/describe() title pin', () => {
+  const hits = findStructuralPinHits("describe('guard (F-100000-001)', () => {});\n", 'F-100000-001', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['title']);
+});
+
+test('F-f0339e12 unit: findStructuralPinHits recognizes a same-line assert argument pin', () => {
+  const hits = findStructuralPinHits("assert.doesNotMatch(a, /F-B-001/, 'domain-a leaked F-B-001');\n", 'F-B-001', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['assert-line']);
+});
+
+test('F-f0339e12 unit: findStructuralPinHits recognizes a self-referencing file-header pin', () => {
+  const text = '/**\n * verify-fixed.test.js — F-252713-002 (Phase 7 wave 1)\n */\n';
+  const hits = findStructuralPinHits(text, 'F-252713-002', 'verify-fixed.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['self-header']);
+});
+
+test('F-f0339e12 unit: a bare narrative mention (not leading, no title, no self-header, no same-line assert) is NOT structural', () => {
+  const text = "// unlike F-deadbeef's approach, this test does something else entirely\n";
+  assert.equal(hasStructuralTestPin(text, 'F-deadbeef', 'unrelated.test.js'), false);
+});
+
+test('F-f0339e12 unit: a SECOND id named mid-sentence after a leading id does not inherit the leading id\'s structural credit (the real live-tree shape)', () => {
+  // Reproduces the exact live wave-6 comment shape verbatim (see this file's
+  // own history) without spelling either id on a title/leading-comment/
+  // assert-line anywhere in THIS file — both ids are isolated into named
+  // constants on their own undecorated, assert-free lines so this unit test
+  // cannot itself hand out the structural credit it's proving is absent.
+  const leadingId = 'F-c59bb518';
+  const namedAfterwardId = 'F-893adcd1';
+  const text = `// ${leadingId}: ${namedAfterwardId} (wave 4) fixed the module docstring to stop\n`;
+  assert.equal(hasStructuralTestPin(text, leadingId, 'check-finding-regression-pins.test.mjs'), true, 'the LEADING id on the line is a real pin');
+  assert.equal(hasStructuralTestPin(text, namedAfterwardId, 'check-finding-regression-pins.test.mjs'), false, 'the id named afterward, mid-sentence, is a narrative cross-reference, not a pin');
+});
+
+test('F-f0339e12 mutation-probe (RED direction): a source fix pin whose only test-side mention is a narrative name-drop in an UNRELATED test stays an orphan', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('packages/foo/index.js', '// F-deadbeef — fixed a totally fake bug for this fixture\n');
+  fx.write(
+    'packages/foo/other.test.js',
+    "test('something unrelated', () => {\n" +
+    "  // unlike F-deadbeef's approach, this test asserts a different invariant\n" +
+    '  assert.equal(1, 1);\n' +
+    '});\n',
+  );
+
+  const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
+
+  assert.equal(
+    result.ok,
+    false,
+    'a narrative name-drop with no structural signal must NOT clear Class #14 for the id it merely mentions',
+  );
+  assert.deepEqual(result.orphans, ['F-deadbeef']);
+});
+
+test('F-f0339e12 counter-proof (GREEN direction): a source fix pin with a GENUINE test-title pin is not an orphan', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('packages/foo/index.js', '// F-deadbeef — fixed a totally fake bug for this fixture\n');
+  fx.write('packages/foo/index.test.js', "test('regression: F-deadbeef stays fixed', () => { assert.equal(1, 1); });\n");
+
+  const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
+
+  assert.equal(result.ok, true, 'a genuine title pin must still clear Class #14');
+  assert.deepEqual(result.orphans, []);
+});
+
+test('F-f0339e12: computeStructuralOrphans — pure function over an injected readFile, no disk access', () => {
+  const json = {
+    source_pins: { 'F-100000-001': ['/x/a.js'], 'F-200000-002': ['/x/b.js'] },
+    test_pins: { 'F-100000-001': ['/x/a.test.js'], 'F-200000-002': ['/x/b.test.js'] },
+    files_scanned: 4,
+    summary: { source_ids: 2, test_ids: 2, orphan_source_ids: [] },
+  };
+  const files = {
+    '/x/a.test.js': "test('F-100000-001 stays fixed', () => {});\n",
+    '/x/b.test.js': "// unlike F-100000-001's approach, F-200000-002 does something else\n",
+  };
+  const out = computeStructuralOrphans(json, { readFile: (p) => files[p] });
+  assert.deepEqual(out.orphanSourceIds, ['F-200000-002'], 'the title pin clears F-100000-001; the narrative mention does not clear F-200000-002');
+  assert.deepEqual(out.narrativeOnlyIds, ['F-200000-002']);
+});
+
+test('F-f0339e12: explainUnusedAllowEntry distinguishes "now structurally covered" from "no longer a source pin"', () => {
+  const json = { source_pins: { 'F-covered': ['/x/a.js'] }, test_pins: {}, files_scanned: 1, summary: {} };
+  assert.match(
+    explainUnusedAllowEntry('F-covered', json, new Set(['F-covered'])),
+    /genuine structural test pin/,
+  );
+  assert.match(
+    explainUnusedAllowEntry('F-gone', json, new Set()),
+    /no longer appears as a source pin/,
+  );
+});
+
+test('F-f0339e12: the live tree — a genuine orphan whose only test-side mention is a wave-6 narrative name-drop stays suppressed by its allowlist entry, never surfaces as "unused"', async () => {
+  // The id under test is isolated into a named constant on its own
+  // undecorated, assert-free, non-title line — see the section-header
+  // comment above for why: spelling it directly in this test's title or on
+  // an assert-line would hand it fresh structural credit and defeat the
+  // very thing being proven.
+  const LIVE_NARRATIVE_ONLY_ID = 'F-893adcd1';
+
+  const result = await runRegressionPinGate({ repoRoot });
+  const stillUnused = result.unusedAllowEntries.includes(LIVE_NARRATIVE_ONLY_ID);
+  const stillApplied = result.allowlistApplied.includes(LIVE_NARRATIVE_ONLY_ID);
+  assert.equal(
+    stillUnused,
+    false,
+    `${LIVE_NARRATIVE_ONLY_ID} is a genuine orphan with only a narrative test-side mention (search this file for "wave 4) fixed the module docstring") — it must stay suppressed via the allowlist (applied), never surface as "unused"/"safe to delete"`,
+  );
+  assert.equal(
+    stillApplied,
+    true,
+    `${LIVE_NARRATIVE_ONLY_ID} should be actively applying its allowlist entry, not silently uncovered`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // F-3ec5b54f / F-5eafee44 META — non-vacuity across ID format and file
 // extension. CROSS-DOMAIN: F_ID_PATTERN and DEFAULT_SOURCE_EXTENSIONS are
 // defined in packages/portfolio/lib/parse-regression-pins.js, which this
@@ -221,25 +376,38 @@ test('F-5eafee44 META: a workflow YAML source pin with no test pin must fail the
 
 test('F-5eafee44: the 12 workflow-pinned F-ids named in the finding are still present in .github/workflows/*.yml (guards the claim, not the gate)', () => {
   // Independently verifies the finding's own factual claim about today's
-  // live tree, using a LOCAL regex over the real repo — not the (out-of-
-  // domain) parser and not a fixture — so the claim can't silently go stale
-  // if a future edit drops one of these pins without updating this list.
-  // Genuinely load-bearing pins per F-5eafee44: the deferred-fault
-  // evidence-preservation ordering in ingest.yml, the release
+  // live tree over the real repo — not the (out-of-domain) parser and not a
+  // fixture — so the claim can't silently go stale if a future edit drops
+  // one of these pins. Genuinely load-bearing pins per F-5eafee44: the
+  // deferred-fault evidence-preservation ordering in ingest.yml, the release
   // concurrency-group normalization, and the pa11y permission isolation.
-  const ids = [
-    'F-362d4131', 'F-42e57a77', 'F-50558cb2', 'F-60f0c4f5', 'F-68818085',
-    'F-a52776d5', 'F-bc123f41', 'F-caeeacc3', 'F-d31dfc55', 'F-e4a24655',
-    'F-ef512e21', 'F-f05363e2',
-  ];
+  //
+  // One assert per id, each id literal on its own assert line, instead of
+  // the previous ids[]-array + filter + single deepEqual: the arrange-then-
+  // assert shape parked every one of these ids in the F-f0339e12 structural
+  // filter's blind spot (an id in an array literal lines away from the
+  // assert that consumes it earns no structural credit), which left two of
+  // them reading as orphans despite this exact test covering them. Unrolled
+  // per the wave-8 coordinator disposition — same coverage, one failure
+  // message per missing id, structurally credited.
   const workflowsDir = resolve(repoRoot, '.github/workflows');
   const text = readdirSync(workflowsDir)
     .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
     .map((f) => readFileSync(resolve(workflowsDir, f), 'utf-8'))
     .join('\n');
 
-  const missing = ids.filter((id) => !text.includes(id));
-  assert.deepEqual(missing, [], `expected every listed F-id to still be pinned somewhere in .github/workflows/*.yml; missing: ${missing.join(', ')}`);
+  assert.ok(text.includes('F-362d4131'), 'F-362d4131 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-42e57a77'), 'F-42e57a77 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-50558cb2'), 'F-50558cb2 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-60f0c4f5'), 'F-60f0c4f5 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-68818085'), 'F-68818085 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-a52776d5'), 'F-a52776d5 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-bc123f41'), 'F-bc123f41 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-caeeacc3'), 'F-caeeacc3 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-d31dfc55'), 'F-d31dfc55 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-e4a24655'), 'F-e4a24655 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-ef512e21'), 'F-ef512e21 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
+  assert.ok(text.includes('F-f05363e2'), 'F-f05363e2 must stay pinned somewhere in .github/workflows/*.yml (F-5eafee44 claim)');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -374,6 +542,16 @@ test('formatHuman: marks the live tree as OK when there are no orphans', () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Live-tree assertion — the load-bearing test
+//
+// F-f0339e12 (2026-07-15): when the structural test-pin filter landed, this
+// test went deliberately red for one wave — the filter surfaced 8 ids whose
+// only test-side evidence was a narrative mention. All 8 were disposed the
+// same day by coordinator direction (3 allowlisted with documented adjacent-
+// coverage reasons, 2 section banners reworded id-first, 2 covered by the
+// unrolled per-id asserts in the F-5eafee44 test above, 1 given a dedicated
+// structural test in stageC-check-ingest-stale-index-warn.test.mjs), and
+// this assertion returned to its normal green contract. Full per-id detail:
+// the ci-tooling wave-8 amend output and scripts/regression-pin-allowlist.json.
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('live testing-os tree passes the regression-pin gate', async () => {

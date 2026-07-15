@@ -44,6 +44,22 @@
     "F-e241fa61": {
       "reason": "Doc-only correction in packages/dogfood-swarm/commands/redrive.js's AGENT_ELIGIBLE_SOURCES comment, clarifying that a WAVE-level 'failed' status (unlike an agent-level 'failed') is BLOCKED and needs the override path. The behavior itself — a failed wave redriven only via override — is exercised by packages/dogfood-swarm/redrive.test.js's 'failed wave is redriven via override path (BLOCKED source)' test (describe block 'redrive — wave-level transition paths'), which predates and is independent of this id.",
       "file": "packages/dogfood-swarm/commands/redrive.js"
+    },
+    "F-L1-001": {
+      "reason": "Adjacent coverage — the dedicated regression test is titled under sibling id F-L1-004, which superseded/strengthened the same guard; same accepted shape as F-893adcd1's entry. (Wave-8 coordinator disposition, run swarm-1784091637-5127, after the F-f0339e12 structural test-pin filter surfaced this id as narrative-only: its sole test-side mention is a mid-sentence historical note inside amend1-wave9-filter-discipline.test.js's F-L1-004 comment.)",
+      "file": "packages/dogfood-swarm/commands/status.js"
+    },
+    "F-XXXXXX-001": {
+      "reason": "The parser's own documented illustrative placeholder (parse-regression-pins.js JSDoc) colliding with an unrelated test's identical illustrative string — the exact accepted false-positive class the JSDoc names. (Wave-8 coordinator disposition, run swarm-1784091637-5127. The JSDoc's 'Known accepted false positive' paragraph names this allowlist as the designated absorber; the colliding test-side string lives in d3b-006-finding-id-collision.test.js's narrative about Date.now() tails.)",
+      "file": "packages/portfolio/lib/parse-regression-pins.js"
+    },
+    "F-742440-007": {
+      "reason": "Historical-context mention inside wave12-observability.test.js, whose dedicated coverage is titled under sibling id F-693631-001. (Wave-8 coordinator disposition, run swarm-1784091637-5127. The source pins narrate the wave-1 silent --isolate catch history in dispatch.js/resume.js/lib/errors.js; the wave-12 re-fix F-693631-001 carries the behavioral tests.)",
+      "file": "packages/dogfood-swarm/commands/dispatch.js, packages/dogfood-swarm/commands/resume.js, packages/dogfood-swarm/lib/errors.js"
+    },
+    "F-c63c7498": {
+      "reason": "Illustrative canonical-id example inside cmdApprove's user-facing CLI_FINDINGS_ID_NO_MATCH hint string (cli.js) — product copy showing the operator what a fingerprint-minted finding_id looks like, deliberately hash-shaped because the hint explains the hash-format namespace. Not a fix pin; the F-ad540b83 id-namespace fix it belongs to carries its own CLI-subprocess pins in wave8-4091637-5127-swarm-cp-pins.test.js. Same accepted class as F-XXXXXX-001. (Wave-8 coordinator disposition at serial verify, run swarm-1784091637-5127: the example was minted in the verbs worktree while the stricter structural matcher was minted in ci-tooling's — invisible to each other under --isolate until merge, the same structural property F-f0d874a7's entry documents.)",
+      "file": "packages/dogfood-swarm/cli.js"
     }
   }
 }

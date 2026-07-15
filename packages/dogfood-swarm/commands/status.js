@@ -111,6 +111,30 @@ export function status(opts) {
   // agent_run still inflated `cnt` after `swarm resume`. Apply the same
   // helper inside the subquery — `ar` is the agent_runs alias here, so the
   // fragment slots in directly.
+  //
+  // F-87dc7b35 (LOW, wave 8): this query shares the IDENTICAL blind spot
+  // documented for lib/advance.js#checkViolations by F-9c41a2b7 / F-4220149f
+  // (that file's own header names this query as its fix's model — "mirroring
+  // commands/status.js's existing cross-wave violations aggregator" — so the
+  // two consumers cannot drift apart on this point without someone noticing
+  // one and not the other). LATEST_AGENT_RUN_PER_DOMAIN filters to the
+  // latest agent_run per (wave_id, domain_id); a REAL violation recorded on
+  // a SUPERSEDED (non-latest) agent_run — reachable within a single wave via
+  // `swarm resume` under non-isolated dispatch, not only across a wave
+  // boundary — is invisible to this count too. Unlike F-4fa7e644's original
+  // cross-wave scenario (where this aggregator's run-wide reach was a named
+  // MITIGATING factor — "commands/status.js's all-waves count still
+  // surfaces the stray violation to an operator"), that mitigation does NOT
+  // hold for the resume-within-wave shape: there is no operator-visible
+  // signal anywhere in the system for it, not even this informational count.
+  // This is an observability note, not a fix — the underlying semantics live
+  // in lib/queries/latest-agent-runs.js (LATEST_AGENT_RUN_PER_DOMAIN itself,
+  // swarm-cp-core's domain, not this file's). If that shared fragment is
+  // ever changed to close the gap (documenting the isolation-mode dependency
+  // per F-4220149f's fix option 1, or reconciling the superseded row per
+  // option 2), this query inherits the fix for free — but a change scoped
+  // only to lib/advance.js#checkViolations would leave this operator-facing
+  // count still wrong, so treat the two as one fix, not two.
   const violations = db.prepare(`
     SELECT COUNT(*) as cnt FROM file_claims
     WHERE violation = 1 AND agent_run_id IN (

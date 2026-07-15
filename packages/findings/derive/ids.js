@@ -38,17 +38,35 @@ export function generateFindingId(repoSlug, lessonSlug) {
  * Compute a dedupe key for collision detection.
  * Two findings with the same dedupe key are considered the same lesson.
  *
+ * F-112c88a4: defense-in-depth sibling of generateFindingId's own
+ * boundary-collision fix (findings-A-002, above). A plain `'::'.join()` here
+ * would let a delimiter-shaped VALUE in one field forge a false boundary
+ * with its neighbor — e.g. (issue_kind='x::y', root_cause_kind='z') and
+ * (issue_kind='x', root_cause_kind='y::z') both flatten to the same joined
+ * string. Routed through the same NUL-delimited boundaryHash() helper
+ * generateFindingId uses, so no component value can forge a boundary
+ * regardless of what it contains.
+ *
+ * Today's five fields are each enum- or pattern-constrained upstream (see
+ * dogfood-finding.schema.json) such that none can actually contain '::', so
+ * this specific collision is not reachable through the intended pipeline —
+ * but that safety lives entirely in the CALLER's schema, not in this
+ * function's own construction. boundaryHash() makes computeDedupeKey safe on
+ * its own terms, so a future caller (or a future schema relaxation on any of
+ * these fields) cannot unknowingly reopen the collision generateFindingId
+ * was explicitly fixed to close.
+ *
  * @param {{ repo: string, issue_kind: string, root_cause_kind: string, journey_stage: string, slug: string }} fields
  * @returns {string}
  */
 export function computeDedupeKey(fields) {
-  return [
+  return boundaryHash([
     fields.repo,
     fields.issue_kind,
     fields.root_cause_kind,
     fields.journey_stage,
     fields.slug
-  ].join('::');
+  ]);
 }
 
 /**

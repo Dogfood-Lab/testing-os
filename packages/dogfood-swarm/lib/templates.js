@@ -139,7 +139,8 @@ Each feature object (required keys: ${feature.required.join(', ')}):
 }
 
 /**
- * Neutralize CommonMark fence markers inside interpolated prose (F-019d40b2).
+ * Neutralize CommonMark fence markers inside interpolated prose (F-019d40b2),
+ * but ONLY when the text actually carries the fence-parity hazard.
  *
  * Every prompt built here embeds a worked-example ```json ... ``` fence
  * AFTER interpolating agent- or LLM-authored text (prior findings, finding
@@ -153,19 +154,34 @@ Each feature object (required keys: ${feature.required.join(', ')}):
  * own description text was about this exact fence-parity class of bug in
  * scripts/check-doc-drift.mjs.
  *
- * The fix interleaves a zero-width space (U+200B) between every backtick in
- * a run of 3+, so no run of 3+ CONSECUTIVE backtick characters survives to be
- * mistaken for a fence marker by any CommonMark-conformant reader — while the
- * visible text (a zero-width space renders as nothing) is unchanged for a
- * human or an LLM reading it. Every template builder below that interpolates
- * finding-authored prose ahead of its own worked-example fence must route
- * that text through this function.
+ * An EVEN count of 3+-backtick runs is NOT a hazard — it already self-closes
+ * under CommonMark's fence-toggle model, and it is the overwhelmingly common
+ * LEGITIMATE shape: a well-formed fenced code example inside a finding's
+ * free-form description/recommendation (one opening fence, one closing
+ * fence). F-01458fdb: transforming unconditionally — the pre-fix behavior —
+ * mangled that legitimate shape into garbled inline `<code>` spans (proven
+ * against a real CommonMark+GFM engine), a NEW cost this function introduced
+ * that the pre-fix text never had. Checking parity FIRST means only the
+ * actual hazard (an ODD count — a stray, unpaired run) pays the
+ * transformation cost; a well-formed paired example is left untouched and
+ * renders correctly.
+ *
+ * When the hazard IS present, the fix still interleaves a zero-width space
+ * (U+200B) between every backtick in every run of 3+, so no run of 3+
+ * CONSECUTIVE backtick characters survives to be mistaken for a fence marker
+ * by any CommonMark-conformant reader — while the visible text (a zero-width
+ * space renders as nothing) is unchanged for a human or an LLM reading it.
+ * Every template builder below that interpolates finding-authored prose
+ * ahead of its own worked-example fence must route that text through this
+ * function.
  *
  * @param {string} text
  * @returns {string}
  */
 function fenceSafe(text) {
   if (!text) return text;
+  const runs = text.match(/`{3,}/g);
+  if (!runs || runs.length % 2 === 0) return text;
   const zeroWidthSpace = String.fromCharCode(8203);
   return text.replace(/`{3,}/g, (run) => run.split('').join(zeroWidthSpace));
 }

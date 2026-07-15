@@ -189,7 +189,15 @@ export function computeFingerprint(finding, options = {}) {
     finding.category || 'unknown',
     finding.rule_id || '',
     normalizePath(finding.file),
-    (finding.symbol || '').toLowerCase(),
+    // F-a8c0cf04: symbol case is NOT folded, unlike the path component above.
+    // A file path's case-folding absorbs LLM-transcription slips for the SAME
+    // real file (F-c63da27b) — but two identifiers differing only by case are
+    // almost always two DIFFERENT things in JS/TS (a `Runner` class vs. a
+    // `runner` instance, a `Component` vs. a `component` helper), not
+    // spelling variants of one identifier. Folding it let an unrelated new
+    // finding about `runner` silently collide with an already-closed finding
+    // about `Runner` and get discarded — proven live, two independent probes.
+    finding.symbol || '',
     location,
   ];
 
@@ -301,7 +309,43 @@ export function disambiguateFingerprints(findings, priorFingerprints = new Map()
   const resolved = new Map();
   for (const [base, members] of groups) {
     if (members.length === 1) {
-      resolved.set(members[0], base);
+      const only = members[0];
+      // F-a8c0cf04: the collision-safety-net below only ever runs for a
+      // same-WAVE group of size > 1 — but the cross-wave collision this
+      // guards against never produces one. A finding that was already
+      // `fixed` in a prior wave is, by definition, absent from `findings`
+      // (it was not re-reported this wave), so it can never sit alongside a
+      // colliding new finding as a same-wave sibling; the group here is a
+      // singleton even though a real collision exists one wave away. This is
+      // the cross-wave analogue of a same-wave collision group — one member
+      // just lives in `priorFingerprints` instead of `findings` — so salt it
+      // exactly like an ordinary non-keeper UNLESS the raw (pre-
+      // normalizePath) file spelling genuinely agrees with the prior's. A
+      // spelling MATCH is either an exact regression (new information — let
+      // it reopen via the ordinary `recurring` path below) or, when the
+      // prior is still OPEN, a same-file rediscovery under different casing
+      // — the case-fold's intended job (F-c63da27b) — which must keep
+      // collapsing. Gating on status === 'fixed' specifically (not any
+      // closed status) leaves deferred/rejected untouched: they already have
+      // their own dedicated recurred-while-closed handling
+      // (F-130dee59/F-833dff6f) that a raw-spelling check has no proven need
+      // to intrude on.
+      const priorRow = priorFingerprints.get(base);
+      if (priorRow && priorRow.status === 'fixed' && rawFileIdentityDiffers(only, priorRow)) {
+        const salted = saltByContent(base, only, 0);
+        logStage('fingerprint_disambiguated_cross_wave', {
+          component: 'dogfood-swarm',
+          base_fingerprint: base,
+          salted_fingerprint: salted,
+          prior_status: priorRow.status,
+          file: only.file || only.file_path || null,
+          prior_file: priorRow.file_path || priorRow.file || null,
+          category: only.category || null,
+        });
+        resolved.set(only, salted);
+        continue;
+      }
+      resolved.set(only, base);
       continue;
     }
 
@@ -349,6 +393,30 @@ export function disambiguateFingerprints(findings, priorFingerprints = new Map()
  */
 function normalizeDescription(description) {
   return String(description || '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * True when a finding's RAW (pre-normalizePath) file spelling differs from a
+ * prior row's raw spelling, even though their NORMALIZED identity (and
+ * therefore base fingerprint) already matches. normalizePath's case/slash
+ * folding exists to absorb LLM-transcription slips for the SAME real file
+ * (F-c63da27b's header) — a raw mismatch means the fingerprint match is
+ * coincidental: two differently-spelled files (which, on this repo's
+ * case-sensitive ubuntu-latest CI, really are two different files) rather
+ * than two spellings of the one file the fold was designed to unify.
+ *
+ * Requires POSITIVE evidence on BOTH sides: a prior row with no file info at
+ * all (e.g. a hand-built fixture, or a genuinely file-less finding) must NOT
+ * be treated as "differs" just because the current finding has a file — that
+ * would fire the cross-wave safety net on missing data rather than a proven
+ * mismatch, wrongly salting an ordinary regression whose prior row simply
+ * never carried file_path.
+ */
+function rawFileIdentityDiffers(finding, priorRow) {
+  const findingFile = finding.file || '';
+  const priorFile = priorRow.file_path || priorRow.file || '';
+  if (!findingFile || !priorFile) return false;
+  return findingFile !== priorFile;
 }
 
 /**

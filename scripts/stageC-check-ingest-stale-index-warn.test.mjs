@@ -123,3 +123,26 @@ test("F-703e5eac: the badge/trends regen step ALSO fires when the result JSON wa
     "ingest.yml's 'Regenerate served badges + trends' step must fire on steps.result.outputs.parse_failed == 'true' in addition to written == 'true' (F-703e5eac), matching the 'Commit records and indexes' step's condition immediately below it.",
   );
 });
+
+test('F-W1-CI-008: the checkout step keeps fetch-depth: 0 (full clone) so the push-retry rebase works against arbitrary history', () => {
+  // The push-with-retry loop downstream does `git pull --rebase` on failure;
+  // a shallow clone cannot rebase against history that diverged by more than
+  // one commit — it either rebases onto a graft missing intermediate commits
+  // or fails with "refusing to merge unrelated histories" masquerading as a
+  // concurrent-ingest conflict. The fix landed in wave 1 as a comment +
+  // `fetch-depth: 0` in ingest.yml but carried no regression net until the
+  // wave-8 disposition (the F-f0339e12 structural filter surfaced it as a
+  // narrative-only pin). Comment lines are excluded below because the
+  // in-file rationale comment itself contains the literal counter-example
+  // string "(NOT fetch-depth: 1)".
+  const text = readFileSync(ingestPath, 'utf8');
+  const configLines = text.split(/\r?\n/).filter((l) => !l.trim().startsWith('#'));
+  assert.ok(
+    configLines.some((l) => /^\s*fetch-depth:\s*0\s*$/.test(l)),
+    "ingest.yml's checkout step must set `fetch-depth: 0` (full clone) — the push-retry `git pull --rebase` cannot rebase from a shallow clone (F-W1-CI-008).",
+  );
+  assert.ok(
+    !configLines.some((l) => /fetch-depth:\s*[1-9]/.test(l)),
+    'ingest.yml must not regress to a shallow fetch-depth checkout (F-W1-CI-008).',
+  );
+});

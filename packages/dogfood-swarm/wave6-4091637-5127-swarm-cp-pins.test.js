@@ -375,6 +375,126 @@ describe('F-67ddcd02: revalidate() mutation pass reconciles file_claims too (the
     assert.equal(receipt.ownership_violations.length, 0,
       'the receipt for the repaired wave must not export the stale violation revalidate() just superseded');
   });
+
+  // F-3ee5d050: the mutation-pass reconcileFileClaims call (line 415, pre-fix)
+  // was nested inside `if (isAmend && r.ownership && Array.isArray(r.ownership.valid))`.
+  // r.ownership is only assigned truthy in the validation pass when
+  // filesForOwnership.length > 0 (revalidate.js:316) — the UNION of the
+  // corrected output's files_changed and the independently-observed touched
+  // set. A repair whose corrected output reports files_changed: [] (a full
+  // revert: the agent's entire contribution WAS the out-of-domain edit, so
+  // the lawful fix is to remove it, not replace it) against a worktree with
+  // no independently-observable touches (no git repo at `tmp`, mirroring the
+  // "getActualTouchedFiles is unavailable" fixture shape used throughout this
+  // file) leaves filesForOwnership empty too — so pre-fix, r.ownership stayed
+  // null and reconcileFileClaims was skipped entirely for this repair, even
+  // though the agent_run genuinely transitioned to 'complete'. THE FIX: hoist
+  // the call so it runs whenever isAmend is true, with keep=[] for this case
+  // (reconcileFileClaims's own empty-array branch already clears every row).
+  it('F-3ee5d050: a revalidate() repair with corrected files_changed: [] (full revert) still clears the stale violation claim', () => {
+    const outPath1 = join(tmp, 'attempt1.json');
+    const outPath2 = join(tmp, 'reverted.json');
+    writeFileSync(outPath1, JSON.stringify({
+      domain: 'backend', summary: 'rogue edit',
+      fixes: [{ finding_id: 'F-1', description: 'x' }], files_changed: [ROGUE],
+    }));
+    writeFileSync(outPath2, JSON.stringify({
+      domain: 'backend', summary: 'reverted the out-of-domain edit entirely — nothing left to claim',
+      fixes: [{ finding_id: 'F-1', description: 'reverted, no replacement edit' }], files_changed: [],
+    }));
+
+    // Original collect: rogue file -> ownership_violation, wave -> failed.
+    const r1 = collect({ runId: RID, dbPath, outputs: { backend: outPath1 } });
+    assert.equal(r1.agents.find(a => a.domain === 'backend').status, 'ownership_violation');
+
+    const dbCheck = openDb(dbPath);
+    const ar = dbCheck.prepare('SELECT id FROM agent_runs WHERE wave_id = 1').get();
+    const rogueClaimBefore = dbCheck.prepare(
+      'SELECT violation FROM file_claims WHERE agent_run_id = ? AND file_path = ?'
+    ).get(ar.id, ROGUE);
+    assert.ok(rogueClaimBefore, 'precondition: the violation claim exists before the repair');
+    assert.equal(rogueClaimBefore.violation, 1);
+
+    // revalidate() with files_changed: [] — pre-fix, this is the ONE
+    // asymmetric branch: filesForOwnership ends up empty (no reported files,
+    // no independently-observed touches), r.ownership stays null, and the
+    // reconcile call never runs.
+    const rr = revalidate({
+      runId: RID, dbPath, reason: 'reverted the out-of-domain edit',
+      outputs: { backend: outPath2 }, apply: true,
+    });
+    assert.equal(rr.repairs.filter(r => r.applied).length, 1,
+      `repair must apply cleanly: ${JSON.stringify(rr.refusals)}`);
+    assert.equal(rr.repairs[0].ownership, null,
+      'precondition: an empty union set leaves ownership null in the validation pass (the branch the pre-fix code missed)');
+    assert.equal(rr.waveStatusAfter, 'collected');
+
+    const db = openDb(dbPath);
+    // THE FIX: the stale ROGUE row must be gone even though ownership was
+    // never re-checked (nothing to check — the keep-set is legitimately []).
+    const rogueClaimAfter = db.prepare(
+      'SELECT * FROM file_claims WHERE agent_run_id = ? AND file_path = ?'
+    ).get(ar.id, ROGUE);
+    assert.equal(rogueClaimAfter, undefined,
+      'F-3ee5d050 regression: an empty-files_changed repair must still supersede the stale violation claim');
+    const allClaimsAfter = db.prepare('SELECT file_path FROM file_claims WHERE agent_run_id = ?').all(ar.id);
+    assert.equal(allClaimsAfter.length, 0,
+      `a fully-reverted repair must clear every claim for this agent_run; got ${JSON.stringify(allClaimsAfter)}`);
+
+    // Consumer path 1: the repaired wave's receipt reports zero violations.
+    const receipt = buildReceipt({ runId: RID, waveNumber: 1, dbPath });
+    assert.equal(receipt.ownership_violations.length, 0,
+      'the receipt for the repaired wave must not export the stale violation the empty-revert repair just superseded');
+
+    // Consumer path 2: status()'s run-wide violation count reads 0.
+    const s = status({ runId: RID, dbPath });
+    assert.equal(s.violations, 0,
+      'status() must not keep counting a violation an empty-files_changed repair superseded');
+
+    // Consumer path 3: the run-wide advance gate reads clean (do not weaken
+    // it — this is the same "verify the gate actually reads 0" requirement
+    // as the sibling describe block above, applied to the empty-revert path).
+    const gates = checkGates(db, RID);
+    const ownershipGate = gates.gates.find(g => g.name === 'ownership');
+    assert.equal(ownershipGate.passed, true,
+      'the ownership gate must not block on a violation an empty-files_changed repair superseded');
+  });
+
+  // Both directions, in one place: a repair that DOES have real files must
+  // still write its claims — the empty-keep-set branch above must not have
+  // become the ONLY path that runs. (The sibling test above this one already
+  // proves this independently with files_changed: [GOOD]; this asserts it
+  // again explicitly alongside the empty-revert pin so the two directions are
+  // visibly paired, per the wave-8 brief's "lens both directions" note.)
+  it('F-3ee5d050 lens: a repair with real (non-empty) files_changed still writes its valid claims, not just clears stale ones', () => {
+    const outPath1 = join(tmp, 'attempt1.json');
+    const outPath2 = join(tmp, 'corrected-real-file.json');
+    writeFileSync(outPath1, JSON.stringify({
+      domain: 'backend', summary: 'rogue edit',
+      fixes: [{ finding_id: 'F-1', description: 'x' }], files_changed: [ROGUE],
+    }));
+    writeFileSync(outPath2, JSON.stringify({
+      domain: 'backend', summary: 'corrected to a real in-domain edit',
+      fixes: [{ finding_id: 'F-1', description: 'x, corrected' }], files_changed: [GOOD],
+    }));
+
+    collect({ runId: RID, dbPath, outputs: { backend: outPath1 } });
+    const rr = revalidate({
+      runId: RID, dbPath, reason: 'corrected to a real edit',
+      outputs: { backend: outPath2 }, apply: true,
+    });
+    assert.equal(rr.repairs.filter(r => r.applied).length, 1, `repair must apply: ${JSON.stringify(rr.refusals)}`);
+    assert.ok(rr.repairs[0].ownership && Array.isArray(rr.repairs[0].ownership.valid),
+      'precondition: a non-empty files_changed DOES populate ownership.valid (the branch that already worked pre-fix)');
+
+    const db = openDb(dbPath);
+    const ar = db.prepare('SELECT id FROM agent_runs WHERE wave_id = 1').get();
+    const goodClaim = db.prepare(
+      'SELECT violation FROM file_claims WHERE agent_run_id = ? AND file_path = ?'
+    ).get(ar.id, GOOD);
+    assert.ok(goodClaim, 'a repair with a real file must still write its valid claim');
+    assert.equal(goodClaim.violation, 0);
+  });
 });
 
 // ══════════════════════════════════════════════════════════════════════

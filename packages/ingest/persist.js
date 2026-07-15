@@ -159,6 +159,27 @@ function isRetryableSchemaRejection(rejectedPath) {
 /**
  * Check if a record with this run_id already exists (accepted or rejected).
  *
+ * F-0f9e4077 (wave-6 regression, fixed wave-8): computeRecordPath() is keyed
+ * on (run_id, date, accepted|rejected) — never on rejection_reasons content.
+ * So once a `_rejected` record occupies a path, ANY new record whose OWN
+ * status is STILL 'rejected' is headed to that exact same path no matter
+ * which violation it reports (an unexpected field with a different name, a
+ * different value, even a byte-identical resubmission all collide
+ * identically — computeRecordPath never looks at content). The
+ * isRetryableSchemaRejection carve-out below exists so a stale schema-class
+ * rejection does not block a DIFFERENT-status (now accepted) record from
+ * reaching ITS OWN, different path — it was never a promise that the
+ * REJECTED path specifically is free. Pre-fix, skipping the status check let
+ * an uncorrected retry fall through as "not a duplicate," reach
+ * writeRecord()'s exclusive-create, and throw DuplicateRunIdError — a
+ * purely sequential, single-writer collision masquerading as the two-writer
+ * TOCTOU race that error class exists for. Gating on
+ * `record.verification.status === 'accepted'` restores the carve-out to
+ * exactly the case it can actually help (a record now headed elsewhere)
+ * while making a still-rejected collision an unconditional, ordinary
+ * duplicate — so writeRecord() short-circuits before ever attempting the
+ * write, and no throw is reachable for this class anymore.
+ *
  * @param {string} runId
  * @param {object} record - The record (used for repo/timing to compute path)
  * @param {string} repoRoot
@@ -174,6 +195,11 @@ export function isDuplicate(runId, record, repoRoot) {
   const rejectedRecord = { ...record, verification: { ...record.verification, status: 'rejected' } };
   const rejectedPath = computeRecordPath(rejectedRecord, repoRoot);
   if (existsSync(rejectedPath)) {
+    // A record that is itself still rejected can only ever land at THIS
+    // path — asking whether the OLD occupant is retryable is moot when the
+    // NEW attempt has nowhere else to go. Only a record now bound for the
+    // accepted path (real forward progress) gets to ask that question.
+    if (record.verification?.status !== 'accepted') return true;
     return !isRetryableSchemaRejection(rejectedPath);
   }
 

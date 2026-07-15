@@ -65,6 +65,19 @@ const REQUIRED_PATHS = [
   // d6-infra-001 above.
   'fixtures/**',
   'dogfood/**',
+  // F-41379e68: the wave-6-tombstoned swarms artifacts (manifest-schema.json
+  // gained a RETIRED $comment; both templates/ files gained a RETIRED banner
+  // — F-f67526e6 / F-ef033db4 / F-bd8b4353's chronic drift offenders). The
+  // retired-swarm-artifact doc-drift checks pin the tombstone markers, but
+  // without these trigger entries a commit that edits ONLY these files —
+  // e.g. reverting the tombstone — runs no CI at all, so the drift gate is
+  // bypassed at the trigger level for the exact files it guards (the same
+  // vacuity-one-layer-up class as d6-infra-001 above). These files are
+  // tracked (unlike swarm-*/, which swarms/.gitignore ignores wholesale),
+  // so the triggers are live, not dead-on-arrival like the removed
+  // F-CI-001 entry.
+  'swarms/manifest-schema.json',
+  'swarms/templates/**',
 ];
 
 /**

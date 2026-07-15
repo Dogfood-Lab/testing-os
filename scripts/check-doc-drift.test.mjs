@@ -7,7 +7,8 @@
  * wired in CI right after `npm ci`).
  *
  * Coverage:
- *   1. Each configured check in scripts/doc-drift-patterns.json (currently 13)
+ *   1. Each configured check in scripts/doc-drift-patterns.json (currently 17,
+ *      after F-41379e68 added the three retired-swarm-artifact tombstone pins)
  *      with a clean fixture and a drift fixture.
  *   2. Live-tree assertion: the actual repo passes all checks. This is the
  *      load-bearing test — it's the contract that the docs agents in wave 19
@@ -345,6 +346,119 @@ test('expandGlobs: exact path returns single file, glob expands directory', asyn
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// F-41379e68 — retired-swarm-artifact tombstone pins.
+//
+// swarms/manifest-schema.json and swarms/templates/{audit,explore}.md are this
+// run's proven chronic drift offenders (F-f67526e6 / F-ef033db4 / F-bd8b4353:
+// the templates sat wrong and unnoticed from the 2026-04-24 migration until
+// wave 6 tombstoned them). The wave-6 fix added RETIRED markers but no
+// regression net: the files sat outside every ci.yml paths trigger and every
+// doc-drift target, so a future edit reverting the tombstone would ship with
+// zero signal. The three retired-swarm-artifact--* self-consistency entries in
+// scripts/doc-drift-patterns.json pin the marker text; ci.yml's paths filters
+// gained matching triggers (guarded by stageA-check-ci-honesty-paths.test.mjs).
+//
+// The fixture tests below deliberately pull the LIVE config entries (not
+// copies) so they exercise the exact production regexes — a reword of the
+// live entry that weakens it to never-fire cannot stay hidden behind a
+// green test that pinned a stale copy.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RETIRED_ARTIFACT_CHECK_IDS = [
+  'retired-swarm-artifact--manifest-schema',
+  'retired-swarm-artifact--template-audit',
+  'retired-swarm-artifact--template-explore',
+];
+
+function liveRetiredArtifactChecks() {
+  const liveCfg = JSON.parse(readFileSync(resolve(repoRoot, 'scripts/doc-drift-patterns.json'), 'utf8'));
+  return RETIRED_ARTIFACT_CHECK_IDS.map((id) => liveCfg.checks.find((c) => c.id === id));
+}
+
+test('F-41379e68: live config carries all three retired-swarm-artifact tombstone checks with the exact targets', () => {
+  const [manifest, audit, explore] = liveRetiredArtifactChecks();
+  const expectations = [
+    [manifest, 'retired-swarm-artifact--manifest-schema', 'swarms/manifest-schema.json'],
+    [audit, 'retired-swarm-artifact--template-audit', 'swarms/templates/audit.md'],
+    [explore, 'retired-swarm-artifact--template-explore', 'swarms/templates/explore.md'],
+  ];
+  for (const [entry, id, target] of expectations) {
+    assert.ok(entry, `live doc-drift-patterns.json must carry the '${id}' check — without it the wave-6 tombstone has no drift net (F-41379e68)`);
+    assert.equal(entry.kind, 'self-consistency', `${id} must be a self-consistency check`);
+    assert.equal(entry.target, target, `${id} must target ${target}`);
+    const musts = (entry.rules ?? []).flatMap((r) => r.must ?? []);
+    assert.ok(musts.length >= 1, `${id} must pin at least one required marker (got ${musts.length})`);
+  }
+});
+
+test('F-41379e68: the real retired files, copied verbatim into a fixture, satisfy the live tombstone checks', async (t) => {
+  const fx = makeFixture(t);
+  for (const rel of ['swarms/manifest-schema.json', 'swarms/templates/audit.md', 'swarms/templates/explore.md']) {
+    fx.write(rel, readFileSync(resolve(repoRoot, rel), 'utf8'));
+  }
+  const cfg = fx.config({ checks: liveRetiredArtifactChecks() });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+  assert.equal(result.checksRun, 3);
+});
+
+test('F-41379e68 RED-capability: stripping a template\'s RETIRED banner (un-tombstoning) fires drift via the LIVE entry', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('swarms/manifest-schema.json', readFileSync(resolve(repoRoot, 'swarms/manifest-schema.json'), 'utf8'));
+  fx.write('swarms/templates/explore.md', readFileSync(resolve(repoRoot, 'swarms/templates/explore.md'), 'utf8'));
+  // Simulate the revert F-41379e68 warns about: audit.md loses its banner
+  // block and reads like a live template again.
+  const audit = readFileSync(resolve(repoRoot, 'swarms/templates/audit.md'), 'utf8');
+  const reverted = audit
+    .split('\n')
+    .filter((line) => !line.startsWith('# RETIRED TEMPLATE') && !line.includes('No code path consumes this file'))
+    .join('\n');
+  fx.write('swarms/templates/audit.md', `# Audit Template\n${reverted}`);
+
+  const cfg = fx.config({ checks: liveRetiredArtifactChecks() });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'an un-tombstoned template must not pass');
+  const auditReports = result.reports.filter((r) => r.checkId === 'retired-swarm-artifact--template-audit');
+  assert.ok(auditReports.length >= 1, `expected drift from the audit-template check; got: ${JSON.stringify(result.reports)}`);
+  assert.match(auditReports[0].message, /required content missing/);
+});
+
+test('F-41379e68 RED-capability: a banner demoted off the first line (frontmatter prepended) fires drift', async (t) => {
+  // The banner is load-bearing as the FIRST thing a reader sees; the live
+  // regex is ^-anchored (no m flag → index 0 only). Prepending anything
+  // demotes it and must fire.
+  const fx = makeFixture(t);
+  fx.write('swarms/manifest-schema.json', readFileSync(resolve(repoRoot, 'swarms/manifest-schema.json'), 'utf8'));
+  fx.write('swarms/templates/audit.md', readFileSync(resolve(repoRoot, 'swarms/templates/audit.md'), 'utf8'));
+  fx.write('swarms/templates/explore.md', `---\ntitle: Explore\n---\n${readFileSync(resolve(repoRoot, 'swarms/templates/explore.md'), 'utf8')}`);
+
+  const cfg = fx.config({ checks: liveRetiredArtifactChecks() });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  const exploreReports = result.reports.filter((r) => r.checkId === 'retired-swarm-artifact--template-explore');
+  assert.ok(exploreReports.length >= 1, `expected drift from the explore-template check; got: ${JSON.stringify(result.reports)}`);
+});
+
+test('F-41379e68 RED-capability: stripping the RETIRED $comment marker from manifest-schema.json fires drift via the LIVE entry', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('swarms/templates/audit.md', readFileSync(resolve(repoRoot, 'swarms/templates/audit.md'), 'utf8'));
+  fx.write('swarms/templates/explore.md', readFileSync(resolve(repoRoot, 'swarms/templates/explore.md'), 'utf8'));
+  const schema = JSON.parse(readFileSync(resolve(repoRoot, 'swarms/manifest-schema.json'), 'utf8'));
+  // Simulate re-livening: the $comment loses its RETIRED head, the
+  // description loses its RETIRED cross-ref.
+  schema.$comment = 'Checkpoint schema for swarm runs.';
+  schema.description = 'Checkpoint file that tracks swarm audit progress across phases and agents.';
+  fx.write('swarms/manifest-schema.json', JSON.stringify(schema, null, 2));
+
+  const cfg = fx.config({ checks: liveRetiredArtifactChecks() });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'a re-livened manifest-schema must not pass');
+  const schemaReports = result.reports.filter((r) => r.checkId === 'retired-swarm-artifact--manifest-schema');
+  assert.ok(schemaReports.length >= 1, `expected drift from the manifest-schema check; got: ${JSON.stringify(result.reports)}`);
+  assert.match(schemaReports[0].message, /required content missing/);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // LIVE TREE assertion — the load-bearing test
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -423,7 +537,9 @@ test("F-25e984d7: doublestarToRegex's sentinel substitution still functions afte
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// untagged-fence handler (D-CI-001 / F-827321-010, wave 23)
+// F-827321-010 — untagged-fence handler (D-CI-001, wave 23). Id-first so the
+// F-f0339e12 structural filter credits this section as the fix's coverage
+// (wave-8 disposition — the tests below ARE the handler's regression net).
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('untagged-fence: clean fixture (every opener tagged) passes', async (t) => {
@@ -514,7 +630,9 @@ test('untagged-fence: empty target glob reports config-error', async (t) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// helper-adoption-sweep handler (F-252713-016 / FT-CITOOLING-001, wave 26)
+// F-252713-016 — helper-adoption-sweep handler (FT-CITOOLING-001, wave 26).
+// Id-first so the F-f0339e12 structural filter credits this section as the
+// fix's coverage (wave-8 disposition — the tests below ARE the handler's net).
 // Productizes wave22-log-stage-discipline.test.js as a generalized Class #9
 // sweep. Tests cover: clean adoption, raw-primitive drift, wrapper-with-import
 // allowed, allowlist exemption, helper-not-found config error, helper missing

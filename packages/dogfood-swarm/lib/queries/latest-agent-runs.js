@@ -36,6 +36,27 @@
  * be glued into queries that JOIN domains for the display layer (status.js,
  * receipt.js) or queries that pull `ar.*` for downstream consumers
  * (collect.js, resume.js).
+ *
+ * ISOLATION-MODE ASSUMPTION (F-4220149f — read before trusting a superseded
+ * row's discarded state is safe to ignore). Every consumer of this fragment
+ * implicitly treats a superseded (non-latest) agent_run's data as safe to
+ * drop — the ownership-violation gate (lib/advance.js#checkViolations) is the
+ * sharpest example: a `violation=1` file_claims row on a superseded agent_run
+ * is invisible to the gate. That is PROVEN safe for a `swarm resume`
+ * redispatch under `--isolate` dispatch, because worktree.js#createWorktree
+ * always force-removes and recreates a fresh worktree from HEAD before the
+ * redispatch — the surviving row's clean file_claims genuinely reflects a
+ * wiped tree. It is UNVERIFIED for non-isolated dispatch (a real, supported
+ * mode — see `waves.dispatch_sha` / `waves.ownership_probe_degraded` in
+ * db/schema.js): a failed first attempt's stray out-of-domain edit is not
+ * guaranteed to be reverted or re-examined by the resumed attempt's own
+ * collect() pass, so a superseded row's discarded violation could, in that
+ * mode, be a real ownership violation this fragment silently hides from every
+ * consumer. Nothing in this module enforces, checks, or records which mode a
+ * given wave ran under — it can only trust the caller. checkViolations
+ * partially closes the blind spot by surfacing an informational note (not a
+ * block — this module still cannot prove which mode applied) whenever a
+ * superseded agent_run carries a violation the latest row does not.
  */
 
 /**

@@ -65,6 +65,17 @@ on:
       # scripts/stageA-check-ci-honesty-paths.test.mjs.
       - 'fixtures/**'
       - 'dogfood/**'
+      # F-41379e68: the retired swarms artifacts (tombstoned wave 6 —
+      # manifest-schema.json's RETIRED $comment, templates/'s RETIRED
+      # banners) are pinned by the retired-swarm-artifact doc-drift checks,
+      # but check-doc-drift only runs when CI runs. Without these triggers a
+      # commit editing ONLY these files (e.g. reverting the tombstone)
+      # produced no CI run at all — the same trigger-level bypass as
+      # d6-infra-001. Both paths are tracked files (not under the ignored
+      # swarm-*/), so these triggers are live. Guarded by
+      # scripts/stageA-check-ci-honesty-paths.test.mjs.
+      - 'swarms/manifest-schema.json'
+      - 'swarms/templates/**'
   pull_request:
     paths:
       - 'packages/**'
@@ -93,6 +104,10 @@ on:
       # F-362d4131: runtime fixture/scenario data dirs (see push block above).
       - 'fixtures/**'
       - 'dogfood/**'
+      # F-41379e68: retired swarms artifacts — tombstone-drift triggers (see
+      # push block above).
+      - 'swarms/manifest-schema.json'
+      - 'swarms/templates/**'
   workflow_dispatch:
 
 concurrency:

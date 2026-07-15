@@ -386,11 +386,18 @@ export async function verify(submission, options) {
   // newly-persisted category — a corrected resubmission silently dropped as a
   // duplicate (exit 0). packages/ingest/persist.js's isDuplicate() closes that
   // gap: a prior `_rejected` record whose reasons are ALL `schema:`-class is
-  // treated as non-blocking for a same-run_id retry, so the audit trail and the
-  // resubmission path both hold. (A schema-invalid submission that reaches
-  // writeRecord() may still fail dogfood-record.schema.json's own mirrored
-  // constraints on the SAME field — ingest() routes that RecordValidationError
-  // the same way _skipPersist routes here; see F-4acd28d8.)
+  // treated as non-blocking for a same-run_id retry that goes on to be
+  // ACCEPTED, so the audit trail and the resubmission path both hold. (A
+  // schema-invalid submission that reaches writeRecord() may still fail
+  // dogfood-record.schema.json's own mirrored constraints on the SAME field —
+  // ingest() routes that RecordValidationError the same way _skipPersist
+  // routes here; see F-4acd28d8.) An UNCORRECTED retry — still rejected,
+  // same run_id and date — computes to the exact SAME `_rejected` path
+  // attempt 1 already occupies regardless of which violation it reports, so
+  // it stays an ordinary duplicate rather than reaching writeRecord()'s
+  // exclusive-create at all (F-0f9e4077: the schema-class carve-out only
+  // ever waives the collision for a record now headed to a DIFFERENT,
+  // accepted path).
   //
   // The line: the duplicate guard otherwise consumes a run_id when we rendered
   // a VERDICT on a run. A policy or provenance rejection is a verdict — it

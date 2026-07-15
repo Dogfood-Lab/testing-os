@@ -47,6 +47,42 @@ const MAX_STEP_OUTPUT_CHARS = 8000;
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
 
 /**
+ * F-014c22f0: `step.maxBufferBytes` (F-3a098ded) is a real, honored override,
+ * but it is reachable ONLY from a hand-written Node script calling
+ * runStep()/runVerification() directly — `swarm verify`'s CLI surface has no
+ * flag for it anywhere on the three-layer path (runStep ← an adapter's
+ * commands(overrides) ← registry.js#runVerification's commandOverrides). The
+ * output_exceeded message told the operator to "set step.maxBufferBytes"
+ * regardless — advice as unreachable in practice from a terminal as the
+ * pre-F-3a098ded text it replaced.
+ *
+ * SWARM_VERIFY_MAX_BUFFER_BYTES closes that gap without a new CLI flag:
+ * `SWARM_VERIFY_MAX_BUFFER_BYTES=<n> swarm verify` raises (or lowers) the
+ * ceiling for every step in the run, genuinely actionable from the same
+ * terminal the output_exceeded reason is read from.
+ *
+ * Read fresh on every call — NOT cached in a module-level constant the way
+ * MAX_BUFFER_BYTES above is — mirroring log-stage.js#shouldEmitHuman's
+ * per-call env read rather than STEP_TIMEOUT_MS's build-time constant shape.
+ * A per-call read is what lets a single test process exercise "env unset",
+ * "env set to X", and "env set to Y" without re-importing the module between
+ * cases, and it costs nothing in production (one env lookup per step).
+ *
+ * Invalid input (missing, non-numeric, non-positive — execFileSync's
+ * `maxBuffer` must be a positive number) is treated as "no override": the
+ * caller's `?? MAX_BUFFER_BYTES` fallback takes over rather than handing
+ * execFileSync a value it would reject or misinterpret.
+ *
+ * @returns {number|null}
+ */
+function readEnvMaxBufferBytes() {
+  const raw = process.env.SWARM_VERIFY_MAX_BUFFER_BYTES;
+  if (!raw) return null;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : null;
+}
+
+/**
  * Recognizes the shell's "executable not found" message across platforms.
  * With `shell: true` a missing `step.cmd` does NOT surface as an ENOENT error
  * object — the shell itself runs and exits non-zero with one of these strings
@@ -89,15 +125,21 @@ const TOOL_NOT_FOUND_STDERR = /is not recognized as an internal or external comm
  *   "failure" that is really "didn't finish in 5 min". `maxBufferBytes`
  *   (F-3a098ded) overrides the default stdout+stderr capture ceiling
  *   (F-8d355b64, MAX_BUFFER_BYTES) the same way, for a step whose own output
- *   legitimately exceeds 64 MB — before this override existed, the
- *   output_exceeded message told the operator to "raise MAX_BUFFER_BYTES"
- *   with no way to actually do so short of editing this file's source.
+ *   legitimately exceeds 64 MB. Both are programmatic-only (no `swarm verify`
+ *   CLI flag threads into either); `maxBufferBytes` additionally has a
+ *   terminal-reachable escape hatch (F-014c22f0) — the
+ *   `SWARM_VERIFY_MAX_BUFFER_BYTES` environment variable, read fresh per call
+ *   and applied when `step.maxBufferBytes` is absent (see
+ *   readEnvMaxBufferBytes below).
  * @returns {object} — StepResult
  */
 export function runStep(repoPath, step) {
   const cmdArgs = step.args || [];
   const timeoutMs = step.timeoutMs ?? STEP_TIMEOUT_MS;
-  const maxBufferBytes = step.maxBufferBytes ?? MAX_BUFFER_BYTES;
+  // Most-specific-wins, mirroring step.timeoutMs's own override shape:
+  // per-step property > process-wide env override (F-014c22f0,
+  // readEnvMaxBufferBytes) > module default.
+  const maxBufferBytes = step.maxBufferBytes ?? readEnvMaxBufferBytes() ?? MAX_BUFFER_BYTES;
   // `command` is the human-readable display string returned to callers and
   // asserted by callers/tests; it is NOT what executes. `execFileSync`
   // receives `step.cmd` + the argv array separately below.
@@ -200,14 +242,16 @@ export function runStep(repoPath, step) {
       reason: toolMissing
         ? `tool \`${step.cmd}\` not found on PATH`
         : outputExceeded
-          // F-3a098ded: name the byte count actually enforced for THIS step
-          // (maxBufferBytes — the effective value after any step.maxBufferBytes
-          // override) and the real, reachable remedy (the override itself),
-          // mirroring the step.timeoutMs message pattern. The old text pointed
-          // at MAX_BUFFER_BYTES, a module constant with no configuration
-          // surface — the only way to "raise" it was to edit this file's
-          // source and republish.
-          ? `step \`${step.name}\` output exceeded execFileSync's ${maxBufferBytes.toLocaleString()}-byte maxBuffer — this is NOT a timeout (the overflow kill reports SIGTERM, which duration_ms confirms was reached in ${duration_ms}ms, not near ${timeoutMs}ms); set step.maxBufferBytes above ${maxBufferBytes.toLocaleString()} (mirrors step.timeoutMs) or reduce step output`
+          // F-3a098ded named the byte count actually enforced for THIS step
+          // (maxBufferBytes — the effective value after any override) but
+          // pointed the remedy at step.maxBufferBytes, reachable only from a
+          // hand-written Node script — no `swarm verify` CLI flag threads
+          // into it. F-014c22f0: lead with SWARM_VERIFY_MAX_BUFFER_BYTES, the
+          // env override an operator can actually set before re-running
+          // `swarm verify` from the terminal; step.maxBufferBytes remains
+          // named as the programmatic-caller equivalent (same override
+          // chain, most-specific-wins).
+          ? `step \`${step.name}\` output exceeded execFileSync's ${maxBufferBytes.toLocaleString()}-byte maxBuffer — this is NOT a timeout (the overflow kill reports SIGTERM, which duration_ms confirms was reached in ${duration_ms}ms, not near ${timeoutMs}ms); set SWARM_VERIFY_MAX_BUFFER_BYTES above ${maxBufferBytes.toLocaleString()} before re-running \`swarm verify\` (or step.maxBufferBytes for programmatic callers) or reduce step output`
           : timedOut
             ? `step \`${step.name}\` timed out after ${timeoutMs}ms`
             : undefined,

@@ -51,17 +51,259 @@
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname, resolve, relative } from 'node:path';
+import { dirname, resolve, relative, basename } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import {
   parseRegressionPins,
   toJSON,
+  F_ID_PATTERN,
 } from '../packages/portfolio/lib/parse-regression-pins.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = resolve(here, '..');
 const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
+
+/**
+ * F-f0339e12: structural test-pin filter.
+ *
+ * PROBLEM (full mutation-probe writeup lives in the finding): the parser
+ * this file consumes (parse-regression-pins.js) buckets a file into
+ * source_pins/test_pins via a single whole-file-text regex sweep —
+ * extractPinsFromText() has zero requirement that a mention of an F-id in a
+ * file classifyFile() calls "test" have any structural relationship to a
+ * real check. A narrative cross-reference in an UNRELATED test's comment
+ * ("unlike F-deadbeef's approach...") cleared Class #14 for F-deadbeef
+ * exactly as if a dedicated regression test existed. This already happened
+ * for real: a wave-6 comment narrating F-893adcd1's history inside
+ * F-c59bb518's test explanation made the still-genuinely-uncovered
+ * F-893adcd1 pin (this file's own docstring, line ~13) look newly test-
+ * pinned, surfacing only as a "stale allowlist entry" WARN that a reader
+ * could reasonably (and wrongly) read as "safe to delete."
+ *
+ * FIX: a test-side textual mention only counts as a structural pin if it
+ * carries one of four cheap, line-local signals — each an ALREADY-OBSERVED
+ * convention in this repo's own test files, not an invented rule:
+ *
+ *   1. LEADING COMMENT — the id is the first token of a `//`/`*`/`#`/`-`
+ *      comment or list-item line (after stripping that decoration), e.g.
+ *      `// F-893adcd1 — the actual fix reason` or the JSDoc continuation
+ *      `*   F-375053-005  schema.js STATUS.run enum…`. This is the exact
+ *      "leading-comment line" form parse-regression-pins.test.js's own
+ *      docstring documents as canonical.
+ *   2. TEST TITLE — the id sits inside the quoted title argument of a
+ *      test()/it()/describe() call, e.g. `describe('guard (F-100000-001)',
+ *      …)` or `test('F-W1-CI-006: main-entry guard …', …)`. The other
+ *      canonical form from the same docstring.
+ *   3. SELF-REFERENCING FILE HEADER — the id is the first F-id mentioned on
+ *      a line that ALSO names this file's own basename, within the file's
+ *      first 20 lines, e.g. `verify-fixed.test.js — F-252713-002 (Phase 7
+ *      wave 1, FT-BACKEND-002)`. A file citing its own name before an id in
+ *      its opening docblock is declaring "this file is the regression
+ *      coverage for that id" — categorically different from a stray
+ *      cross-reference deep inside an unrelated file.
+ *   4. SAME-LINE ASSERT ARGUMENT — the id appears anywhere on a line that
+ *      also contains `assert` or `expect(`, e.g. an assertion message that
+ *      names the id it proves (`assert.doesNotMatch(a, /F-NNNNNN-NNN/,
+ *      'domain leaked F-NNNNNN-NNN')`) or an id passed straight into an
+ *      assert argument (`assert.deepEqual('F-NNNNNN-NNN'.match(…), […])`).
+ *      An id sharing a line with the check that exercises it is the thing
+ *      being tested, not prose about it. (Deliberately illustrated with
+ *      the non-matching F-NNNNNN-NNN placeholder, not a real tracked id —
+ *      a real id here would make THIS docstring's own coverage depend on
+ *      an unrelated file in another domain never refactoring it away.)
+ *
+ * Each signal is deliberately LINE-LOCAL, never a multi-line proximity
+ * window. A window-based "within N lines of an assert" heuristic was
+ * prototyped and rejected: it let the real F-893adcd1 false positive back
+ * in whenever an unrelated assert happened to fall within the window
+ * (common in dense test files), which defeats the fix — the mutation-probe
+ * case is exactly a comment that sits physically near real assert calls
+ * without being structurally CONNECTED to any of them.
+ *
+ * WHAT STILL SLIPS THROUGH (documented, not silently over-fit — matching
+ * this repo's own "cheapest honest structure, not perfect precision"
+ * standard elsewhere, e.g. F_ID_PATTERN's own "known accepted false
+ * positive" paragraph):
+ *   - Multi-line arrange-then-assert: ids collected into an array/variable
+ *     several lines before the assert that consumes it (e.g.
+ *     `const ids = ['F-…', …]; …; assert.deepEqual(missing, [], …)`) are
+ *     NOT recognized — tracing a variable to its consuming assert is
+ *     dataflow analysis, not a cheap line-local check. The live instance
+ *     that proved this (the 12-workflow-pins test in this gate's own test
+ *     file) was unrolled into per-id asserts at the wave-8 disposition;
+ *     the class remains for any future array-arranged ids.
+ *   - Section-header banner comments where the target id is NOT the first
+ *     F-id token on the line (e.g. `// widget handler (D-CI-001 /
+ *     F-NNNNNN-NNN, wave N)` — a non-F-id label precedes it, so rule 1
+ *     doesn't fire, and rule 3 requires the file's own basename, which a
+ *     mid-file section banner has no reason to contain). The two live
+ *     instances of this shape were reworded id-first at the wave-8
+ *     disposition; the class remains for future banners.
+ *   - A same-line trailing comment that mentions an unrelated id on a line
+ *     which also happens to contain a genuine (unrelated) assert/expect
+ *     call would still count under rule 4 — same-line is a far smaller
+ *     surface than a proximity window, but it is not zero.
+ *
+ * These are line-based heuristics over the SAME already-classified test
+ * files the parser walks — no new file walk, no parser edit. Deliberately
+ * reads F_ID_PATTERN from parse-regression-pins.js (not a hand-rolled
+ * copy) so the id-shape contract still lives in exactly one place.
+ */
+
+const STRUCTURAL_COMMENT_DECORATION = /^\s*(?:[/*#-]+\s*)+/;
+const STRUCTURAL_TEST_TITLE = /\b(?:test|it|describe)(?:\.\w+)?\s*\(\s*(['"`])((?:(?!\1).)*?)\1/;
+const STRUCTURAL_ASSERT_LINE = /\bassert\b|\bexpect\s*\(/;
+const STRUCTURAL_HEADER_LINE_LIMIT = 20;
+
+function isLeadingCommentPin(line, id) {
+  return line.replace(STRUCTURAL_COMMENT_DECORATION, '').startsWith(id);
+}
+
+function isTestTitlePin(line, id) {
+  const m = STRUCTURAL_TEST_TITLE.exec(line);
+  return Boolean(m && m[2].includes(id));
+}
+
+function isSelfReferencingHeaderPin(line, id, fileBasename, lineIndex) {
+  if (lineIndex >= STRUCTURAL_HEADER_LINE_LIMIT) return false;
+  const idPos = line.indexOf(id);
+  if (idPos === -1) return false;
+  const basePos = line.indexOf(fileBasename);
+  if (basePos === -1 || basePos >= idPos) return false;
+  // The id at idPos must be the FIRST F-id match on the line — a different,
+  // earlier id (the real F-893adcd1 shape: "F-c59bb518: F-893adcd1 …")
+  // disqualifies it, same reasoning as the leading-comment rule.
+  F_ID_PATTERN.lastIndex = 0;
+  let m;
+  while ((m = F_ID_PATTERN.exec(line))) {
+    if (m.index < idPos) return false;
+    if (m.index === idPos) break;
+  }
+  return true;
+}
+
+function isSameLineAssertArgumentPin(line, id) {
+  return STRUCTURAL_ASSERT_LINE.test(line) && line.includes(id);
+}
+
+/**
+ * Classify every textual occurrence of `id` in `text` (a file already known
+ * to contain at least one match) as structural or not, one record per
+ * occurrence, so tests and diagnostics can see WHY, not just a boolean.
+ *
+ * @param {string} text
+ * @param {string} id
+ * @param {string} fileBasename - basename(file), for the self-header rule.
+ * @returns {{ line: number, kind: 'leading-comment'|'title'|'self-header'|'assert-line'|'none' }[]}
+ */
+export function findStructuralPinHits(text, id, fileBasename) {
+  const lines = text.split('\n');
+  const hits = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line.includes(id)) continue;
+    if (isTestTitlePin(line, id)) hits.push({ line: i + 1, kind: 'title' });
+    else if (isLeadingCommentPin(line, id)) hits.push({ line: i + 1, kind: 'leading-comment' });
+    else if (isSelfReferencingHeaderPin(line, id, fileBasename, i)) hits.push({ line: i + 1, kind: 'self-header' });
+    else if (isSameLineAssertArgumentPin(line, id)) hits.push({ line: i + 1, kind: 'assert-line' });
+    else hits.push({ line: i + 1, kind: 'none' });
+  }
+  return hits;
+}
+
+/**
+ * @param {string} text
+ * @param {string} id
+ * @param {string} fileBasename
+ * @returns {boolean} true iff at least one occurrence of `id` in `text` carries
+ *   a structural signal (see findStructuralPinHits).
+ */
+export function hasStructuralTestPin(text, id, fileBasename) {
+  return findStructuralPinHits(text, id, fileBasename).some((h) => h.kind !== 'none');
+}
+
+/**
+ * Re-derive the orphan list using STRUCTURAL test-pin evidence instead of
+ * the parser's whole-file-text test_pins membership. Reads each test file
+ * named in `json.test_pins` at most once, regardless of how many ids map
+ * to it. Source-side extraction (`json.source_pins`) is never touched —
+ * only which test-side mentions count as counter-evidence changes.
+ *
+ * @param {ReturnType<typeof toJSON>} json
+ * @param {{ readFile?: (path: string) => string }} [opts] - injection point for tests.
+ * @returns {{
+ *   orphanSourceIds: string[],
+ *   structuralTestIds: Set<string>,
+ *   narrativeOnlyIds: string[],
+ * }} `narrativeOnlyIds` — ids with a raw test_pins entry but NO structural
+ *   signal anywhere: the exact "textually mentioned, not really pinned"
+ *   set this fix exists to stop trusting.
+ */
+export function computeStructuralOrphans(json, { readFile = (p) => readFileSync(p, 'utf-8') } = {}) {
+  const fileTextCache = new Map();
+  const readCached = (file) => {
+    if (fileTextCache.has(file)) return fileTextCache.get(file);
+    let text = null;
+    try {
+      text = readFile(file);
+    } catch {
+      text = null;
+    }
+    fileTextCache.set(file, text);
+    return text;
+  };
+
+  const structuralTestIds = new Set();
+  const narrativeOnlyIds = [];
+  for (const [id, files] of Object.entries(json.test_pins)) {
+    let structural = false;
+    for (const file of files) {
+      const text = readCached(file);
+      if (text === null) continue;
+      if (hasStructuralTestPin(text, id, basename(file))) {
+        structural = true;
+        break;
+      }
+    }
+    if (structural) structuralTestIds.add(id);
+    else narrativeOnlyIds.push(id);
+  }
+  narrativeOnlyIds.sort();
+
+  const orphanSourceIds = Object.keys(json.source_pins)
+    .filter((id) => !structuralTestIds.has(id))
+    .sort();
+
+  return { orphanSourceIds, structuralTestIds, narrativeOnlyIds };
+}
+
+/**
+ * Explain why a currently-unused allowlist entry no longer matches an
+ * orphan — F-f0339e12's fix to the WARN wording. Before this fix, "unused"
+ * could mean the dangerous case (a narrative-only mention got miscounted as
+ * a real test pin, silently clearing the orphan without any real
+ * coverage); computeStructuralOrphans makes that case structurally
+ * unreachable here — a narrative-only id stays an orphan, so an
+ * allowlisted one stays in `applied`, never `unused` (see the module
+ * docstring above). Only two legitimate cases remain, and this function
+ * distinguishes them so the WARN can no longer be misread as a uniform
+ * "safe to delete" regardless of which reason applies.
+ *
+ * @param {string} id
+ * @param {ReturnType<typeof toJSON>} json
+ * @param {Set<string>} structuralTestIds
+ * @returns {string}
+ */
+export function explainUnusedAllowEntry(id, json, structuralTestIds) {
+  if (!(id in json.source_pins)) {
+    return 'no longer appears as a source pin at all — safe to delete';
+  }
+  if (structuralTestIds.has(id)) {
+    return 'now has a genuine structural test pin — safe to delete';
+  }
+  return 'reason undetermined (should be unreachable post-F-f0339e12 — investigate before deleting)';
+}
 
 /**
  * Load the allowlist JSON at `path`. Returns an object whose `allow` key is a
@@ -137,20 +379,48 @@ export function applyAllowlist(json, allowlist) {
  *   orphans: string[],
  *   allowlistApplied: string[],
  *   unusedAllowEntries: string[],
+ *   unusedAllowEntryReasons: Record<string, string>,
+ *   narrativeOnlyIds: string[],
  *   indexWritten: string | null
  * }>}
  */
 export async function runRegressionPinGate({ repoRoot = defaultRepoRoot, allowlistPath = defaultAllowlistPath, writeIndexPath = null } = {}) {
   const result = parseRegressionPins(repoRoot);
   const json = toJSON(result);
+  // F-f0339e12: orphan status is decided by STRUCTURAL test-pin coverage,
+  // not the parser's raw whole-file-text test_pins membership — see the
+  // module docstring above computeStructuralOrphans. json.source_pins/
+  // test_pins/summary.{source_ids,test_ids} stay exactly as the parser
+  // emitted them; only the orphan_source_ids fed to applyAllowlist changes.
+  const { orphanSourceIds, structuralTestIds, narrativeOnlyIds } = computeStructuralOrphans(json);
   const allowlist = loadAllowlist(allowlistPath);
-  const { orphansAfterAllowlist, applied, unusedAllowEntries } = applyAllowlist(json, allowlist);
+  const { orphansAfterAllowlist, applied, unusedAllowEntries } = applyAllowlist(
+    { ...json, summary: { ...json.summary, orphan_source_ids: orphanSourceIds } },
+    allowlist,
+  );
+  const unusedAllowEntryReasons = Object.fromEntries(
+    unusedAllowEntries.map((id) => [id, explainUnusedAllowEntry(id, json, structuralTestIds)]),
+  );
 
   let indexWritten = null;
   if (writeIndexPath) {
     const absPath = resolve(repoRoot, writeIndexPath);
     mkdirSync(dirname(absPath), { recursive: true });
-    writeFileSync(absPath, `${JSON.stringify(json, null, 2)}\n`, 'utf-8');
+    // The persisted index gets the corrected (structural) orphan_source_ids
+    // too, plus the structural summary fields — a future consumer (e.g. the
+    // FT-BACKEND-002 swarm verify-fixed delta join this docstring names)
+    // should never read the pre-fix, textually-fooled orphan list back off
+    // disk. source_pins/test_pins stay the parser's raw maps, unmodified.
+    const indexPayload = {
+      ...json,
+      summary: {
+        ...json.summary,
+        orphan_source_ids: orphanSourceIds,
+        structural_test_ids: structuralTestIds.size,
+        narrative_only_ids: narrativeOnlyIds,
+      },
+    };
+    writeFileSync(absPath, `${JSON.stringify(indexPayload, null, 2)}\n`, 'utf-8');
     indexWritten = absPath;
   }
 
@@ -160,6 +430,8 @@ export async function runRegressionPinGate({ repoRoot = defaultRepoRoot, allowli
     orphans: orphansAfterAllowlist,
     allowlistApplied: applied,
     unusedAllowEntries,
+    unusedAllowEntryReasons,
+    narrativeOnlyIds,
     indexWritten,
   };
 }
@@ -169,7 +441,7 @@ export async function runRegressionPinGate({ repoRoot = defaultRepoRoot, allowli
  */
 export function formatHuman(result, repoRoot) {
   const lines = [];
-  const { json, orphans, allowlistApplied, unusedAllowEntries, indexWritten } = result;
+  const { json, orphans, allowlistApplied, unusedAllowEntries, unusedAllowEntryReasons = {}, indexWritten } = result;
   lines.push(`[check-finding-regression-pins] scanned ${json.files_scanned} files`);
   lines.push(`  source pins: ${json.summary.source_ids} F-id(s)`);
   lines.push(`  test pins:   ${json.summary.test_ids} F-id(s)`);
@@ -177,7 +449,16 @@ export function formatHuman(result, repoRoot) {
     lines.push(`  allowlist applied: ${allowlistApplied.length} F-id(s) (${allowlistApplied.join(', ')})`);
   }
   if (unusedAllowEntries.length > 0) {
-    lines.push(`  WARN — stale allowlist entries (no longer match any orphan): ${unusedAllowEntries.join(', ')}`);
+    // F-f0339e12: explain WHY each entry went stale — "now has a genuine
+    // structural test pin" (safe to delete, real coverage landed) reads very
+    // differently from "no longer a source pin" (safe to delete, the fix
+    // moved/vanished). Neither can be misread as "a stray comment merely
+    // mentioned it" anymore — computeStructuralOrphans makes that specific
+    // misread structurally unreachable (see runRegressionPinGate).
+    lines.push('  WARN — stale allowlist entries (no longer match any orphan):');
+    for (const id of unusedAllowEntries) {
+      lines.push(`    ${id} — ${unusedAllowEntryReasons[id] ?? 'reason unavailable'}`);
+    }
   }
   if (orphans.length === 0) {
     lines.push(`  OK — every source-pinned F-id has at least one test pin (Class #14 invariant holds).`);
@@ -278,6 +559,8 @@ async function main() {
       orphans: result.orphans,
       allowlist_applied: result.allowlistApplied,
       unused_allow_entries: result.unusedAllowEntries,
+      unused_allow_entry_reasons: result.unusedAllowEntryReasons,
+      narrative_only_ids: result.narrativeOnlyIds,
       index_written: result.indexWritten,
       parser: result.json,
     }, null, 2)}\n`);

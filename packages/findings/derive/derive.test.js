@@ -536,6 +536,24 @@ describe('Dedupe key computation', () => {
     const b = computeDedupeKey({ repo: 'org/b', issue_kind: 'x', root_cause_kind: 'y', journey_stage: 'z', slug: 's' });
     assert.notEqual(a, b);
   });
+
+  it('a "::" inside a field value cannot forge a false boundary between two different tuples (F-112c88a4)', () => {
+    // Sibling of generateFindingId's own boundary-collision fix
+    // (findings-A-002, see ids.js): a naive '::'-joined key lets a
+    // delimiter-shaped VALUE in one field masquerade as the join between two
+    // DIFFERENT fields. These two tuples disagree on issue_kind/
+    // root_cause_kind but both flatten to the identical string
+    // 'org/repo::x::y::z::w::s' under a plain '::'.join() — the exact class
+    // generateFindingId's boundaryHash() was built to close.
+    const a = computeDedupeKey({
+      repo: 'org/repo', issue_kind: 'x::y', root_cause_kind: 'z', journey_stage: 'w', slug: 's'
+    });
+    const b = computeDedupeKey({
+      repo: 'org/repo', issue_kind: 'x', root_cause_kind: 'y::z', journey_stage: 'w', slug: 's'
+    });
+    assert.notEqual(a, b,
+      'a "::" inside a field value must not be able to forge a false component boundary');
+  });
 });
 
 // ============================================================

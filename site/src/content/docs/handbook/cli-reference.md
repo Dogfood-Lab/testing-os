@@ -210,6 +210,25 @@ Example:
       --override --reason "operator accepts soft warn"
 ```
 
+## swarm adjudicate
+
+Dispatch a neutral case-file to the cross-family jury and record the advisory verdict on the run's current wave — the wave gate `swarm advance` reads (`corroborate` clears; anything else needs Director disposition). Two tiers: `--jury=local` (default, free local seats, whole-brief reads) and `--jury=prism` (per-criterion, multi-lens, signed receipts, 4,000-char brief cap); `--cloud` opts into the paid seats and **spends Ollama-Cloud credits**. Exits 0 only on corroborate. The full contract — case-file shape, neutrality lint, tier trade-offs, compensators — lives in [`docs/case-file-contract.md`](https://github.com/dogfood-lab/testing-os/blob/main/docs/case-file-contract.md); read it before your first adjudication.
+
+```text
+Usage: swarm adjudicate <run-id>
+           --case-file <path>
+           [--jury=local|prism] [--cloud]
+           [--dry-run] [--format=text|json]
+       swarm adjudicate <run-id>
+           --undo <adjudication-id> [--apply]
+
+Example:
+  $ swarm adjudicate <run> \
+      --case-file case-file.json --dry-run
+  $ swarm adjudicate <run> \
+      --case-file case-file.json --jury=local --cloud
+```
+
 ## swarm status
 
 Render the full control-plane status for a run — phase, waves, agent states, findings counts, recovery breadcrumbs. The scan-first surface: read this when you want to know "what is this run, where is it in the lifecycle, what's blocking it, and what do I run next." The trailing `Next:` line is the canonical pointer to the next action.

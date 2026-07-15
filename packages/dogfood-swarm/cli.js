@@ -62,7 +62,18 @@ import {
   editDomain, addDomain, removeDomain, getDomainEvents,
 } from './lib/domains.js';
 import { setTimeoutPolicy, getTimeoutPolicy } from './lib/state-machine.js';
-import { buildDigest } from './lib/findings-digest.js';
+// F-19f86582: cmdFindings no longer calls the all-in-one buildDigest() —
+// it needs to attach a `.code`/`.hint` to the directory-resolution throws
+// (typed-error surface owned by THIS file, cli.js) and to annotate each
+// finding's DB-canonical id (F-ad540b83) BEFORE rendering, and neither seam
+// exists on buildDigest itself. Both are lib/findings-digest.js /
+// lib/findings-render.js concerns (swarm-cp-core's domain, not this one's),
+// so cmdFindings reassembles the SAME orchestration buildDigest already
+// does from its individually-exported pieces instead of editing that file.
+// buildDigest is untouched and still exported for lib/findings-digest.js's
+// own `node findings-digest.js <run-id>` direct-execution entry point.
+import { findLatestWave, loadDomainOutputs, buildDigestModel } from './lib/findings-digest.js';
+import { renderDigest } from './lib/findings-render.js';
 import { renderTopLevelError } from './lib/error-render.js';
 import { CliInvalidGlobsError } from './lib/errors.js';
 import { renderPhaseList, renderPhaseColumns } from './lib/phases.js';
@@ -1841,6 +1852,15 @@ function cmdApprove(args) {
     process.exit(1);
   }
 
+  // F-ad540b83: `--ids` matches findings.finding_id CASE-INSENSITIVELY
+  // (UPPER() on both sides, not just lower-casing the input — a legacy or
+  // test-seeded finding_id is not guaranteed lowercase, only the canonical
+  // `F-${fingerprint.slice(0,8)}` mint shape is). The canonical id is always
+  // lowercase hex (lib/fingerprint.js), but an operator retyping or pasting
+  // it should not be tripped by casing, the same way a git short-hash
+  // comparison would not be.
+  const idsUpper = ids.map(s => s.toUpperCase());
+
   // cli-002 fix: record `approved` events only for findings THIS call moves
   // new/recurring → approved, not for every already-approved finding in the
   // run. finding_events is append-only with no unique constraint, so the old
@@ -1856,7 +1876,7 @@ function cmdApprove(args) {
         "SELECT id FROM findings WHERE run_id = ? AND status IN ('new', 'recurring')"
       )
     : db.prepare(
-        `SELECT id FROM findings WHERE run_id = ? AND finding_id IN (${ids.map(() => '?').join(',')}) AND status IN ('new', 'recurring')`
+        `SELECT id FROM findings WHERE run_id = ? AND UPPER(finding_id) IN (${idsUpper.map(() => '?').join(',')}) AND status IN ('new', 'recurring')`
       );
 
   const insertEvent = db.prepare(
@@ -1867,7 +1887,7 @@ function cmdApprove(args) {
   const tx = db.transaction(() => {
     const pending = approveAll
       ? selectPending.all(runId)
-      : selectPending.all(runId, ...ids);
+      : selectPending.all(runId, ...idsUpper);
 
     let updated;
     if (approveAll) {
@@ -1875,10 +1895,10 @@ function cmdApprove(args) {
         "UPDATE findings SET status = 'approved' WHERE run_id = ? AND status IN ('new', 'recurring')"
       ).run(runId);
     } else {
-      const placeholders = ids.map(() => '?').join(',');
+      const placeholders = idsUpper.map(() => '?').join(',');
       updated = db.prepare(
-        `UPDATE findings SET status = 'approved' WHERE run_id = ? AND finding_id IN (${placeholders}) AND status IN ('new', 'recurring')`
-      ).run(runId, ...ids);
+        `UPDATE findings SET status = 'approved' WHERE run_id = ? AND UPPER(finding_id) IN (${placeholders}) AND status IN ('new', 'recurring')`
+      ).run(runId, ...idsUpper);
     }
 
     for (const f of pending) insertEvent.run(f.id);
@@ -1886,6 +1906,23 @@ function cmdApprove(args) {
   });
 
   changes = tx();
+
+  // F-ad540b83: refuse loudly when NONE of the supplied --ids exist in this
+  // run's findings AT ALL — the exact shape of pasting a `swarm findings`
+  // digest's agent-local id (a disjoint namespace: computeFingerprint's
+  // F-<8 hex> minted at collect() time, never the raw agent-authored `id`
+  // field pre-fix) into --ids. Pre-fix this printed the textually-identical
+  // "Approved 0 findings" a legitimate no-op prints, at exit 0 — no signal
+  // an operator could act on. An id that EXISTS but is simply not currently
+  // open (already approved/deferred/rejected/fixed) is a DIFFERENT, benign
+  // case — re-approving an already-approved finding is intentionally
+  // idempotent (cli-002) and must keep exiting 0 with its own "Approved 0"
+  // line, so this check is existence, not open-match. --all matching zero
+  // (nothing pending) is a normal, expected state and is never refused.
+  if (!approveAll && changes === 0) {
+    refuseIfNoIdsExist(db, runId, ids, idsUpper);
+  }
+
   console.log(`Approved ${changes} findings for ${runId}`);
 }
 
@@ -1926,6 +1963,42 @@ function cmdPersist(args) {
     }
     process.exit(1);
   }
+}
+
+/**
+ * F-ad540b83: shared zero-match refusal for the three targeted (--ids)
+ * finding-disposition verbs (`approve --ids`, `defer`, `reject`). Fires
+ * ONLY when NONE of the supplied ids exist in this run's
+ * findings.finding_id AT ALL — not when they exist but simply are not
+ * currently open (that is the ordinary, intentionally idempotent no-op the
+ * cli-002 / wave12-swarm-cp-pins defer-idempotency pins already cover: a
+ * re-run naming an already-terminal but genuinely-canonical id must keep
+ * exiting 0). Pre-fix, both cases printed the identical "N findings" (N=0)
+ * line at exit 0 — indistinguishable from "you asked to flip 0 findings on
+ * purpose". The proven-live harm this closes is specifically the id-
+ * namespace confusion: pasting a `swarm findings` digest's agent-local id
+ * (disjoint from findings.finding_id, minted by computeFingerprint at
+ * collect() time) into --ids.
+ *
+ * `idsUpper` must already be upper-cased by the caller (mirrors the
+ * UPPER(finding_id) comparison the caller's own SELECT/UPDATE used) so the
+ * existence probe agrees with the case-insensitive match that already ran.
+ */
+function refuseIfNoIdsExist(db, runId, ids, idsUpper) {
+  const existing = db.prepare(
+    `SELECT COUNT(*) as cnt FROM findings WHERE run_id = ? AND UPPER(finding_id) IN (${idsUpper.map(() => '?').join(',')})`
+  ).get(runId, ...idsUpper).cnt;
+  if (existing > 0) return;
+
+  console.error(
+    `ERROR [CLI_FINDINGS_ID_NO_MATCH]: 0 of ${ids.length} --ids value(s) matched any finding in run ${runId}.`
+  );
+  console.error(
+    '  Next: findings.finding_id is the canonical id (e.g. F-c63c7498) minted by `swarm collect` — not the ' +
+    'agent-local `id` a not-yet-collected `swarm findings` digest may still be showing from raw output.json. ' +
+    `Run \`swarm findings ${runId}\` (after collect) or \`swarm status ${runId} --format=json\` for canonical ids.`
+  );
+  process.exit(1);
 }
 
 /**
@@ -1979,15 +2052,18 @@ function disposeFindings(verb, status, label, args) {
 
   const db = openDb(getDbPath());
 
-  const placeholders = ids.map(() => '?').join(',');
+  // F-ad540b83: same case-insensitive UPPER(finding_id) matching as
+  // cmdApprove — see that call site's comment for the rationale.
+  const idsUpper = ids.map(s => s.toUpperCase());
+  const placeholders = idsUpper.map(() => '?').join(',');
   // Open statuses only — terminal fixed/deferred/rejected are skipped so the
   // flip is idempotent and never re-events an already-disposed finding.
   const selectOpen = db.prepare(
-    `SELECT id FROM findings WHERE run_id = ? AND finding_id IN (${placeholders}) ` +
+    `SELECT id FROM findings WHERE run_id = ? AND UPPER(finding_id) IN (${placeholders}) ` +
     `AND status IN ('new', 'recurring', 'approved', 'unverified')`
   );
   const update = db.prepare(
-    `UPDATE findings SET status = ? WHERE run_id = ? AND finding_id IN (${placeholders}) ` +
+    `UPDATE findings SET status = ? WHERE run_id = ? AND UPPER(finding_id) IN (${placeholders}) ` +
     `AND status IN ('new', 'recurring', 'approved', 'unverified')`
   );
   const insertEvent = db.prepare(
@@ -1995,13 +2071,21 @@ function disposeFindings(verb, status, label, args) {
   );
 
   const tx = db.transaction(() => {
-    const pending = selectOpen.all(runId, ...ids);
-    const updated = update.run(status, runId, ...ids);
+    const pending = selectOpen.all(runId, ...idsUpper);
+    const updated = update.run(status, runId, ...idsUpper);
     for (const f of pending) insertEvent.run(f.id, status, reason);
     return updated.changes;
   });
 
   const changes = tx();
+
+  // F-ad540b83: existence-based zero-match refusal — see
+  // refuseIfNoIdsExist's doc comment. defer/reject have no --all path, so
+  // (unlike cmdApprove) every call reaches this check when changes === 0.
+  if (changes === 0) {
+    refuseIfNoIdsExist(db, runId, ids, idsUpper);
+  }
+
   console.log(`${label} ${changes} findings for ${runId}`);
 }
 
@@ -2011,6 +2095,87 @@ function cmdDefer(args) {
 
 function cmdReject(args) {
   disposeFindings('reject', 'rejected', 'Rejected', args);
+}
+
+/**
+ * F-ad540b83 (half 1/2): best-effort resolution of each digest finding's
+ * DB-canonical `finding_id`, so an id an operator copies from `swarm
+ * findings` output actually matches `swarm approve/defer/reject --ids`
+ * (which key ONLY on findings.finding_id — the fingerprint-derived id
+ * minted at collect() time, lib/fingerprint.js:672 — a namespace completely
+ * disjoint from the agent's own `id` field this digest otherwise renders
+ * straight off output.json).
+ *
+ * Resolution is by EXACT field-equality against this run+wave's collected
+ * DB rows (file_path/line_number/symbol/category/severity — the same raw
+ * fields upsertFindings() persists verbatim off the identical output.json
+ * this digest reads, lib/fingerprint.js:671-677), NOT by recomputing the
+ * fingerprint hash. Recomputing would risk silently diverging from whatever
+ * sourceText collect() actually hashed against at collect time (fp-p-005:
+ * the fingerprint folds in a source-context hash this function has no
+ * access to and must not guess at) — a WRONG resolved id would be worse
+ * than none. `description` is deliberately excluded from the match tuple:
+ * B-BACK-002's contract (d3b-006-finding-id-collision.test.js) is that
+ * description is NOT part of a finding's identity, and a RECURRING row's
+ * description stays frozen at its first-seen wording (upsertFindings'
+ * updateRecurring only bumps status/last_seen_wave) while the current
+ * wave's raw output.json may have reworded it — comparing description
+ * would false-negative on exactly the recurring findings this is meant to
+ * help with.
+ *
+ * Fails CLOSED, never wrong: a wave not yet collected has no DB rows to
+ * match against (findings keep their plain agent-local id — today's
+ * behavior, unchanged) and a field tuple shared by more than one DB row (a
+ * true duplicate — the rare case disambiguateFingerprints exists for)
+ * resolves to nothing rather than guessing. Known, accepted gap: a
+ * RECURRING finding whose file/line/symbol drifted since its first-seen
+ * wave (plausible — intervening waves edit the same files) will not match
+ * this exact-equality tuple and keeps showing its agent-local id, same as
+ * pre-fix. A `new` finding (first reported THIS wave) always matches
+ * exactly, because the DB row was inserted THIS SAME collect() from THIS
+ * SAME output.json — zero drift is possible for that case.
+ */
+function annotateCanonicalFindingIds(model, { runId, waveNumber, dbPath }) {
+  if (!model.findings || model.findings.length === 0) return;
+
+  let db;
+  try {
+    db = openDb(dbPath);
+  } catch {
+    return; // control plane unreachable — leave agent-local ids as-is.
+  }
+
+  const wave = db.prepare('SELECT id FROM waves WHERE run_id = ? AND wave_number = ?').get(runId, waveNumber);
+  if (!wave) return; // this run/wave was never dispatched through THIS control plane.
+
+  const rows = db.prepare(
+    'SELECT finding_id, file_path, line_number, symbol, category, severity FROM findings WHERE run_id = ? AND last_seen_wave = ?'
+  ).all(runId, wave.id);
+  if (rows.length === 0) return;
+
+  const tupleKey = (file, line, symbol, category, severity) =>
+    JSON.stringify([file ?? null, line ?? null, symbol ?? null, category ?? null, severity ?? null]);
+
+  const byTuple = new Map();
+  for (const r of rows) {
+    const key = tupleKey(r.file_path, r.line_number, r.symbol, r.category, r.severity);
+    const bucket = byTuple.get(key);
+    if (bucket) bucket.push(r); else byTuple.set(key, [r]);
+  }
+
+  for (const f of model.findings) {
+    const key = tupleKey(
+      f.file || null,
+      f.line || null,
+      f.symbol || null,
+      f.category || null,
+      String(f.severity || '').toUpperCase() || null
+    );
+    const bucket = byTuple.get(key);
+    if (bucket && bucket.length === 1) {
+      f.id = bucket[0].finding_id;
+    }
+  }
 }
 
 function cmdFindings(args) {
@@ -2036,12 +2201,70 @@ function cmdFindings(args) {
   // swallowing a following flag). parseFormatFlag closes both gaps.
   const format = parseFormatFlag(args.slice(1));
 
-  const { output, exitCode } = buildDigest({
-    runId,
-    waveNumber: waveArg ? parseInt(waveArg, 10) : undefined,
-    format,
-    stream: process.stdout,
-  });
+  // F-19f86582: resolve digest artifacts relative to the ACTIVE control
+  // plane (dirname(getDbPath())) — mirrors cmdCollect's --all
+  // auto-discovery (swarmDir: dirname(getDbPath()), cmdCollect's --all branch) and
+  // getOutputDir's identical derivation. Pre-fix, this was the ONE
+  // output-consuming verb that skipped the seam: buildDigest's own
+  // SWARMS_DIR default (lib/findings-digest.js) is always this installed
+  // package's build-relative swarms/ dir, independent of SWARM_DB — so a
+  // run collected against a relocated SWARM_DB was invisible here even
+  // though `swarm collect --all` under the identical SWARM_DB found the
+  // same run's artifacts fine.
+  //
+  // The directory-resolution logic below is buildDigest's own
+  // (lib/findings-digest.js:279-288, findLatestWave), reimplemented here —
+  // not wrapped — so the "Run/Wave/no-waves directory not found" throws can
+  // carry a `.code` + `.hint`. That file lives under this package's lib
+  // directory, swarm-cp-core's domain, not this one's, so the type is
+  // attached at this call site instead of editing it. Everything past
+  // directory resolution (parsing, counting, sorting, rendering) still goes
+  // through the shared, UNMODIFIED buildDigestModel/renderDigest exports —
+  // no business logic is duplicated, only the directory-existence checks.
+  const swarmsDir = dirname(getDbPath());
+  const runDir = join(swarmsDir, runId);
+  if (!existsSync(runDir)) {
+    const e = new Error(`Run directory not found: ${runDir}`);
+    e.code = 'FINDINGS_RUN_DIR_NOT_FOUND';
+    e.runId = runId;
+    e.hint = `swarm findings looks for this run's artifacts under ${swarmsDir} (dirname of $SWARM_DB, ` +
+      `or the default swarms/ dir when SWARM_DB is unset) — confirm SWARM_DB matches whatever \`swarm collect\` ` +
+      `used for this run`;
+    throw e;
+  }
+
+  let waveNumber;
+  if (waveArg) {
+    waveNumber = parseInt(waveArg, 10);
+  } else {
+    try {
+      waveNumber = findLatestWave(runDir);
+    } catch (e) {
+      if (!e.code) {
+        e.code = 'FINDINGS_NO_WAVES_FOUND';
+        e.runId = runId;
+        e.hint = `no wave-N directories exist under ${runDir} — confirm SWARM_DB (${swarmsDir}) matches ` +
+          `whatever \`swarm collect\`/\`swarm dispatch\` used for this run`;
+      }
+      throw e;
+    }
+  }
+
+  const waveDir = join(runDir, `wave-${waveNumber}`);
+  if (!existsSync(waveDir)) {
+    const e = new Error(`Wave directory not found: ${waveDir}`);
+    e.code = 'FINDINGS_WAVE_DIR_NOT_FOUND';
+    e.runId = runId;
+    e.hint = `wave ${waveNumber} has no artifacts under ${runDir} — run \`swarm status ${runId}\` to see which ` +
+      `wave numbers exist under this SWARM_DB`;
+    throw e;
+  }
+
+  const outputs = loadDomainOutputs(waveDir);
+  const model = buildDigestModel(runId, waveNumber, outputs);
+  annotateCanonicalFindingIds(model, { runId, waveNumber, dbPath: getDbPath() });
+  const output = renderDigest(model, format, process.stdout);
+
   console.log(output);
   // F-091578-034 — exit codes propagate the 3-way digest state so CI gates
   // can distinguish clean (0), findings-present (1), and audit-pipeline-broken
@@ -2049,10 +2272,10 @@ function cmdFindings(args) {
   // signal AND the visual signal, not just the visual.
   //
   // F-5dabf101: process.exitCode, not process.exit() — the console.log(output)
-  // above renders buildDigest's full findings text/markdown/JSON, exactly the
+  // above renders the full findings text/markdown/JSON, exactly the
   // large-payload case the finding names; truncation risk is identical to the
   // four verify-* siblings.
-  process.exitCode = exitCode;
+  process.exitCode = model.exitCode;
 }
 
 /**

@@ -18,10 +18,10 @@
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { join, dirname } from 'node:path';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { join, dirname, resolve as resolvePath } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openDb, closeDb } from './db/connection.js';
 import { cleanClaims, formatCleanClaims } from './commands/clean-claims.js';
@@ -29,6 +29,70 @@ import { cleanClaims, formatCleanClaims } from './commands/clean-claims.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const CLI_PATH = join(__dirname, 'cli.js');
+
+// ──────────────────────────────────────────────────────────────
+// F-c653f331 mutation-proof helpers — load a MODIFIED COPY of
+// clean-claims.js so the two in-tx safety nets (CLEAN_CLAIMS_COUNT_MISMATCH
+// / CLEAN_CLAIMS_SCOPE_VIOLATION) can be forced to fire for real. Mirrors
+// redrive.test.js's receipt-byte-identity proof-gate technique (the house
+// pattern for this class of guard): relative imports are rewritten to
+// absolute file:// URLs pointing at the REAL sibling modules, so the mutant
+// exercises the real DB layer / state machine / logStage — only the patched
+// text differs from production.
+// ──────────────────────────────────────────────────────────────
+const CLEAN_CLAIMS_PATH = join(__dirname, 'commands', 'clean-claims.js');
+const CLEAN_CLAIMS_SRC = readFileSync(CLEAN_CLAIMS_PATH, 'utf-8');
+const CLEAN_CLAIMS_DIR = dirname(CLEAN_CLAIMS_PATH);
+
+function rewriteRelativeImportsToAbsolute(src, fromDir) {
+  return src.replace(/from '(\.\.?\/[^']+)'/g, (_m, spec) => {
+    return `from '${pathToFileURL(resolvePath(fromDir, spec)).href}'`;
+  });
+}
+
+async function loadCleanClaimsMutant(mutatedSrc, tag) {
+  const mutantDir = mkdtempSync(join(tmpdir(), `clean-claims-mutant-${tag}-`));
+  const mutantPath = join(mutantDir, `clean-claims-mutant-${tag}.mjs`);
+  writeFileSync(mutantPath, mutatedSrc, 'utf-8');
+  try {
+    return await import(pathToFileURL(mutantPath).href);
+  } finally {
+    rmSync(mutantDir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Load clean-claims.js with an extra DELETE injected right after `claimIds`
+ * is computed — simulating "a concurrent writer moved the rows between the
+ * planning pass and this tx" (the count-guard's own doc comment,
+ * clean-claims.js:348-351). Throws if the anchor literal isn't found, so a
+ * future refactor of this line cannot silently turn this into a no-op
+ * mutant that always "passes".
+ */
+async function importCleanClaimsWithSimulatedConcurrentDelete() {
+  const marker = 'const claimIds = eligible.flatMap(g => g.claims.map(c => c.id));';
+  assert.ok(CLEAN_CLAIMS_SRC.includes(marker), 'claimIds literal not found — mutant patch is stale, update it');
+  const injected = marker + `
+    db.prepare('DELETE FROM file_claims WHERE id = ?').run(claimIds[0]);`;
+  const mutatedSrc = rewriteRelativeImportsToAbsolute(CLEAN_CLAIMS_SRC.replace(marker, injected), CLEAN_CLAIMS_DIR);
+  assert.notEqual(mutatedSrc, CLEAN_CLAIMS_SRC, 'mutant source must differ from the real module');
+  return loadCleanClaimsMutant(mutatedSrc, 'count-mismatch');
+}
+
+/**
+ * Load clean-claims.js with the sweep query's `AND fc.violation = 1` filter
+ * removed, widening eligibility to violation=0 rows. This is the wave-7
+ * auditor's own validated technique for tripping
+ * CLEAN_CLAIMS_SCOPE_VIOLATION for real (not just neutering the guard) — see
+ * finding F-c653f331's text for the exact thrown message this reproduces.
+ */
+async function importCleanClaimsWithWidenedSweep() {
+  const marker = '      AND fc.violation = 1\n';
+  assert.ok(CLEAN_CLAIMS_SRC.includes(marker), 'violation=1 sweep filter not found — mutant patch is stale, update it');
+  const mutatedSrc = rewriteRelativeImportsToAbsolute(CLEAN_CLAIMS_SRC.replace(marker, ''), CLEAN_CLAIMS_DIR);
+  assert.notEqual(mutatedSrc, CLEAN_CLAIMS_SRC, 'mutant source must differ from the real module');
+  return loadCleanClaimsMutant(mutatedSrc, 'scope-violation');
+}
 
 const RUN_A = 'swarm-ccfix-aaa-01';
 const RUN_B = 'swarm-ccfix-bbb-02';
@@ -129,6 +193,17 @@ function setupFixture() {
 
 function countClaims(db, where = '1=1', ...params) {
   return db.prepare(`SELECT COUNT(*) AS n FROM file_claims WHERE ${where}`).get(...params).n;
+}
+
+// F-eb35de79: `id` is AUTOINCREMENT (db/schema.js:116) so a re-inserted row
+// never recovers its old id — the round-trip proof below compares this
+// id-free shape, not the raw table rows.
+function snapshotClaims(db, agentRunIds) {
+  const placeholders = agentRunIds.map(() => '?').join(',');
+  return db.prepare(
+    `SELECT agent_run_id, file_path, claim_type, domain_id, violation FROM file_claims ` +
+    `WHERE agent_run_id IN (${placeholders}) ORDER BY agent_run_id, file_path`
+  ).all(...agentRunIds);
 }
 
 let fixtures = [];
@@ -306,6 +381,12 @@ describe('clean-claims — exact-count apply', () => {
     const fx = fixture();
     const db = openDb(fx.dbPath);
     const eventsBefore = db.prepare('SELECT COUNT(*) AS n FROM agent_state_events').get().n;
+    // F-eb35de79: captured BEFORE the apply so the round-trip proof below has
+    // an authoritative pre-delete shape to compare against — not re-derived
+    // from the deleted-rows payload itself (that would be a mirror test).
+    const affectedAgentRunIds = [fx.agents.a1, fx.agents.a2, fx.agents.a4];
+    const preDeleteSnapshot = snapshotClaims(db, affectedAgentRunIds);
+    assert.equal(preDeleteSnapshot.length, 8, 'sanity: a1 (3×v1 + 2×v0) + a2 (2×v1) + a4 (1×v1)');
 
     const report = cleanClaims({
       runId: RUN_A, dbPath: fx.dbPath, apply: true,
@@ -348,6 +429,26 @@ describe('clean-claims — exact-count apply', () => {
     ), 'old_value carries the full deleted rows — re-insertable compensator');
     assert.deepEqual(JSON.parse(backendEvent.new_value), { violation_claims_remaining: 3 },
       'a3 (2, refused) + a5 (1, refused) still hold backend violation rows');
+
+    // F-eb35de79: the assertion above only checks payload SHAPE. Actually
+    // perform the round-trip the comment claims is possible — capture
+    // old_value across BOTH domain_events rows (backend's 3 + tests' 3),
+    // re-insert every row, and diff the restored table against the
+    // pre-delete snapshot instead of re-deriving an expected value from the
+    // payload itself.
+    const testsEvent = events.find(e => e.domain_id === Number(fx.domains.dTestsA));
+    const allDeletedRows = [...payload.rows, ...JSON.parse(testsEvent.old_value).rows];
+    assert.equal(allDeletedRows.length, 6, 'sanity: every deleted row is captured across both domain_events rows');
+
+    const insertRow = db.prepare(
+      'INSERT INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation) VALUES (?, ?, ?, ?, ?)'
+    );
+    for (const r of allDeletedRows) {
+      insertRow.run(r.agent_run_id, r.file_path, r.claim_type, r.domain_id, r.violation);
+    }
+    const restoredSnapshot = snapshotClaims(db, affectedAgentRunIds);
+    assert.deepEqual(restoredSnapshot, preDeleteSnapshot,
+      'old_value must be genuinely re-insertable — the restored set must match the pre-delete snapshot field-for-field, not just carry fields of the right shape');
   });
 
   it('is idempotent — a second apply finds nothing eligible and deletes 0', () => {
@@ -458,5 +559,97 @@ describe('clean-claims — CLI surface', () => {
     assert.equal(verbHelp.status, 0);
     assert.match(verbHelp.stdout, /Dry-run by default/);
     assert.match(verbHelp.stdout, /agent_state_events audit trail is NEVER touched/);
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// F-c653f331 — mutation proof: the two in-transaction safety nets
+// (CLEAN_CLAIMS_COUNT_MISMATCH / CLEAN_CLAIMS_SCOPE_VIOLATION) actually fire
+// and roll back. Before this describe block, neutering both guards left all
+// other tests in this file green — the pin suite provided no independent
+// signal that either guard exists or fires. Mirrors redrive.test.js's
+// receipt-byte-identity proof-gate pattern (patch a copy of the real source,
+// import it, show the guard trips where the real module stays silent).
+// ──────────────────────────────────────────────────────────────
+
+describe('clean-claims — F-c653f331: in-tx safety nets (mutation proof)', () => {
+  it('CLEAN_CLAIMS_COUNT_MISMATCH: a row removed between the eligibility read and the apply tx throws and rolls back everything else', async () => {
+    const mutant = await importCleanClaimsWithSimulatedConcurrentDelete();
+
+    const fx = fixture();
+    const db = openDb(fx.dbPath);
+    const before = countClaims(db);
+
+    assert.throws(
+      () => mutant.cleanClaims({ runId: RUN_A, dbPath: fx.dbPath, apply: true, reason: 'mutation proof' }),
+      (err) => {
+        assert.equal(err.code, 'CLEAN_CLAIMS_COUNT_MISMATCH');
+        assert.match(err.message, /expected to delete 6 row\(s\), deleted 5/,
+          'the guard must report the actual planned-vs-deleted counts, not a generic message');
+        return true;
+      },
+      'F-c653f331: a row that disappears between the eligibility read and the apply tx must throw, never silently under-delete',
+    );
+
+    // Rollback proof: the tx's own attempted deletes (the other 5 planned
+    // rows) must be undone. Only the simulated "concurrent" delete (one row,
+    // executed OUTSIDE the tx on the same connection — exactly like a real
+    // concurrent writer's already-committed change) stays gone; it was never
+    // part of the transaction that rolled back.
+    assert.equal(countClaims(db), before - 1,
+      'the tx must roll back every row IT tried to delete; only the pre-tx simulated concurrent delete persists');
+    assert.equal(countClaims(db, 'agent_run_id = ?', fx.agents.a2), 2, 'a2 untouched — not the simulated victim');
+    assert.equal(countClaims(db, 'agent_run_id = ?', fx.agents.a4), 1, 'a4 untouched — not the simulated victim');
+    assert.equal(countClaims(db, 'violation = 0'), 3, 'violation=0 rows untouched — the tx never reached the audit-write stage');
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS n FROM domain_events WHERE event_type = 'file_claims_cleaned'").get().n,
+      0,
+      'no audit row survives a rolled-back tx',
+    );
+  });
+
+  it('control: the UNMODIFIED module does not throw for the same fixture (isolates the mutant above as the cause)', () => {
+    const fx = fixture();
+    const report = cleanClaims({ runId: RUN_A, dbPath: fx.dbPath, apply: true, reason: 'control' });
+    assert.equal(report.totals.deleted, 6);
+    assert.equal(report.scope_invariants_verified, true);
+  });
+
+  it('CLEAN_CLAIMS_SCOPE_VIOLATION: a widened eligibility sweep that reaches violation=0 rows throws and rolls back everything', async () => {
+    const mutant = await importCleanClaimsWithWidenedSweep();
+
+    const fx = fixture();
+    const db = openDb(fx.dbPath);
+    const before = countClaims(db);
+
+    assert.throws(
+      () => mutant.cleanClaims({ runId: RUN_A, dbPath: fx.dbPath, apply: true, reason: 'mutation proof' }),
+      (err) => {
+        assert.equal(err.code, 'CLEAN_CLAIMS_SCOPE_VIOLATION');
+        assert.ok(err.message.includes('violation=0 rows 3 → 0, other-run rows 2 → 2'),
+          `the re-check must name both watch-sets with their actual before/after counts; got: ${err.message}`);
+        return true;
+      },
+      'F-c653f331: a sweep query that widens past violation=1 must throw, never silently delete violation=0 rows',
+    );
+
+    // Rollback proof: the WHOLE tx rolls back, including the 6 legitimately
+    // eligible rows the widened query also would have (correctly) deleted —
+    // the guard is fail-closed: one violated watch-set voids the whole apply.
+    assert.equal(countClaims(db), before, 'nothing was deleted — the scope-invariant re-check fires before commit');
+    assert.equal(countClaims(db, 'violation = 0'), 3, 'a1 (2) + a6 (1) violation=0 rows untouched');
+    assert.equal(countClaims(db, 'agent_run_id = ?', fx.agents.b1), 2, 'other-run rows untouched');
+    assert.equal(
+      db.prepare("SELECT COUNT(*) AS n FROM domain_events WHERE event_type = 'file_claims_cleaned'").get().n,
+      0,
+      'no audit row survives a rolled-back tx',
+    );
+  });
+
+  it('control: the UNMODIFIED module does not throw for the same fixture (isolates the mutant above as the cause)', () => {
+    const fx = fixture();
+    const report = cleanClaims({ runId: RUN_A, dbPath: fx.dbPath, apply: true, reason: 'control' });
+    assert.equal(report.totals.deleted, 6);
+    assert.equal(report.scope_invariants_verified, true);
   });
 });

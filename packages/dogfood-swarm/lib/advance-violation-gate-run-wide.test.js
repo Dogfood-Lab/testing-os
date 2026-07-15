@@ -162,6 +162,23 @@ describe('checkGates — ownership-violation gate is run-wide (F-4fa7e644)', () 
     // proves for export.js: a FAILED first-attempt agent_run carries a
     // violation; the SUCCEEDED redispatched row is clean. The wave-9 latest-
     // per-domain filter must select only the surviving row.
+    //
+    // F-4220149f — ISOLATION-MODE CAVEAT (read before trusting this test as
+    // universally safe). "The SUCCEEDED redispatched row is clean" is a
+    // PREMISE this fixture asserts by construction (the survivingRow's own
+    // file_claims below is hand-inserted as violation=0) — it is not
+    // something checkGates/checkViolations can independently verify. That
+    // premise is PROVEN true for a `swarm resume` under `--isolate` dispatch
+    // (worktree.js#createWorktree always force-removes and recreates a fresh
+    // worktree from HEAD before redispatch), but UNVERIFIED for non-isolated
+    // dispatch, where a failed attempt's stray out-of-domain edit is not
+    // guaranteed to be reverted or re-examined by the resumed attempt's own
+    // collect() pass — see the ISOLATION-MODE ASSUMPTION block in
+    // lib/queries/latest-agent-runs.js's docstring for the full accounting.
+    // The gate still correctly PASSES here (that direction is unchanged by
+    // F-4220149f — see the informational-note test immediately below for
+    // what DID change: the previously-silent superseded violation is now
+    // named in the passing reason instead of vanishing without a trace).
     const runId = 'r-resume-stale-row';
     const domainId = seedRun(runId);
 
@@ -186,5 +203,60 @@ describe('checkGates — ownership-violation gate is run-wide (F-4fa7e644)', () 
 
     assert.equal(violationGate.passed, true,
       'the stale failed row belongs to a superseded agent_run for the same (wave, domain) — the wave-9 filter must exclude it');
+  });
+
+  it('F-4220149f: a violation on a superseded (resume-within-wave) agent_run is surfaced as an informational note, not silence', () => {
+    // The exact fixture shape as the test above (a real, proven-safe-under-
+    // isolation resume scenario), but asserting the field the pre-fix gate
+    // left silent: `reason`. Before this fix, checkViolations reported the
+    // bare 'No ownership violations' here — a true statement about the
+    // GATING scope, but one that gave an operator reading the reason zero
+    // signal that a violation exists anywhere in the run's history. The gate
+    // still PASSES (this module cannot prove which dispatch mode produced the
+    // superseded row, so it cannot safely BLOCK) — only the reason changes.
+    const runId = 'r-resume-stale-row-informational';
+    const domainId = seedRun(runId);
+
+    const wave = db.prepare(
+      "INSERT INTO waves (run_id, phase, wave_number, status) VALUES (?, 'health-amend-a', 1, 'collected')"
+    ).run(runId);
+    const waveId = Number(wave.lastInsertRowid);
+
+    const failedRow = db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'failed')")
+      .run(waveId, domainId);
+    recordViolation(Number(failedRow.lastInsertRowid), domainId, 'other/stale-attempt.js');
+
+    const survivingRow = db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'complete')")
+      .run(waveId, domainId);
+    db.prepare(`
+      INSERT INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
+      VALUES (?, 'src/clean.js', 'edit', ?, 0)
+    `).run(Number(survivingRow.lastInsertRowid), domainId);
+
+    const result = checkGates(db, runId);
+    const violationGate = result.gates.find(g => g.name === 'ownership');
+
+    assert.equal(violationGate.passed, true, 'still non-blocking — this module cannot prove the superseded violation is live');
+    assert.match(violationGate.reason, /1 violation\(s\) recorded on superseded agent_run/,
+      `the previously-silent superseded violation must now be named in the gate reason, got: ${violationGate.reason}`);
+    assert.match(violationGate.reason, /informational/i);
+  });
+
+  it('F-4220149f: a run with NO superseded violations anywhere still reports the plain, unqualified passing reason', () => {
+    // Baseline-preservation: the new informational branch must not fire on
+    // an ordinary clean run — the plain 'No ownership violations' reason
+    // (asserted verbatim elsewhere in this file) must survive unchanged.
+    const runId = 'r-no-superseded-violations';
+    const domainId = seedRun(runId);
+    const wave = db.prepare(
+      "INSERT INTO waves (run_id, phase, wave_number, status) VALUES (?, 'health-audit-a', 1, 'collected')"
+    ).run(runId);
+    db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'complete')")
+      .run(Number(wave.lastInsertRowid), domainId);
+
+    const result = checkGates(db, runId);
+    const violationGate = result.gates.find(g => g.name === 'ownership');
+    assert.equal(violationGate.passed, true);
+    assert.equal(violationGate.reason, 'No ownership violations');
   });
 });

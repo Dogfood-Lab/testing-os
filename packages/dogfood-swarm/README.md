@@ -326,11 +326,12 @@ Read via `swarm status`, `swarm history`, `swarm receipt`. Never via raw SQL in 
 
 ## Environment variables
 
-Five environment variables are part of the scriptable surface:
+Six environment variables are part of the scriptable surface:
 
 | Variable | Accepted values | Effect |
 |---|---|---|
 | `SWARM_DB` | a filesystem path | Overrides the control-plane DB path. Unset → the default `swarms/<run-id>/control-plane.db`. Point this at a non-default DB to run against an alternate control plane. |
+| `SWARM_VERIFY_MAX_BUFFER_BYTES` | a positive integer (bytes) | Overrides the default 64 MB `execFileSync` stdout+stderr capture ceiling for every `swarm verify` step. Unset → the module default. Set it above a failing step's reported byte count when its own output legitimately exceeds 64 MB (mirrors `step.maxBufferBytes` for programmatic callers). |
 | `DOGFOOD_FINDINGS_FORMAT` | `raw` \| `human` \| `json` | Forces the `swarm findings` output format, overriding both the `--format` flag and TTY auto-detection. `raw` → markdown, `human` → text, `json` → JSON. |
 | `DOGFOOD_LOG_HUMAN` | `0` \| `1` | Controls the human-readable companion banner printed alongside the NDJSON stage stream on **stderr**. `0` → never emit the banner (deterministic machine-readable stderr for CI), `1` → always emit it. Unset → emit only when stderr is a TTY. |
 | `INGEST_REPO_ROOT` | a filesystem path | Overrides the **data root** the dogfood ingest writes to when `swarm persist --ingest` (or `persist-results.js`) shells out to `packages/ingest/run.js`. Unset → the real repo root (the live `records/` + `indexes/` corpus). Point it at a scratch dir to ingest without touching the real tree — the test suite sets it so ingest stays side-effect-free. |
