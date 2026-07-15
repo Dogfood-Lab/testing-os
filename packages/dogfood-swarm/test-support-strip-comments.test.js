@@ -93,20 +93,51 @@ test('comments inside ${ } template expressions are stripped, template body unto
   assert.ok(out.includes('head ') && out.includes(' tail`'), 'template body preserved');
 });
 
-test('DOCUMENTED BOUNDARY: a bare /' + '* inside a regex character class is misread (regexes are not lexed)', () => {
-  // /[/*]/ is a legal regex whose source contains an UNESCAPED /* pair —
-  // the one comment-lookalike shape escaping cannot occur for. (Escaped
-  // slashes like \/\/ never form a bare pair and pass through correctly —
-  // a first draft of this fixture used them and the "limitation" vanished.)
+test('BOUNDARY CLOSED (wave 9): a bare /' + '* inside a regex character class survives — regexes are lexed', () => {
+  // This pin originally asserted the opposite as a documented limitation.
+  // Wave-9's audit proved the un-lexed-regex gap was live (an odd count of
+  // quotes inside redrive.test.js's own import-rewriting regex desynced the
+  // string tracker), so regex lexing was added and this pin flipped per its
+  // own instructions — the conscious change the old assertion demanded.
   const src = 'const re = /[/*]/; keep();';
   const out = stripComments(src);
-  // The scanner treats the [/* as opening a block comment and, finding no
-  // closer, consumes to EOF — the module header's SCOPE section names this
-  // limit, and the corpora inventory (2026-07-15) measured zero such
-  // literals in the sources these tests scan. If this assertion ever fails,
-  // the boundary CLOSED (regex lexing was added) — update the module header.
+  assert.ok(out.includes('keep();'), 'code after a comment-lookalike regex survives');
+  assert.ok(out.includes('/[/*]/'), 'the regex literal itself is preserved verbatim');
+});
+
+test('wave-9 F-001 shape: odd quote count inside a regex cannot desync the string tracker', () => {
+  // redrive.test.js's real helper regex contains three unescaped quotes; an
+  // earlier revision entered fake-string mode on the third and stopped
+  // stripping comments for the rest of the file.
+  const src = [
+    "const re = /from '(\\.\\.?\\/[^']+)'/g;",
+    '/' + '* a real block comment that MUST be stripped *' + '/',
+    'stillHere();',
+  ].join('\n');
+  const out = stripComments(src);
+  assert.ok(!out.includes('MUST be stripped'), 'block comment after the regex is stripped');
+  assert.ok(out.includes('stillHere();'), 'code after the comment survives');
+  assert.ok(out.includes("from '("), 'regex body preserved verbatim');
+});
+
+test('division is not misread as a regex opener', () => {
+  const src = 'const x = total / count; /' + '* strip me *' + '/ keep();';
+  const out = stripComments(src);
+  assert.ok(out.includes('total / count'), 'division preserved');
+  assert.ok(!out.includes('strip me'), 'block comment after division is stripped');
+  assert.ok(out.includes('keep();'));
+});
+
+test('DOCUMENTED RESIDUAL: a regex directly after a value-closer reads as division (token-local heuristic)', () => {
+  // `(a) /re/` — after `)` the heuristic says division, so the regex body is
+  // NOT lexed. Harmless alone; the compound hazard (such a regex ALSO
+  // containing a comment-lookalike) is the residual boundary the module
+  // header names. If this assertion ever fails, the residual closed
+  // (grammatical regex detection was added) — update the header with it.
+  const src = 'const y = (a) /x[/*]y/.source; keep();';
+  const out = stripComments(src);
   assert.ok(!out.includes('keep();'),
-    'expected the documented limitation: the boundary closing must be a conscious change');
+    'expected the documented residual: closing it must be a conscious change');
 });
 
 test('real-corpora smoke: the scanner keeps known live code visible across every scanned source', () => {
