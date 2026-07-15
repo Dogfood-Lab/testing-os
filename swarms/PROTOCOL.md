@@ -20,7 +20,7 @@ The swarm's verification layer is a **funnel**, and the seats are not interchang
 | **Executor** | **Sonnet** | Audit + amend domain agents — the generators | proposes |
 | **Scout / mechanical** | **Haiku** | Cheap recon, path sweeps, enum sync, count checks | proposes |
 | **Clerk** | **Fable** | Assembles the neutral case-file. **Renders NO verdict.** | advisory, verdict-free by construction |
-| **Jury** | **non-Claude**, and the two tiers seat **different rosters**: `--jury=local` (5) — `mistral-small:24b` · `granite4.1:30b` · `qwen2.5:7b` · `gemma4:31b` · `hermes3:8b`; `--jury=prism` (3) — `mistral-small:24b` · `qwen2.5:7b` · `hermes3:8b`, the 30B pair excluded because prism's hard 30s ceiling makes them abstain (`--cloud` adds `gpt-oss`/`glm` to either) | The only family-different verification | **strong evidence** |
+| **Jury** | **non-Claude**, and the two tiers seat **different rosters**: `--jury=local` (5) — `mistral-small:24b` · `granite4.1:30b` · `qwen2.5:7b` · `gemma4:31b` · `hermes3:8b`; `--jury=prism` (3) — `mistral-small:24b` · `qwen2.5:7b` · `hermes3:8b`, the 30B pair excluded because prism's hard 30s ceiling makes them abstain (`--cloud`: the local tier switches to `DEFAULT_JURY_SEATS` — the same five local seats plus `gpt-oss:120b-cloud` and `glm-4.6:cloud`, seven in all, held in comment-pinned lockstep with `LOCAL_JURY_SEATS` and guarded by a parity test — while the prism tier appends `gpt-oss:120b-cloud` only) | The only family-different verification | **strong evidence** |
 | **Floor** | `swarm verify` (the real test suite) | Deterministic | **LAW — the only thing that is** |
 
 **Why the jury cannot be a Claude model.** Every Claude model — Opus, Fable, Sonnet, Haiku — is one family, so no Claude model can independently verify another Claude model's work (Panickssery et al. NeurIPS 2024, arXiv:2404.13076: self-preference correlates linearly with self-recognition). `buildJurySpec` enforces this as **Lock 1** and throws if any seat is the producer family. A same-family "review" is a second opinion, not verification.
@@ -42,8 +42,8 @@ Scored against the six [workflow standards](../.claude/rules/workflow-standards.
 | Standard | Score | Evidence | Remediation |
 |---|---|---|---|
 | PIN_PER_STEP | **2** | Each wave writes its agent prompts to `swarms/<run-id>/wave-N/<domain>.md` (the byte-exact brief is on disk), captures a `domain_snapshot_id` at dispatch that `collect` validates against, and records output artifacts with a SHA-256. So the *prompt* and the *domain contract* are pinned and enforced. | **The resolved model id is not recorded anywhere**, so a wave is reproducible in brief but not byte-for-byte replayable. P1: persist `model` + prompt SHA-256 per `agent_run`. |
-| ANDON_AUTHORITY | **2** | Real and firing: `collect` moves a bad output to `invalid_output` / `ownership_violation` — BLOCKED statuses with no outbound transition that require an explicit coordinator override carrying a reason; the wave flips to `failed` on any validation error; `doctor` exits non-zero on hard FAIL. Trial C of the 2026-04-11 dogfood proved a malformed output is blocked, not silently retried. | **Not a 3, because this run proved four gates certify success in exactly the state they exist to catch** (`redrive` receipt-integrity, `fingerprint` deferred-protection, `check-finding-regression-pins`, `PROVENANCE_ADAPTERS`). An andon that cannot fire is not authority. P0: every gate ships a meta-test that mutates the protected thing and asserts RED — see [Proving a gate](#proving-a-gate). |
-| NAMED_COMPENSATORS | **2** | The compensators table below is now complete and every swarm-state action has a named, dry-run-by-default, reason-required undo (`rewind` / `redrive` / `revalidate` / `clean`), each writing its own audit row. | **Not a 3: no rollback meta-test exists.** A compensator that has never been proven to restore is prose. P1: a drill that mutates state, runs the compensator, and asserts the pre-state is restored. Also `redrive`'s integrity assert currently runs *after* its transaction commits, so it can only report a violation, never prevent it. |
+| ANDON_AUTHORITY | **2** | Real and firing: `collect` moves a bad output to `invalid_output` / `ownership_violation` — BLOCKED statuses with no outbound transition that require an explicit coordinator override carrying a reason; the wave flips to `failed` on any validation error; `doctor` exits non-zero on hard FAIL. Trial C of the 2026-04-11 dogfood proved a malformed output is blocked, not silently retried. | **Not a 3, because this run proved four gates certified success in exactly the state they exist to catch** (`redrive` receipt-integrity, `fingerprint` deferred-protection, `check-finding-regression-pins`, `PROVENANCE_ADAPTERS`) — all four have since been fixed with mutation-proof pins (waves 2 and 4), but the class outlives its instances. An andon that cannot fire is not authority. P0: every gate ships a meta-test that mutates the protected thing and asserts RED — see [Proving a gate](#proving-a-gate). |
+| NAMED_COMPENSATORS | **2** | The compensators table below is now complete and every swarm-state action has a named, dry-run-by-default, reason-required undo (`rewind` / `redrive` / `revalidate` / `clean`), each writing its own audit row. | **Not a 3: no rollback meta-test exists.** A compensator that has never been proven to restore is prose. P1: a drill that mutates state, runs the compensator, and asserts the pre-state is restored. (`redrive`'s integrity assert, previously listed here as running after its transaction commits, now runs inside the transaction and rolls back on mismatch — F-ad3004f4, wave 2.) |
 | DECOMPOSE_BY_SECRETS | **2** | The frozen domain map is exactly this standard: draft → edit → freeze, exclusive file ownership, glob-specificity arbitration via `resolveExclusiveOwner`, enforced at collect time against the snapshot captured at dispatch. Every change is logged to `domain_events`. | **The independent attribution is unsound in the default mode.** Without `--isolate`, all agents share one worktree and git cannot attribute a file to an agent, so an agent that silently edits out-of-domain *and* omits the file from `files_changed` is not caught. `--isolate` restores soundness but is opt-in, and Ji et al. 2026 (arXiv:2607.02294) measured **55.8–67.8% of coding-agent runs violating at least one boundary** — so the unsound mode is the default while the base rate is a coin flip. P0: flip the default. See §Ownership attribution in non-isolated parallel amend waves. |
 | UNCERTAINTY_GATED_HUMANS | **1** | The `[!] OWNERSHIP PROBE DEGRADED [!]` banner is a genuine uncertainty surface: it tells the operator the guarantee weakened and names the remedy. | **The review gates fire on phase boundary, not uncertainty** — Phase 2 and Phase 6 checkpoint every time regardless of how certain the wave is, which trains the operator to rubber-stamp. No checkpoint uses contrastive framing ("you probably expected X; I did Y because…"). P1: gate the review on disagreement/uncertainty, and frame contrastively (Buçinca et al. 2024, arXiv:2410.04253). |
 | EXTERNAL_VERIFIER | **2** | `swarm adjudicate` runs a live cross-family jury with a prism-per-seat tier (L3/L4 per seat), and the citation gate defers to a different model family with the caller's reasoning stripped. The standard is implemented, not just named. | **One live hole, and one closed.** CLOSED: `buildSeatEnv` was a *denylist* over the ambient env; it is now an explicit `AMBIENT_PASSTHROUGH_KEYS` allowlist (Saltzer & Schroeder 1975 — base access decisions on permission, not exclusion), so ambient config can no longer silently weaken what the jury guarantees. OPEN (P0): **severity is assigned by the same agent that authored the finding** — the self-preference configuration Panickssery et al. 2024 (arXiv:2404.13076) predicts inflates. Remedy: a cross-family severity panel (Verga et al. 2024, arXiv:2404.18796) with an anchored rubric (Kim et al. 2024, arXiv:2310.08491); keep pointwise labels — Tripathi et al. 2025 (arXiv:2504.14716) measures pairwise flipping 35% vs pointwise 9%. |
@@ -225,7 +225,7 @@ Coordinator presents consolidated findings to the user.
 2. Sort by severity: CRITICAL > HIGH > MEDIUM > LOW.
 3. Present to user with counts per severity level.
 4. User approves, modifies, or rejects findings before any code is written.
-5. Record approved findings in `manifest.json`.
+5. Record the approvals in the control plane: `swarm approve <run-id> --ids F-…` (or `--all`).
 
 ### Phase 3: AMEND
 
@@ -346,7 +346,7 @@ Final comprehensive test pass validating everything works together.
 
 2. Run integration/E2E tests if they exist.
 3. Verify no regressions from any wave.
-4. Record final test count and pass rate in manifest.
+4. Record the final test count and pass rate in the control plane: `swarm verify <run-id>` writes the verification receipt.
 5. If any failures, dispatch targeted fix agents and re-run.
 6. Proceed to Phase 10 (Full Treatment).
 
@@ -377,8 +377,8 @@ Follow the 7 phases from `full-treatment.md` in order:
 ### Completion
 
 After Phase 7 (post-deploy verification) passes:
-- Mark manifest `status: "complete"`.
-- Record final metrics: test count, findings fixed, features shipped, treatment phases completed.
+- Advance the run to `complete`: `swarm advance <run-id>` from the treatment phase records the final promotion.
+- Record final metrics: test count, findings fixed, features shipped, treatment phases completed (`swarm verify` receipt + `swarm status`).
 
 ### Do NOT
 
@@ -427,7 +427,7 @@ Sometimes an amend wave's `swarm collect` rejects every agent's output for a sch
 
 ### The two blocked statuses
 
-`packages/dogfood-swarm/lib/state-machine.js` defines an 8-status state machine for `agent_runs`. Two of those statuses are the BLOCKED_STATUSES set (line 50) — `invalid_output` and `ownership_violation`. Neither has any outbound transition in the normal `TRANSITIONS` map; the state-machine deliberately requires explicit coordinator override to move them.
+`packages/dogfood-swarm/lib/state-machine.js` defines a 9-status state machine for `agent_runs` (pending, dispatched, running, complete, failed, timed_out, invalid_output, ownership_violation, aborted_for_rewind — matching the handbook's "The 9 canonical statuses"). Two of those statuses form the BLOCKED_STATUSES set declared in the same module — `invalid_output` and `ownership_violation`. Neither has any outbound transition in the normal `TRANSITIONS` map; the state-machine deliberately requires explicit coordinator override to move them.
 
 - **`invalid_output`** — the agent's JSON failed the canonical `agent-output.schema.json` envelope, the legacy `validateAuditOutput` / `validateFeatureOutput` / `validateAmendOutput`, or one of the legacy normalization passes downstream. The output is on disk; the gate refused it.
 - **`ownership_violation`** — the agent's `files_changed` set contains paths that lie outside the agent's frozen domain map. The work landed in the worktree; ownership accounting refused to claim it.
@@ -503,7 +503,7 @@ The shape — "executed but produced invalid output is repairable in place, with
 6. **Four-Stage Pre-Feature** — Stage A fixes bugs/security, Stage B applies proactive hardening, Stage C humanizes behavior/text, Stage D polishes visuals. All four complete before features.
 7. **Health Before Features** — Feature execution only begins after clean bill of health.
 8. **User Reviews First** — User reviews feature audit BEFORE execution begins. No code without approval.
-9. **Manifest Checkpoint** — `manifest.json` is the single source of swarm state for resumability.
+9. **Control-Plane Checkpoint** — the SQLite control plane (`swarms/control-plane.db`) is the single source of swarm state for resumability. See §Run state — there is no `manifest.json`.
 10. **Evidence Persisted** — Evidence persisted to repo-knowledge DB after each wave.
 
 ---
@@ -526,7 +526,7 @@ Adjust domains to match the repo's architecture. The key constraint is that ever
 
 **There is no `manifest.json`.** Run state lives in the SQLite control plane at `swarms/control-plane.db`, created by `swarm init` and mutated only through the CLI verbs. The DB is canonical; every JSON artifact on disk (wave receipts, collect reports, adjudication receipts) is a derived export of it.
 
-This supersedes the hand-maintained manifest the protocol described before the control plane existed. Key Principle #9 ("Manifest Checkpoint") now reads: **the control plane is the single source of swarm state for resumability.**
+This supersedes the hand-maintained manifest the protocol described before the control plane existed; Key Principle #9 (Control-Plane Checkpoint) states the same rule. The vestigial `swarms/manifest-schema.json` — the schema for the artifact this section retires — carries a deprecation `$comment` and is kept only because paths under `swarms/` are published API.
 
 Read state with `swarm status <run-id>` — it renders the run, the frozen domain map, the current wave, per-agent status, finding counts by severity, and the next action. Add `--format=json` for the structured object. `swarm runs` lists every run; `swarm history <wave-id>` renders a wave's transition chain, including any override-and-reason record.
 
@@ -639,5 +639,5 @@ FULL TREATMENT (Phase 10)
 37. [ ] Repo-knowledge DB: scan, thesis, architecture, relationships
 38. [ ] Commit + deploy (explicit staging, never git add .)
 39. [ ] Post-deploy verify: landing page, handbook, pagefind, CI green
-40. [ ] Mark manifest status: "complete"
+40. [ ] Advance the run to complete (swarm advance <run-id> — final promotion)
 ```

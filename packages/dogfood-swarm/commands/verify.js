@@ -26,6 +26,22 @@ function mintCorrelationId() {
 }
 
 /**
+ * F-59f22202: sentinel persisted to verification_receipts.exit_code when the
+ * wave verdict is non-'pass' but no REQUIRED step failed — no_tests,
+ * unmeasured_tests, or a future verdict shaped the same way (a test step
+ * that genuinely ran and returned 0, with no positive evidence the runner
+ * could count). lib/verify/runner.js guarantees a failing required step
+ * always carries a real exit code (a genuine nonzero, or -127 for
+ * tool_missing — see runStep's catch branch), so this value can never
+ * collide with a real step's exit code. verification_receipts.exit_code is
+ * `INTEGER NOT NULL` (db/schema.js), so NULL is not an option; -127 already
+ * means "tool not found" in this vocabulary, so -1 is the free, conventional
+ * "not applicable" slot. Mirrors runner.js's own sentinel-exit-code
+ * discipline one layer up.
+ */
+const NO_FAILING_STEP_EXIT_CODE = -1;
+
+/**
  * Run verification for a swarm run.
  *
  * @param {object} opts
@@ -80,6 +96,21 @@ export function verify(opts) {
     ...result.steps.map(s => `=== ${s.name} (${s.passed ? 'PASS' : 'FAIL'}) ===\n${s.stdout}`),
   ].join('\n\n');
 
+  // F-59f22202: exit_code was derived purely from per-step pass/fail via
+  // `.find(...)?.exit_code ?? 0`. That default was silently wrong whenever
+  // EVERY step exited 0 (nothing to .find()) but the wave verdict was still
+  // non-'pass' (no_tests / unmeasured_tests) — the receipt then persisted
+  // the self-contradictory pair exit_code=0 / passed=0, which
+  // commands/receipt.js's PASS/FAIL rendering displays as e.g.
+  // "FAIL (node, exit 0)" — reads as a rendering bug (exit 0 conventionally
+  // means success) rather than the real signal (zero tests were measured).
+  // A genuine pass keeps exit_code=0 (a required step actually returned
+  // success); a real failing step is unaffected (`.find()` still finds it,
+  // its own real/sentinel exit code wins, same as before).
+  const persistedExitCode =
+    result.steps.find(s => !s.passed && !s.optional)?.exit_code
+    ?? (result.verdict === 'pass' ? 0 : NO_FAILING_STEP_EXIT_CODE);
+
   // Persist to verification_receipts
   const receiptResult = db.prepare(`
     INSERT INTO verification_receipts
@@ -89,7 +120,7 @@ export function verify(opts) {
     wave.id,
     result.adapter || 'none',
     JSON.stringify(result.steps.map(s => s.command)),
-    result.steps.find(s => !s.passed && !s.optional)?.exit_code ?? 0,
+    persistedExitCode,
     persistedStdout,
     result.steps.filter(s => s.stderr).map(s => `=== ${s.name} ===\n${s.stderr}`).join('\n\n'),
     result.verdict === 'pass' ? 1 : 0,
@@ -136,6 +167,17 @@ export function verify(opts) {
     // exactly what left the operator staring at a bare `NO_TESTS` token.
     reason: result.reason,
     no_tests: result.no_tests,
+    // F-1997e7c8: forward the run-level output_exceeded/timed_out aggregates
+    // (lib/verify/runner.js's runSteps()) the same way reason/no_tests are
+    // forwarded above — registry.js's runVerification() already spreads
+    // `...result` unchanged, so this file was the SOLE point in the chain
+    // dropping them. `reason` already carries the disambiguated text for the
+    // human-readable path (cmdVerify), but a --format=json caller or any
+    // other structured consumer had no machine-readable way to distinguish
+    // an output-overflow failure from an ordinary one without string-parsing
+    // `reason`.
+    output_exceeded: result.output_exceeded,
+    timed_out: result.timed_out,
     duration_ms: result.duration_ms,
     test_count: result.test_count,
     steps: result.steps.map(s => ({
@@ -145,6 +187,12 @@ export function verify(opts) {
       exit_code: s.exit_code,
       duration_ms: s.duration_ms,
       optional: s.optional,
+      // F-1997e7c8: per-step classification flags (lib/verify/runner.js's
+      // runStep() sets these in its catch branch; a passing step leaves them
+      // undefined, which is the correct "not applicable" shape). Dropped
+      // here pre-fix alongside the run-level aggregates above.
+      timed_out: s.timed_out,
+      output_exceeded: s.output_exceeded,
     })),
   };
 }

@@ -1406,9 +1406,9 @@ function globToRegex(glob) {
  */
 function doublestarToRegex(glob) {
   // First mark `**/` as a placeholder to expand later.
-  const SENTINEL_DOUBLE = ' DBL ';
-  const SENTINEL_SINGLE = ' SGL ';
-  const SENTINEL_TRAIL = ' TRL ';
+  const SENTINEL_DOUBLE = '\0DBL\0';
+  const SENTINEL_SINGLE = '\0SGL\0';
+  const SENTINEL_TRAIL = '\0TRL\0';
   // F-ae195c1d: a TRAILING `**` means "everything under this directory".
   // Routing it through the generic doublestar sentinel compiled `outputs/**`
   // to `^outputs/(?:.*/)?$`, which requires the match to END at a slash

@@ -125,7 +125,7 @@ JSON Schema 2020-12. Title and description on every schema and every property. `
 `$id` URLs point at the canonical monorepo path: `https://github.com/dogfood-lab/testing-os/packages/schemas/src/json/<name>.schema.json`. If you ever change a schema in a way that consumers should treat as a contract change, bump the workspace lockstep version — `$id` is a contract field.
 
 ### Ship gate
-`SHIP_GATE.md` at the repo root tracks what shipcheck audits. Hard gates A–D (Security, Errors, Operator Docs, Hygiene) currently pass at 100% (21 checked / 16 SKIP-with-justification / 0 unchecked at v1.9.0, re-affirmed 2026-07-03). Soft gate E (Identity) is fully met. Re-run `npx @mcptoolshop/shipcheck audit` before any release; if a previously-checked item fails, fix the underlying gap before bumping the version.
+`SHIP_GATE.md` at the repo root tracks what shipcheck audits. Hard gates A–D (Security, Errors, Operator Docs, Hygiene) currently pass at 100% (17 checked / 14 SKIP-with-justification / 0 unchecked at v1.9.0, re-affirmed 2026-07-15 against the current SHIP_GATE.md). Soft gate E (Identity) is fully met. Re-run `npx @mcptoolshop/shipcheck audit` before any release; if a previously-checked item fails, fix the underlying gap before bumping the version.
 
 ### Runtime data dirs at the repo root
 `policies/`, `fixtures/`, `records/`, `indexes/`, `reports/`, `swarms/`, `dogfood/`, `docs/`. These are the **shared backing store** that consumers (e.g. `repo-knowledge`, `shipcheck`) read from via `raw.githubusercontent.com/dogfood-lab/testing-os/main/...` URLs. The paths inside those dirs are part of the public API. **Don't reorganize them without thinking about every consumer first.**

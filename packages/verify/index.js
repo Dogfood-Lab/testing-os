@@ -87,6 +87,39 @@ function runValidator(name, fn) {
 }
 
 /**
+ * F-4036ae25: does `submission` carry a repo / run_id / timing.finished_at
+ * shape that packages/ingest/persist.js's computeRecordPath() could place on
+ * disk? Mirrors computeRecordPath's OWN structural preconditions (segment
+ * count, run_id charset, a parseable finished_at) — deliberately NOT its
+ * stricter isUnsafeSegment traversal guard. That guard rejects strings (e.g.
+ * `../etc`) this submission schema's own repo pattern also accepts, so a
+ * submission can be schema-VALID and still fail it; that gap belongs to
+ * F-4acd28d8, handled downstream in writeRecord()/ingest() once the record
+ * already has a verdict. Here we only need "is this filable in principle" —
+ * a three-field structural question `verify()` can answer locally without
+ * importing `@dogfood-lab/ingest` (which already imports `@dogfood-lab/verify`;
+ * importing back would close a new cross-package cycle).
+ *
+ * @param {object} submission
+ * @returns {boolean}
+ */
+function hasFilablePathIdentity(submission) {
+  const repo = submission.repo;
+  if (typeof repo !== 'string') return false;
+  const segments = repo.split('/');
+  if (segments.length !== 2 || !segments[0] || !segments[1]) return false;
+
+  if (typeof submission.run_id !== 'string' || !/^[\w-]+$/.test(submission.run_id)) {
+    return false;
+  }
+
+  const finishedAt = submission.timing && typeof submission.timing === 'object'
+    ? submission.timing.finished_at
+    : undefined;
+  return typeof finishedAt === 'string' && !isNaN(new Date(finishedAt).getTime());
+}
+
+/**
  * Verify a dogfood submission and produce a persisted record.
  *
  * @param {object} submission - Source-authored submission payload
@@ -329,27 +362,45 @@ export async function verify(submission, options) {
 
   // 7. Assemble persisted record
   //
-  // A schema-invalid submission is marked `_skipPersist` — the SAME sentinel
-  // the null/non-object branch above sets, because it is the same claim: we
-  // could not parse the submission, so there is nothing to file. The record is
-  // still assembled and returned (the submitter needs the `schema:` reasons);
-  // it is simply never written.
+  // A submission whose repo/run_id/timing.finished_at cannot drive
+  // computeRecordPath() is marked `_skipPersist` — the SAME sentinel the
+  // null/non-object branch above sets, because it is the same claim: we
+  // cannot place this on disk, so there is nothing to file. The record is
+  // still assembled and returned (the submitter needs the reasons); it is
+  // simply never written.
   //
-  // This is not merely an economy. isDuplicate checks the _rejected path, so
-  // persisting the rejection would permanently consume the run_id and silently
-  // drop the submitter's CORRECTED resubmission as a duplicate (exit 0) — the
-  // V2-CROSS-BO-001 / F-82429f90 poisoning pathology, reached from a new
-  // direction. It would also be unfilable in the first place whenever the
-  // invalid field is one the storage path is derived from (repo, run_id,
-  // timing.finished_at).
+  // F-4036ae25: this used to fire for EVERY schema-invalid submission, not
+  // only this unfilable subset — broader than the rationale below justifies.
+  // A submission whose repo/run_id/timing.finished_at are perfectly fine but
+  // fails schema on an unrelated field (e.g. an unexpected top-level property)
+  // IS filable, and blanket-skipping it left the fleet-wide audit trail with a
+  // rejection nobody could see anywhere durable. hasFilablePathIdentity()
+  // re-checks the three path-deriving fields directly against `submission`
+  // (not against WHICH schema rule fired), so this stays correct regardless of
+  // which field the schema violation is actually on.
   //
-  // The line: the duplicate guard consumes a run_id when we rendered a VERDICT
-  // on a run. A policy or provenance rejection is a verdict — it persists, and
-  // consuming the run_id is the intended anti-retry behavior. "We could not
-  // read your submission" is not a verdict.
+  // Skipping is not merely an economy. isDuplicate checks the _rejected path,
+  // so persisting an UNFILABLE rejection isn't possible anyway (computeRecordPath
+  // would throw); persisting a FILABLE one, on the other hand, reopens the
+  // V2-CROSS-BO-001 / F-82429f90 run_id-poisoning pathology for the
+  // newly-persisted category — a corrected resubmission silently dropped as a
+  // duplicate (exit 0). packages/ingest/persist.js's isDuplicate() closes that
+  // gap: a prior `_rejected` record whose reasons are ALL `schema:`-class is
+  // treated as non-blocking for a same-run_id retry, so the audit trail and the
+  // resubmission path both hold. (A schema-invalid submission that reaches
+  // writeRecord() may still fail dogfood-record.schema.json's own mirrored
+  // constraints on the SAME field — ingest() routes that RecordValidationError
+  // the same way _skipPersist routes here; see F-4acd28d8.)
+  //
+  // The line: the duplicate guard otherwise consumes a run_id when we rendered
+  // a VERDICT on a run. A policy or provenance rejection is a verdict — it
+  // persists, and consuming the run_id is the intended anti-retry behavior.
+  // "We could not read your submission" is not a verdict, whether or not it
+  // happens to be filable.
+  const canFilePath = schemaResult.valid || hasFilablePathIdentity(submission);
   const persisted = {
     schema_version: RECORD_SCHEMA_VERSION,
-    ...(schemaResult.valid ? {} : { _skipPersist: true }),
+    ...(canFilePath ? {} : { _skipPersist: true }),
     policy_version: policyVersion,
     run_id: submission.run_id,
     repo: submission.repo,

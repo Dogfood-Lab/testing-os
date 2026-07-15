@@ -684,6 +684,123 @@ describe('null submission produces persistable rejection record', () => {
   });
 });
 
+// ── _skipPersist narrowed to unfilable submissions only (F-4036ae25) ──
+//
+// Wave-2 marked EVERY schema-invalid submission `_skipPersist`, not only the
+// subset whose repo/run_id/timing.finished_at (the fields computeRecordPath
+// needs) are themselves the invalid fields. That discarded the fleet-wide
+// audit trail for the common case: a filable record with an unrelated schema
+// violation. hasFilablePathIdentity() re-derives filability from `submission`
+// directly instead of trusting WHICH schema rule fired.
+
+describe('_skipPersist fires only when repo/run_id/timing.finished_at are unfilable (F-4036ae25)', () => {
+  it('does NOT set _skipPersist when the schema violation is on an unrelated field', async () => {
+    const bad = structuredClone(pilot0);
+    bad.ref.commit_sha = 'not-a-sha'; // schema-invalid, but repo/run_id/timing are fine
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.schema_valid, false);
+    assert.equal(record.verification.status, 'rejected');
+    assert.equal(record._skipPersist, undefined,
+      'a filable record must not be skip-persisted just because SOME field failed schema');
+  });
+
+  it('sets _skipPersist when repo itself is unfilable (wrong segment count)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.repo = 'a/b/c';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.schema_valid, false);
+    assert.equal(record._skipPersist, true,
+      'computeRecordPath cannot place a 3-segment repo — must stay skip-persisted');
+  });
+
+  it('sets _skipPersist when repo itself is unfilable (no slash)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.repo = 'noslash';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record._skipPersist, true);
+  });
+
+  it('sets _skipPersist when run_id itself is unfilable (unsafe chars)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.run_id = 'bad id!';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record._skipPersist, true);
+  });
+
+  it('sets _skipPersist when timing.finished_at itself is unfilable (not a date)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.timing.finished_at = 'xyz';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record._skipPersist, true);
+  });
+
+  it('does NOT set _skipPersist for an unexpected top-level property (additionalProperties)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.unexpected_field = 'oops';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.schema_valid, false);
+    assert.equal(record._skipPersist, undefined);
+    // verify() only ever copies the known allowlisted fields into the
+    // persisted record, so the extra property never reaches the record shape
+    // — this is the one class of schema violation that can go on to persist
+    // cleanly through writeRecord()'s own validateRecord() gate too.
+    assert.equal('unexpected_field' in record, false);
+  });
+
+  it('still never sets _skipPersist for a fully schema-valid submission (unchanged)', async () => {
+    const record = await verify(pilot0, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+    assert.equal(record.verification.schema_valid, true);
+    assert.equal(record._skipPersist, undefined);
+  });
+});
+
 // ── githubProvenance fetch timeout (F-246817-014 regression) ──
 //
 // Bug: githubProvenance called fetch() with no AbortController and no timeout.

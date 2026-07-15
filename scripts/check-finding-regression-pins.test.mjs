@@ -437,3 +437,35 @@ test('F-W1-CI-006: --help invokes the main-entry block (proves isMain fires on a
   assert.equal(result.status, 0, `--help must exit 0 (proves the main-entry block ran).\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`);
   assert.match(result.stdout, /Usage:/, '--help must print the Usage block, proving isMain fired');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-c59bb518: F-893adcd1 (wave 4) fixed the module docstring to stop
+// re-describing the id-shape contract and point at parse-regression-pins.js's
+// F_ID_PATTERN instead — but printHelp() is a second, independently-live
+// surface that still claimed (verbatim) the gate only recognizes the legacy
+// 'F-NNNNNN-NNN' shape. Same narrower-than-reality claim F-893adcd1 was filed
+// to eliminate, one surface over — verified live via `--help` below, the
+// same subprocess pattern the F-W1-CI-006 test above already uses.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-c59bb518: --help describes the F_ID_PATTERN contract (legacy + hash-style), not just the legacy F-NNNNNN-NNN shape', () => {
+  const targetScript = resolve(repoRoot, 'scripts/check-finding-regression-pins.mjs');
+  const result = spawnSync(process.execPath, [targetScript, '--help'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `--help must exit 0.\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`);
+  assert.match(result.stdout, /F-NNNNNN-NNN/, '--help must still mention the legacy id shape');
+  assert.match(
+    result.stdout,
+    /F-xxxxxxxx/,
+    '--help must also mention the hash-style id shape — F-3ec5b54f widened F_ID_PATTERN to include it, but ' +
+      '--help previously described only the legacy shape as if it were the whole contract',
+  );
+  assert.match(
+    result.stdout,
+    /F_ID_PATTERN/,
+    '--help should point at F_ID_PATTERN by name (like the module docstring already does) so the two ' +
+      'descriptions cannot independently go stale again the next time the pattern is widened',
+  );
+});

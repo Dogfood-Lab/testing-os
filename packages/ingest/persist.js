@@ -6,7 +6,7 @@
  * duplicate detection by run_id, directory creation.
  */
 
-import { existsSync, mkdirSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync, readFileSync } from 'node:fs';
 import { join, dirname, relative, sep } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
@@ -14,6 +14,7 @@ import { validateRecord } from './validate-record.js';
 import { isUnsafeSegment } from './lib/unsafe-segment.js';
 import { submissionDigest } from './lib/integrity.js';
 import { readChainHead, appendChainEntry } from './lib/chain-manifest.js';
+import { parseRejectionReason } from '@dogfood-lab/verify';
 
 /**
  * Error thrown when writeRecord loses a TOCTOU race for the same canonical path.
@@ -123,6 +124,39 @@ export function computeRecordPath(record, repoRoot) {
 }
 
 /**
+ * F-4036ae25: a prior `_rejected` record whose rejection_reasons are ALL
+ * `schema:`-class is "we could not understand your submission", not a
+ * rendered verdict about the run — the same doctrine that already exempts an
+ * unfilable (`_skipPersist`) rejection from consuming its run_id. Narrowing
+ * `_skipPersist` in verify/index.js means a filable-but-schema-invalid
+ * submission now DOES persist (the fleet-wide audit trail F-4036ae25
+ * restores), so this is the other half of that fix: persisting the evidence
+ * must not resurrect the exact run_id-poisoning pathology F-82429f90
+ * eliminated for validator-crash faults. A mixed-reason or non-schema
+ * rejection (policy, provenance, ...) is still a rendered verdict and stays
+ * blocking — unchanged from today.
+ *
+ * Any read/parse failure fails closed (blocking): a corrupted or unreadable
+ * evidence file must never silently unblock a path collision.
+ *
+ * @param {string} rejectedPath - Absolute path already confirmed to exist.
+ * @returns {boolean} true when every rejection reason is schema-class.
+ */
+function isRetryableSchemaRejection(rejectedPath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(rejectedPath, 'utf-8'));
+  } catch {
+    return false;
+  }
+  const reasons = parsed?.verification?.rejection_reasons;
+  if (parsed?.verification?.status !== 'rejected' || !Array.isArray(reasons) || reasons.length === 0) {
+    return false;
+  }
+  return reasons.every(r => parseRejectionReason(r).prefix === 'schema:');
+}
+
+/**
  * Check if a record with this run_id already exists (accepted or rejected).
  *
  * @param {string} runId
@@ -139,7 +173,9 @@ export function isDuplicate(runId, record, repoRoot) {
   // Check rejected path
   const rejectedRecord = { ...record, verification: { ...record.verification, status: 'rejected' } };
   const rejectedPath = computeRecordPath(rejectedRecord, repoRoot);
-  if (existsSync(rejectedPath)) return true;
+  if (existsSync(rejectedPath)) {
+    return !isRetryableSchemaRejection(rejectedPath);
+  }
 
   return false;
 }

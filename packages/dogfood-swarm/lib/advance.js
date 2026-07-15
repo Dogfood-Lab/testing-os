@@ -103,7 +103,7 @@ export function checkGates(db, runId) {
       ${LATEST_AGENT_RUN_PER_DOMAIN}
   `).all(wave.id);
 
-  // F-feb78e7b (DESIGN RULING): evaluate ALL five gates unconditionally and
+  // F-feb78e7b (DESIGN RULING): evaluate ALL six gates unconditionally and
   // return the full array. The pre-fix code returned at the FIRST failing
   // gate, so gateResult.gates never contained the gates after it — and the
   // override branch in advance() then promoted past EVERY unevaluated gate,
@@ -114,7 +114,7 @@ export function checkGates(db, runId) {
   // can mask ONLY individually-overridable failures.
   const waveGate = { ...checkWaveStatus(wave), overridable: false };
   const agentGate = { ...checkAgentCompletion(agents), overridable: false };
-  const violationGate = { ...checkViolations(db, wave.id, agents), overridable: true };
+  const violationGate = { ...checkViolations(db, runId), overridable: true };
   const verifyGateRaw = checkVerification(db, wave);
   // The serial-verify obligation (verdict:'VERIFY') is the one deliberately
   // NON-overridable verification failure; a plain failed receipt stays
@@ -335,7 +335,7 @@ export function advance(db, runId, opts = {}) {
 
   // F-feb78e7b (DESIGN RULING): an override is consent to the NAMED,
   // individually-overridable gate failures — never a master key. checkGates
-  // now evaluates all five gates, so the failure set here is complete; the
+  // now evaluates all six gates, so the failure set here is complete; the
   // pre-fix branches keyed on the verdict of a TRUNCATED gate array and
   // promoted past every gate that was never evaluated (including the
   // non-overridable serial-verify gate). Any non-overridable failure refuses
@@ -459,14 +459,28 @@ function checkAgentCompletion(agents) {
   return { name: 'agent_completion', passed: true, reason: `All ${agents.length} agents complete` };
 }
 
-function checkViolations(db, waveId, agents) {
-  const agentIds = agents.map(a => a.id);
-  if (agentIds.length === 0) return { name: 'ownership', passed: true, reason: 'No agents' };
-
+// F-4fa7e644: RUN-WIDE, not wave-scoped. The pre-fix query counted violations
+// only among the CURRENT wave's agent_runs (the `agents` param, itself
+// LATEST_AGENT_RUN_PER_DOMAIN-filtered for the current wave_id) — so once a
+// run's latest wave advanced past a wave that recorded a real ownership
+// violation (the normal AMEND -> dispatch-nextPhase sequence), that
+// violation became permanently invisible to the gate, with no override and
+// no log entry marking the loss. This mirrors commands/status.js's existing
+// cross-wave `violations` aggregator (the one place that already queried
+// run-wide) — same LATEST_AGENT_RUN_PER_DOMAIN-per-wave semantics, just
+// applied to every wave of the run instead of one, so a stale/superseded
+// agent_run from a `swarm resume` redispatch still cannot resurrect a row
+// the surviving attempt doesn't have.
+function checkViolations(db, runId) {
   const count = db.prepare(`
     SELECT COUNT(*) as cnt FROM file_claims
-    WHERE violation = 1 AND agent_run_id IN (${agentIds.map(() => '?').join(',')})
-  `).get(...agentIds);
+    WHERE violation = 1 AND agent_run_id IN (
+      SELECT ar.id FROM agent_runs ar
+      JOIN waves w ON ar.wave_id = w.id
+      WHERE w.run_id = ?
+        ${LATEST_AGENT_RUN_PER_DOMAIN}
+    )
+  `).get(runId);
 
   if (count.cnt > 0) {
     return {

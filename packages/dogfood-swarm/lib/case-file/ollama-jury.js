@@ -46,6 +46,14 @@ import { JUROR_ANSWERS } from './adjudicate.js';
  * adjudicate() call, not here. adjudicate's own DEFAULT_JURY_SEATS includes the
  * gpt-oss / glm `:cloud` seats (the strongest cross-family seats but not free);
  * this constant is the explicit free-local opt-in.
+ *
+ * F-efe53969: DEFAULT_JURY_SEATS's non-cloud seats must stay in lockstep with
+ * this list (same families, same model pins — including this qwen2.5:7b
+ * choice, since the "thinking model" trap this comment describes applies to
+ * the paid --cloud tier too). ./adjudicate.js cannot import this constant
+ * directly (this file already imports FROM adjudicate.js, so the reverse
+ * edge would cycle) — keep the two rosters synchronized by hand;
+ * case-file-jury-seats-parity.test.js pins the relationship.
  */
 export const LOCAL_JURY_SEATS = [
   { family: 'mistral', model: 'mistral-small:24b' },

@@ -91,6 +91,16 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
 
     // ingest — scenario load fault (ingest/run.js)
     ['scenario-load: not_found scenario-x', 'ingest', 'scenario-load:'],
+
+    // submission-bad — F-4acd28d8: computeRecordPath's traversal guard
+    // rejected a schema-valid repo (ingest/run.js, writeRecord()'s second
+    // computeRecordPath call — see F-bbbe2e1f). The submitter's own repo
+    // identifier is the problem.
+    [
+      'unsafe-record-path: record passed schema validation but its path could not be safely computed (repo: ../etc, run_id: r1): unsafe repo segment: ../etc',
+      'submission-bad',
+      'unsafe-record-path:',
+    ],
   ];
 
   for (const [reason, expectedClass, expectedPrefix] of cases) {

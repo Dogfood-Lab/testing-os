@@ -472,6 +472,11 @@ function setupTempRunJs({ withPolicies = false } = {}) {
   const logStageJs = pathToFileURL(resolve(__dirname, '../dogfood-swarm/lib/log-stage.js')).href;
   const loadContextJs = pathToFileURL(resolve(__dirname, 'load-context.js')).href;
   const persistJs = pathToFileURL(resolve(__dirname, 'persist.js')).href;
+  // F-4acd28d8: run.js now imports RecordValidationError directly (to route
+  // it alongside UnsafeRecordPathError out of ingest()'s writeRecord() catch),
+  // so the sandbox copy needs this sibling rewritten too or Node's ESM loader
+  // fails to resolve the relative specifier from TEST_ROOT.
+  const validateRecordJs = pathToFileURL(resolve(__dirname, 'validate-record.js')).href;
   const rebuildIndexesJs = pathToFileURL(resolve(__dirname, 'rebuild-indexes.js')).href;
   const verifyChainJs = pathToFileURL(resolve(__dirname, 'verify-chain.js')).href;
   // The anchor CLI handlers are imported by run.js too; rewrite that sibling
@@ -488,6 +493,7 @@ function setupTempRunJs({ withPolicies = false } = {}) {
       `from '${logStageJs}'`)
     .replace(/from\s+['"]\.\/load-context\.js['"]/, `from '${loadContextJs}'`)
     .replace(/from\s+['"]\.\/persist\.js['"]/, `from '${persistJs}'`)
+    .replace(/from\s+['"]\.\/validate-record\.js['"]/, `from '${validateRecordJs}'`)
     .replace(/from\s+['"]\.\/rebuild-indexes\.js['"]/, `from '${rebuildIndexesJs}'`)
     .replace(/from\s+['"]\.\/verify-chain\.js['"]/, `from '${verifyChainJs}'`)
     .replace(/from\s+['"]\.\/anchor\/cli\.js['"]/, `from '${anchorCliJs}'`);

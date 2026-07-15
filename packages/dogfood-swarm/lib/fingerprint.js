@@ -60,13 +60,28 @@ import { logStage } from './log-stage.js';
 
 /**
  * Normalize a file path for fingerprinting.
- * Strips leading ./ and normalizes separators.
+ * Strips leading ./, collapses repeated/trailing slashes, and normalizes
+ * separators and case.
+ *
+ * F-c63da27b: a trailing slash ('foo.js/') and a doubled internal slash
+ * ('packages//dogfood-swarm/...' — a common path-join artifact, e.g.
+ * `${prefix}/${file}` where prefix already ends in '/') used to fingerprint
+ * DIFFERENTLY from the clean spelling, even though they name the identical
+ * file. Two audit passes reporting the same real defect, where one happens
+ * to compute a doubled- or trailing-slash path, would silently fail
+ * cross-wave dedup — the same double-count risk (fixed + new) the
+ * description-exclusion in this file's header was written to prevent.
+ * Collapsing repeated slashes BEFORE stripping the leading './' also
+ * normalizes a leading './/', which a strict single-slash leading-dot strip
+ * alone would otherwise leave as a stray '/'.
  */
 function normalizePath(filePath) {
   if (!filePath) return '';
   return filePath
     .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/')
     .replace(/^\.\//, '')
+    .replace(/\/$/, '')
     .toLowerCase();
 }
 

@@ -25,7 +25,8 @@ import { verify } from '@dogfood-lab/verify';
 import { stubProvenance, provenanceForProvider } from '@dogfood-lab/verify/validators/provenance.js';
 import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-stage.js';
 import { loadGlobalPolicy, loadRepoPolicy, loadScenarios, githubScenarioFetcher } from './load-context.js';
-import { isDuplicate, writeRecord, computeRecordPath } from './persist.js';
+import { isDuplicate, writeRecord, computeRecordPath, UnsafeRecordPathError } from './persist.js';
+import { RecordValidationError } from './validate-record.js';
 import { rebuildIndexes } from './rebuild-indexes.js';
 import { verifyChain, formatChainResult } from './verify-chain.js';
 import { handleAnchorCompute, handleAnchorPost, handleAnchorVerify } from './anchor/cli.js';
@@ -484,7 +485,72 @@ export async function ingest(submission, options) {
     return { record, path: null, written: false, duplicate: false };
   }
   const persistStart = Date.now();
-  const { path, written } = writeRecord(record, repoRoot);
+  let path, written;
+  try {
+    ({ path, written } = writeRecord(record, repoRoot));
+  } catch (err) {
+    // F-4acd28d8: computeRecordPath()'s traversal guard (isUnsafeSegment) is
+    // STRICTER than the submission schema's repo pattern (F-bbbe2e1f — e.g.
+    // `../etc` is schema-valid but traversal-unsafe), so a record can reach
+    // here without `_skipPersist` ever having been set. The record's own
+    // identifier is what's unfilable — submission-bad, not an operator
+    // incident — so route it like `_skipPersist` above instead of letting the
+    // throw reach the outer CLI catch, which would misreport it as
+    // failed_stage:'cli_parse_payload' and exit 2 ("operator error") for
+    // content that is squarely the submitter's to fix.
+    //
+    // RecordValidationError is the SIBLING gap F-4036ae25's _skipPersist
+    // narrowing opens: dogfood-record.schema.json mirrors the submission
+    // schema's constraints on every source-authored field verify() copies
+    // verbatim (ref, source, timing, scenario_results, overall_verdict.proposed),
+    // so a submission that is schema-invalid on one of THOSE fields (not just
+    // repo/run_id/timing.finished_at) reaches writeRecord() filable-by-identity
+    // and still fails validateRecord() here. Only catch it when the submission
+    // was ALREADY schema-invalid (record.verification.schema_valid === false)
+    // — that is the authoritative signal this is submission-bad fallout, not a
+    // genuine internal defect in what verify() assembled for an
+    // otherwise-valid submission, which must keep crashing loudly.
+    const isUnfilableRecordPath = err instanceof UnsafeRecordPathError;
+    const isSubmissionBadRecordShape =
+      err instanceof RecordValidationError && record.verification.schema_valid === false;
+    if (!isUnfilableRecordPath && !isSubmissionBadRecordShape) {
+      throw err;
+    }
+
+    // verify() already rejected this submission for a real reason whenever
+    // one exists (e.g. repo:mismatch, or the schema violation itself) — those
+    // reasons survive untouched. When verify() had no reason to reject (an
+    // otherwise-accepted record whose ONLY problem is storage-unsafety),
+    // downgrade the verdict here — the same shape used below for a late
+    // scenario-load rejection.
+    if (isUnfilableRecordPath) {
+      record.verification.rejection_reasons.push(`unsafe-record-path: ${err.message}`);
+      if (record.verification.status === 'accepted') {
+        record.verification.status = 'rejected';
+        record.verification.policy_valid = false;
+        if (record.overall_verdict.verified === 'pass') {
+          record.overall_verdict.verified = 'fail';
+          record.overall_verdict.downgraded = true;
+          if (!record.overall_verdict.downgrade_reasons) {
+            record.overall_verdict.downgrade_reasons = [];
+          }
+          record.overall_verdict.downgrade_reasons.push('record path could not be safely computed');
+        }
+      }
+    }
+
+    logStage('rejected_pre_persist', {
+      submission_id: submissionId,
+      correlation_id,
+      reason: isUnfilableRecordPath ? 'unsafe_record_path' : 'record_schema_invalid_from_submission',
+      rejection_reasons: record.verification.rejection_reasons ?? [],
+      // Operator-debug only: validateRecord()'s OWN structured errors, distinct
+      // from (and not merged into) the submitter-facing rejection_reasons above,
+      // which stay exactly as verify() computed them against the submission schema.
+      ...(isSubmissionBadRecordShape ? { record_validation_errors: err.errors } : {})
+    });
+    return { record, path: null, written: false, duplicate: false };
+  }
   logStage('persist_complete', {
     submission_id: submissionId,
     correlation_id,
@@ -685,10 +751,12 @@ export async function verifyOnly(submission, options) {
       would_persist_to = computeRecordPath(record, repoRoot);
     } catch {
       // Defensive: if a record passes verify() but still trips path
-      // computation (e.g., a future schema with looser constraints), keep
-      // verify-only side-effect-free. Real ingest would surface the throw
-      // via writeRecord; verify-only just returns null and lets the operator
-      // see the rejection in record.verification.rejection_reasons.
+      // computation (e.g. F-bbbe2e1f's `../etc` — schema-valid but
+      // traversal-unsafe), keep verify-only side-effect-free. Real ingest
+      // hits the SAME underlying computeRecordPath failure inside
+      // writeRecord() but now catches it too (F-4acd28d8, UnsafeRecordPathError)
+      // rather than letting it escape; verify-only just returns null here and
+      // lets the operator see the rejection in record.verification.rejection_reasons.
       would_persist_to = null;
     }
   }

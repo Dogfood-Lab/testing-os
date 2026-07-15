@@ -34,7 +34,11 @@
  *                                     VALIDATOR_FAULT_<NAME>:
  *   - validators/schema-version.js:   CONTRACT_SCHEMA_TOO_NEW:,
  *                                     CONTRACT_SCHEMA_TOO_OLD:
- *   - packages/ingest/run.js:         scenario-load:
+ *   - packages/ingest/run.js:         scenario-load:,
+ *                                     unsafe-record-path: (F-4acd28d8,
+ *                                       computeRecordPath's traversal guard
+ *                                       rejected a schema-valid repo →
+ *                                       submission-bad)
  *   - packages/ingest/load-context.js: scenario-fetch-fault: (V2-CROSS-BO-001,
  *                                     scenario-fetch outage/credential fault
  *                                     → operational)
@@ -92,6 +96,12 @@ const LITERAL_PREFIXES = [
   },
   { match: 'CONTRACT_SCHEMA_TOO_NEW:', prefix: 'CONTRACT_SCHEMA_TOO_NEW:', class: 'submission-bad' },
   { match: 'CONTRACT_SCHEMA_TOO_OLD:', prefix: 'CONTRACT_SCHEMA_TOO_OLD:', class: 'submission-bad' },
+  // submission-bad — F-4acd28d8: the record passed schema validation but its
+  // OWN repo identifier is unsafe to file under (computeRecordPath's
+  // isUnsafeSegment traversal guard, stricter than the schema's repo
+  // pattern — see F-bbbe2e1f). The submitter's repo string is the problem,
+  // not the verifier/ingest tooling, so this stays submission-bad.
+  { match: 'unsafe-record-path:', prefix: 'unsafe-record-path:', class: 'submission-bad' },
   // operational — a null/non-object submission is a malfunctioning dispatcher
   // (verify-B-003), not a submitter who sent a bad-but-shaped payload. Page ops;
   // do NOT bounce it back to the submitter.

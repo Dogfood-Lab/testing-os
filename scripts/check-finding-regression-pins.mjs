@@ -228,8 +228,10 @@ function printHelp() {
   process.stdout.write(`Usage: node scripts/check-finding-regression-pins.mjs [options]
 
 Always-on CI gate for Class #14 (claimed-fixed without verification). Asserts
-every F-NNNNNN-NNN pinned in a source file has at least one matching pin in
-a test file.
+every F-id pinned in a source file has at least one matching pin in a test
+file — see parse-regression-pins.js's F_ID_PATTERN for the exact id-shape
+contract (three unioned formats: legacy F-NNNNNN-NNN, hash F-xxxxxxxx,
+prefixed F-AAA-NNN).
 
 Options:
   --json                    machine-readable JSON output (parser result + gate)

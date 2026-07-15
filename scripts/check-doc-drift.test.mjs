@@ -372,6 +372,57 @@ test('LIVE TREE: actual repo passes all drift checks (post-wave-26 framework gen
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// F-25e984d7: doublestarToRegex()'s three sentinel string literals must use
+// the two-character `\0` escape sequence, not a raw embedded 0x00 byte. Six
+// raw NULs made this whole 1660+-line file register as binary to content-
+// mode grep/ripgrep (zero visible matches on ANY token, whole-file blast
+// radius) and made the Read tool silently render each NUL as a plain space
+// — misrepresenting the sentinel's collision-safety rationale, since a
+// genuinely space-delimited sentinel would collide with real glob text
+// containing spaces where the actual NUL-delimited one cannot. Two-part pin,
+// both directions of the lens: (1) the file's own bytes contain no raw NUL,
+// (2) the sentinel substitution the escape swap touches — doublestar glob
+// expansion — still functions, proven by a real CLI subprocess run against
+// the live config (not just the programmatic call the LIVE TREE test above
+// already makes) so the pin also covers the actual entry point wiring.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-25e984d7: the live file contains zero raw NUL bytes (sentinels must use the \\0 escape, not the raw byte)', () => {
+  const liveFile = resolve(repoRoot, 'scripts/check-doc-drift.mjs');
+  const buf = readFileSync(liveFile);
+  assert.equal(
+    buf.includes(0x00),
+    false,
+    'scripts/check-doc-drift.mjs must not contain a raw NUL (0x00) byte anywhere. A raw NUL makes ' +
+      'ripgrep/grep content-mode search treat the whole file as binary (matches found but zero visible ' +
+      "content) and makes the Read tool silently render the byte as a space. Use the '\\0' two-character " +
+      'escape sequence inside the string literal instead — identical runtime value, plain-text source bytes.',
+  );
+});
+
+test("F-25e984d7: doublestarToRegex's sentinel substitution still functions after the byte fix — live CLI run exits 0 with zero reports", () => {
+  // Runs the actual entry point (spawnSync on driftScript, no args -> default
+  // config) rather than only the exported runDriftChecks function. The live
+  // doc-drift-patterns.json config includes recursive '**' checks (helper-
+  // adoption-sweep, schema-conformance) that only resolve their target files
+  // correctly if doublestarToRegex's sentinel mark/replace round-trip is
+  // intact — a corrupted sentinel degrades those globs silently (see the
+  // F-ae195c1d comment in doublestarToRegex itself) and would surface here
+  // as a config-error or drift, not just as a broken unit test.
+  const result = spawnSync(process.execPath, [driftScript], { cwd: repoRoot, encoding: 'utf8' });
+  assert.equal(
+    result.status,
+    0,
+    `expected the live doc-drift gate to exit 0 (no drift, no config-error).\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+  );
+  assert.match(
+    result.stdout,
+    /^\[check-doc-drift\] OK/,
+    'expected the OK banner, proving every configured check — including the recursive-glob ones that depend on doublestarToRegex — passed',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // untagged-fence handler (D-CI-001 / F-827321-010, wave 23)
 // ─────────────────────────────────────────────────────────────────────────────
 

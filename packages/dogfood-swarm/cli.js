@@ -1532,7 +1532,10 @@ async function cmdAdjudicate(args) {
     }
     const applyUndo = args.includes('--apply');
     const db = openDb(getDbPath());
-    const undoReport = undoAdjudication(db, { adjudicationId, apply: applyUndo });
+    // F-482629a9: forward runId so undoAdjudication can refuse a cross-run
+    // undo — pre-fix this was dropped on the floor here, so the required
+    // <run-id> positional above enforced nothing past its own presence check.
+    const undoReport = undoAdjudication(db, { adjudicationId, apply: applyUndo, runId });
     console.log(formatAdjudicationUndo(undoReport));
     return;
   }

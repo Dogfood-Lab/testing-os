@@ -34,14 +34,40 @@
  * failure exits 1) — if either shape reappears anywhere in this package's
  * test suite.
  *
+ * The sweep itself shipped with two undocumented gaps of its own
+ * (F-1c3fc4dd, wave 6): it tested each physical LINE independently
+ * (text.split('\n'), then a per-line regex .test()), so a readFileSync(
+ * call wrapped across lines put the identifier+paren and the string
+ * literal on different lines and neither line matched on its own; and its
+ * quote class was ['"] only, so a backtick-quoted (template-literal)
+ * absolute path was invisible outright. Both are closed below: the sweep
+ * now matches each file's WHOLE TEXT instead of one line at a time
+ * (findHardcodedAbsolutePathOffenders), and the quote class covers
+ * ['"`]. See SCOPE below and the two self-test fixtures at the bottom of
+ * this describe block, which pin both shapes so neither gap can silently
+ * reopen.
+ *
  * SCOPE, STATED PLAINLY (a narrow, honest guard beats a broad, noisy one):
- *   - Catches: a string literal shaped like a Windows drive-letter path
- *     (`X:\` / `X:/`) or a POSIX-absolute path (`/something`) passed
- *     DIRECTLY as the argument to readFileSync(/readFile(/require(.
+ *   - Catches: a single-quoted, double-quoted, or backtick-quoted string
+ *     literal shaped like a Windows drive-letter path (`X:\` / `X:/`) or a
+ *     POSIX-absolute path (`/something`) passed DIRECTLY as the argument
+ *     to readFileSync(/readFile(/require(.
+ *   - Catches it even when the call is wrapped across multiple lines —
+ *     e.g. the identifier and open-paren on one line, the string literal
+ *     on the next — because matching runs against each file's WHOLE TEXT
+ *     (findHardcodedAbsolutePathOffenders), not one physical line at a
+ *     time. Not a hypothetical shape: this exact package already has three
+ *     precedents for wrapping a readFileSync( call across lines
+ *     (amend1-state-machine-tx.test.js, meta-amendA-findings-persist.test.js,
+ *     meta-amendA-readme-contract.test.js — all portable today via
+ *     join(__dirname,...)/new URL(...), so none are current offenders).
  *   - Does NOT catch: the same hardcoding one step removed through a
- *     variable (`const p = 'E:/...'; readFileSync(p)`) — that needs real
- *     data-flow analysis, not a text sweep. Known residual gap, not a
- *     silent claim of completeness.
+ *     variable (`const p = 'E:/...'; readFileSync(p)`), through string
+ *     concatenation, or through a template literal whose absolute-path
+ *     prefix is itself interpolated rather than literal (the value comes
+ *     from a variable, not from characters immediately after the opening
+ *     backtick) — all three need real data-flow analysis, not a text
+ *     sweep. Known residual gap, not a silent claim of completeness.
  *   - Does NOT catch: whether a referenced RELATIVE fixture path is itself
  *     git-tracked. That is a materially heavier check (shelling out to git,
  *     or reimplementing gitignore matching) — scoped OUT of this pass as
@@ -81,8 +107,36 @@ function walkTestFiles(dir, files = []) {
 // values, synthetic env values, JSON-pointer field names — all present
 // elsewhere in this suite) is never flagged. See the header for why the
 // unanchored version was rejected.
+//
+// Quote class covers '/"/` so a template-literal path is caught too
+// (F-1c3fc4dd). \s* already matches '\n' in JS regexes, so this pattern
+// was never the reason a wrapped call went unseen — that was purely the
+// old per-line split, fixed below by matching whole-file text instead
+// (findHardcodedAbsolutePathOffenders). The `g` flag is required for
+// matchAll and is safe to share across every file and every call: matchAll
+// scans with a clone of this regex's match state rather than mutating the
+// module-level constant's lastIndex, unlike a manual global .exec()/.test()
+// loop — which is exactly the footgun this refactor avoids reintroducing.
 const HARDCODED_ABSOLUTE_PATH_ARG =
-  /\b(?:readFileSync|readFile|require)\(\s*['"](?:[A-Za-z]:[\\/]|\/[A-Za-z])/;
+  /\b(?:readFileSync|readFile|require)\(\s*[`'"](?:[A-Za-z]:[\\/]|\/[A-Za-z])/g;
+
+// Extracted so the two self-test fixtures below can exercise the exact
+// detection logic the real sweep uses, without writing throwaway files to
+// disk. Operates on whole-file TEXT rather than per-line so a call wrapped
+// across lines is caught regardless of which line the string literal
+// lands on; the reported line number is derived from the match index
+// after the fact instead of from a line-by-line scan position.
+function findHardcodedAbsolutePathOffenders(text) {
+  const lines = text.split('\n');
+  const offenders = [];
+  for (const match of text.matchAll(HARDCODED_ABSOLUTE_PATH_ARG)) {
+    const startLine = text.slice(0, match.index).split('\n').length;
+    const endLine = text.slice(0, match.index + match[0].length).split('\n').length;
+    const snippet = lines.slice(startLine - 1, endLine).map((l) => l.trim()).join(' ');
+    offenders.push({ line: startLine, snippet });
+  }
+  return offenders;
+}
 
 describe('meta — no hardcoded absolute fixture paths in any test file (closes the F-2a8f4d17 / F-caeeb671 class)', () => {
   it('sweep must visit at least one test file', () => {
@@ -99,12 +153,10 @@ describe('meta — no hardcoded absolute fixture paths in any test file (closes 
     const offenders = [];
     for (const f of walkTestFiles(PKG_ROOT)) {
       const text = readFileSync(f, 'utf-8');
-      const lines = text.split('\n');
-      lines.forEach((line, i) => {
-        if (HARDCODED_ABSOLUTE_PATH_ARG.test(line)) {
-          offenders.push(`${f.slice(PKG_ROOT.length + 1).split('\\').join('/')}:${i + 1}: ${line.trim()}`);
-        }
-      });
+      const relPath = f.slice(PKG_ROOT.length + 1).split('\\').join('/');
+      for (const { line, snippet } of findHardcodedAbsolutePathOffenders(text)) {
+        offenders.push(`${relPath}:${line}: ${snippet}`);
+      }
     }
     assert.deepEqual(offenders, [],
       `hardcoded absolute path literal(s) passed directly to readFileSync/readFile/require — this is ` +
@@ -112,5 +164,38 @@ describe('meta — no hardcoded absolute fixture paths in any test file (closes 
       `node --test) and F-caeeb671 (loud — a module-top-level throw does). Resolve portably instead: ` +
       `join(dirname(fileURLToPath(import.meta.url)), ..., 'fixtures', 'case-files', ...), matching ` +
       `case-file.test.js's FIXTURES constant.\n  ${offenders.join('\n  ')}`);
+  });
+
+  it('catches a hardcoded absolute path literal wrapped across multiple lines, which a per-line sweep cannot see (F-1c3fc4dd)', () => {
+    // Built from parts rather than written as a literal call so this
+    // fixture text does not itself match HARDCODED_ABSOLUTE_PATH_ARG when
+    // the sweep above scans this very file's own source — this file is a
+    // *.test.js under PKG_ROOT, so walkTestFiles() visits it too.
+    const fn = 'readFileSync';
+    const q = "'";
+    const wrapped = [
+      `${fn}(`,
+      `  ${q}E:/AI/testing-os/fixtures/case-files/example.json${q},`,
+      `  ${q}utf-8${q}`,
+      `)`,
+    ].join('\n');
+    const offenders = findHardcodedAbsolutePathOffenders(wrapped);
+    assert.equal(offenders.length, 1,
+      `a readFileSync( call wrapped across lines with a hardcoded absolute path must be caught, not ` +
+      `just its single-line-equivalent form; got ${JSON.stringify(offenders)}`);
+    assert.equal(offenders[0].line, 1, 'offender should be reported at the line the call opens on');
+  });
+
+  it('catches a hardcoded absolute path literal in a backtick (template-literal) string, not just single/double-quoted (F-1c3fc4dd)', () => {
+    // Same "built from parts" reasoning as the wrapped-call fixture above:
+    // the backtick character is held in a variable so this file's own raw
+    // source never contains the literal offending sequence.
+    const fn = 'readFileSync';
+    const bt = '`';
+    const offending = `${fn}(${bt}E:/AI/testing-os/fixtures/case-files/example.json${bt})`;
+    const offenders = findHardcodedAbsolutePathOffenders(offending);
+    assert.equal(offenders.length, 1,
+      `a readFileSync( call using a backtick-quoted hardcoded absolute path must be caught, not just ` +
+      `single/double-quoted forms; got ${JSON.stringify(offenders)}`);
   });
 });

@@ -233,6 +233,53 @@ const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'sta
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
 
 /**
+ * F-67ddcd02: the shared file_claims reconciliation step BOTH collect() (this
+ * file, below) and revalidate.js's mutation pass must run before writing an
+ * agent_run's current-pass file claims.
+ *
+ * Pre-fix, both write paths were add/upsert-ONLY: a row for a file the
+ * CURRENT pass no longer even examines — because a corrected diff base
+ * landed between two collect() attempts (`swarm redrive` re-opening a wave),
+ * a domain-map recomputation narrowed the set, or the agent's edits were
+ * fully reverted before a revalidate() repair — was never revisited by
+ * either the violation-upsert or the valid-insert-or-ignore loop. A stale
+ * violation=1 row from an earlier, WRONG attempt then survived forever,
+ * corrupting `swarm status`'s violation count and any exported
+ * `swarm receipt` for a wave whose real, corrected result was clean (proven
+ * live against this run's own control-plane DB: wave 4's first, broken-diff-
+ * base collect attempt wrote 335 violation=1 rows across 6 agents; the
+ * corrected second attempt never touched them, and `swarm receipt` for wave
+ * 4 still exports all 335 as live violations today).
+ *
+ * file_claims rows are a CLAIM about what the current pass observed, not an
+ * audit event (DS-MUT-001's framing, a few lines below, for the sibling
+ * upsert) — deleting a superseded claim is the lawful write, not data loss.
+ * The audit trail for WHY an agent_run reached its current status lives in
+ * agent_state_events, untouched by this.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {number} agentRunId
+ * @param {string[]} keep — the file paths this pass's ownership check
+ *   actually examined (collect.js's filesForOwnership: reported self-report
+ *   UNION independently-observed touched files). Any EXISTING file_claims
+ *   row for this agent_run_id whose file_path is NOT in this set is
+ *   superseded and removed — regardless of whether it was violation=1 or
+ *   violation=0, since either can go stale the same way. An empty array
+ *   clears every row for this agent_run_id, which is correct for a fully-
+ *   reverted / now-empty pass.
+ */
+export function reconcileFileClaims(db, agentRunId, keep) {
+  if (keep.length === 0) {
+    db.prepare('DELETE FROM file_claims WHERE agent_run_id = ?').run(agentRunId);
+    return;
+  }
+  const placeholders = keep.map(() => '?').join(',');
+  db.prepare(`
+    DELETE FROM file_claims WHERE agent_run_id = ? AND file_path NOT IN (${placeholders})
+  `).run(agentRunId, ...keep);
+}
+
+/**
  * @param {object} opts
  * @param {string} opts.runId
  * @param {string} opts.dbPath
@@ -742,6 +789,14 @@ export function collect(opts) {
           remediation: '--isolate',
         });
       }
+
+      // F-67ddcd02: supersede this agent_run's PRIOR file_claims rows before
+      // writing the current pass's — see reconcileFileClaims's doc comment
+      // (above tryTransition) for the full rationale. Runs unconditionally,
+      // even when filesForOwnership is now empty, so a fully-reverted
+      // agent_run's stale claims (of either violation value) are cleared
+      // too, not just the ones this pass happens to re-examine.
+      reconcileFileClaims(db, ar.id, filesForOwnership);
 
       if (filesForOwnership.length > 0) {
         const ownership = checkOwnership(db, opts.runId, domain.name, filesForOwnership);

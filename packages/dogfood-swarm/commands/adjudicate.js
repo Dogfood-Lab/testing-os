@@ -168,19 +168,46 @@ export function previewAdjudicate(db, opts) {
  * lib/adjudication-store.js#deleteAdjudication. Dry-run by default (mirrors
  * every other recovery verb — redrive/rewind/revalidate/clean).
  *
+ * F-482629a9: `runId` is REQUIRED and enforced — adjudication ids are one
+ * global auto-increment sequence (db/schema.js's `adjudications` table has
+ * no per-run namespacing), so a bare `WHERE id = ?` lookup with no run-scope
+ * check let the CLI's `<run-id>` positional argument (cli.js requires it
+ * before reaching --undo) name a completely different run than the
+ * adjudication actually belongs to — the argument READ as scoping ("undo
+ * THIS run's adjudication") but enforced nothing, silently deleting an
+ * unrelated run's row on --apply. Enforced BEFORE the `if (apply)` branch
+ * below so both the dry-run preview and --apply refuse identically, mirroring
+ * how every other targeted verb in this file (revalidate's --domain,
+ * defer/reject's --ids) scopes its target to the named run before mutating.
+ *
  * @param {import('better-sqlite3').Database} db
  * @param {object} opts
  * @param {number} opts.adjudicationId
+ * @param {string} opts.runId — the run this undo must be scoped to
  * @param {boolean} [opts.apply]
  * @returns {object} report
  */
 export function undoAdjudication(db, opts) {
-  const { adjudicationId, apply } = opts;
+  const { adjudicationId, apply, runId } = opts;
 
   const row = db.prepare('SELECT * FROM adjudications WHERE id = ?').get(adjudicationId);
   if (!row) {
     const err = new Error(`adjudicate --undo: adjudication ${adjudicationId} not found`);
     err.code = 'ADJUDICATION_NOT_FOUND';
+    throw err;
+  }
+
+  // F-482629a9: row.run_id is NOT NULL (db/schema.js), so an absent/undefined
+  // opts.runId fails this comparison too — the same refusal covers both "no
+  // run id supplied" and "wrong run id supplied" with one consistent error.
+  if (row.run_id !== runId) {
+    const err = new Error(
+      `adjudicate --undo: adjudication ${adjudicationId} belongs to run "${row.run_id}", ` +
+      `not "${runId}" — refusing a cross-run undo. Re-run naming the correct run id.`
+    );
+    err.code = 'ADJUDICATION_RUN_MISMATCH';
+    err.runId = runId;
+    err.adjudicationId = adjudicationId;
     throw err;
   }
 

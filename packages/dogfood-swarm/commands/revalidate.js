@@ -57,6 +57,10 @@ import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js
 import { readBoundedJson } from '../lib/bounded-json-read.js';
 import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
 import { getActualTouchedFiles, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
+// F-67ddcd02: the file_claims reconciliation step is shared with collect.js
+// (both write paths superseded the SAME way) — see reconcileFileClaims's own
+// doc comment there for the full rationale.
+import { reconcileFileClaims } from './collect.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
@@ -409,6 +413,14 @@ export function revalidate(opts) {
 
         // Record file claims for amend (mirrors collect.js:288-294)
         if (isAmend && r.ownership && Array.isArray(r.ownership.valid)) {
+          // F-67ddcd02: supersede this agent_run's PRIOR file_claims (e.g.
+          // the violation=1 rows from the earlier collect() attempt that
+          // originally blocked it as ownership_violation — the repair below
+          // only reaches r.ownership.valid when that recheck came back
+          // clean) before writing the corrected pass's claims. Mirrors
+          // collect.js's identical call; this is the revalidate half of the
+          // same write-path defect.
+          reconcileFileClaims(db, r.agent_run_id, r.ownership.valid.map(v => v.file));
           for (const v of r.ownership.valid) {
             const domain = domainByName.get(r.domain);
             db.prepare(`

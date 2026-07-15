@@ -46,14 +46,30 @@ import { toJuryRequest } from './handoff.js';
  * (gpt-oss / glm) route through Ollama's OpenAI-compatible endpoint per the F-14
  * recipe; local seats are distinct lineages the rig serves at ~24-32B. Override
  * via opts.seats.
+ *
+ * F-efe53969: this roster's non-cloud seats MUST stay in lockstep with
+ * ./ollama-jury.js's LOCAL_JURY_SEATS — same families, same model pins. That
+ * file's own header states the intended relationship: "DEFAULT_JURY_SEATS
+ * includes the gpt-oss / glm `:cloud` seats ... LOCAL_JURY_SEATS is the
+ * explicit free-local opt-in", i.e. DEFAULT = LOCAL + the two cloud seats
+ * below. A prior revision let this roster drift (missing the hermes seat,
+ * qwen re-pinned to qwen3.6) with no comment explaining either change — an
+ * unintentional divergence confirmed via commit history (LOCAL_JURY_SEATS's
+ * qwen2.5:7b-over-qwen3.x "thinking model can return empty JSON" rationale
+ * was written AFTER this roster and never backported). Cannot import
+ * LOCAL_JURY_SEATS directly here (ollama-jury.js imports FROM this module —
+ * see its header — so importing back would cycle); keep the two lists
+ * synchronized by hand and let case-file-jury-seats-parity.test.js catch a
+ * future re-drift.
  */
 export const DEFAULT_JURY_SEATS = [
   { family: 'openai', model: 'gpt-oss:120b-cloud', base_url: 'http://localhost:11434' },
   { family: 'zhipu', model: 'glm-4.6:cloud', base_url: 'http://localhost:11434' },
   { family: 'mistral', model: 'mistral-small:24b' },
   { family: 'granite', model: 'granite4.1:30b' },
-  { family: 'qwen', model: 'qwen3.6' },
+  { family: 'qwen', model: 'qwen2.5:7b' },
   { family: 'gemma', model: 'gemma4:31b' },
+  { family: 'hermes', model: 'hermes3:8b' },
 ];
 
 /**

@@ -40,6 +40,20 @@
  * go red — the thrown/rejected error reverts to a bare Error with no `.code`
  * and `e.constructor.name === 'Error'`, failing the `instanceof
  * UnsafeRecordPathError` assertions.
+ *
+ * F-4acd28d8 (wave 6) follow-up: classifying the error was necessary but not
+ * sufficient — nothing in run.js branched on `.code`, so `ingest()` still let
+ * UnsafeRecordPathError escape uncaught to the CLI's outer catch, which
+ * mislabeled it failed_stage:'cli_parse_payload' and exited 2 ("operator
+ * error") for content that is squarely submission-bad. `ingest()` now catches
+ * UnsafeRecordPathError itself and returns a clean rejected result (nothing
+ * written — there IS no safe path) instead of throwing, so the CLI's ordinary
+ * accepted/rejected exit-code logic (1, not 2) applies without a special case.
+ * The end-to-end test below is updated accordingly — it now asserts on
+ * `ingest()`'s RETURN, not a throw. The two `writeRecord()`-direct tests are
+ * UNCHANGED: the low-level persist function still throws a classified
+ * UnsafeRecordPathError when called directly; only the orchestration layer
+ * (`ingest()`) learned to catch it.
  */
 
 import { describe, it, before, afterEach } from 'node:test';
@@ -143,7 +157,7 @@ describe('F-bbbe2e1f: writeRecord() classifies its second, post-validation compu
     );
   });
 
-  it('end-to-end through ingest(): a schema-valid submission with repo: "../etc" throws UnsafeRecordPathError instead of a bare Error', async () => {
+  it('end-to-end through ingest(): a schema-valid submission with repo: "../etc" is cleanly rejected (F-4acd28d8), not thrown', async () => {
     setupTestRoot();
     const submission = structuredClone(pilot0);
     submission.run_id = 'f-bbbe2e1f-end-to-end';
@@ -155,14 +169,52 @@ describe('F-bbbe2e1f: writeRecord() classifies its second, post-validation compu
     // the record reaches writeRecord() for real.
     submission.repo = '../etc';
 
-    await assert.rejects(
-      () => ingest(submission, { repoRoot: TEST_ROOT, provenance: stubProvenance }),
-      (e) => {
-        assert.ok(e instanceof UnsafeRecordPathError,
-          `expected UnsafeRecordPathError to propagate out of ingest(), got ${e.constructor.name}: ${e.message}`);
-        assert.equal(e.code, 'UNSAFE_RECORD_PATH');
-        return true;
-      }
+    // Deletion/emptiness proof (F-4acd28d8): remove the UnsafeRecordPathError
+    // catch around writeRecord() in run.js's ingest() and this call rejects
+    // instead of resolving — the promise assertions below go red.
+    const result = await ingest(submission, { repoRoot: TEST_ROOT, provenance: stubProvenance });
+
+    assert.equal(result.written, false);
+    assert.equal(result.path, null);
+    assert.equal(result.duplicate, false);
+    assert.equal(result.record.verification.status, 'rejected');
+
+    const reasons = result.record.verification.rejection_reasons;
+    // The pre-existing repo:mismatch reason (computed by verify(), BEFORE
+    // writeRecord ever ran) must survive untouched.
+    assert.ok(reasons.some(r => r.startsWith('repo:mismatch:')),
+      `expected the pre-existing repo:mismatch reason to survive, got: ${JSON.stringify(reasons)}`);
+    // Plus the new reason naming the actual persist-time failure.
+    assert.ok(reasons.some(r => r.startsWith('unsafe-record-path:')),
+      `expected an 'unsafe-record-path:' reason, got: ${JSON.stringify(reasons)}`);
+  });
+
+  it('end-to-end through ingest(): an otherwise-ACCEPTED submission with repo: "../etc" is downgraded to rejected, not thrown', async () => {
+    setupTestRoot();
+    const submission = structuredClone(pilot0);
+    submission.run_id = 'f-bbbe2e1f-end-to-end-accepted';
+    // Point run_url at the SAME unsafe repo so verify()'s repo:mismatch guard
+    // does not fire — this submission has NO other reason to reject, so
+    // verify() would otherwise accept it. Proves the downgrade path (not just
+    // the "reasons already existed" path exercised above).
+    submission.repo = '../etc';
+    submission.source.run_url = 'https://github.com/../etc/actions/runs/9123456789';
+
+    const result = await ingest(submission, { repoRoot: TEST_ROOT, provenance: stubProvenance });
+
+    assert.equal(result.written, false);
+    assert.equal(result.path, null);
+    assert.equal(result.record.verification.status, 'rejected',
+      'an accepted verdict must never survive an unwritable record');
+    assert.equal(result.record.overall_verdict.verified, 'fail');
+    assert.equal(result.record.overall_verdict.downgraded, true);
+    assert.ok(
+      result.record.overall_verdict.downgrade_reasons?.includes('record path could not be safely computed'),
+      `expected a downgrade_reasons entry naming the path failure, got: ${JSON.stringify(result.record.overall_verdict.downgrade_reasons)}`
+    );
+    assert.ok(
+      result.record.verification.rejection_reasons.some(r => r.startsWith('unsafe-record-path:')),
+      `expected an 'unsafe-record-path:' reason, got: ${JSON.stringify(result.record.verification.rejection_reasons)}`
     );
   });
 

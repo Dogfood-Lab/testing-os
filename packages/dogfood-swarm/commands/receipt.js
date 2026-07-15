@@ -263,9 +263,29 @@ export function storeReceipt(db, waveId, jsonPath, mdPath) {
 }
 
 /**
+ * F-59f22202: a verification_receipts row with `passed=0` (falsy) and
+ * `exit_code` of 0 or -1 is never a real failing step — lib/verify/runner.js
+ * guarantees a failing REQUIRED step always carries a genuine nonzero (or
+ * -127 tool_missing) exit code, so that pairing can ONLY be a wave-verdict-
+ * only case (no_tests / unmeasured_tests / skip) where no step failed at
+ * all. Pre-fix persistence (commands/verify.js) stored a bare 0 for this
+ * case, so historical rows carry 0; post-fix rows carry the -1 sentinel
+ * (NO_FAILING_STEP_EXIT_CODE in verify.js) — both are handled here so this
+ * renders coherently for old and new data alike. Printing either as a bare
+ * "exit 0"/"exit -1" reads as a self-contradictory rendering bug to an
+ * operator (0 conventionally means success); naming the real condition
+ * avoids that misdiagnosis at exactly the moment the operator needs to
+ * trust the diagnostic.
+ */
+function formatExitClause(passed, exitCode) {
+  if (!passed && (exitCode === 0 || exitCode === -1)) return 'no required step failed';
+  return `exit ${exitCode}`;
+}
+
+/**
  * Format receipt as markdown.
  */
-function formatReceiptMarkdown(r) {
+export function formatReceiptMarkdown(r) {
   const lines = [];
 
   lines.push(`# Wave ${r.wave.number} Receipt — ${r.wave.phase}`);
@@ -347,7 +367,8 @@ function formatReceiptMarkdown(r) {
   if (r.verification) {
     lines.push('## Verification');
     lines.push('');
-    lines.push(`${r.verification.passed ? 'PASS' : 'FAIL'} (${r.verification.repo_type}${r.verification.test_count ? `, ${r.verification.test_count} tests` : ''}, exit ${r.verification.exit_code})`);
+    const v = r.verification;
+    lines.push(`${v.passed ? 'PASS' : 'FAIL'} (${v.repo_type}${v.test_count ? `, ${v.test_count} tests` : ''}, ${formatExitClause(v.passed, v.exit_code)})`);
     lines.push('');
   }
 
@@ -400,7 +421,7 @@ export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta
     return {
       action: 'VERIFY',
       reason: verification
-        ? `serial verify required (--skip-verify wave) — latest verification failed (${verification.repo_type}, exit ${verification.exit_code}); fix and re-run \`swarm verify\``
+        ? `serial verify required (--skip-verify wave) — latest verification failed (${verification.repo_type}, ${formatExitClause(verification.passed, verification.exit_code)}); fix and re-run \`swarm verify\``
         : 'serial verify required (--skip-verify wave) — no verification receipt; run `swarm verify` first',
     };
   }

@@ -465,13 +465,18 @@ describe('F-fa047531 — adjudicate --undo compensator (undoAdjudication)', () =
     const db = openMemoryDb();
     const { adjudicationId } = seedAdjudication(db);
 
-    const dry = undoAdjudication(db, { adjudicationId, apply: false });
+    // F-482629a9 (wave 6): undoAdjudication now REQUIRES and enforces runId —
+    // seedAdjudication hardcodes the adjudication's run_id as 'r1' (matching
+    // setupAdjudicateRun's default), so 'r1' here is the correct, same-run
+    // scope, not a new behavior under test (that lives in
+    // wave6-4091637-5127-swarm-cp-pins.test.js alongside the other wave-6 fixes).
+    const dry = undoAdjudication(db, { adjudicationId, apply: false, runId: 'r1' });
     assert.equal(dry.dryRun, true);
     assert.equal(dry.removed, false);
     const stillThere = db.prepare('SELECT COUNT(*) AS n FROM adjudications WHERE id = ?').get(adjudicationId).n;
     assert.equal(stillThere, 1, 'dry-run must not remove the row');
 
-    const applied = undoAdjudication(db, { adjudicationId, apply: true });
+    const applied = undoAdjudication(db, { adjudicationId, apply: true, runId: 'r1' });
     assert.equal(applied.removed, true);
     const goneNow = db.prepare('SELECT COUNT(*) AS n FROM adjudications WHERE id = ?').get(adjudicationId).n;
     assert.equal(goneNow, 0, '--apply must remove the row — the compensator lib/adjudication-store.js#deleteAdjudication documents');
@@ -480,6 +485,9 @@ describe('F-fa047531 — adjudicate --undo compensator (undoAdjudication)', () =
   it('throws ADJUDICATION_NOT_FOUND for an unknown id (no raw-SQL-surgery footgun)', () => {
     const db = openMemoryDb();
     seedAdjudication(db);
+    // No runId needed here: the NOT_FOUND check (row lookup) runs BEFORE the
+    // F-482629a9 run-scope check, so an unknown id is refused for the same
+    // reason regardless of runId.
     assert.throws(
       () => undoAdjudication(db, { adjudicationId: 99999, apply: true }),
       (err) => err.code === 'ADJUDICATION_NOT_FOUND',

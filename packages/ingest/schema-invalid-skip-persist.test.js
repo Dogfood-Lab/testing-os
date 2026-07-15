@@ -42,6 +42,29 @@
  * The line this draws: the duplicate guard consumes a run_id when we rendered
  * a VERDICT on a run (policy/provenance rejections still persist — pinned
  * below), never when we could not understand the submission.
+ *
+ * F-4036ae25 (wave 6) NARROWED which schema-invalid submissions get
+ * `_skipPersist`: only the subset whose repo/run_id/timing.finished_at are
+ * THEMSELVES unfilable (Class A above). The 10 cases pinned below are
+ * UNCHANGED in observable outcome (still rejected, still nothing written,
+ * still a reusable run_id) but for two DIFFERENT reasons depending on class:
+ *
+ *   - Class A cases still get `_skipPersist` directly from verify() — the
+ *     mechanism this file was originally written to pin.
+ *   - Class B cases NO LONGER get `_skipPersist` (verify() now considers them
+ *     filable by identity) — but dogfood-record.schema.json mirrors the
+ *     submission schema's constraints on every field verify() copies verbatim
+ *     into the record (ref, source, timing, scenario_results,
+ *     overall_verdict.proposed), so writeRecord()'s own validateRecord() gate
+ *     independently re-rejects the SAME field and throws RecordValidationError.
+ *     `ingest()` now catches that (alongside UnsafeRecordPathError — see
+ *     F-4acd28d8) when `record.verification.schema_valid === false`, and
+ *     returns the same clean non-throwing rejection shape. Net effect for
+ *     these 10 cases: identical to before. The new
+ *     'genuinely filable' describe block below is where the fix's actual
+ *     value shows up — a schema violation that does NOT propagate into the
+ *     record's own checked shape (e.g. an unexpected top-level property,
+ *     silently dropped by verify()'s field allowlist) now persists for real.
  */
 
 import { describe, it, before, afterEach } from 'node:test';
@@ -180,10 +203,10 @@ describe('schema-invalid submission → rejected, never persisted', () => {
     assert.ok(existsSync(second.path));
   });
 
-  it('verifyOnly reports would_persist_to=null for a schema-invalid submission', async () => {
+  it('verifyOnly reports would_persist_to=null for an UNFILABLE (Class A) schema-invalid submission', async () => {
     setupTestRoot();
     const bad = clone();
-    bad.ref.commit_sha = 'nope';
+    bad.repo = 'a/b/c'; // computeRecordPath cannot place a 3-segment repo
 
     const result = await verifyOnly(bad, { repoRoot: TEST_ROOT, provenance: stubProvenance });
     assert.equal(result.record.verification.status, 'rejected');
@@ -191,13 +214,46 @@ describe('schema-invalid submission → rejected, never persisted', () => {
     assert.equal('_skipPersist' in result.record, false);
     assert.equal(countFiles(resolve(TEST_ROOT, 'records')), 0);
   });
-});
 
-describe('verify() marks schema-invalid records _skipPersist', () => {
-  it('sets the sentinel when the submission schema fails', async () => {
+  it('verifyOnly reports a REAL would_persist_to for a FILABLE (Class B) schema-invalid submission (F-4036ae25)', async () => {
+    // F-4036ae25 narrowing surfaces a pre-existing asymmetry: verifyOnly()
+    // never calls validateRecord() (only computeRecordPath(), directly) — see
+    // run.js's verifyOnly(), step 5 — so for a Class B violation it reports
+    // where the record WOULD land by identity, even though a real ingest()
+    // would find writeRecord()'s validateRecord() gate rejects the SAME
+    // field and persists nothing (pinned in the 'genuinely filable' describe
+    // block below). would_persist_to is documented as an optimistic preview,
+    // not a persistence guarantee; this test makes that asymmetry explicit
+    // rather than leaving it as an unproven implication of the fix.
     setupTestRoot();
     const bad = clone();
     bad.ref.commit_sha = 'nope';
+
+    const result = await verifyOnly(bad, { repoRoot: TEST_ROOT, provenance: stubProvenance });
+    assert.equal(result.record.verification.status, 'rejected');
+    assert.equal(result.record.verification.schema_valid, false);
+    assert.notEqual(result.would_persist_to, null);
+    assert.ok(result.would_persist_to.includes('_rejected'));
+    assert.equal('_skipPersist' in result.record, false);
+    // verifyOnly NEVER writes, regardless of what it reports would_persist_to.
+    assert.equal(countFiles(resolve(TEST_ROOT, 'records')), 0);
+  });
+});
+
+describe('verify() marks schema-invalid records _skipPersist', () => {
+  // F-4036ae25 (wave 6): this used to assert the sentinel for ANY schema
+  // failure, using a Class B field (ref.commit_sha — not a path-identity
+  // field). That assertion is now WRONG by design: narrowing _skipPersist to
+  // only the unfilable subset is the whole point of the fix. The Class A/B
+  // split and the full matrix (including the additionalProperties case) is
+  // pinned in @dogfood-lab/verify's own verify.test.js, right next to
+  // hasFilablePathIdentity(); this block keeps ONE positive + ONE negative
+  // case local so this file's own contract (what ingest() sees from verify())
+  // stays self-evident without cross-package navigation.
+  it('sets the sentinel when the invalid field IS a path-identity field (Class A)', async () => {
+    setupTestRoot();
+    const bad = clone();
+    bad.repo = 'a/b/c'; // computeRecordPath cannot place a 3-segment repo
 
     const record = await verify(bad, {
       globalPolicy: loadGlobalPolicy(TEST_ROOT),
@@ -207,6 +263,23 @@ describe('verify() marks schema-invalid records _skipPersist', () => {
     });
 
     assert.equal(record._skipPersist, true);
+    assert.equal(record.verification.status, 'rejected');
+    assert.equal(record.verification.schema_valid, false);
+  });
+
+  it('does NOT set the sentinel when the invalid field is unrelated to path identity (Class B)', async () => {
+    setupTestRoot();
+    const bad = clone();
+    bad.ref.commit_sha = 'nope'; // repo/run_id/timing.finished_at are all fine
+
+    const record = await verify(bad, {
+      globalPolicy: loadGlobalPolicy(TEST_ROOT),
+      repoPolicy: loadRepoPolicy(bad.repo, TEST_ROOT),
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record._skipPersist, undefined);
     assert.equal(record.verification.status, 'rejected');
     assert.equal(record.verification.schema_valid, false);
   });
@@ -240,5 +313,91 @@ describe('the persist-a-verdict doctrine is preserved', () => {
     assert.equal(result.written, true);
     assert.ok(result.path.includes('_rejected'));
     assert.ok(existsSync(result.path));
+  });
+});
+
+// ── F-4036ae25: genuinely filable schema-invalid submissions persist ──
+//
+// The one class of schema violation that does NOT propagate into the
+// persisted record's OWN checked shape: an unexpected TOP-LEVEL property.
+// verify() assembles `persisted` from an explicit field allowlist (run_id,
+// repo, ref, source, timing, ci_checks, scenario_results, overall_verdict,
+// notes) rather than spreading `submission` wholesale, so an extra property
+// is simply never copied — validateRecord() never sees it, and writeRecord()
+// succeeds. This is where F-4036ae25's audit-trail promise is actually kept.
+
+describe('a genuinely filable schema-invalid submission persists to _rejected (F-4036ae25)', () => {
+  it('an unexpected top-level property is schema-invalid but persists for real', async () => {
+    setupTestRoot();
+    const bad = clone();
+    bad.unexpected_field = 'oops';
+
+    const result = await ingest(bad, { repoRoot: TEST_ROOT, provenance: stubProvenance });
+
+    assert.equal(result.record.verification.status, 'rejected');
+    assert.equal(result.record.verification.schema_valid, false);
+    assert.equal(result.written, true,
+      'a filable-identity schema violation that does not touch the record shape must persist');
+    assert.ok(result.path.includes('_rejected'));
+    assert.ok(existsSync(result.path));
+    assert.ok(
+      result.record.verification.rejection_reasons.some(r => r.startsWith('schema: ')),
+      `expected a 'schema: ' rejection reason, got: ${JSON.stringify(result.record.verification.rejection_reasons)}`
+    );
+    // The extra property must never leak into the persisted record — it would
+    // fail dogfood-record.schema.json's own additionalProperties:false.
+    const onDisk = JSON.parse(readFileSync(result.path, 'utf-8'));
+    assert.equal('unexpected_field' in onDisk, false);
+  });
+
+  it('a corrected resubmission after a persisted schema-class rejection is NOT blocked (isDuplicate retry carve-out)', async () => {
+    setupTestRoot();
+    const RUN_ID = 'f-4036ae25-retry-schema-class';
+
+    const bad = clone();
+    bad.run_id = RUN_ID;
+    bad.unexpected_field = 'oops';
+
+    const first = await ingest(bad, { repoRoot: TEST_ROOT, provenance: stubProvenance });
+    assert.equal(first.written, true, 'precondition: the bad attempt must actually persist');
+    assert.equal(first.record.verification.status, 'rejected');
+
+    const corrected = clone();
+    corrected.run_id = RUN_ID;
+
+    const second = await ingest(corrected, { repoRoot: TEST_ROOT, provenance: stubProvenance });
+    assert.equal(second.duplicate, false,
+      'a persisted schema-class rejection must not poison the run_id for a corrected retry');
+    assert.equal(second.written, true);
+    assert.equal(second.record.verification.status, 'accepted');
+    assert.ok(existsSync(second.path));
+    // Both records survive: the first attempt's rejection evidence is NOT
+    // overwritten by the second attempt's acceptance (different paths).
+    assert.ok(existsSync(first.path));
+  });
+
+  it('REGRESSION GUARD: a resubmission after a persisted NON-schema rejection is STILL blocked', async () => {
+    setupTestRoot();
+    const RUN_ID = 'f-4036ae25-retry-non-schema-class';
+
+    const bad = clone();
+    bad.run_id = RUN_ID;
+    // Schema-valid; rejected on provenance instead — a rendered verdict, not
+    // "we could not understand the submission". The anti-retry doctrine must
+    // still apply here, unaffected by the schema-class carve-out.
+    const first = await ingest(bad, { repoRoot: TEST_ROOT, provenance: rejectingProvenance });
+    assert.equal(first.written, true, 'precondition: the provenance rejection must persist');
+    assert.ok(
+      first.record.verification.rejection_reasons.some(r => r.startsWith('provenance:')),
+      `expected a 'provenance:' rejection reason, got: ${JSON.stringify(first.record.verification.rejection_reasons)}`
+    );
+
+    const retry = clone();
+    retry.run_id = RUN_ID;
+    // Same submission, but now with provenance that WOULD confirm — proves
+    // the block is isDuplicate's doing, not a second provenance failure.
+    const second = await ingest(retry, { repoRoot: TEST_ROOT, provenance: stubProvenance });
+    assert.equal(second.duplicate, true,
+      'a rendered (non-schema) verdict must keep consuming its run_id — the carve-out must not overreach');
   });
 });

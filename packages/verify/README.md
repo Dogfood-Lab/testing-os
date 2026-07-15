@@ -122,6 +122,7 @@ Discrimination happens by **class**, surfaced by `parseRejectionReason` (below).
 | `submission-contains-verifier-field:` | `index.js` | The submission carried a verifier-owned field (`policy_version`, `verification`, or an object `overall_verdict`) it must not author. |
 | `CONTRACT_SCHEMA_TOO_NEW:` | `validators/schema-version.js` | The submission's `schema_version` declares a MAJOR **above** what this build supports (see `SUPPORTED_SCHEMA_VERSIONS` in `@dogfood-lab/schemas`). This build cannot understand a future contract — **the operator must upgrade testing-os**, but the routing class stays submission-bad (the payload as-shipped cannot be accepted by THIS build). |
 | `CONTRACT_SCHEMA_TOO_OLD:` | `validators/schema-version.js` | The submission's `schema_version` declares a MAJOR **below** the supported floor. **The submitter must re-emit** against the current contract. A patch/minor delta inside the supported major range is NOT rejected. |
+| `unsafe-record-path:` | `packages/ingest/run.js`, `writeRecord()` catch | The record passed schema validation but `computeRecordPath()`'s traversal guard (`isUnsafeSegment`, stricter than the schema's `repo` pattern — e.g. `../etc`) still refused to place it on disk. The submitter's own `repo` string is the problem; nothing is persisted (there is no safe path to write to). |
 
 **Operational** — `class: 'operational'` (the validator itself threw an internal error; investigate the verifier, do NOT bounce to the submitter):
 

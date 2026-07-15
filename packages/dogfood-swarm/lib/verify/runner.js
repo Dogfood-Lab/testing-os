@@ -83,15 +83,21 @@ const TOOL_NOT_FOUND_STDERR = /is not recognized as an internal or external comm
  *
  * @param {string} repoPath — cwd for the command (the only untrusted input;
  *   it is passed as `cwd`, never concatenated into the command string)
- * @param {object} step — { name, cmd, args?, optional?, timeoutMs? }. `timeoutMs`
- *   overrides the default per-step budget (ve-p-005) so build-heavy repos
- *   (large Rust workspaces) can be given more room without a misleading
- *   "failure" that is really "didn't finish in 5 min".
+ * @param {object} step — { name, cmd, args?, optional?, timeoutMs?, maxBufferBytes? }.
+ *   `timeoutMs` overrides the default per-step budget (ve-p-005) so build-heavy
+ *   repos (large Rust workspaces) can be given more room without a misleading
+ *   "failure" that is really "didn't finish in 5 min". `maxBufferBytes`
+ *   (F-3a098ded) overrides the default stdout+stderr capture ceiling
+ *   (F-8d355b64, MAX_BUFFER_BYTES) the same way, for a step whose own output
+ *   legitimately exceeds 64 MB — before this override existed, the
+ *   output_exceeded message told the operator to "raise MAX_BUFFER_BYTES"
+ *   with no way to actually do so short of editing this file's source.
  * @returns {object} — StepResult
  */
 export function runStep(repoPath, step) {
   const cmdArgs = step.args || [];
   const timeoutMs = step.timeoutMs ?? STEP_TIMEOUT_MS;
+  const maxBufferBytes = step.maxBufferBytes ?? MAX_BUFFER_BYTES;
   // `command` is the human-readable display string returned to callers and
   // asserted by callers/tests; it is NOT what executes. `execFileSync`
   // receives `step.cmd` + the argv array separately below.
@@ -104,7 +110,7 @@ export function runStep(repoPath, step) {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: timeoutMs,
-      maxBuffer: MAX_BUFFER_BYTES,
+      maxBuffer: maxBufferBytes,
       env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
       shell: true,
     });
@@ -194,7 +200,14 @@ export function runStep(repoPath, step) {
       reason: toolMissing
         ? `tool \`${step.cmd}\` not found on PATH`
         : outputExceeded
-          ? `step \`${step.name}\` output exceeded execFileSync's ${MAX_BUFFER_BYTES.toLocaleString()}-byte maxBuffer — this is NOT a timeout (the overflow kill reports SIGTERM, which duration_ms confirms was reached in ${duration_ms}ms, not near ${timeoutMs}ms); raise MAX_BUFFER_BYTES or reduce step output`
+          // F-3a098ded: name the byte count actually enforced for THIS step
+          // (maxBufferBytes — the effective value after any step.maxBufferBytes
+          // override) and the real, reachable remedy (the override itself),
+          // mirroring the step.timeoutMs message pattern. The old text pointed
+          // at MAX_BUFFER_BYTES, a module constant with no configuration
+          // surface — the only way to "raise" it was to edit this file's
+          // source and republish.
+          ? `step \`${step.name}\` output exceeded execFileSync's ${maxBufferBytes.toLocaleString()}-byte maxBuffer — this is NOT a timeout (the overflow kill reports SIGTERM, which duration_ms confirms was reached in ${duration_ms}ms, not near ${timeoutMs}ms); set step.maxBufferBytes above ${maxBufferBytes.toLocaleString()} (mirrors step.timeoutMs) or reduce step output`
           : timedOut
             ? `step \`${step.name}\` timed out after ${timeoutMs}ms`
             : undefined,

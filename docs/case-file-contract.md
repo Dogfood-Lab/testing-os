@@ -227,7 +227,7 @@ case-file (or the spec) has a gap to fill.
 | Planner + **clerk** | **Fable** | assembles the case-file; **renders no verdict** — advisory |
 | Executor | Sonnet | generates the artifact |
 | Scout / screen | Haiku | recon, dedup, cheap refutation |
-| **Jury** | `--jury=local` (**5 seats**): mistral-small:24b · granite4.1:30b · qwen2.5:7b · gemma4:31b · hermes3:8b · `--jury=prism` (**3 seats**): mistral-small:24b · qwen2.5:7b · hermes3:8b, each adjudicated by prism per criterion (`--cloud` adds gpt-oss/glm to either) | family-different, reasoning-stripped; multi-lens + submodularity on the prism tier — **strong evidence** |
+| **Jury** | `--jury=local` (**5 seats**): mistral-small:24b · granite4.1:30b · qwen2.5:7b · gemma4:31b · hermes3:8b · `--jury=prism` (**3 seats**): mistral-small:24b · qwen2.5:7b · hermes3:8b, each adjudicated by prism per criterion (`--cloud`: the local tier switches to DEFAULT_JURY_SEATS — the same five local seats plus gpt-oss:120b-cloud and glm-4.6:cloud, seven in all, comment-pinned in lockstep with LOCAL_JURY_SEATS and guarded by a parity test — while the prism tier appends gpt-oss:120b-cloud only) | family-different, reasoning-stripped; multi-lens + submodularity on the prism tier — **strong evidence** |
 | **Floor** | `swarm verify` (tests) + prism retrieval/numeric floors | deterministic — **law** |
 
 **The two jury rosters are NOT the same set, and the difference is load-bearing.** `--jury=prism`
@@ -287,7 +287,11 @@ The `runJury` boundary is injected, and **two tiers now plug into it** (see [The
 jury tiers](#the-two-jury-tiers) below), selected with `--jury=local|prism`. The
 default is the **free local-Ollama panel** (`lib/case-file/ollama-jury.js` —
 Mistral/Granite/Qwen/Gemma/Hermes, all non-Claude, zero cost); `--cloud` opts into the
-paid gpt-oss/glm seats on either tier. The verb exits `0` only on corroborate
+paid seats — the local tier selects `DEFAULT_JURY_SEATS`, the five local seats plus
+gpt-oss:120b-cloud and glm-4.6:cloud (seven seats; the two rosters are comment-pinned
+in lockstep and guarded by a parity test after an earlier unintentional drift), while
+the prism tier appends gpt-oss:120b-cloud only (`PRISM_CLOUD_SEATS`, never glm).
+The verb exits `0` only on corroborate
 (mirroring `swarm verify`), writes the full per-criterion receipt under
 `swarms/<run>/adjudications/`, and persists the gate-readable summary row.
 

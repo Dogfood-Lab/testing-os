@@ -139,6 +139,38 @@ Each feature object (required keys: ${feature.required.join(', ')}):
 }
 
 /**
+ * Neutralize CommonMark fence markers inside interpolated prose (F-019d40b2).
+ *
+ * Every prompt built here embeds a worked-example ```json ... ``` fence
+ * AFTER interpolating agent- or LLM-authored text (prior findings, finding
+ * descriptions/recommendations) that this function does not control. A run
+ * of 3+ literal backticks is a CommonMark fence marker; an ODD count of them
+ * inside the interpolated text flips the fence-toggle parity for the REST of
+ * the document — the real ```json opener meant to start the worked example
+ * gets consumed as the CLOSER for the wrongly-opened fence instead, so the
+ * worked example renders unfenced and the document ends still "inside" an
+ * open fence. Proven against two real findings (F-de02ea22, F-1c99c064) whose
+ * own description text was about this exact fence-parity class of bug in
+ * scripts/check-doc-drift.mjs.
+ *
+ * The fix interleaves a zero-width space (U+200B) between every backtick in
+ * a run of 3+, so no run of 3+ CONSECUTIVE backtick characters survives to be
+ * mistaken for a fence marker by any CommonMark-conformant reader — while the
+ * visible text (a zero-width space renders as nothing) is unchanged for a
+ * human or an LLM reading it. Every template builder below that interpolates
+ * finding-authored prose ahead of its own worked-example fence must route
+ * that text through this function.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function fenceSafe(text) {
+  if (!text) return text;
+  const zeroWidthSpace = String.fromCharCode(8203);
+  return text.replace(/`{3,}/g, (run) => run.split('').join(zeroWidthSpace));
+}
+
+/**
  * Render the per-domain ownership block — globs + ownership class + (optional)
  * frozen-snapshot ID. Agents read the SAME ownership facts the collect-time
  * checkOwnership() will enforce against, not a paraphrased coordinator brief.
@@ -282,7 +314,7 @@ export function buildAuditPrompt(opts) {
   if (!lens) throw new Error(`Unknown audit phase: ${opts.phase}`);
 
   const priorSection = opts.priorContext
-    ? `\n## Prior Findings (do NOT re-report these)\n\n${opts.priorContext}\n`
+    ? `\n## Prior Findings (do NOT re-report these)\n\n${fenceSafe(opts.priorContext)}\n`
     : '';
 
   const domainContract = renderDomainContract(
@@ -362,7 +394,7 @@ Be thorough. Every finding must have a severity and a concrete recommendation.`;
  */
 export function buildAmendPrompt(opts) {
   const findingsList = opts.findings
-    .map(f => `- [${f.severity}] ${f.finding_id}: ${f.description} (${f.file_path || 'no file'}:${f.line_number || '?'})${f.recommendation ? '\n  Fix: ' + f.recommendation : ''}`)
+    .map(f => `- [${f.severity}] ${f.finding_id}: ${fenceSafe(f.description)} (${f.file_path || 'no file'}:${f.line_number || '?'})${f.recommendation ? '\n  Fix: ' + fenceSafe(f.recommendation) : ''}`)
     .join('\n');
 
   const domainContract = renderDomainContract(
