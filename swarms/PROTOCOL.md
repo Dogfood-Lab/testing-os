@@ -20,7 +20,7 @@ The swarm's verification layer is a **funnel**, and the seats are not interchang
 | **Executor** | **Sonnet** | Audit + amend domain agents — the generators | proposes |
 | **Scout / mechanical** | **Haiku** | Cheap recon, path sweeps, enum sync, count checks | proposes |
 | **Clerk** | **Fable** | Assembles the neutral case-file. **Renders NO verdict.** | advisory, verdict-free by construction |
-| **Jury** | **non-Claude** — `mistral-small:24b` · `granite4.1:30b` · `qwen2.5:7b` · `gemma4:31b` · `hermes3:8b` (`--cloud` adds `gpt-oss`/`glm`) | The only family-different verification | **strong evidence** |
+| **Jury** | **non-Claude**, and the two tiers seat **different rosters**: `--jury=local` (5) — `mistral-small:24b` · `granite4.1:30b` · `qwen2.5:7b` · `gemma4:31b` · `hermes3:8b`; `--jury=prism` (3) — `mistral-small:24b` · `qwen2.5:7b` · `hermes3:8b`, the 30B pair excluded because prism's hard 30s ceiling makes them abstain (`--cloud` adds `gpt-oss`/`glm` to either) | The only family-different verification | **strong evidence** |
 | **Floor** | `swarm verify` (the real test suite) | Deterministic | **LAW — the only thing that is** |
 
 **Why the jury cannot be a Claude model.** Every Claude model — Opus, Fable, Sonnet, Haiku — is one family, so no Claude model can independently verify another Claude model's work (Panickssery et al. NeurIPS 2024, arXiv:2404.13076: self-preference correlates linearly with self-recognition). `buildJurySpec` enforces this as **Lock 1** and throws if any seat is the producer family. A same-family "review" is a second opinion, not verification.
@@ -46,7 +46,27 @@ Scored against the six [workflow standards](../.claude/rules/workflow-standards.
 | NAMED_COMPENSATORS | **2** | The compensators table below is now complete and every swarm-state action has a named, dry-run-by-default, reason-required undo (`rewind` / `redrive` / `revalidate` / `clean`), each writing its own audit row. | **Not a 3: no rollback meta-test exists.** A compensator that has never been proven to restore is prose. P1: a drill that mutates state, runs the compensator, and asserts the pre-state is restored. Also `redrive`'s integrity assert currently runs *after* its transaction commits, so it can only report a violation, never prevent it. |
 | DECOMPOSE_BY_SECRETS | **2** | The frozen domain map is exactly this standard: draft → edit → freeze, exclusive file ownership, glob-specificity arbitration via `resolveExclusiveOwner`, enforced at collect time against the snapshot captured at dispatch. Every change is logged to `domain_events`. | **The independent attribution is unsound in the default mode.** Without `--isolate`, all agents share one worktree and git cannot attribute a file to an agent, so an agent that silently edits out-of-domain *and* omits the file from `files_changed` is not caught. `--isolate` restores soundness but is opt-in, and Ji et al. 2026 (arXiv:2607.02294) measured **55.8–67.8% of coding-agent runs violating at least one boundary** — so the unsound mode is the default while the base rate is a coin flip. P0: flip the default. See §Ownership attribution in non-isolated parallel amend waves. |
 | UNCERTAINTY_GATED_HUMANS | **1** | The `[!] OWNERSHIP PROBE DEGRADED [!]` banner is a genuine uncertainty surface: it tells the operator the guarantee weakened and names the remedy. | **The review gates fire on phase boundary, not uncertainty** — Phase 2 and Phase 6 checkpoint every time regardless of how certain the wave is, which trains the operator to rubber-stamp. No checkpoint uses contrastive framing ("you probably expected X; I did Y because…"). P1: gate the review on disagreement/uncertainty, and frame contrastively (Buçinca et al. 2024, arXiv:2410.04253). |
-| EXTERNAL_VERIFIER | **2** | `swarm adjudicate` runs a live cross-family jury with a prism-per-seat tier (L3/L4 per seat), and the citation gate defers to a different model family with the caller's reasoning stripped. The standard is implemented, not just named. | **Two live holes.** (1) `buildSeatEnv` uses a *denylist* over the ambient env, so the jury can silently collapse to one model asked three times under seat names that never judged. (2) **Severity is assigned by the same agent that authored the finding** — the exact self-preference configuration Panickssery et al. 2024 (arXiv:2404.13076) predicts inflates, and where this repo's measured 16→6 HIGH deflation lives. P0 both. |
+| EXTERNAL_VERIFIER | **2** | `swarm adjudicate` runs a live cross-family jury with a prism-per-seat tier (L3/L4 per seat), and the citation gate defers to a different model family with the caller's reasoning stripped. The standard is implemented, not just named. | **One live hole, and one closed.** CLOSED: `buildSeatEnv` was a *denylist* over the ambient env; it is now an explicit `AMBIENT_PASSTHROUGH_KEYS` allowlist (Saltzer & Schroeder 1975 — base access decisions on permission, not exclusion), so ambient config can no longer silently weaken what the jury guarantees. OPEN (P0): **severity is assigned by the same agent that authored the finding** — the self-preference configuration Panickssery et al. 2024 (arXiv:2404.13076) predicts inflates. Remedy: a cross-family severity panel (Verga et al. 2024, arXiv:2404.18796) with an anchored rubric (Kim et al. 2024, arXiv:2310.08491); keep pointwise labels — Tripathi et al. 2025 (arXiv:2504.14716) measures pairwise flipping 35% vs pointwise 9%. |
+
+> **A retracted number, kept visible on purpose (2026-07-15).** Earlier revisions of this table
+> cited "this repo's measured 16→6 HIGH deflation" as established history, and it circulated for a
+> full session as the local evidence for the severity remediation above. **It is unsubstantiated.**
+> A wave-3 audit queried the control plane directly: the cited run shows **9 HIGH / 35 MEDIUM /
+> 16 LOW**, all `approved`, with **no evidence of any re-rating** — and no 16, and no 6.
+>
+> The reason it could never have been checked is the useful part: **`findings` has no
+> `severity_original` column.** The schema cannot record that a severity ever changed, so a
+> deflation claim is unfalsifiable here *by construction*. The number wasn't measured and couldn't
+> have been. It reached a public spec because a coordinator propagated it from a memory file
+> without running the one query that refutes it — while, in the same session, instructing agents to
+> verify a finding's named mechanism against source before trusting its severity.
+>
+> **The remediation above still stands, on the literature rather than on us.** Panickssery et al.
+> 2024 predicts inflation for exactly this configuration; that citation was independently verified
+> against the paper, as were the other two 2026 arXiv citations in this document. What died is only
+> the "and we measured it ourselves" claim. **If the repo wants that evidence, it has to build the
+> column first** — which is itself a finding: this protocol cannot currently measure the bias it
+> names as a P0.
 
 ### Compensators
 

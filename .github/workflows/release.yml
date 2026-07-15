@@ -7,10 +7,14 @@ name: Release
 # 22 ships with npm 10.9 which can sign Sigstore provenance but cannot
 # negotiate the new trusted-publisher auth — the publish PUT goes out without
 # an OIDC token and npm returns 404 ("not in this registry"). The sandbox
-# install below shadows the system npm with npm@latest (mirrors the doctrine
-# in sovereign's release.yml, which is the proven pattern across the org).
-# In-place `npm install -g npm@latest` on Node 22's bundled npm 10.9 races
-# on its own arborist rebuild — the sandbox keeps the system npm untouched.
+# install below shadows the system npm with an exact-pinned npm version
+# (F-eb9fc4aa: corrected from this paragraph's prior claim of npm@latest,
+# which the F-c0348ff6 fix below replaced with an exact pin — see that
+# comment block for the pin rationale; the sandbox-shadow PATTERN itself
+# still mirrors the doctrine in sovereign's release.yml, which is the proven
+# pattern across the org). In-place `npm install -g npm@latest` on Node 22's
+# bundled npm 10.9 races on its own arborist rebuild — the sandbox keeps the
+# system npm untouched.
 #
 # Two triggers:
 #   - push of a v*.*.* tag → automatic publish (the future-default path)

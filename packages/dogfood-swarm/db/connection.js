@@ -105,6 +105,10 @@ export function openDb(dbPath) {
   // retroactively seeds the ledger for migrations whose column/index already
   // exists WITHOUT re-running, and applies only the genuinely missing ones.
   // schema_version bump is folded into migrateDb. Idempotent on a current DB.
+  // F-1de6e6ca: `version` is passed for signature compatibility with every
+  // other caller (see migrateDb's JSDoc) but is not actually consulted —
+  // the function decides fresh-vs-upgrade per-migration via the ledger +
+  // artifactExists().
   migrateDb(db, version);
 
   pool.set(dbPath, db);

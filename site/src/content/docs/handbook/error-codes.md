@@ -460,14 +460,33 @@ A `swarm verify --ingest` run (or `persist-results.js`) reached the dogfood-inge
 
 ### `CRITERION_INTENT_OVERFLOW`
 
-- **Class:** `config` — a locally-detectable input error in the case-file, not an operational fault.
-- **Trigger:** Assembling a `--jury=prism` seat call, when `rubric.objective` plus a single criterion's `check` text already exceed prism's 4000-char `intent` cap **before** any optional evidence or out-of-scope sections are added. Raised by `buildCriterionIntent` in `packages/dogfood-swarm/lib/case-file/prism-jury.js`.
-- **Message shape:** `rubric.objective + criterion '<id>' exceed prism's 4000-char intent cap by <n> chars — shorten the objective or split the criterion`
-- **Hint:** carried as structured fields on the error — `criterionId`, `headLength`, `maxChars`.
+:::note[Severity: MEDIUM]
+A locally-detectable input error in the case-file, caught before any jury seat is dispatched. Nothing is spent, nothing is written, nothing is corrupted — the operator edits the case-file and re-runs.
+:::
+
+- **Class:** `CriterionIntentOverflowError` (`packages/dogfood-swarm/lib/errors.js`).
+- **Trigger:** Assembling a `--jury=prism` seat call, when the **mandatory** section — `rubric.objective` + one criterion's `check` + the whole `out_of_scope` block — already exceeds prism's 4000-char `intent` cap, before any evidence is added. Raised by `buildCriterionIntent` in `packages/dogfood-swarm/lib/case-file/prism-jury.js`.
+- **Message shape:** `rubric.objective + criterion '<id>' + out_of_scope exceed prism's 4000-char intent cap by <n> chars — shorten the objective, split the criterion, or trim the out-of-scope list`
+- **Hint:** **none reaches the operator.** `CriterionIntentOverflowError` sets no `.hint`, and `deriveHintForCode()` in `error-render.js` has no case for this code — so `renderTopLevelError` prints no `Next:` line. The actionable detail lives in the message text and in the error's structured fields (`criterionId`, `headLength`, `maxChars`). This is a real gap, recorded here rather than papered over; the fix belongs in `error-render.js`, not in this page.
 - **Operator action:**
-  1. Shorten `objective` in the case-file, or split the named criterion into two narrower checks. The mandatory head (objective + one criterion) must fit the cap on its own; evidence and out-of-scope are the parts that get trimmed, and the trimming is always reported.
+  1. Shorten `objective`, split the named criterion, or trim `out_of_scope` — the three levers the message names. **All three sections are mandatory** on this tier: only the evidence pack yields to the cap, so an over-cap mandatory section cannot be resolved by dropping evidence.
   2. Re-run `swarm adjudicate <run-id> --case-file <path> --jury=prism`.
-- **Why this fails fast rather than trimming:** the prism tier's assembly is priority-ordered, so anything dropped is reported and never silent. An over-cap *head*, however, was neither reported nor dropped — it was a fixed cost measured against the budget but never checked. prism's own pydantic `max_length=4000` then rejected the request on **every seat uniformly**, so the panel returned `insufficient_context` and the operator was told the jury could not reach the artifact — when the real cause was a deterministic input error knowable without spending a single ~27s seat call. This is the [case-file contract](../../case-file-contract/)'s "anything that does not fit is REPORTED, not silently dropped" applied to the one section that had escaped it.
+- **Why this fails fast rather than trimming:** everything droppable is already reported per-criterion on the receipt as `criteria[].brief_omitted`. An over-cap **mandatory** section, though, was neither reported nor droppable — it was a fixed cost measured against the budget but never checked. prism's own pydantic `max_length=4000` then rejected the request on **every seat uniformly**, so the panel returned `insufficient_context` and the operator was told the jury could not reach the artifact — when the real cause was a deterministic input error knowable without spending a single ~27s seat call. This is the [case-file contract](https://github.com/dogfood-lab/testing-os/blob/main/docs/case-file-contract.md)'s "anything that does not fit is REPORTED, not silently dropped" applied to the one section that had escaped it.
+
+### `UNSAFE_RECORD_PATH`
+
+:::caution[Severity: HIGH]
+A submission passed the record schema but its on-disk path could not be safely computed. **Nothing is written** — the traversal guard holds and the ingest fails closed. The submission is rejected, not persisted.
+:::
+
+- **Class:** `UnsafeRecordPathError` (`packages/ingest/persist.js`), cause-chained to the underlying `computeRecordPath` failure.
+- **Trigger:** `writeRecord()`, when `computeRecordPath()` throws *after* `validateRecord()` has already passed. The gap it closes: the record schema's `repo` pattern (`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`) **permits embedded `..`** — `../etc` matches — while `isUnsafeSegment` correctly refuses it. So a schema-valid-but-unsafe repo reached path computation and threw a bare, unclassified `Error`.
+- **Message shape:** `record passed schema validation but its path could not be safely computed (repo: <repo>, run_id: <run_id>): <cause message>`
+- **Fields:** `repo`, `runId`, plus the chained `cause` (rendered as `Caused by: …`).
+- **Operator action:**
+  1. Read the `Caused by:` line — it names the specific guard that refused (`invalid repo format` / `unsafe repo segment` / `unsafe run_id`).
+  2. Fix the submission's `repo` or `run_id` and resubmit. **The run_id is not consumed** — nothing was written, so a corrected resubmission is not a duplicate.
+- **Why a distinct code rather than reusing `RECORD_SCHEMA_INVALID`:** the record is *not* schema-invalid — it passed. Reporting it as a schema failure would send the operator to the schema, which is exactly the confusion this code exists to end. The two checks disagree by design: the schema is a permissive contract shared with consumers, and `isUnsafeSegment` is the stricter filesystem-safety gate. A submission can satisfy the first and fail the second, and that state now has a name.
 
 ## Cross-references
 

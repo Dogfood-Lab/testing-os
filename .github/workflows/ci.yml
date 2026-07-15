@@ -115,9 +115,14 @@ jobs:
     strategy:
       # Both Node legs must run to completion so the operator can tell from a
       # single CI run whether a failure is Node-version-specific (e.g. an
-      # assert.throws matcher tightened in Node 22) or a real cross-version
-      # bug. Default fail-fast: true cancels Node 22 mid-flight when Node 20
-      # fails and costs an extra retry-and-pin cycle every time.
+      # assert.throws matcher tightened in one runtime) or a real cross-
+      # version bug. Default fail-fast: true cancels one leg mid-flight when
+      # the other fails and costs an extra retry-and-pin cycle every time.
+      # F-33ff7b4b: phrased version-agnostically on purpose — a prior version
+      # of this comment named a specific pair (22 vs 20) and went stale the
+      # moment F-W1-CI-010 (a few lines below) dropped 20 from the matrix,
+      # self-contradicting within the same strategy: block. Naming no
+      # version here means the next matrix move can't repeat that drift.
       fail-fast: false
       matrix:
         # F-W1-CI-010: Node 20 hit EOL on 2026-04-30 — drop. Node 22 is

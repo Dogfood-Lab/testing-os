@@ -111,6 +111,24 @@ function isAllowlisted(relPath) {
  * function in this package uses at module scope. Arrow functions and object
  * methods are not extracted; a file that needs those covered needs a wider
  * extractor, not a silent stretch of this one.
+ *
+ * F-bb7f4885: a same-line default-parameter OBJECT literal — e.g.
+ * `function computeAssessment(wave, ..., ctx = {}) {` (commands/status.js) —
+ * used to mis-extract. The old single brace-walk started counting at the
+ * signature line with no notion of "am I still inside the parameter list",
+ * so `ctx = {}`'s own balanced pair closed depth back to zero before the
+ * walk ever reached the function's REAL opening brace at the end of that
+ * same line, truncating a 176-line body down to the signature line alone
+ * (verified against commands/status.js:493 directly). Fixed by walking PAREN
+ * depth first, from the `(` this function's own regex already matched
+ * through, to find where the parameter list itself closes — a default
+ * value's `{}` never touches paren depth, so this walk locates the true end
+ * of the parameter list regardless of how many such literals a signature
+ * carries. Only once that close is found does the brace walk begin, at the
+ * first `{` on or after it. Tolerant, not lexer-exact, same as the original
+ * brace walk: neither has awareness of strings, comments, or regex literals
+ * containing a stray `(`, `)`, `{`, or `}` — an existing limitation of this
+ * extractor, not one this fix introduces.
  */
 function extractFunctionBodies(text) {
   const lines = text.split('\n');
@@ -119,11 +137,48 @@ function extractFunctionBodies(text) {
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(fnRe);
     if (!m) continue;
-    let depth = 0, seenOpen = false, endLine = -1;
-    for (let j = i; j < lines.length && endLine === -1; j++) {
-      for (const ch of lines[j]) {
-        if (ch === '{') { depth++; seenOpen = true; }
-        else if (ch === '}') { depth--; if (seenOpen && depth === 0) { endLine = j; break; } }
+
+    // Phase 1: walk PAREN depth from the opening '(' this regex already
+    // matched through (position m[0].length - 1 on line i) until it returns
+    // to zero — that is the parameter list's own closing ')', regardless of
+    // any '{}' a default value carries.
+    let parenDepth = 0, seenParenOpen = false;
+    let paramsCloseLine = -1, paramsCloseCol = -1;
+    for (let j = i; j < lines.length && paramsCloseLine === -1; j++) {
+      const startCol = j === i ? m[0].length - 1 : 0;
+      for (let k = startCol; k < lines[j].length; k++) {
+        const ch = lines[j][k];
+        if (ch === '(') { parenDepth++; seenParenOpen = true; }
+        else if (ch === ')') {
+          parenDepth--;
+          if (seenParenOpen && parenDepth === 0) { paramsCloseLine = j; paramsCloseCol = k; break; }
+        }
+      }
+    }
+    if (paramsCloseLine === -1) continue; // unbalanced parens — not a function we can safely extract
+
+    // Phase 2: the body's opening '{' is the first one at or after the
+    // parameter list's close — in valid JS there is nothing between them but
+    // whitespace, or a line break if the brace starts its own line.
+    let bodyLine = -1, bodyCol = -1;
+    for (let j = paramsCloseLine; j < lines.length && bodyLine === -1; j++) {
+      const startCol = j === paramsCloseLine ? paramsCloseCol + 1 : 0;
+      const idx = lines[j].indexOf('{', startCol);
+      if (idx !== -1) { bodyLine = j; bodyCol = idx; }
+    }
+    if (bodyLine === -1) continue; // no body brace found — not a function we can safely extract
+
+    // Phase 3: brace-depth from that known-good starting point to the
+    // function's own matching '}' — unchanged from the original walk, just
+    // no longer seeded from the signature line where an earlier default-
+    // parameter '{}' could return depth to zero first.
+    let depth = 0, endLine = -1;
+    for (let j = bodyLine; j < lines.length && endLine === -1; j++) {
+      const startCol = j === bodyLine ? bodyCol : 0;
+      for (let k = startCol; k < lines[j].length; k++) {
+        const ch = lines[j][k];
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { endLine = j; break; } }
       }
     }
     if (endLine !== -1) bodies.set(m[1], lines.slice(i, endLine + 1).join('\n'));
@@ -184,6 +239,32 @@ describe('Tx discipline — UPDATE agent_runs + INSERT agent_state_events co-occ
       `Route through transitionAgent (which goes through executeTransition in ` +
       `lib/state-machine.js, the self-wrapping helper), or wrap the pair in ` +
       `db.transaction() inside the same function at the call site.`);
+  });
+
+  // DELETION-PROOF for F-bb7f4885's two-phase (paren-then-brace) walk above.
+  // Revert extractFunctionBodies to a single brace-walk seeded at the
+  // signature line and this goes red: the default value's own '{}' closes
+  // depth back to zero before the walk ever reaches the real body, and the
+  // assertions below catch the 1-line truncation directly rather than via a
+  // downstream sweep that might not touch this exact shape.
+  it('extractFunctionBodies is not fooled by a same-line default-parameter object literal (F-bb7f4885)', () => {
+    // Mirrors commands/status.js:493's real shape exactly (verified against
+    // an acorn AST parse: that function's real span is 176 lines, and the
+    // pre-fix walk truncated it to this same 1-line signature).
+    const src = [
+      'function computeAssessment(wave, agents, openBySeverity, blocked, inFlight, ctx = {}) {',
+      '  const a = 1;',
+      '  const b = 2;',
+      '  return a + b;',
+      '}',
+      '',
+    ].join('\n');
+    const body = extractFunctionBodies(src).get('computeAssessment');
+    assert.ok(body, 'computeAssessment must be found at all');
+    assert.equal(body.split('\n').length, 5,
+      'the FULL 5-line body must be extracted, not truncated to the 1-line signature');
+    assert.match(body, /return a \+ b;/,
+      'the body must include the real closing content, not stop at the default-param object');
   });
 
   it('lib/state-machine.js executeTransition body contains db.transaction(', () => {

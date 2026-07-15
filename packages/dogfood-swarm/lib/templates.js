@@ -482,7 +482,7 @@ the canonical contract above is load-bearing:
   "domain": "${opts.domainName}",
   "features": [
     {
-      "id": "FT-001",
+      "id": "F-001",
       "priority": "CRITICAL|HIGH|MEDIUM|LOW",
       "category": "missing-feature|ux|performance|integration|production-readiness",
       "description": "What is needed",

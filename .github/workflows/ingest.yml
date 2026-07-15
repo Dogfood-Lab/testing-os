@@ -223,7 +223,15 @@ jobs:
         # same evidence-loss class d6-infra-B001 closed for the rejected-exit
         # path. The generator is deterministic and re-runs on every ingest, so
         # a skipped regeneration self-heals; a dropped record does not.
-        if: steps.result.outputs.written == 'true'
+        # F-703e5eac: also fires on parse_failed == 'true'. 'Read result'
+        # exits 0 before ever reaching the written= extraction when run.js's
+        # stdout is unparseable, so `written` stays unset even though a record
+        # may already be sitting on the runner's working tree — the exact
+        # scenario the very next step's own condition already accounts for
+        # (see its `if:` a few lines down). Without this disjunct the record
+        # still commits but the served badge/trends endpoints silently go
+        # stale with no operator-visible signal.
+        if: steps.result.outputs.written == 'true' || steps.result.outputs.parse_failed == 'true'
         run: |
           # F-f05363e2: on the non-fatal fallback, the inline ::warning:: is the
           # only signal — an operator scanning the run SUMMARY page (not the step

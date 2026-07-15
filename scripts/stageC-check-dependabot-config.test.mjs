@@ -67,6 +67,28 @@ test('F-W1-CI-032: version 2, with exactly the 3 documented ecosystem entries (r
   );
 });
 
+test('F-7881db1c: schedule.interval is monthly on all 3 ecosystem entries (org rule requires monthly, not weekly)', () => {
+  const text = readFileSync(dependabotPath, 'utf8');
+  const intervals = [...text.matchAll(/interval:\s*(\w+)/g)].map((m) => m[1]);
+  assert.equal(intervals.length, 3, `expected exactly 3 schedule.interval fields — found ${intervals.length}`);
+  assert.deepEqual(
+    intervals,
+    ['monthly', 'monthly', 'monthly'],
+    `.claude/rules/github-actions.md's Non-Negotiable Dependabot rule requires interval: monthly; found ${JSON.stringify(intervals)} (F-7881db1c). Weekly is a reachable ~4x CI-minutes multiplier here, not a cosmetic drift: package.json and package-lock.json are both in ci.yml's push/pull_request paths filters, so every Dependabot PR (weekly or monthly) triggers a full 2-leg Node 22+24 CI run through every gate.`,
+  );
+});
+
+test('F-7881db1c: open-pull-requests-limit is 3 on every ecosystem entry (org rule requires 3, not 5)', () => {
+  const text = readFileSync(dependabotPath, 'utf8');
+  const limits = [...text.matchAll(/open-pull-requests-limit:\s*(\d+)/g)].map((m) => Number(m[1]));
+  assert.equal(limits.length, 3, `expected exactly 3 open-pull-requests-limit fields — found ${limits.length}`);
+  assert.deepEqual(
+    limits,
+    [3, 3, 3],
+    `.claude/rules/github-actions.md's Non-Negotiable Dependabot rule requires open-pull-requests-limit: 3; found ${JSON.stringify(limits)} (F-7881db1c). The github-actions entry was already compliant pre-fix; only the two npm entries (root + site/) had drifted to 5.`,
+  );
+});
+
 test('F-W1-CI-032: every ecosystem entry groups minor+patch updates into one PR rather than one PR per dependency', () => {
   const text = readFileSync(dependabotPath, 'utf8');
   const groupBlocks = [...text.matchAll(

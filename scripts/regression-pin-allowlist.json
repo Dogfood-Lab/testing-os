@@ -1,6 +1,10 @@
 {
   "$comment": "Allowlist for scripts/check-finding-regression-pins.mjs (W2-CI-001). Each entry is an F-id that appears in source files but has no corresponding test pin, AND has a deliberate justification. The parser is intentionally permissive — it cannot distinguish 'this comment IS a fix pin' from 'this comment MENTIONS the id' (see parse-regression-pins.js JSDoc 'permissive limitation'). Cross-references in source comments are the most common legitimate orphan; this allowlist captures them so the always-on CI gate stays green without forcing test pins for prose mentions. Adding an entry: F-id key, value is an object with at least { reason, file }. Entries should be revisited each release — if the source reference goes away, drop the allowlist entry.",
   "allow": {
+    "F-f0d874a7": {
+      "reason": "Cross-reference, not a fix pin. Both mentions in lib/wave-state-machine.js are prose ABOUT a deliberately-unfixed caveat, not a guard: the module docblock (:14) and an inline note (:201) record that the override branch validates toStatus against the canonical wave-status SET rather than the SPECIFIC target sanctioned for each blocked FROM state — deliberately weaker, and production-unreachable today because every override callsite (revalidate.js, rewind.js) hardcodes a literal target. There is no behavior to pin: a test asserting the weaker check would pin the caveat as correct, and a test asserting the stronger one would fail by design. The comments exist precisely so a future caller passing a VARIABLE toStatus reads the warning first — deleting them to satisfy this gate would remove the only thing standing between that caller and the hazard. Added at wave-4 integration by the coordinator, not by ci-tooling: this pin was minted in swarm-cp-core's isolated worktree and is invisible from ci-tooling's, so under --isolate the allowlist cannot be complete until merge. That is a structural property of isolation, not an oversight by either domain.",
+      "file": "packages/dogfood-swarm/lib/wave-state-machine.js"
+    },
     "F-693631-010": {
       "reason": "Cross-reference in scripts/build.mjs comment naming the drift class — not a fix-site pin, the pin lives in packages/dogfood-swarm where the AUDIT_PHASES enum is enforced.",
       "file": "scripts/build.mjs"
@@ -24,6 +28,18 @@
     "F-W1-CI-001": {
       "reason": "Cross-reference in .github/workflows/pages.yml naming the historical id for the pa11y job-permission-isolation restructure — the same restructure the file elsewhere attributes to F-a52776d5 (both appear independently in prose, not dual-labeled at one site). Real behavioral coverage is scripts/stageC-check-pages-a11y-isolation.test.mjs's F-a52776d5/F-32c517c4 tests, which assert the a11y job is dedicated with `permissions: {}` and that pa11y does NOT run inside the elevated deploy job — the exact property this citation describes.",
       "file": ".github/workflows/pages.yml"
+    },
+    "F-eb9fc4aa": {
+      "reason": "Doc-only correction in .github/workflows/release.yml's top-of-file header: the header narrated the pre-fix 'shadows the system npm with npm@latest' behavior as current fact even though the F-c0348ff6 fix (90-odd lines below) had already replaced that install with an exact version pin. No new behavior — the header now describes the exact-pin mechanism and points at the F-c0348ff6 comment block for the rationale. Real behavioral coverage (the install line itself must never resolve npm@latest and must pin npm@X.Y.Z) is scripts/stageC-check-release-resilience.test.mjs's 'F-c0348ff6' test, which predates and is independent of this id.",
+      "file": ".github/workflows/release.yml"
+    },
+    "F-33ff7b4b": {
+      "reason": "Doc-only correction in .github/workflows/ci.yml's fail-fast justification comment: it named a specific Node pair (22 vs 20) that F-W1-CI-010 (two comment blocks below, same strategy: block) had already dropped 20 from, self-contradicting within the same file. Reworded version-agnostically so it cannot go stale the next time the matrix moves — no new behavior. Real structural coverage (fail-fast: false and node-version: [22, 24]) is scripts/stageC-check-ci-hardening.test.mjs's 'F-W1-CI-010' test, which predates and is independent of this id.",
+      "file": ".github/workflows/ci.yml"
+    },
+    "F-893adcd1": {
+      "reason": "Doc-only correction in scripts/check-finding-regression-pins.mjs's top-of-file docstring: it described only the legacy F-NNNNNN-NNN id shape even though the F-3ec5b54f/F-5eafee44 fix in the parser this file imports (packages/portfolio/lib/parse-regression-pins.js) had already widened the matched shapes to three formats and the scanned extensions to include .yml/.yaml. The docstring now points at F_ID_PATTERN's own JSDoc as the single source of truth instead of re-describing it, so the two files cannot drift apart again. No new behavior — real coverage of the widened contract is this same test file's own 'F-3ec5b54f META' / 'F-5eafee44 META' tests (already green on this tree) plus packages/portfolio/lib/parse-regression-pins.test.js, both of which predate this id.",
+      "file": "scripts/check-finding-regression-pins.mjs"
     },
     "F-e241fa61": {
       "reason": "Doc-only correction in packages/dogfood-swarm/commands/redrive.js's AGENT_ELIGIBLE_SOURCES comment, clarifying that a WAVE-level 'failed' status (unlike an agent-level 'failed') is BLOCKED and needs the override path. The behavior itself — a failed wave redriven only via override — is exercised by packages/dogfood-swarm/redrive.test.js's 'failed wave is redriven via override path (BLOCKED source)' test (describe block 'redrive — wave-level transition paths'), which predates and is independent of this id.",

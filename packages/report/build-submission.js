@@ -81,7 +81,17 @@ export function buildSubmission(params) {
     notes
   } = params;
 
-  const required = { repo, commitSha, startedAt, finishedAt, scenarioResults };
+  // F-fc1bbffa: providerRunId was the one required param this check missed —
+  // workflow/runUrl are effectively (if accidentally) protected too: an
+  // omitted value stays `undefined`, JSON.stringify drops the key entirely,
+  // and precheckSubmission's schema gate catches the resulting missing
+  // source.workflow/source.run_url downstream. providerRunId instead gets
+  // COERCED below (`String(providerRunId)`), and `String(undefined)` is the
+  // real, non-empty, 9-character string "undefined" — schema-conformant
+  // (provider_run_id is typed string only, no pattern/minLength) and
+  // therefore silent all the way to the real verifier, where it fails as a
+  // GitHub API 404 on run id "undefined" instead of a clear build-time error.
+  const required = { repo, commitSha, startedAt, finishedAt, scenarioResults, providerRunId };
   for (const [name, value] of Object.entries(required)) {
     if (value == null) throw new Error(`buildSubmission: missing required param "${name}"`);
   }

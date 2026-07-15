@@ -181,24 +181,6 @@ export function loadRepoPolicy(repoSlug, repoRoot) {
 }
 
 /**
- * Default scenario fetcher that reads from the local filesystem.
- * Used when dogfood-labs is dogfooding itself.
- *
- * @param {string} repoRoot - Root of the source repo
- * @returns {object} Scenario fetch adapter
- */
-export function localScenarioFetcher(repoRoot) {
-  return {
-    async fetch(scenarioId) {
-      if (!/^[\w-]+$/.test(scenarioId)) return null;
-      const path = join(repoRoot, 'dogfood', 'scenarios', `${scenarioId}.yaml`);
-      if (!existsSync(path)) return null;
-      return yaml.load(readFileSync(path, 'utf-8'));
-    }
-  };
-}
-
-/**
  * Default per-request timeout for the GitHub scenario fetch. Mirrors the
  * sibling `GITHUB_PROVENANCE_TIMEOUT_MS` constant at
  * `packages/verify/validators/provenance.js`: a hung GitHub API call
@@ -305,13 +287,25 @@ function defaultSleep(ms) {
  * this is a pure security hardening with no behavioural cost to a
  * conforming scenario document.
  *
- * Scoped deliberately to THIS call site only. The other three `yaml.load`
- * calls in this file (loadGlobalPolicy, loadRepoPolicy,
- * localScenarioFetcher) all read maintainer-committed local files — the
- * attacker does not control their content, only (in loadRepoPolicy's
- * case) which existing file gets selected, and that selection is already
- * segment-validated above. Widening this schema change to those sites is
- * unnecessary risk for zero additional coverage.
+ * Scoped deliberately to THIS call site only. The other two `yaml.load`
+ * calls in this file (loadGlobalPolicy, loadRepoPolicy) both read
+ * maintainer-committed local files — the attacker does not control their
+ * content, only (in loadRepoPolicy's case) which existing file gets
+ * selected, and that selection is already segment-validated above.
+ * Widening this schema change to those sites is unnecessary risk for zero
+ * additional coverage.
+ *
+ * F-3be85850: this comment previously also named a THIRD "local files"
+ * call site, localScenarioFetcher — removed as dead code (zero callers
+ * anywhere in the repo, and not reachable even as an external package hook:
+ * load-context.js is not in @dogfood-lab/ingest's package.json `exports`
+ * map). Its own doc comment claimed it was "Used when dogfood-labs is
+ * dogfooding itself," but the real self-dogfood path (self-dogfood.yml)
+ * routes through the SAME public ingest.yml repository_dispatch pipeline
+ * every consumer uses, via githubScenarioFetcher below — never a local-disk
+ * reader. dogfood/scenarios/*.yaml remain the canonical scenario
+ * definitions; they are simply fetched over the GitHub Contents API rather
+ * than off local disk, even for this repo's own CI.
  */
 export function parseUntrustedScenarioYaml(text) {
   return yaml.load(text, { schema: yaml.CORE_SCHEMA });

@@ -10,7 +10,7 @@
 
 import { readdirSync, existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { buildSubmission } from '@dogfood-lab/report/build-submission.js';
@@ -314,7 +314,19 @@ console.error(`Wrote submission to ${submissionPath}`);
 // Ingest via CLI — packages/ingest/run.js after the testing-os monorepo migration.
 const ingestScript = resolve(REPO_ROOT, 'packages/ingest/run.js');
 try {
-  execSync(`node "${ingestScript}" --provenance=stub --file "${submissionPath}"`, {
+  // F-1f7f9de8: argv-array form (execFileSync), never a shell-string exec —
+  // sibling of F-21240958 (commands/persist.js:91, same shape, already
+  // fixed). `submissionPath` derives from `absDir = resolve(manifestDir)`
+  // where `manifestDir = process.argv[2]` — an operator-supplied CLI
+  // positional, unvalidated for shell metacharacters — and was previously
+  // embedded inside a double-quoted argument in a string handed to execSync,
+  // which always invokes a shell (unlike execFileSync). A `manifestDir`
+  // containing a `"` would break out of the quoted argument. execFileSync
+  // with an argv array never invokes a shell to parse arguments, so there is
+  // no quoting to get right and no metacharacter surface at all — matching
+  // every sibling git/node invocation in this package (dispatch.js's
+  // execFileSync('git', [...]), lib/worktree.js, and F-21240958's fix).
+  execFileSync('node', [ingestScript, '--provenance=stub', '--file', submissionPath], {
     stdio: ['ignore', 'inherit', 'inherit'],
     // SEED-2: forward the ingest DATA root so it stays overridable. run.js
     // honors INGEST_REPO_ROOT for the records/ + indexes/ it writes; in

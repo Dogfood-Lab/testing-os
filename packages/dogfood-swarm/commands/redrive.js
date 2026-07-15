@@ -526,6 +526,14 @@ export function redrive(opts) {
     if (isReceiptViolation) {
       const wrapped = new Error(`${e.message} (correlation_id=${correlationId})`);
       wrapped.code = e.code;
+      // F-67908e23: waveId + hint for parity with this file's sibling typed
+      // errors (and DISPATCH_NO_AGENT_DOMAINS / COLLECT_UNKNOWN_DOMAIN /
+      // CLEAN_WAVE_IN_FLIGHT) — renderTopLevelError prints dedicated lines
+      // for both when present. waveId is already resolved in this function's
+      // outer scope, so setting it here is free.
+      wrapped.waveId = waveId;
+      wrapped.hint = 'inspect wave_state_events / agent_state_events for this wave; ' +
+        'this indicates a classification or state-machine regression, not an operator mistake';
       throw wrapped;
     }
     throw new Error(

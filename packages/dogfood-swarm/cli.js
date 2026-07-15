@@ -414,7 +414,7 @@ function cmdInit(args) {
 function cmdDomains(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm domains <run-id> [--freeze | --unfreeze --reason "..." | --edit <name> [opts] | --add <name> [opts] | --remove <name> | --history]');
+    console.error('Usage: swarm domains <run-id> [--freeze | --unfreeze --reason "..." [--force] | --edit <name> [opts] | --add <name> [opts] | --remove <name> | --history]');
     process.exit(1);
   }
 
@@ -447,7 +447,13 @@ function cmdDomains(args) {
       console.error('--unfreeze requires --reason "explanation"');
       process.exit(1);
     }
-    unfreezeDomains(db, runId, reason);
+    // F-b66306c5: unfreezeDomains (lib/domains.js) refuses while a wave is
+    // in flight and its own thrown message names `{ force: true }` as the
+    // documented escape hatch for an operator who has already halted the
+    // wave by hand — but nothing here ever parsed --force, so that escape
+    // hatch was unreachable from the CLI surface that prints the message.
+    const force = args.includes('--force');
+    unfreezeDomains(db, runId, reason, { force });
     console.log(`Domains unfrozen for ${runId} (reason: ${reason})`);
     return;
   }
@@ -894,14 +900,23 @@ function cmdStatus(args) {
 function cmdResume(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm resume <run-id>');
+    console.error('Usage: swarm resume <run-id> [--force]');
     process.exit(1);
   }
+
+  // F-058f4d54: resume()'s COORD-002 guard (resume.js:204) refuses to
+  // redispatch over a dirty/unmerged --isolate worktree and its own error
+  // message tells the operator to pass `{ force: true } (CLI: --force)` —
+  // but until this fix nothing here ever parsed --force, so the advertised
+  // escape hatch was unreachable and the refusal fired identically every
+  // time, with the flag silently discarded.
+  const force = args.includes('--force');
 
   const r = resume({
     runId,
     dbPath: getDbPath(),
     outputDir: getOutputDir(runId),
+    force,
   });
   console.log(formatResume(r));
 
@@ -2363,7 +2378,12 @@ Commands:
                              structured status object (run/waves/agents/
                              findings/assessment) for machine consumers;
                              default is the text frame.
-  resume <run-id>            Redispatch incomplete agents
+  resume <run-id> [--force]  Redispatch incomplete agents. --force: proceed
+                             even when a redispatch candidate's --isolate
+                             worktree has uncommitted/unmerged work that
+                             recreation would destroy (default: refuse and
+                             name the at-risk worktree(s); no undo once
+                             --force accepts the loss).
   history <wave-id> [--format=text|json]
                              Render the wave_state_events transition chain for
                              a wave. Deep audit verb for the override-and-reason
@@ -2402,7 +2422,11 @@ Commands:
 Domain commands:
   domains <run-id>                          Show current map
   domains <run-id> --freeze                 Lock for the run
-  domains <run-id> --unfreeze --reason "."  Unlock (requires reason)
+  domains <run-id> --unfreeze --reason "."  Unlock (requires reason). Refuses
+                                             while a wave is in flight
+                                             (dispatched/collecting/failed);
+                                             add --force to override once
+                                             you've halted the wave by hand.
   domains <run-id> --edit <name> [opts]     Modify globs/ownership/desc
   domains <run-id> --add <name> --globs ... Add new domain
   domains <run-id> --remove <name>          Remove domain

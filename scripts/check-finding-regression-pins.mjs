@@ -4,11 +4,22 @@
  * (claimed-fixed without verification).
  *
  * Consumes the parser at packages/portfolio/lib/parse-regression-pins.js to
- * scan the repo for `F-NNNNNN-NNN` finding-id pins, then asserts the
- * asymmetric invariant the gate cares about: every F-id pinned in source
- * has at least one F-id pin in a test file. Test-only pins are NOT a
- * failure — a test that documents a regression whose source reference has
- * been refactored away still earns its keep.
+ * scan the repo for finding-id pins, then asserts the asymmetric invariant
+ * the gate cares about: every F-id pinned in source has at least one F-id
+ * pin in a test file. Test-only pins are NOT a failure — a test that
+ * documents a regression whose source reference has been refactored away
+ * still earns its keep.
+ *
+ * F-893adcd1: the exact id shape and the scanned file extensions are NOT
+ * re-described here — they live in parse-regression-pins.js's F_ID_PATTERN
+ * JSDoc (three unioned formats: legacy F-NNNNNN-NNN, hash F-xxxxxxxx,
+ * prefixed F-AAA-NNN) and its DEFAULT_SOURCE_EXTENSIONS (.js/.mjs/.cjs/
+ * .ts/.tsx/.jsx plus .yml/.yaml, with a .github carve-out — see
+ * DOT_DIR_SCAN_ALLOWLIST). This docstring previously hard-coded only the
+ * legacy `F-NNNNNN-NNN` shape and went stale the moment F-3ec5b54f /
+ * F-5eafee44 widened the pattern in that other file — pointing at the file
+ * that actually DEFINES the contract, instead of re-stating it, means this
+ * wrapper's docstring cannot drift from it again the next time it's widened.
  *
  * Companion to FT-BACKEND-002 (`swarm verify-fixed` runtime check). This
  * commit-time gate runs in CI on every push; the runtime check runs after

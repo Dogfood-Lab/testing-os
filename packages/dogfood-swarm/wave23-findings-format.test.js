@@ -434,6 +434,18 @@ describe('F-091578-034 — 3-way disambiguation preserved in text + markdown + j
  * imports and calls, to appear inside exactly one handler's body. That is a
  * true sweep: it inspects every command cli.js routes, not a fixed list of
  * names assumed safe.
+ *
+ * F-bb7f4885: this duplicates the same brace-walk amend1-tx-discipline.test.js's
+ * extractFunctionBodies used, and inherited the same defect — a same-line
+ * default-parameter OBJECT literal in a `cmd*` signature would close depth
+ * back to zero on the signature line itself, before the walk ever reached
+ * the handler's real opening brace, truncating the body to one line. Cross-
+ * checked against every one of cli.js's 27 real cmd* handlers via acorn: 0
+ * mismatches today, because none of them currently default a parameter to
+ * an object — so this was latent here, not live. Fixed the same way: walk
+ * PAREN depth first (immune to a default value's own '{}') to find where
+ * the parameter list itself closes, and only start the brace walk at the
+ * first '{' on or after that point.
  */
 function extractCmdFunctionBodies(src) {
   const lines = src.split('\n');
@@ -441,18 +453,49 @@ function extractCmdFunctionBodies(src) {
   const fnRe = /^(?:async\s+)?function\s+(cmd[A-Za-z]+)\s*\(/;
   for (let i = 0; i < lines.length; i++) {
     const m = lines[i].match(fnRe);
-    if (m) starts.push({ name: m[1], startLine: i });
+    if (m) starts.push({ name: m[1], startLine: i, matchText: m[0] });
   }
   assert.ok(starts.length >= 10,
     `expected to find cli.js's cmd* handlers by scanning for top-level \`function cmd*(\` — got ${starts.length}; extraction regex is wrong`);
 
   const bodies = new Map();
-  for (const { name, startLine } of starts) {
-    let depth = 0, seenOpen = false, endLine = -1;
-    for (let i = startLine; i < lines.length && endLine === -1; i++) {
-      for (const ch of lines[i]) {
-        if (ch === '{') { depth++; seenOpen = true; }
-        else if (ch === '}') { depth--; if (seenOpen && depth === 0) { endLine = i; break; } }
+  for (const { name, startLine, matchText } of starts) {
+    // Phase 1: paren depth from the '(' the regex already matched through,
+    // to the parameter list's OWN closing ')' — see extractFunctionBodies in
+    // amend1-tx-discipline.test.js for the full defect writeup this mirrors.
+    let parenDepth = 0, seenParenOpen = false;
+    let paramsCloseLine = -1, paramsCloseCol = -1;
+    for (let i = startLine; i < lines.length && paramsCloseLine === -1; i++) {
+      const startCol = i === startLine ? matchText.length - 1 : 0;
+      for (let k = startCol; k < lines[i].length; k++) {
+        const ch = lines[i][k];
+        if (ch === '(') { parenDepth++; seenParenOpen = true; }
+        else if (ch === ')') {
+          parenDepth--;
+          if (seenParenOpen && parenDepth === 0) { paramsCloseLine = i; paramsCloseCol = k; break; }
+        }
+      }
+    }
+    assert.ok(paramsCloseLine !== -1, `could not find the closing ')' of ${name}'s parameter list — extraction is broken`);
+
+    // Phase 2: the body's opening '{' is the first one at or after that close.
+    let bodyLine = -1, bodyCol = -1;
+    for (let i = paramsCloseLine; i < lines.length && bodyLine === -1; i++) {
+      const startCol = i === paramsCloseLine ? paramsCloseCol + 1 : 0;
+      const idx = lines[i].indexOf('{', startCol);
+      if (idx !== -1) { bodyLine = i; bodyCol = idx; }
+    }
+    assert.ok(bodyLine !== -1, `could not find the opening '{' of ${name}'s body — extraction is broken`);
+
+    // Phase 3: brace-depth from that known-good start to the handler's own
+    // matching '}' — unchanged from the original walk otherwise.
+    let depth = 0, endLine = -1;
+    for (let i = bodyLine; i < lines.length && endLine === -1; i++) {
+      const startCol = i === bodyLine ? bodyCol : 0;
+      for (let k = startCol; k < lines[i].length; k++) {
+        const ch = lines[i][k];
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { endLine = i; break; } }
       }
     }
     assert.ok(endLine !== -1, `could not find the closing brace of ${name} — brace-depth extraction is broken`);
@@ -528,6 +571,40 @@ describe('Class #9 sweep invariant — only `swarm findings` may emit markdown t
     assert.equal(totalInBodies, totalInFile,
       `buildDigest( appears ${totalInFile} time(s) in cli.js but only ${totalInBodies} were attributable to a cmd* handler body — ` +
       `a call site outside every handler is invisible to this sweep`);
+  });
+
+  // DELETION-PROOF for F-bb7f4885's two-phase (paren-then-brace) walk above.
+  // Revert extractCmdFunctionBodies to a single brace-walk seeded at the
+  // signature line and this goes red: a same-line default-parameter object
+  // literal's own '{}' closes depth back to zero before the walk ever
+  // reaches the handler's real body. None of cli.js's 27 real cmd* handlers
+  // currently have this shape (confirmed via acorn cross-check), which is
+  // exactly why this needs its own direct test rather than relying on the
+  // sweep above to trip over a real handler by accident.
+  it('extractCmdFunctionBodies is not fooled by a same-line default-parameter object literal (F-bb7f4885)', () => {
+    // Padded with 9 trivial cmd* handlers so this satisfies the function's
+    // own `starts.length >= 10` anti-vacuity guard (line ~479) — that guard
+    // exists to catch the regex silently matching nothing against the real
+    // cli.js, not to forbid a small synthetic source, so the padding here
+    // is inert filler rather than a second thing under test. Letters only
+    // (A, B, C, …) — the extraction regex requires cmd[A-Za-z]+, so a
+    // digit-suffixed name like cmdPad0 would silently fail to match at all.
+    const padding = Array.from({ length: 9 }, (_, i) =>
+      `function cmdPad${String.fromCharCode(65 + i)}() {\n  return ${i};\n}\n`).join('\n');
+    const src = padding + [
+      'function cmdExample(argv, opts = {}) {',
+      '  const a = 1;',
+      '  const b = 2;',
+      '  return a + b;',
+      '}',
+      '',
+    ].join('\n');
+    const body = extractCmdFunctionBodies(src).get('cmdExample');
+    assert.ok(body, 'cmdExample must be found at all');
+    assert.equal(body.split('\n').length, 5,
+      'the FULL 5-line body must be extracted, not truncated to the 1-line signature');
+    assert.match(body, /return a \+ b;/,
+      'the body must include the real closing content, not stop at the default-param object');
   });
 
   it('lib/findings-digest.js is the only choke-point — markdown rendering is delegated, not duplicated', () => {

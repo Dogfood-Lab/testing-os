@@ -68,7 +68,9 @@ criterion's brief. That is the default and it is backward-compatible, but on the
 `--jury=prism` tier it is also how a brief starves: the tier sends one call per
 (seat × criterion), and a global pack means every claim competes for one 4 000-char
 budget on **every** call, most of them irrelevant to the criterion at hand. Measured on
-the wave-2 case-file, a 15-claim global pack delivered **5 of 15** per criterion.
+the wave-2 case-file, a 15-claim global pack delivered **5 of 15** to nine criteria and 6 of 15 to
+one — the delivered count is not uniform, because each criterion's own `check` text is charged to
+the same budget.
 `AC-yaml-merge-inert` does not need the seat-env allowlist's evidence; it was
 nonetheless spending that budget.
 
@@ -225,8 +227,16 @@ case-file (or the spec) has a gap to fill.
 | Planner + **clerk** | **Fable** | assembles the case-file; **renders no verdict** — advisory |
 | Executor | Sonnet | generates the artifact |
 | Scout / screen | Haiku | recon, dedup, cheap refutation |
-| **Jury** | `--jury=local`: mistral/granite/qwen/gemma/hermes · `--jury=prism`: the same non-Claude seats, each adjudicated by prism per criterion (`--cloud` adds gpt-oss/glm) | family-different, reasoning-stripped; multi-lens + submodularity on the prism tier — **strong evidence** |
+| **Jury** | `--jury=local` (**5 seats**): mistral-small:24b · granite4.1:30b · qwen2.5:7b · gemma4:31b · hermes3:8b · `--jury=prism` (**3 seats**): mistral-small:24b · qwen2.5:7b · hermes3:8b, each adjudicated by prism per criterion (`--cloud` adds gpt-oss/glm to either) | family-different, reasoning-stripped; multi-lens + submodularity on the prism tier — **strong evidence** |
 | **Floor** | `swarm verify` (tests) + prism retrieval/numeric floors | deterministic — **law** |
+
+**The two jury rosters are NOT the same set, and the difference is load-bearing.** `--jury=prism`
+seats **3** of the local tier's 5: `granite4.1:30b` and `gemma4:31b` are deliberately excluded
+because prism's `Budget.max_latency_ms` is capped at 30 000 by construction and they overrun it
+(see [the honest boundary](#the-honest-boundary-what-this-tier-does-not-give-you)). A seat that
+does not fit returns `BUDGET_EXCEEDED` and abstains, so a roster chosen for size rather than fit
+would silently shrink its own panel. The prism roster is chosen for **fit**; it is not a copy of
+the local one, and any doc or table implying otherwise is wrong.
 
 Only the deterministic floor is law; every model verdict — the clerk's (there is
 none), the jury's — is evidence, weighted by independence.
@@ -333,7 +343,7 @@ the first call on each seat carries the load (13.3s / 6.0s / 9.9s), the rest are
 | **No out-of-brief findings.** | prism's response has no per-criterion channel and its `Finding` is free text (`{file,line,category,evidence,severity}`), so findings are scoped to the criterion-intent that produced them. Classifying them as "out of brief" would be invention, and would double-count one finding once per criterion. | They are preserved verbatim in each verdict's `prism` detail for a human, and never reach the aggregator. The rubric-is-a-floor property is **weaker** here than on the local tier, which asks for out-of-brief explicitly. |
 | **The abstention rubric is not delivered to the model.** | prism owns its lens prompts; this tier only controls `intent`. `ABSTENTION_RUBRIC` therefore does not reach the juror. | Abstention on this tier is **structural, not instructed** — it comes from prism's own `UNCERTAIN → ESCALATE` lens outcome. That is arguably stronger (a mechanism, not a request), but it is a different mechanism, and a seat can still under-abstain: the smoke's 7B seat returned a confident `refuse` on a criterion the diff satisfies, rather than `insufficient_context`. The under-abstention failure this contract exists to fix is **mitigated, not eliminated**. |
 | **A hard 30s ceiling per call.** | prism's `Budget.max_latency_ms` is capped at 30 000 by construction (the local tier uses a 180s timeout and cannot here). | Seats must FIT the ceiling; one that overruns returns `BUDGET_EXCEEDED` and abstains on that criterion. The roster is chosen for fit, not size — larger local models (`granite4.1:30b`, `gemma4:31b`) are excluded for this reason, so the prism roster is deliberately **not** a copy of the local one. |
-| **The brief can be trimmed — severely.** | prism caps `intent` at 4 000 chars. | Assembly is priority-ordered — `objective + criterion + out_of_scope` are **mandatory** (their cost is inside every `fits()` check, though the floor is still *emitted* last to preserve the documented reading order), and only the evidence pack yields. Every drop is recorded per-criterion on the receipt as `criteria[].brief_omitted`, not merely printed. **Do not read this as "slightly thinner."** On the wave-2 case-file the floor alone was **1 093 chars — 27% of the whole budget** — and the tier delivered **5 of 15 evidence claims**. The prism tier judges on roughly **one third** of the evidence the local tier reads. |
+| **The brief can be trimmed — severely.** | prism caps `intent` at 4 000 chars. | Assembly is priority-ordered — `objective + criterion + out_of_scope` are **mandatory** (their cost is inside every `fits()` check, though the floor is still *emitted* last to preserve the documented reading order), and only the evidence pack yields. Every drop is recorded per-criterion on the receipt as `criteria[].brief_omitted`, not merely printed. **Do not read this as "slightly thinner."** On the wave-2 case-file the floor alone was **1 093 chars — 27% of the whole budget** — and the tier delivered **5 of 15 evidence claims to nine criteria, 6 of 15 to one** (the count varies because each criterion's own `check` text is charged to the same budget). The prism tier judges on roughly **one third** of the evidence the local tier reads. |
 
 > **Why `out_of_scope` is mandatory (earned 2026-07-15, run `swarm-1784091637-5127`).** It used to be assembled *last*, which made it the *first* thing the cap sacrificed — it was dropped on **100% of criteria**, every time, while 9 of 15 evidence claims survived. A tier that reliably discards its own scrutiny floor is a tier that manufactures false failures, and the effect was measured on one case-file across both tiers:
 >

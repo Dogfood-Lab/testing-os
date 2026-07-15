@@ -269,9 +269,15 @@ export function revalidate(opts) {
       const worktree = ar.worktree_path || run.local_path;
       // F-0e55b5ca (mirrors collect.js): per-wave dispatch-time base; the
       // init-time runs.commit_sha is the legacy fallback only.
-      const baseRef = isolated
-        ? resolveWorktreeBaseRef(worktree, run.branch)
-        : (wave.dispatch_sha || run.commit_sha);
+      // F-COORD-DIFFBASE (mirrors collect.js): dispatch_sha is preferred on
+      // the ISOLATED path too — merge-base(run.branch, HEAD) only equals the
+      // dispatch point when the worktrees forked from run.branch's tip, and
+      // returns a stale base otherwise. Revalidate is the recovery verb for a
+      // wave that collect just failed, so a fix here that left revalidate
+      // re-deriving would hand the operator a recovery path that reproduces
+      // the same phantom violations it is meant to clear.
+      const baseRef = wave.dispatch_sha
+        || (isolated ? resolveWorktreeBaseRef(worktree, run.branch) : run.commit_sha);
       const actualTouched = getActualTouchedFiles(worktree, { baseRef });
       // V2-CONTRACT-003 / V2-INVARIAN-006 (mirrors collect.js): a failed base
       // diff or an unresolvable fork point makes committed edits invisible —

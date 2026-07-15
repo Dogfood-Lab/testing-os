@@ -22,11 +22,21 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 
 import { lintCaseFile } from './lib/case-file/lint.js';
 
+// F-caeeb671 / F-9d3c61eb: this used to be a hardcoded absolute path
+// (E:/AI/testing-os/fixtures/...), which resolved only on the one machine
+// it was authored on. Portable resolution matches case-file.test.js's
+// FIXTURES constant and wave2-4091637-5127-swarm-cp-pins.test.js's
+// CASE_FILE_FIXTURES constant — both already established in this directory.
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const FIXTURES = join(__dirname, '..', '..', 'fixtures', 'case-files');
+
 const BASE = JSON.parse(
-  readFileSync('E:/AI/testing-os/fixtures/case-files/valid/well-formed-auth-fix.json', 'utf-8'),
+  readFileSync(join(FIXTURES, 'valid', 'well-formed-auth-fix.json'), 'utf-8'),
 );
 
 /** The canonical valid fixture, with criterion_ids applied to its claims. */

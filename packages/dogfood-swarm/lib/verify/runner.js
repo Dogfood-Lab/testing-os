@@ -24,6 +24,29 @@ const STEP_TIMEOUT_MS = 300000; // 5 min per step
 const MAX_STEP_OUTPUT_CHARS = 8000;
 
 /**
+ * execFileSync's stdout+stderr capture ceiling (F-8d355b64). This is a
+ * DIFFERENT concern from MAX_STEP_OUTPUT_CHARS above: that constant bounds
+ * what gets PERSISTED into the receipt; this one bounds what execFileSync
+ * will even CAPTURE before Node/libuv kills the child and throws. Left at
+ * Node's own default (~1 MiB), the throw arrives as `e.code === 'ENOBUFS'`
+ * with `e.signal === 'SIGTERM'` — empirically reproduced on this rig (Node
+ * v22.22.3): a 2 MB write overflows and throws in ~40ms, nowhere near
+ * STEP_TIMEOUT_MS. Undetected, that SIGTERM is indistinguishable from a real
+ * kill in the `timedOut` check below, so an instrument overflow gets reported
+ * as "timed out after 300000ms" — a fast, categorical misdiagnosis, not a
+ * slow one. Set well above current usage: this repo's own `npm test` output
+ * was 898,923 chars (~878 KB, ~86% of the ~1.06 MB default) at the time
+ * ve-trunc-001 was written, and the suite has grown every wave since. 64 MB
+ * matches the spirit of lib/case-file/prism-jury.js's 32 MB ceiling for the
+ * same class of large-capture site — this floor is the one gate that is
+ * "law" per this file's own header, so it gets more headroom, not less.
+ * Raising this reduces how often the classification bug below is reachable;
+ * it does not replace the classification fix, since a large enough capture
+ * can still exceed any finite ceiling.
+ */
+const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
+
+/**
  * Recognizes the shell's "executable not found" message across platforms.
  * With `shell: true` a missing `step.cmd` does NOT surface as an ENOENT error
  * object — the shell itself runs and exits non-zero with one of these strings
@@ -81,6 +104,7 @@ export function runStep(repoPath, step) {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: timeoutMs,
+      maxBuffer: MAX_BUFFER_BYTES,
       env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
       shell: true,
     });
@@ -106,6 +130,11 @@ export function runStep(repoPath, step) {
       // degraded. The full text is deliberately NOT returned: the step result
       // is the persisted receipt, and an 899 KB receipt is what the bound
       // exists to prevent.
+      // F-8d355b64: "the full stream" measured here is itself bounded by
+      // MAX_BUFFER_BYTES above (execFileSync's `maxBuffer`) — `stdout` here
+      // can never exceed that ceiling, because Node kills the child and
+      // throws (caught below) before this line is reached. "Full" means
+      // "everything execFileSync was able to capture," not "unbounded."
       ...measureStep(step, stdout),
       optional: !!step.optional,
     };
@@ -121,12 +150,25 @@ export function runStep(repoPath, step) {
     // the shell runs and reports "not recognized"/"command not found" itself.
     const toolMissing = e.code === 'ENOENT' || TOOL_NOT_FOUND_STDERR.test(stderrRaw);
 
+    // F-8d355b64: a stdout+stderr capture past MAX_BUFFER_BYTES is killed by
+    // Node/libuv with e.code === 'ENOBUFS' — empirically confirmed (this rig,
+    // Node v22.22.3) to ALSO set e.signal === 'SIGTERM' unconditionally, even
+    // though the child ran for milliseconds. Detected here, before timedOut
+    // below, so that shared SIGTERM cannot be folded into a false "timed out
+    // after 300000ms" diagnosis — a misdiagnosis that sends the operator
+    // toward raising timeoutMs, which does nothing for an output-size
+    // overflow.
+    const outputExceeded = e.code === 'ENOBUFS';
+
     // ve-p-005: a 5-min hang must be distinguishable from a fast exit-1 fail.
     // Under shell:true, Node's SIGTERM hits the wrapping shell, not the real
     // grandchild, so e.killed/e.signal are erased — the reliable signal is the
     // elapsed wall clock reaching the budget. e.signal is still checked first
     // for the shell:false future where Node sets it on the real child.
-    const timedOut = !toolMissing &&
+    // outputExceeded is excluded (not merely deprioritized): left in this OR
+    // chain, its unconditional SIGTERM would satisfy timedOut on an overflow
+    // that took 40ms, regardless of duration_ms.
+    const timedOut = !toolMissing && !outputExceeded &&
       (e.signal === 'SIGTERM' || e.killed === true ||
         duration_ms >= timeoutMs - 50);
 
@@ -148,11 +190,14 @@ export function runStep(repoPath, step) {
       ...measureStep(step, e.stdout || ''),
       tool_missing: toolMissing,
       timed_out: timedOut,
+      output_exceeded: outputExceeded,
       reason: toolMissing
         ? `tool \`${step.cmd}\` not found on PATH`
-        : timedOut
-          ? `step \`${step.name}\` timed out after ${timeoutMs}ms`
-          : undefined,
+        : outputExceeded
+          ? `step \`${step.name}\` output exceeded execFileSync's ${MAX_BUFFER_BYTES.toLocaleString()}-byte maxBuffer — this is NOT a timeout (the overflow kill reports SIGTERM, which duration_ms confirms was reached in ${duration_ms}ms, not near ${timeoutMs}ms); raise MAX_BUFFER_BYTES or reduce step output`
+          : timedOut
+            ? `step \`${step.name}\` timed out after ${timeoutMs}ms`
+            : undefined,
       optional: !!step.optional,
     };
   }
@@ -167,10 +212,12 @@ export function runStep(repoPath, step) {
  * @param {object} [opts]
  * @param {boolean} [opts.continueOnError] — keep going after required step failure
  * @returns {object} — { steps: StepResult[], verdict, duration_ms, test_count,
- *   tests_ran, timed_out, truncated, reason? }. `verdict` is one of
- *   `pass | fail | skip | tool_missing`; adapters may further refine `pass` to
- *   `no_tests`. `reason` is present (a human-readable string) on every non-pass
- *   verdict the runner originates, absent on a plain `pass`.
+ *   tests_ran, timed_out, output_exceeded, truncated, reason? }. `verdict` is
+ *   one of `pass | fail | skip | tool_missing`; adapters may further refine
+ *   `pass` to `no_tests`. `reason` is present (a human-readable string) on
+ *   every non-pass verdict the runner originates, absent on a plain `pass`.
+ *   `output_exceeded` (F-8d355b64) is a step-level capture-overflow signal,
+ *   distinct from `timed_out` — see runStep's MAX_BUFFER_BYTES comment.
  */
 export function runSteps(repoPath, steps, opts = {}) {
   const results = [];
@@ -220,8 +267,16 @@ export function runSteps(repoPath, steps, opts = {}) {
     verdict = 'pass';
   } else if (requiredFailures.some(r => !r.tool_missing)) {
     verdict = 'fail';
+    // F-8d355b64: output_exceeded is checked first — it is the more specific,
+    // more actionable diagnosis. Without this ordering an output-overflow
+    // step would fall through to the timed_out branch below whenever it also
+    // happened to be the one `find()` picks, which is exactly the
+    // misclassification this finding fixed at the step level; ordering here
+    // keeps the wave-level `reason` honest too.
+    const outputExceeded = requiredFailures.find(r => r.output_exceeded);
     const timedOut = requiredFailures.find(r => r.timed_out);
-    if (timedOut) reason = timedOut.reason;
+    if (outputExceeded) reason = outputExceeded.reason;
+    else if (timedOut) reason = timedOut.reason;
   } else {
     // Every required failure was a missing tool. The display `command` string
     // begins with the executable name, so its first token names the tool.
@@ -311,6 +366,11 @@ export function runSteps(repoPath, steps, opts = {}) {
     // can flag a hang or a truncated log at the run level without re-walking
     // every step.
     timed_out: results.some(r => r.timed_out),
+    // F-8d355b64: a distinct aggregate, mirroring timed_out immediately
+    // above — NOT folded into it, so a display layer that special-cases
+    // "hang" on timed_out cannot inherit the same false diagnosis this
+    // finding removed at the step level.
+    output_exceeded: results.some(r => r.output_exceeded),
     truncated: results.some(r => r.truncated),
   };
   if (noTests) out.no_tests = true;

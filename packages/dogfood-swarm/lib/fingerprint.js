@@ -614,6 +614,21 @@ export function upsertFindings(db, runId, waveId, classified) {
     UPDATE findings SET status = 'fixed', last_seen_wave = ? WHERE id = ?
   `);
 
+  // F-833dff6f: recurred-while-closed findings need last_seen_wave bumped
+  // WITHOUT touching status — the opposite split from updateRecurring/
+  // updateFixed above, which bump both together. Status must stay untouched
+  // (that is F-130dee59's whole point: a coordinator's deferred/rejected
+  // call is not overturned by mere recurrence); last_seen_wave must NOT stay
+  // untouched, because the finding genuinely WAS observed again this wave,
+  // and every per-wave operator surface that reasons about "what did this
+  // wave touch" keys off last_seen_wave (commands/status.js's
+  // currentWaveFindingCount half-state check; commands/revalidate.js's
+  // full-coverage reclassification query `WHERE last_seen_wave = ?`) — not
+  // off finding_events, which none of them join against today.
+  const updateLastSeenPreserveStatus = db.prepare(`
+    UPDATE findings SET last_seen_wave = ? WHERE id = ?
+  `);
+
   // Note: unverified does NOT bump last_seen_wave — the agent did not see
   // this finding, so claiming it was last seen now would be a lie. We update
   // status only, so the next wave can still re-evaluate against the original
@@ -660,10 +675,23 @@ export function upsertFindings(db, runId, waveId, classified) {
         // an explicit finding_event so triage can see "this keeps coming
         // back" WITHOUT reopening the rejected row (rejection is a
         // coordinator decision; recurrence alone does not overturn it).
+        //
+        // The last_seen_wave bump mirrors F-833dff6f's fix in the
+        // recurred_while_closed loop below — this is that finding's sibling
+        // gap, on the path 'rejected' actually takes. The two closed statuses
+        // are one class in intent (F-130dee59) but reach upsert through
+        // different branches: 'deferred' via that loop, 'rejected' via this
+        // insert-conflict. The event row alone left last_seen_wave-keyed
+        // operator surfaces blind to the recurrence — notably status.js's
+        // currentWaveFindingCount, where a wave rediscovering ONLY rejected
+        // findings counted 0 and tripped the half-state "artifacts present,
+        // findings absent" breadcrumb. Status stays untouched: that is
+        // F-130dee59's point and this does not re-litigate it.
         const existing = db.prepare(
           'SELECT id, status FROM findings WHERE run_id = ? AND (fingerprint = ? OR finding_id = ?)'
         ).get(runId, f.fingerprint, fid);
         if (existing && existing.status === 'rejected') {
+          updateLastSeenPreserveStatus.run(waveId, existing.id);
           insertEvent.run(
             existing.id, 'recurred', waveId,
             'recurred-while-rejected: rediscovered by this wave; rejected status preserved'
@@ -704,6 +732,7 @@ export function upsertFindings(db, runId, waveId, classified) {
     // since classifyFindings already never routed these into `recurring`.
     for (const f of (classified.recurred_while_closed || [])) {
       if (f.prior?.id) {
+        updateLastSeenPreserveStatus.run(waveId, f.prior.id);
         insertEvent.run(
           f.prior.id, 'recurred', waveId,
           `recurred-while-${f.priorStatus}: rediscovered by this wave; ${f.priorStatus} status preserved`

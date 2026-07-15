@@ -140,7 +140,26 @@ function artifactExists(db, sql) {
  * migrations_ledger.
  *
  * @param {import('better-sqlite3').Database} db
- * @param {number} currentVersion — schema_version read from the DB (0 = fresh)
+ * @param {number} currentVersion — schema_version read from the DB (0 = fresh).
+ *   F-1de6e6ca: accepted but NOT consulted below — grepping this file, the
+ *   only two occurrences of the identifier are this JSDoc line and the
+ *   signature itself. The fresh-vs-upgrade decision is made entirely
+ *   per-migration via the migrations_ledger table plus artifactExists()
+ *   (PRAGMA table_info / sqlite_master introspection), independent of
+ *   whatever value is passed here — both call sites (db/connection.js
+ *   openDb/openMemoryDb) would produce byte-identical results with any
+ *   value swapped in for this argument. Kept in the signature rather than
+ *   removed: db/connection.js is this domain, but
+ *   stageBC-control-plane-migration-runner.test.js (package root, a
+ *   different domain) calls this function ~15 times at the OLD
+ *   `migrateDb(db, currentVersion, opts)` 3-arg shape, including one
+ *   `{ check: true }` dry-run call at the third position — removing this
+ *   parameter would silently shift that opts object out of position
+ *   (destructuring `{check} = <a number>` does not throw; it just silently
+ *   defaults `check` to `false`), turning a dry-run test into a real
+ *   mutation with no error to signal it. Fixing that test file is out of
+ *   this domain's owned glob, so the honest fix here is documentation, not
+ *   a signature change that breaks a test this agent cannot repair.
  * @param {object} [opts]
  * @param {boolean} [opts.check=false] — dry-run: compute the plan, mutate nothing
  * @returns {{

@@ -18,7 +18,6 @@
  */
 
 import { describe, it } from 'node:test';
-import { readFileSync } from 'node:fs';
 import assert from 'node:assert/strict';
 
 import { buildCriterionIntent, MAX_INTENT_CHARS } from './lib/case-file/prism-jury.js';
@@ -331,41 +330,107 @@ describe('normalizeAdjudication — the brief-completeness record reaches the re
  *   absent  -> global; grounds every criterion (backward-compatible default)
  *   present -> grounds ONLY the listed criteria
  *
- * THE FIXTURE IS THE REAL WAVE-2 CASE-FILE. A synthetic one cannot fail —
- * nothing trims at small sizes, which is the same vacuous shape as the
- * "an em-dash survives" draft. The criterion_ids are assigned here
- * deterministically (round-robin, 4 criteria per claim) rather than by my
- * editorial judgement about which claim grounds which criterion: the property
- * under test is "every claim tagged for a criterion reaches it", and that
- * property must hold regardless of who did the tagging.
+ * THE FIXTURE MUST FORCE A TRIM OR THESE TESTS CANNOT PROVE ANYTHING — a
+ * fixture too small to overflow the cap would pass this suite whether or not
+ * per-criterion scoping is even implemented, the same vacuous shape as the
+ * "an em-dash survives" draft. This test originally proved that with the
+ * LITERAL wave-2 case-file, read from a hardcoded absolute path
+ * (`E:/AI/testing-os/swarms/swarm-1784091637-5127/wave-2/case-file.json`).
+ * That was itself a defect (F-4a7309f9 / F-2a8f4d17): the path is this
+ * swarm's own ephemeral output — every `swarm-` prefixed run directory under
+ * swarms/ is gitignored (swarms/.gitignore:6) — so it resolves on no machine
+ * but the one that produced it, and worse, a describe()-body throw on a
+ * missing file is swallowed by node:test as a silent per-suite skip
+ * (`# fail` stays 0, exit code 0), not a build break. The five tests below
+ * covering this fix could vanish on every other clone or CI runner with
+ * `npm test` still reporting green.
+ *
+ * CASE_FILE below is a COMMITTED, PORTABLE STAND-IN, not the real wave-2
+ * file — same shape (10 criteria / 15 context claims / 6 out_of_scope
+ * entries) and calibrated to the same budget proportions, verified by
+ * running it through the real buildCriterionIntent:
+ *
+ *   head (objective + criterion + boilerplate)   1360 chars  (real: ~1322)
+ *   out_of_scope floor                            1119 chars  (real: ~1093)
+ *   ------------------------------------------------------
+ *   mandatory before any evidence                 2479  (real: ~2415)
+ *   left for evidence                             1521  (real: ~1585)
+ *
+ * Scoped to 4 claims/criterion (below), every one of the 10 criteria fits
+ * with ~209 chars to spare (intent length 3789-3791 of the 4000 cap) and
+ * ZERO omission; offering a criterion a 5th claim already omits one — the
+ * same "roughly five is the ceiling" shape the original incident measured.
+ * Sent GLOBALLY instead (the backward-compat test below, reproducing the
+ * pre-fix behavior on the IDENTICAL claim pool), the cap omits 11 of 15 for
+ * the first criterion. That contrast — scoped: 0 omitted, unscoped: 11
+ * omitted, off the same claims — is the deletion-proof: revert the
+ * criterion_ids scoping and this suite goes red, not green.
+ *
+ * The criterion_ids are assigned here deterministically (round-robin, 4
+ * criteria per claim) rather than by editorial judgement about which claim
+ * grounds which criterion: the property under test is "every claim tagged
+ * for a criterion reaches it", and that property must hold regardless of who
+ * did the tagging.
  */
 describe('buildCriterionIntent — per-criterion evidence budgeting', () => {
-  const REAL = JSON.parse(
-    readFileSync('E:/AI/testing-os/swarms/swarm-1784091637-5127/wave-2/case-file.json', 'utf-8'),
-  );
+  /**
+   * Deterministic filler sized to an exact target length — same idiom as the
+   * FAT fixture above (`'x'.repeat(100)`), just shaped like prose so a reader
+   * skimming a failure diff sees claim-shaped text instead of a wall of x's.
+   * The seed sits at position 0, so every generated string is unique from its
+   * first few characters — that uniqueness is what lets
+   * `intent.includes(e.claim)` (below) tell "this exact claim survived the
+   * trim" apart from "some other claim that merely shares filler text did".
+   */
+  function sizedText(seed, targetLength) {
+    const phrase = `${seed} grounding fact spanning the referenced module and its adjacent call sites in the diff under test, cross-checked against the suite. `;
+    let out = '';
+    while (out.length < targetLength) out += phrase;
+    return out.slice(0, targetLength);
+  }
+
+  const N_CRITERIA = 10;
+  const N_CONTEXT = 15;
+  const N_OUT_OF_SCOPE = 6;
+
+  const CASE_FILE = {
+    objective: sizedText('objective', 1050),
+    artifact_under_test: {
+      kind: 'diff',
+      ref: 'packages/example/module.js@synthetic',
+      content: '(synthetic fixture — buildCriterionIntent never reads payload.artifact)',
+    },
+    acceptance_criteria: Array.from({ length: N_CRITERIA }, (_, i) => ({
+      id: `AC-${i + 1}`,
+      check: sizedText(`criterion ${i + 1}`, 150),
+    })),
+    out_of_scope: Array.from({ length: N_OUT_OF_SCOPE }, (_, i) => sizedText(`out-of-scope item ${i + 1}`, 180)),
+    context: Array.from({ length: N_CONTEXT }, (_, i) => ({
+      claim: sizedText(`claim ${i}`, 300),
+      source: i % 2 === 0 ? 'from-tests' : 'from-code',
+    })),
+  };
 
   /**
-   * The real case-file with each CRITERION scoped to 4 claims — the "3–4
-   * relevant claims" shape real budgeting produces. Built criterion-major on
-   * purpose: a claim-major round-robin skews (some criteria drew 6–10 claims)
-   * and would overrun a budget that is tighter than it looks. Measured on this
-   * exact case-file: head+floor consumes 2415 of the 4000 chars, leaving 1585
-   * for evidence — about 5 claims at the real 302-char average. 4 per criterion
-   * fits with headroom; that ceiling is reported as a finding, not hidden here.
+   * CASE_FILE with each CRITERION scoped to 4 claims — the "3–4 relevant
+   * claims" shape real budgeting produces. Built criterion-major on purpose:
+   * a claim-major round-robin skews (some criteria would draw far more claims
+   * than others) and would overrun a budget that is tighter than it looks.
+   * See the block docstring above for the measured numbers this relies on.
    */
   function scopedPayload() {
-    const ids = REAL.acceptance_criteria.map(c => c.id);
+    const ids = CASE_FILE.acceptance_criteria.map(c => c.id);
     const claimsFor = new Map(
-      ids.map((id, j) => [id, [0, 1, 2, 3].map(k => (j * 3 + k) % REAL.context.length)]),
+      ids.map((id, j) => [id, [0, 1, 2, 3].map(k => (j * 3 + k) % CASE_FILE.context.length)]),
     );
     return {
-      artifact: REAL.artifact_under_test,
+      artifact: CASE_FILE.artifact_under_test,
       rubric: {
-        objective: REAL.objective,
-        acceptance_criteria: REAL.acceptance_criteria,
-        out_of_scope: REAL.out_of_scope,
+        objective: CASE_FILE.objective,
+        acceptance_criteria: CASE_FILE.acceptance_criteria,
+        out_of_scope: CASE_FILE.out_of_scope,
       },
-      evidence: REAL.context.map((c, i) => ({
+      evidence: CASE_FILE.context.map((c, i) => ({
         claim: c.claim,
         source: c.source,
         ...(c.ref ? { ref: c.ref } : {}),
@@ -376,7 +441,7 @@ describe('buildCriterionIntent — per-criterion evidence budgeting', () => {
 
   it('delivers EVERY relevant claim for each criterion, omitting none (the live starvation)', () => {
     const payload = scopedPayload();
-    for (const c of REAL.acceptance_criteria) {
+    for (const c of CASE_FILE.acceptance_criteria) {
       const { intent, omitted } = buildCriterionIntent(c, payload);
       const relevant = payload.evidence.filter(e => e.criterion_ids.includes(c.id));
       assert.ok(relevant.length > 0, `fixture sanity: ${c.id} must have relevant claims`);
@@ -393,7 +458,7 @@ describe('buildCriterionIntent — per-criterion evidence budgeting', () => {
 
   it('does NOT send a criterion the claims scoped to other criteria', () => {
     const payload = scopedPayload();
-    const c = REAL.acceptance_criteria[0];
+    const c = CASE_FILE.acceptance_criteria[0];
     const { intent } = buildCriterionIntent(c, payload);
     const irrelevant = payload.evidence.filter(e => !e.criterion_ids.includes(c.id));
     assert.ok(irrelevant.length > 0, 'fixture sanity: some claims must be out of scope for this criterion');
@@ -430,15 +495,15 @@ describe('buildCriterionIntent — per-criterion evidence budgeting', () => {
   // and must behave EXACTLY as before: all claims global.
   it('a case-file with NO criterion_ids behaves exactly as today (all claims global)', () => {
     const payload = {
-      artifact: REAL.artifact_under_test,
+      artifact: CASE_FILE.artifact_under_test,
       rubric: {
-        objective: REAL.objective,
-        acceptance_criteria: REAL.acceptance_criteria,
-        out_of_scope: REAL.out_of_scope,
+        objective: CASE_FILE.objective,
+        acceptance_criteria: CASE_FILE.acceptance_criteria,
+        out_of_scope: CASE_FILE.out_of_scope,
       },
-      evidence: REAL.context.map(c => ({ claim: c.claim, source: c.source, ...(c.ref ? { ref: c.ref } : {}) })),
+      evidence: CASE_FILE.context.map(c => ({ claim: c.claim, source: c.source, ...(c.ref ? { ref: c.ref } : {}) })),
     };
-    const c = REAL.acceptance_criteria[0];
+    const c = CASE_FILE.acceptance_criteria[0];
     const { intent, omitted } = buildCriterionIntent(c, payload);
     // Unscoped => all 15 compete for the budget => the documented trim still bites.
     assert.ok(omitted.evidence > 0, 'global claims must still be trimmed against the cap');

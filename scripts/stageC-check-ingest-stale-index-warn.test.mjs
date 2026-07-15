@@ -102,3 +102,24 @@ test('F-f05363e2: a badge/trends regeneration failure ALSO writes a note to $GIT
     'the badge/trends summary note must sit on the generate.js fallback branch (F-f05363e2).',
   );
 });
+
+test("F-703e5eac: the badge/trends regen step ALSO fires when the result JSON was unparseable but a record was already persisted", () => {
+  const text = readFileSync(ingestPath, 'utf8');
+  // 'Read result' exits 0 (via parse_failed=true) BEFORE ever reaching the
+  // written= extraction when `jq -e` fails on unparseable stdout — so
+  // `written` stays unset even though run.js may have already persisted the
+  // record to disk. The 'Commit records and indexes' step immediately below
+  // already ORs in parse_failed for exactly this reason (see its own `if:`);
+  // pre-fix the badge/trends regen step did not, so a persisted-but-
+  // unparseable-stdout run committed the record but silently left the served
+  // badge/trends endpoints stale with no operator-visible signal.
+  const badgeStepIdx = text.indexOf('Regenerate served badges + trends');
+  const commitStepIdx = text.indexOf('Commit records and indexes');
+  assert.ok(badgeStepIdx > 0 && commitStepIdx > badgeStepIdx, 'expected the badge regen step to precede the commit step in ingest.yml');
+  const badgeStepBlock = text.slice(badgeStepIdx, commitStepIdx);
+  assert.match(
+    badgeStepBlock,
+    /if:\s*steps\.result\.outputs\.written\s*==\s*'true'\s*\|\|\s*steps\.result\.outputs\.parse_failed\s*==\s*'true'/,
+    "ingest.yml's 'Regenerate served badges + trends' step must fire on steps.result.outputs.parse_failed == 'true' in addition to written == 'true' (F-703e5eac), matching the 'Commit records and indexes' step's condition immediately below it.",
+  );
+});

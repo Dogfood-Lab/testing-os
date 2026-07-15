@@ -62,13 +62,27 @@ export function canonicalize(value) {
 /**
  * Deep clone with object keys sorted ascending at every depth. Arrays keep
  * order (only their element objects are key-sorted). Primitives pass through.
+ *
+ * F-755d0f3f: the accumulator MUST be null-prototype. On a plain `{}` the
+ * assignment below would hit the inherited `Object.prototype.__proto__` setter
+ * for an own `__proto__` key and retarget the accumulator's prototype instead of
+ * creating an own key — dropping that field, and everything under it, from the
+ * canonical string and therefore from the record digest. `JSON.parse` creates a
+ * real own `__proto__` data property (CreateDataProperty, not Set), so any
+ * record file on disk can carry one, and verify-chain.js reaches this via a bare
+ * `JSON.parse` with no schema gate. That made two materially different records
+ * hash identically and let a tampered record re-verify clean.
+ *
+ * `JSON.stringify` serializes a null-prototype object identically to a plain
+ * one, so this is byte-for-byte compatible with every already-persisted record
+ * and the committed chain is unaffected.
  */
 function sortDeep(value) {
   if (Array.isArray(value)) {
     return value.map(sortDeep);
   }
   if (value !== null && typeof value === 'object') {
-    const sorted = {};
+    const sorted = Object.create(null);
     for (const key of Object.keys(value).sort()) {
       sorted[key] = sortDeep(value[key]);
     }

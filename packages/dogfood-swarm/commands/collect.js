@@ -600,19 +600,34 @@ export function collect(opts) {
     // reverted edits before reporting). When git is unavailable (no .git), we
     // fall back to the agent's self-report and surface the degradation in
     // the report.
-    // F-0e55b5ca: the non-isolated base is the PER-WAVE dispatch-time HEAD
+    // F-0e55b5ca: the base is the PER-WAVE dispatch-time HEAD
     // (waves.dispatch_sha), not runs.commit_sha — the init-time sha goes
     // stale as waves land commits, so diffing against it attributed every
     // prior wave's landed edits to this agent (false divergence alarms; the
     // prior waves' in-domain files INSERTed into file_claims under this
     // agent's identity). Legacy waves (dispatched before the v8 column) fall
-    // back to runs.commit_sha, the historical behavior.
+    // back to the per-path derivation below, the historical behavior.
+    //
+    // F-COORD-DIFFBASE: dispatch_sha is preferred on BOTH paths. F-0e55b5ca
+    // added the column and wired it into the non-isolated branch only,
+    // leaving --isolate to re-derive its base via
+    // resolveWorktreeBaseRef = `git merge-base <run.branch> HEAD`. That
+    // equals the dispatch point ONLY IF the worktrees forked from
+    // run.branch's tip; commit a wave to a feature branch and merge-base
+    // silently returns where that branch diverged from run.branch instead —
+    // re-creating F-0e55b5ca's exact stale-base failure on the path that
+    // needs the fix most (run swarm-1784091637-5127 wave 4: 335 phantom
+    // ownership violations across 6 agents; backend diffed to 114 files
+    // against the merge-base vs 6 against dispatch_sha). dispatch_sha IS the
+    // worktree fork point by construction — dispatch.js captures
+    // `git rev-parse HEAD` and lib/worktree.js's createWorktree forks from
+    // that same HEAD — so reading the recorded fact is strictly more direct
+    // than re-deriving it, and cannot drift when HEAD is off run.branch.
     if (isAmend && output.files_changed !== undefined) {
       const isolated = !!ar.worktree_path;
       const worktree = ar.worktree_path || run.local_path;
-      const baseRef = isolated
-        ? resolveWorktreeBaseRef(worktree, run.branch)
-        : (wave.dispatch_sha || run.commit_sha);
+      const baseRef = wave.dispatch_sha
+        || (isolated ? resolveWorktreeBaseRef(worktree, run.branch) : run.commit_sha);
       const actualTouched = getActualTouchedFiles(worktree, { baseRef });
       const reported = Array.isArray(output.files_changed) ? output.files_changed : [];
 

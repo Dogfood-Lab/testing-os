@@ -269,10 +269,13 @@ describe('Finding classification', () => {
     // fingerprint in `current` — the exact shape a wave-2 collect produces
     // when an already-deferred issue is found again with nothing changed.
     //
-    // This is RED against lib/fingerprint.js today by design: the production
-    // fix (a terminal-status guard on the rediscovered branch, mirroring
-    // line 484's) is swarm-cp-core's, not this domain's — see
-    // cross_domain_notes in swarms/*/wave-2/swarm-cp-tests/output.json.
+    // F-205455c4: this was RED against lib/fingerprint.js before the fix —
+    // see cross_domain_notes in swarms/*/wave-2/swarm-cp-tests/output.json
+    // for the original request to swarm-cp-core. The production fix (a
+    // terminal-status guard on the rediscovered branch, mirroring line 484's)
+    // has since landed in lib/fingerprint.js's rediscovered branch
+    // (swarm-cp-core, same wave — see the F-130dee59 comment block there);
+    // this test is green now, for the right reason, not by accident.
     const current = [
       { fingerprint: 'fp-defer', severity: 'HIGH', category: 'bug', file_path: 'src/x.js', description: 'still there' },
     ];

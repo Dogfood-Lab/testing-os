@@ -30,6 +30,40 @@ export class DuplicateRunIdError extends Error {
 }
 
 /**
+ * Error thrown when writeRecord's SECOND computeRecordPath() call — the one
+ * that computes the real write target, reached only AFTER validateRecord()
+ * has already confirmed the record is schema-valid — still cannot produce a
+ * safe path.
+ *
+ * F-bbbe2e1f: computeRecordPath()'s isUnsafeSegment check (lib/unsafe-segment.js)
+ * is STRICTER than the record schema's own repo pattern
+ * (`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`), which permits an embedded `..` or a
+ * lone `.` segment (e.g. `../etc`). A record can therefore pass
+ * validateRecord() above and still fail here — this is never a schema
+ * problem, it is the traversal backstop firing on schema-valid input. Pre-fix
+ * that let a bare, unclassified computeRecordPath Error (no `.code`) escape
+ * uncaught — the exact shape F-a37d36f5 eliminated at the FIRST
+ * computeRecordPath call (the isDuplicate probe below) but not this second
+ * one, three lines after validateRecord(). Classifying it here matches
+ * RecordValidationError's discipline and stays fail-closed: nothing below
+ * this point has touched the filesystem yet (mkdirSync/openSync/writeFileSync
+ * all come after), so no partial write is possible either way.
+ */
+export class UnsafeRecordPathError extends Error {
+  constructor(record, cause) {
+    super(
+      `record passed schema validation but its path could not be safely computed ` +
+      `(repo: ${record.repo}, run_id: ${record.run_id}): ${cause.message}`,
+      { cause }
+    );
+    this.name = 'UnsafeRecordPathError';
+    this.code = 'UNSAFE_RECORD_PATH';
+    this.repo = record.repo;
+    this.runId = record.run_id;
+  }
+}
+
+/**
  * Compute the canonical file path for a persisted record.
  *
  * Accepted:  records/<org>/<repo>/YYYY/MM/DD/run-<run_id>.json
@@ -174,7 +208,16 @@ export function writeRecord(record, repoRoot) {
   // schema is the contract every downstream consumer relies on.
   validateRecord(record);
 
-  const path = computeRecordPath(record, repoRoot);
+  // F-bbbe2e1f: see UnsafeRecordPathError's doc comment. Wrap this SECOND
+  // computeRecordPath() call — the first is inside isDuplicate() above,
+  // already guarded by F-a37d36f5 — so a schema-valid-but-unsafe repo (e.g.
+  // `../etc`) throws a classified error instead of a bare one.
+  let path;
+  try {
+    path = computeRecordPath(record, repoRoot);
+  } catch (err) {
+    throw new UnsafeRecordPathError(record, err);
+  }
   const dir = dirname(path);
 
   mkdirSync(dir, { recursive: true });

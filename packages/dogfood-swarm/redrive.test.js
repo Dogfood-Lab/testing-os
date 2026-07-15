@@ -109,6 +109,37 @@ async function importRedriveWithCompletePromotedToEligible() {
   }
 }
 
+/**
+ * F-67908e23 mutation-proof helper — force the in-tx byte-identity
+ * comparison to report a violation regardless of the real hash values.
+ * Neither mutant above reliably reaches redrive.js's wrapped-error catch
+ * block: the AGENT_PRESERVED_SOURCES/AGENT_ELIGIBLE_SOURCES mutant is
+ * deflected by the state machine's own TERMINAL guard before the
+ * byte-identity check ever runs, and the broken-agentRuns-query mutant's
+ * independent re-query resolves the violation away instead of causing one
+ * (both documented in place above). This mutant needs no realistic mismatch
+ * at all — it patches the `hashesAreEqual(...)` assignment directly so the
+ * violation branch, and the F-67908e23 catch-block fix that wraps it, are
+ * reached deterministically.
+ */
+async function importRedriveWithForcedByteIdentityViolation() {
+  const before = 'receiptByteIdentityVerified = hashesAreEqual(preservedReceiptHashesBefore, preservedReceiptHashesAfter);';
+  const after = 'receiptByteIdentityVerified = false; // MUTANT (F-67908e23 test): force the violation branch';
+  assert.ok(REDRIVE_SRC.includes(before), 'hashesAreEqual assignment not found — mutant patch is stale, update it');
+
+  const mutatedSrc = rewriteRelativeImportsToAbsolute(REDRIVE_SRC.replace(before, after), REDRIVE_DIR);
+  assert.notEqual(mutatedSrc, REDRIVE_SRC, 'mutant source must differ from the real module');
+
+  const mutantDir = mkdtempSync(join(tmpdir(), 'redrive-mutant-force-violation-'));
+  const mutantPath = join(mutantDir, 'redrive-mutant-force-violation.mjs');
+  writeFileSync(mutantPath, mutatedSrc, 'utf-8');
+  try {
+    return await import(pathToFileURL(mutantPath).href);
+  } finally {
+    rmSync(mutantDir, { recursive: true, force: true });
+  }
+}
+
 // Cordoned-test HEAD guard — record the actual repo's HEAD by walking up
 // the filesystem from this file's location. This avoids typing the repo
 // path as a literal (which the grep guard forbids) while still anchoring
@@ -801,6 +832,62 @@ describe('redrive — mutation proof: complete reclassified as eligible', () => 
       // half of the proof: the mutant test shows RED, this shows the
       // identical scenario is GREEN on real production code, so the RED
       // above is attributable to the mutant, not to fixture flakiness.
+      const r = redrive({ waveId, reason: 'control', dbPath, apply: true });
+      assert.equal(r.receipt_byte_identity_verified, true);
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// F-67908e23 — the wrapped RECEIPT_BYTE_IDENTITY_VIOLATION error carries
+// waveId + hint, matching this file's sibling typed errors
+// ──────────────────────────────────────────────────────────────
+describe('redrive — F-67908e23: wrapped RECEIPT_BYTE_IDENTITY_VIOLATION carries waveId + hint', () => {
+  it('GATE: a forced violation throws with .code, .waveId, and a non-empty .hint', async () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      const { waveId } = seedWaveWithSources(dbPath, ['complete', 'failed']);
+      const { redrive: mutantRedrive } = await importRedriveWithForcedByteIdentityViolation();
+
+      assert.throws(
+        () => mutantRedrive({ waveId, reason: 'F-67908e23 proof', dbPath, apply: true }),
+        (err) => {
+          assert.equal(err.code, 'RECEIPT_BYTE_IDENTITY_VIOLATION');
+          // F-67908e23 regression: pre-fix, the catch block set ONLY .code
+          // and .message — every other typed error in this package
+          // (DISPATCH_NO_AGENT_DOMAINS / COLLECT_UNKNOWN_DOMAIN /
+          // CLEAN_WAVE_IN_FLIGHT, and redrive.js's own sibling throws) sets
+          // at least a hint and/or waveId, and renderTopLevelError prints
+          // dedicated lines for both when present.
+          assert.equal(err.waveId, waveId,
+            'F-67908e23 regression: the wrapped error must name the wave it fired on');
+          assert.ok(err.hint && err.hint.trim().length > 0,
+            'F-67908e23 regression: the wrapped error must carry a non-empty .hint');
+          return true;
+        },
+      );
+
+      // Prevention still holds under this mutant too — the throw fires
+      // INSIDE db.transaction()'s callback, so better-sqlite3 rolls back
+      // every write the tx body made, including the one real transition
+      // ('failed' -> 'dispatched') this fixture's eligible row went through
+      // before the forced check fired.
+      const db = openDb(dbPath);
+      const rows = db.prepare('SELECT status FROM agent_runs WHERE wave_id = ? ORDER BY id').all(waveId);
+      closeDb(dbPath);
+      assert.deepEqual(rows.map(r => r.status), ['complete', 'failed'],
+        'a forced violation must still roll back the tx — neither row may show a landed transition');
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('control: the UNMODIFIED module does not throw for the same fixture (isolates the mutant as cause)', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      const { waveId } = seedWaveWithSources(dbPath, ['complete', 'failed']);
       const r = redrive({ waveId, reason: 'control', dbPath, apply: true });
       assert.equal(r.receipt_byte_identity_verified, true);
     } finally {

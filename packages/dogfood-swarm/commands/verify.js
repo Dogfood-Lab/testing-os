@@ -63,9 +63,12 @@ export function verify(opts) {
     commandOverrides: opts.commandOverrides,
   });
 
-  // ve-p-003: the runtime verdict vocabulary (pass/fail/skip/no_tests/
-  // tool_missing) and its `reason` would otherwise flatten to a single
-  // passed=0/1 bit at persistence — verification_receipts has no verdict
+  // ve-p-003: the runtime verdict vocabulary (whatever lib/verify/runner.js's
+  // runSteps() can assign — named here rather than enumerated so this
+  // comment can't re-drift the way it did when runner.js grew
+  // 'unmeasured_tests' as a sixth verdict distinct from 'no_tests') and its
+  // `reason` would otherwise flatten to a single passed=0/1 bit at
+  // persistence — verification_receipts has no verdict
   // column, so a real FAIL, a no_tests skip, and a no-adapter skip become
   // indistinguishable in the durable record. Until that schema gains a
   // verdict/reason column, fold the disambiguation into the stdout the

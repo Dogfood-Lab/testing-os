@@ -1162,6 +1162,17 @@ describe('V2-CONTRACT-003 / V2-INVARIAN-006 — a degraded committed-delta probe
     // resolveWorktreeBaseRef(worktree, 'ghost-branch') → merge-base fails → null.
     db.prepare("UPDATE runs SET branch = 'ghost-branch' WHERE id = 'r-ghost'").run();
     dispatch({ runId: 'r-ghost', phase: 'health-amend-a', dbPath, outputDir: tmp, isolate: true });
+    // F-COORD-DIFFBASE made ISOLATED collect prefer the per-wave dispatch_sha
+    // too; NULL it out to simulate the LEGACY wave this fallback (and this
+    // degradation surface) still serves — the identical treatment F-0e55b5ca
+    // applied to this test's non-isolated sibling above, for the identical
+    // reason. With a dispatch_sha recorded there is no unresolvable fork point
+    // to report: dispatch_sha IS the fork point, the committed-delta diff runs
+    // against it, and firing the note would assert that committed edits are
+    // invisible when they are fully visible. The degradation is only real —
+    // and must still be loud — when NO recorded base exists AND merge-base
+    // cannot derive one, which is exactly what this fixture now builds.
+    openDb(dbPath).prepare("UPDATE waves SET dispatch_sha = NULL WHERE run_id = 'r-ghost'").run();
     const report = collectBoth('r-ghost');
     const a = report.agents.find(x => x.domain === 'domain-a');
     assert.ok(a.base_diff_unavailable,
