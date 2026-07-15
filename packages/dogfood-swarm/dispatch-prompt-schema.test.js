@@ -49,6 +49,22 @@ const require = createRequire(import.meta.url);
 const SCHEMA_PATH = require.resolve('@dogfood-lab/schemas/json/agent-output.schema.json');
 const CANONICAL_SCHEMA = JSON.parse(readFileSync(SCHEMA_PATH, 'utf-8'));
 
+// F-6a78ffdd: every test in this file loops `for (const agent of result.agents)`
+// with all assertions inside the loop body. An empty `result.agents` makes the
+// loop body run zero times and the test reports green with nothing checked —
+// this file is the sole dedicated gate on the prompt/schema contract, so a
+// silent-empty dispatch must fail loudly here rather than pass by omission.
+// `setupRun` always freezes exactly 2 owned domains, so every dispatch in this
+// file is expected to produce exactly 2 agents.
+function dispatchExpecting(n, opts) {
+  const result = dispatch(opts);
+  assert.equal(
+    result.agents.length, n,
+    'dispatch produced the expected agent count — guards against a vacuous loop over result.agents',
+  );
+  return result.agents;
+}
+
 function setupRun(dbPath) {
   const db = openDb(dbPath);
 
@@ -81,14 +97,14 @@ describe('dispatch — schema-derived prompt injection (Stage B Item 1)', () => 
   });
 
   it('audit prompt contains the canonical schema contract block + schema $id', () => {
-    const result = dispatch({
+    const agents = dispatchExpecting(2, {
       runId: RUN_ID,
       phase: 'health-audit-a',
       dbPath,
       outputDir: tmpDir,
     });
 
-    for (const agent of result.agents) {
+    for (const agent of agents) {
       const prompt = readFileSync(agent.promptPath, 'utf-8');
       assert.ok(
         prompt.includes('## Output schema (canonical, derived from agent-output.schema.json)'),
@@ -102,7 +118,7 @@ describe('dispatch — schema-derived prompt injection (Stage B Item 1)', () => 
   });
 
   it('audit prompt enumerates the canonical severity + category + stage values', () => {
-    const result = dispatch({
+    const agents = dispatchExpecting(2, {
       runId: RUN_ID,
       phase: 'health-audit-a',
       dbPath,
@@ -113,7 +129,7 @@ describe('dispatch — schema-derived prompt injection (Stage B Item 1)', () => 
     const categoryEnum = CANONICAL_SCHEMA.$defs.finding.properties.category.enum;
     const stageEnum = CANONICAL_SCHEMA.properties.stage.enum;
 
-    for (const agent of result.agents) {
+    for (const agent of agents) {
       const prompt = readFileSync(agent.promptPath, 'utf-8');
       for (const sev of severityEnum) {
         assert.ok(
@@ -137,14 +153,14 @@ describe('dispatch — schema-derived prompt injection (Stage B Item 1)', () => 
   });
 
   it('amend prompt contains canonical fixes + files_changed keys (NOT the historical drift keys)', () => {
-    const result = dispatch({
+    const agents = dispatchExpecting(2, {
       runId: RUN_ID,
       phase: 'health-amend-a',
       dbPath,
       outputDir: tmpDir,
     });
 
-    for (const agent of result.agents) {
+    for (const agent of agents) {
       const prompt = readFileSync(agent.promptPath, 'utf-8');
       assert.ok(
         prompt.includes('`fixes`'),
@@ -169,7 +185,7 @@ describe('dispatch — schema-derived prompt injection (Stage B Item 1)', () => 
   });
 
   it('feature-audit prompt contains canonical feature contract + priority/category/effort enums', () => {
-    const result = dispatch({
+    const agents = dispatchExpecting(2, {
       runId: RUN_ID,
       phase: 'feature-audit',
       dbPath,
@@ -180,7 +196,7 @@ describe('dispatch — schema-derived prompt injection (Stage B Item 1)', () => 
     const categoryEnum = CANONICAL_SCHEMA.$defs.feature.properties.category.enum;
     const effortEnum = CANONICAL_SCHEMA.$defs.feature.properties.effort.enum;
 
-    for (const agent of result.agents) {
+    for (const agent of agents) {
       const prompt = readFileSync(agent.promptPath, 'utf-8');
       assert.ok(
         prompt.includes('## Output schema (canonical, derived from agent-output.schema.json)'),
@@ -215,14 +231,14 @@ describe('dispatch — domain-map alignment (Stage B Item 4)', () => {
   });
 
   it('every prompt contains the canonical domain contract block with ownership class', () => {
-    const result = dispatch({
+    const agents = dispatchExpecting(2, {
       runId: RUN_ID,
       phase: 'health-audit-a',
       dbPath,
       outputDir: tmpDir,
     });
 
-    for (const agent of result.agents) {
+    for (const agent of agents) {
       const prompt = readFileSync(agent.promptPath, 'utf-8');
       assert.ok(
         prompt.includes('## Your domain (canonical, derived from frozen map)'),
@@ -255,14 +271,14 @@ describe('dispatch — domain-map alignment (Stage B Item 4)', () => {
     const snapshot = takeDomainSnapshot(db, RUN_ID);
     closeDb(dbPath);
 
-    const result = dispatch({
+    const agents = dispatchExpecting(2, {
       runId: RUN_ID,
       phase: 'health-audit-a',
       dbPath,
       outputDir: tmpDir,
     });
 
-    for (const agent of result.agents) {
+    for (const agent of agents) {
       const prompt = readFileSync(agent.promptPath, 'utf-8');
       assert.ok(
         prompt.includes(snapshot.snapshotId),
@@ -272,14 +288,14 @@ describe('dispatch — domain-map alignment (Stage B Item 4)', () => {
   });
 
   it('amend prompts also surface the domain contract block (parallel-authority closure)', () => {
-    const result = dispatch({
+    const agents = dispatchExpecting(2, {
       runId: RUN_ID,
       phase: 'health-amend-a',
       dbPath,
       outputDir: tmpDir,
     });
 
-    for (const agent of result.agents) {
+    for (const agent of agents) {
       const prompt = readFileSync(agent.promptPath, 'utf-8');
       assert.ok(
         prompt.includes('## Your domain (canonical, derived from frozen map)'),
@@ -293,14 +309,14 @@ describe('dispatch — domain-map alignment (Stage B Item 4)', () => {
   });
 
   it('feature-audit prompts also surface the domain contract block', () => {
-    const result = dispatch({
+    const agents = dispatchExpecting(2, {
       runId: RUN_ID,
       phase: 'feature-audit',
       dbPath,
       outputDir: tmpDir,
     });
 
-    for (const agent of result.agents) {
+    for (const agent of agents) {
       const prompt = readFileSync(agent.promptPath, 'utf-8');
       assert.ok(
         prompt.includes('## Your domain (canonical, derived from frozen map)'),

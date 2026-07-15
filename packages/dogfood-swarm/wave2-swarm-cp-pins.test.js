@@ -1173,10 +1173,15 @@ describe('V2-CONTRACT-003 / V2-INVARIAN-006 — a degraded committed-delta probe
     setupRun(dbPath, repoPath, 'r-goodbase', { commitSha: sha });
     dispatch({ runId: 'r-goodbase', phase: 'health-amend-a', dbPath, outputDir: tmp });
     const report = collectBoth('r-goodbase');
-    for (const a of report.agents) {
-      assert.equal(a.base_diff_unavailable, undefined,
-        'a healthy probe must not carry the degradation note');
-    }
+    // F-dcb00802: an unguarded `for` over an empty report.agents would pass
+    // vacuously, and `assert.equal(a.base_diff_unavailable, undefined)` would
+    // pass on ANY absent property (surviving a rename of the field itself).
+    // Mirror the RED siblings above: assert population, then dereference by
+    // domain so a missing/renamed agent throws instead of passing silently.
+    assert.equal(report.agents.length, 2, 'both frozen domains reported');
+    const a = report.agents.find(x => x.domain === 'domain-a');
+    assert.ok(!('base_diff_unavailable' in a),
+      'a healthy probe must not carry the degradation note');
   });
 });
 

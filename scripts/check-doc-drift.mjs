@@ -652,13 +652,32 @@ const schemaConformanceHandler = {
       check.negativeFilenamePattern ?? '^invalid-',
     );
 
-    if (targetFiles.length === 0 && !check.allowEmpty) {
-      return [{
-        checkId: check.id,
-        severity: 'config-error',
-        message: `[${check.id}] no target files matched: ${(check.targets ?? []).join(', ')}`,
-        hint: 'Set "allowEmpty": true in the config if matching zero files is acceptable (e.g. early in a run before any agent output exists).',
-      }];
+    // F-5d126106: per-glob zero-match check, not union-level. The prior
+    // guard checked only the FLATTENED union (targetFiles.length === 0), so
+    // any one glob matching files permanently masked every other glob
+    // matching zero — this is exactly how the live-run wave-outputs glob
+    // (swarms/swarm-*/wave-*/outputs/*.json — structurally unmatchable on
+    // CI because swarms/.gitignore ignores `swarm-*/` wholesale) stayed
+    // invisible for as long as swarms/__schema-fixtures__/*.json kept
+    // matching its 4 committed fixtures. `allowEmptyGlobs` names the
+    // specific target globs EXPECTED to legitimately match zero files on
+    // CI, declaring that intent explicitly rather than a check-wide
+    // `allowEmpty: true` silently covering a glob that rotted for an
+    // unrelated reason. Every glob not listed there is checked
+    // independently and must match at least one file.
+    if (!check.allowEmpty) {
+      const allowEmptyGlobs = new Set(check.allowEmptyGlobs ?? []);
+      const emptyRequired = (check.targets ?? []).filter(
+        (pattern) => !allowEmptyGlobs.has(pattern) && expandGlobs([pattern], repoRoot, { recursive: true }).length === 0,
+      );
+      if (emptyRequired.length > 0) {
+        return [{
+          checkId: check.id,
+          severity: 'config-error',
+          message: `[${check.id}] no target files matched: ${emptyRequired.join(', ')}`,
+          hint: 'The target glob(s) may have rotted (docs reorganized, path typo). Fix the glob in scripts/doc-drift-patterns.json, or add it to "allowEmptyGlobs" only if matching zero files is genuinely expected for that specific glob (e.g. a local-only live-run tree that CI never populates).',
+        }];
+      }
     }
 
     const reports = [];
@@ -1639,6 +1658,17 @@ if (isMain) {
 
   runDriftChecks({ repoRoot, checkId, configPath })
     .then((result) => {
+      // F-a80acc6d: hoisted above the print so BOTH the header text and the
+      // exit code read the same two booleans (previously computed AFTER the
+      // print, so the header text was a hardcoded literal instead of a
+      // reflection of what's actually in `reports`). Prior behavior labeled
+      // every non-clean result 'DRIFT', even when every report was a
+      // config-error — mislabeling a broken CHECK (gating nothing) as a
+      // content problem (docs disagree with source). Those mean opposite
+      // things to an operator scanning a CI log first-line: 'drift' says
+      // update a doc; 'config-error' says fix the check itself.
+      const hasConfigError = result.reports.some((r) => r.severity === 'config-error');
+      const hasDrift = result.reports.some((r) => r.severity === 'drift');
       if (json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
@@ -1646,7 +1676,8 @@ if (isMain) {
         if (result.clean) {
           console.log(`[check-doc-drift] OK — ${verb} passed.`);
         } else {
-          console.error(`[check-doc-drift] DRIFT — ${result.reports.length} report(s) from ${verb}:\n`);
+          const kinds = [hasConfigError && 'CONFIG-ERROR', hasDrift && 'DRIFT'].filter(Boolean).join(' + ');
+          console.error(`[check-doc-drift] ${kinds} — ${result.reports.length} report(s) from ${verb}:\n`);
           for (const r of result.reports) {
             console.error(`  ${r.severity.toUpperCase()}: ${r.message}`);
             if (r.missing && r.missing.length) {
@@ -1659,9 +1690,10 @@ if (isMain) {
           }
         }
       }
-      const hasConfigError = result.reports.some((r) => r.severity === 'config-error');
-      const hasDrift = result.reports.some((r) => r.severity === 'drift');
-      process.exit(hasConfigError ? 2 : hasDrift ? 1 : 0);
+      // Fail closed on an unrecognized severity: only 'drift' and
+      // 'config-error' are emitted today, but a report of any OTHER
+      // severity should still red the run rather than silently exit 0.
+      process.exit(hasConfigError ? 2 : result.reports.length > 0 ? 1 : 0);
     })
     .catch((err) => {
       console.error(`[check-doc-drift] fatal: ${err.message}`);

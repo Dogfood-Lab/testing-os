@@ -78,11 +78,28 @@ jobs:
           # in 11.5. In-place `npm install -g npm@latest` races on Node 22's
           # bundled npm's own arborist rebuild (MODULE_NOT_FOUND: promise-retry).
           # The sandbox shadows system npm via PATH; system npm stays intact.
+          #
+          # F-c0348ff6: pinned to an EXACT version (NOT @latest), with
+          # --ignore-scripts, because this is the only job in the repo that
+          # holds `id-token: write` (npm OIDC trusted publishing) alongside
+          # `contents: write`. `npm@latest` resolves whatever npm and
+          # whatever transitive tree is newest at install time — no
+          # lockfile, no integrity pin — so any package in that tree could
+          # run lifecycle scripts inside a job that can mint an OIDC token
+          # and push to the repo. This mirrors the pa11y exact-version pin
+          # in pages.yml (npx -y pa11y@9.1.1), which the repo already
+          # applies to a cosmetic a11y check; the publish job gets the same
+          # discipline. --ignore-scripts removes arbitrary-code-execution
+          # from the install itself — the npm CLI needs no lifecycle
+          # scripts to run from the sandbox's node_modules/.bin. Floor is
+          # npm >=11.5 for OIDC; 11.5.1 is the first patch release on that
+          # floor. Bump in lockstep with Dependabot github-actions / npm
+          # sweeps (same maintenance convention as the pa11y pin).
           SANDBOX="$HOME/.npm-cli-sandbox"
           mkdir -p "$SANDBOX"
           pushd "$SANDBOX" >/dev/null
           echo '{"name":"npm-cli-sandbox","version":"0.0.0","private":true}' > package.json
-          npm install --no-save --no-audit --no-fund --silent npm@latest
+          npm install --no-save --no-audit --no-fund --silent --ignore-scripts npm@11.5.1
           popd >/dev/null
           echo "$SANDBOX/node_modules/.bin" >> "$GITHUB_PATH"
           "$SANDBOX/node_modules/.bin/npm" --version

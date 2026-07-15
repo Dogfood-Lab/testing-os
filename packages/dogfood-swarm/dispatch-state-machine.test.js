@@ -99,6 +99,10 @@ describe('dispatch — state-machine routing (F-002109-003)', () => {
       dbPath,
       outputDir: tmpDir,
     });
+    // Found hunting F-6a78ffdd's family: unlike the sibling test above (line
+    // 78), this loop had no length guard — an empty result.agents would pass
+    // with zero events checked.
+    assert.equal(result.agents.length, 2, 'two agents dispatched');
 
     const db = openDb(dbPath);
     for (const a of result.agents) {
@@ -143,6 +147,8 @@ describe('dispatch — state-machine routing (F-002109-003)', () => {
       'freshly-dispatched agents must not be classified as timed out');
 
     // And every agent must still be 'dispatched' (not flipped to timed_out).
+    // Found hunting F-6a78ffdd's family: same unguarded-loop shape as above.
+    assert.equal(result.agents.length, 2, 'two agents dispatched');
     for (const a of result.agents) {
       const row = db.prepare('SELECT status FROM agent_runs WHERE id = ?').get(a.agentRunId);
       assert.equal(row.status, 'dispatched',

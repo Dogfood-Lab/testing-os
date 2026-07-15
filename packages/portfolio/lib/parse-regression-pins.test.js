@@ -55,6 +55,79 @@ describe('F_ID_PATTERN', () => {
     assert.equal(matches, null,
       `none of those should match the strict pattern, got ${JSON.stringify(matches)}`);
   });
+
+  // F-3ec5b54f: the gate this pattern feeds cannot see a finding id it
+  // cannot match. This repo mints THREE id shapes — legacy, hash, and
+  // prefixed (see F_ID_PATTERN's own JSDoc for the full account) — and
+  // the pre-fix pattern matched only the first. These are the widening's
+  // load-bearing positive cases.
+  describe('F-3ec5b54f: hash-style ids (F-xxxxxxxx, 8 lowercase hex)', () => {
+    it('matches a standalone hash id', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.deepEqual('fixed in F-42e57a77 today'.match(F_ID_PATTERN), ['F-42e57a77']);
+    });
+
+    it('matches multiple distinct hash ids in one string', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      const text = 'F-2965699b and F-7ce07baa and F-a37d36f5 all landed together';
+      assert.deepEqual(text.match(F_ID_PATTERN), ['F-2965699b', 'F-7ce07baa', 'F-a37d36f5']);
+    });
+
+    it('does NOT truncate a 9-hex-char run into a false 8-char match', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.equal('F-42e57a77b'.match(F_ID_PATTERN), null,
+        'a 9th hex char means this is not a valid 8-char hash id — must not partially match');
+    });
+
+    it('does NOT match a bare 6-digit numeric run (that is a legacy id\'s first segment, not a hash id)', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      // '000000' is only 6 chars — 2 short of the 8 the hash branch requires —
+      // and legacy's own branch requires the '-NNN' tail to complete a match.
+      assert.equal('F-000000'.match(F_ID_PATTERN), null);
+    });
+  });
+
+  describe('F-3ec5b54f: prefixed ids (F-AAA[-AAA...]-NNN)', () => {
+    it('matches a single-segment prefix', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.deepEqual('F-CI-001'.match(F_ID_PATTERN), ['F-CI-001']);
+    });
+
+    it('matches an alphanumeric segment (letters + digits, e.g. W1)', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.deepEqual('F-WAVE29-001'.match(F_ID_PATTERN), ['F-WAVE29-001']);
+    });
+
+    it('matches a multi-segment prefix (F-CI-SELF-DOGFOOD-001)', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.deepEqual('F-CI-SELF-DOGFOOD-001'.match(F_ID_PATTERN), ['F-CI-SELF-DOGFOOD-001']);
+    });
+
+    it('does NOT truncate a 4-digit suffix into a false 3-digit match', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.equal('F-CI-0011'.match(F_ID_PATTERN), null,
+        'a 4th trailing digit means the real suffix is not 3 digits — must not partially match');
+    });
+
+    it('does NOT match a lowercase continuation after an uppercase prefix (F-XXX-yyy stays excluded)', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      // Regression guard: confirms the widened pattern did not accidentally
+      // relax the EXISTING F-XXX-yyy exclusion above while adding prefixed
+      // support — 'XXX' alone satisfies the uppercase-prefix shape, but the
+      // lowercase 'yyy' tail cannot complete either the prefix-continuation
+      // or the digit-suffix branch.
+      assert.equal('F-XXX-yyy'.match(F_ID_PATTERN), null);
+    });
+  });
+
+  it('F-5eafee44: extension widening does not change WHAT counts as a pin — only which files are scanned', () => {
+    // The pattern itself is extension-agnostic; walkSourceFiles' extension
+    // filter is the actual F-5eafee44 fix (covered in the walkSourceFiles
+    // describe block below). This test just pins that expectation in one
+    // place so a reader of F_ID_PATTERN's tests sees the split explicitly.
+    F_ID_PATTERN.lastIndex = 0;
+    assert.deepEqual('# F-CI-SELF-DOGFOOD-001 — pinned in YAML'.match(F_ID_PATTERN), ['F-CI-SELF-DOGFOOD-001']);
+  });
 });
 
 describe('classifyFile', () => {
@@ -178,6 +251,26 @@ describe('walkSourceFiles', () => {
       assert.equal(files.length, 1);
       assert.ok(files[0].endsWith('a.js'),
         `only src/a.js should survive the skip set, got ${files[0]}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('F-5eafee44: finds .yml and .yaml files alongside the JS/TS extensions', () => {
+    const root = makeFixture({
+      'src/a.js': '// F-100000-001',
+      '.github/workflows/example.yml': '# F-CI-SELF-DOGFOOD-001',
+      'policies/global-policy.yaml': '# F-200000-002',
+      'd.txt': 'no F-id here please',
+    });
+    try {
+      // Deletion/emptiness proof: this is the exact fixture shape ci-tooling's
+      // F-5eafee44 META test in scripts/check-finding-regression-pins.test.mjs
+      // uses. Revert DEFAULT_SOURCE_EXTENSIONS to drop .yml/.yaml and both
+      // YAML files vanish from the walk — files.length would drop to 1.
+      const files = walkSourceFiles(root);
+      const names = files.map(f => f.split(/[\\/]/).pop()).sort();
+      assert.deepEqual(names, ['a.js', 'example.yml', 'global-policy.yaml']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

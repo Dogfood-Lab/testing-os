@@ -15,6 +15,38 @@
  * The receipt artifact (full per-criterion detail) is written under
  * swarms/<run-id>/adjudications/ via the atomic-write helper, and the durable
  * gate-readable summary row is persisted through lib/adjudication-store.js.
+ *
+ * F-fa047531 — compensators table (workflow-standards NAMED_COMPENSATORS; no
+ * skip allowed for an irreversible action):
+ *
+ *   Irreversible action: runAdjudicate() dispatches the jury (billed under
+ *   --cloud), writes the receipt artifact to disk, and INSERTs the
+ *   adjudications row — all before this fix, with NO dry-run and no CLI
+ *   surface for the undo lib/adjudication-store.js#deleteAdjudication
+ *   already defined (it was wired to nothing; the only way to invoke it was
+ *   raw SQL surgery, exactly what its own docstring says it exists to
+ *   prevent).
+ *
+ *   Command-to-undo: `swarm adjudicate <run-id> --undo <adjudication-id>
+ *   --apply` (undoAdjudication below, calling deleteAdjudication). Dry-run
+ *   by default like every other recovery verb in this package.
+ *
+ *   Post-rollback state: the adjudications row is gone; checkAdjudication
+ *   (lib/advance.js) falls back to getLatestAdjudication, i.e. the prior
+ *   row for the wave (or none, if this was the only one). The full receipt
+ *   artifact on disk is left in place (it is the durable forensic record of
+ *   what the jury actually said; only the gate-readable summary row is
+ *   removed) — an operator who wants it gone deletes the file directly.
+ *
+ *   Owner: the operator invoking --undo, naming the specific adjudication
+ *   id from `swarm advance --check-only` or the receipt path printed by the
+ *   original run.
+ *
+ *   Preview: `--dry-run` (previewAdjudicate below) resolves the wave, runs
+ *   the SAME fail-closed neutrality gate the apply path runs first, and
+ *   prints the seats/tier/billing WITHOUT dispatching the jury or
+ *   persisting — the highest-value preview in the verb set, because
+ *   adjudicate is the only verb that spends real money.
  */
 
 import { mkdirSync } from 'node:fs';
@@ -22,8 +54,9 @@ import { dirname, join } from 'node:path';
 import { createHash } from 'node:crypto';
 
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
-import { adjudicate } from '../lib/case-file/adjudicate.js';
-import { persistAdjudication } from '../lib/adjudication-store.js';
+import { adjudicate, buildJurySpec } from '../lib/case-file/adjudicate.js';
+import { toJuryRequest } from '../lib/case-file/handoff.js';
+import { persistAdjudication, deleteAdjudication, getLatestAdjudication } from '../lib/adjudication-store.js';
 
 /** Default receipt writer — atomic (helper-adoption discipline), parent-dir safe. */
 function defaultWriteReceipt(path, content) {
@@ -84,6 +117,131 @@ export async function runAdjudicate(db, opts) {
   });
 
   return { result, adjudicationId, receiptPath, wave };
+}
+
+/**
+ * F-fa047531: `--dry-run` preview. Resolves the run/wave and runs the SAME
+ * fail-closed neutrality gate runAdjudicate() runs first (a biasing
+ * case-file is refused here too — CaseFileNeutralityError propagates
+ * unchanged), then reports the seats/tier/billing the apply path WOULD
+ * dispatch. Never calls the jury boundary, never writes a receipt, never
+ * touches the adjudications table.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {object} opts
+ * @param {string} opts.runId
+ * @param {object} opts.caseFile — parsed case-file JSON
+ * @param {Array<{family: string, model: string}>} [opts.seats]
+ * @param {string} [opts.tier] — 'local' | 'prism', for the report only (not re-derived here)
+ * @param {boolean} [opts.cloud] — for the report only
+ * @returns {{ dryRun: true, runId: string, waveId: number, waveNumber: number, tier: string, cloud: boolean, billed: boolean, seats: Array<{family:string,model:string}>, criteriaCount: number }}
+ * @throws {import('../lib/case-file/handoff.js').CaseFileNeutralityError} if the case-file fails the neutrality gate
+ */
+export function previewAdjudicate(db, opts) {
+  const { runId, caseFile, seats, tier, cloud } = opts;
+
+  const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
+  if (!run) throw new Error(`Run not found: ${runId}`);
+  const wave = db.prepare(
+    'SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1',
+  ).get(runId);
+  if (!wave) throw new Error(`No waves found for run ${runId}`);
+
+  const juryRequest = toJuryRequest(caseFile); // fail-closed on a biasing case-file
+  const spec = buildJurySpec(juryRequest, { seats });
+
+  return {
+    dryRun: true,
+    runId,
+    waveId: wave.id,
+    waveNumber: wave.wave_number,
+    tier: tier || 'local',
+    cloud: !!cloud,
+    billed: !!cloud,
+    seats: spec.seats,
+    criteriaCount: juryRequest.rubric.acceptance_criteria.length,
+  };
+}
+
+/**
+ * F-fa047531: the compensator CLI surface for
+ * lib/adjudication-store.js#deleteAdjudication. Dry-run by default (mirrors
+ * every other recovery verb — redrive/rewind/revalidate/clean).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {object} opts
+ * @param {number} opts.adjudicationId
+ * @param {boolean} [opts.apply]
+ * @returns {object} report
+ */
+export function undoAdjudication(db, opts) {
+  const { adjudicationId, apply } = opts;
+
+  const row = db.prepare('SELECT * FROM adjudications WHERE id = ?').get(adjudicationId);
+  if (!row) {
+    const err = new Error(`adjudicate --undo: adjudication ${adjudicationId} not found`);
+    err.code = 'ADJUDICATION_NOT_FOUND';
+    throw err;
+  }
+
+  const report = {
+    dryRun: !apply,
+    apply: !!apply,
+    target: {
+      id: row.id,
+      waveId: row.wave_id,
+      runId: row.run_id,
+      overall: row.overall,
+      createdAt: row.created_at,
+    },
+    removed: false,
+    newLatest: null,
+  };
+
+  if (apply) {
+    const removedCount = deleteAdjudication(db, adjudicationId);
+    report.removed = removedCount > 0;
+    const latest = getLatestAdjudication(db, row.wave_id);
+    report.newLatest = latest
+      ? { id: latest.id, overall: latest.overall, createdAt: latest.created_at }
+      : null;
+  }
+
+  return report;
+}
+
+/**
+ * Human-readable preview text for `swarm adjudicate --dry-run`.
+ */
+export function formatAdjudicationPreview(preview) {
+  const lines = [];
+  lines.push(`Adjudicate (DRY-RUN) — run ${preview.runId}, wave ${preview.waveNumber}`);
+  lines.push(`  Jury tier: ${preview.tier}${preview.cloud ? ' (--cloud: PAID seats — this run would be billed)' : ' (free seats)'}`);
+  lines.push(`  Panel (${preview.seats.length}): ${preview.seats.map(s => `${s.family}:${s.model}`).join(', ') || '(none)'}`);
+  lines.push(`  Criteria to judge: ${preview.criteriaCount}`);
+  lines.push('  Case-file passed the neutrality gate. Nothing was dispatched, written, or persisted.');
+  lines.push('  Re-run without --dry-run to actually adjudicate.');
+  return lines.join('\n');
+}
+
+/**
+ * Human-readable report for `swarm adjudicate --undo`.
+ */
+export function formatAdjudicationUndo(report) {
+  const verb = report.apply ? 'Undo (APPLIED)' : 'Undo (DRY-RUN)';
+  const t = report.target;
+  const lines = [];
+  lines.push(`${verb} — adjudication #${t.id} (wave ${t.waveId}, run ${t.runId})`);
+  lines.push(`  Verdict recorded: ${t.overall} @ ${t.createdAt}`);
+  if (report.apply) {
+    lines.push(`  Removed: ${report.removed ? 'yes' : 'no (already gone)'}`);
+    lines.push(report.newLatest
+      ? `  Gate now reads: adjudication #${report.newLatest.id} (${report.newLatest.overall})`
+      : '  Gate now reads: no adjudication for this wave');
+  } else {
+    lines.push('  Re-run with --apply to remove this row.');
+  }
+  return lines.join('\n');
 }
 
 /**

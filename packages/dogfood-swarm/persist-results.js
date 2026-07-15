@@ -84,15 +84,62 @@ function stepResult(name, ok) {
   return { step_id: name, status: ok ? 'pass' : 'fail' };
 }
 
+// --- Shared: remediation application (F-7545196d / F-b5cd4274) ---
+
+/**
+ * The set of finding ids any remediate result claims to have fixed.
+ */
+function collectFixedIds(remediateResults) {
+  const fixedIds = new Set();
+  for (const r of remediateResults) {
+    for (const fix of (r.fixes || [])) {
+      if (fix.finding_id) fixedIds.add(fix.finding_id);
+    }
+  }
+  return fixedIds;
+}
+
+/**
+ * Apply remediation fixes to findings, returning NEW audit-result objects
+ * (and new finding objects within them) rather than writing through to the
+ * caller's arrays.
+ *
+ * F-7545196d: buildScenarioResults (Path A, the published dogfood submission)
+ * used to build a remediateMap but only consult it for the `remediate` step
+ * flag — never for `deriveVerdict`/`openFindings`, which scored the RAW
+ * pre-remediation status. buildAuditPayload (Path B, the audit DB) DID apply
+ * fixes. One CRITICAL plus a matching remediate fix produced Path A
+ * `overall_verdict: 'fail'` (a self-contradictory step_results 'remediate:
+ * pass' next to 'verify: fail') alongside Path B `overall_status: 'pass'` for
+ * the SAME data — and Path A is the one that ships to the shared records/
+ * corpus other repos read over raw.githubusercontent URLs.
+ *
+ * F-b5cd4274: buildAuditPayload additionally MUTATED the finding objects it
+ * was given in place (`f.status = 'fixed'`), and those objects are shared
+ * references into the caller's auditResults array — so which of Path A/Path B
+ * ran FIRST silently changed the other's answer. Deriving the fixed set once
+ * and mapping to brand-new objects (never `f.status = ...` through a shared
+ * reference) fixes both defects with the same edit: apply this ONCE, before
+ * either path builds anything, and pass the result to BOTH.
+ */
+function applyRemediation(auditResults, remediateResults) {
+  const fixedIds = collectFixedIds(remediateResults);
+  return auditResults.map(a => ({
+    ...a,
+    findings: (a.findings || []).map(f => (fixedIds.has(f.id) ? { ...f, status: 'fixed' } : f)),
+  }));
+}
+
 // --- Path A: Dogfood submission ---
 
 function buildScenarioResults(auditResults, remediateResults) {
+  const resolved = applyRemediation(auditResults, remediateResults);
   const remediateMap = new Map();
   for (const r of remediateResults) {
     remediateMap.set(r.component_id, r);
   }
 
-  return auditResults.map(audit => {
+  return resolved.map(audit => {
     const cid = audit.component_id;
     const remediation = remediateMap.get(cid);
     const findings = audit.findings || [];
@@ -152,19 +199,14 @@ function computeOverallVerdict(scenarioResults) {
 // --- Path B: Audit DB payload ---
 
 function buildAuditPayload(manifest, auditResults, remediateResults) {
-  const allControls = auditResults.flatMap(a => a.controls || []);
-  const allFindings = auditResults.flatMap(a => a.findings || []);
-
-  // Apply remediation fixes to findings
-  const fixedIds = new Set();
-  for (const r of remediateResults) {
-    for (const fix of (r.fixes || [])) {
-      if (fix.finding_id) fixedIds.add(fix.finding_id);
-    }
-  }
-  for (const f of allFindings) {
-    if (fixedIds.has(f.id)) f.status = 'fixed';
-  }
+  // F-b5cd4274: resolve remediation into NEW objects via the SAME helper
+  // buildScenarioResults uses, instead of mutating `f.status` through to the
+  // caller's shared finding references. Both builders are now pure functions
+  // of the same (auditResults, remediateResults) pair — the order they run
+  // in (or whether either runs at all) cannot change the other's answer.
+  const resolved = applyRemediation(auditResults, remediateResults);
+  const allControls = resolved.flatMap(a => a.controls || []);
+  const allFindings = resolved.flatMap(a => a.findings || []);
 
   const openFindings = allFindings.filter(f => f.status !== 'fixed');
   const critical = openFindings.filter(f => sevUpper(f) === 'CRITICAL').length;

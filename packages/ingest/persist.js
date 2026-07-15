@@ -130,7 +130,21 @@ export function isDuplicate(runId, record, repoRoot) {
  * @throws {DuplicateRunIdError} when a concurrent writer won the race
  */
 export function writeRecord(record, repoRoot) {
-  if (isDuplicate(record.run_id, record, repoRoot)) {
+  // F-a37d36f5: family sibling of the ingest.js pre-check fix — writeRecord
+  // carries its OWN premature isDuplicate call, reached even when the
+  // caller's own duplicate check was skipped or already cleared. A record
+  // whose repo/run_id computeRecordPath rejects (invalid format, unsafe
+  // segment) cannot possibly collide with an existing file, so treating the
+  // throw as "not a duplicate" here is the same semantically-free
+  // short-circuit as the run.js fix — it lets validateRecord() below be the
+  // authoritative judge instead of a raw path-computation throw.
+  let duplicate;
+  try {
+    duplicate = isDuplicate(record.run_id, record, repoRoot);
+  } catch {
+    duplicate = false;
+  }
+  if (duplicate) {
     const path = computeRecordPath(record, repoRoot);
     return { path, written: false };
   }

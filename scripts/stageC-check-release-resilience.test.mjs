@@ -157,3 +157,38 @@ test('PB-CI-002: a per-package version guard asserts each publishable package ve
     'release.yml per-package version guard must emit a ::error:: naming the drifted package version (PB-CI-002).',
   );
 });
+
+test('F-c0348ff6: the npm-OIDC sandbox install pins an EXACT npm version with --ignore-scripts (never npm@latest)', () => {
+  // This publish job is the only one in the repo holding `id-token: write`
+  // (npm OIDC trusted publishing) alongside `contents: write`. An unpinned
+  // `npm@latest` install resolves whatever npm + transitive tree is newest
+  // at install time — no lockfile, no integrity pin — so any package in that
+  // tree could run lifecycle scripts inside a job that can mint an OIDC
+  // token and push to the repo. The exact-version pin closes the "newest at
+  // install time" half; --ignore-scripts closes the "arbitrary code from the
+  // install itself" half. Mirrors the pa11y exact-version pin in pages.yml,
+  // which the repo already applies to a cosmetic a11y check — the publish
+  // job gets the same discipline for a job that can push + publish.
+  const text = readFileSync(releasePath, 'utf8');
+  // Scope to actual (non-comment) lines: the step's own header comment
+  // legitimately narrates the AVOIDED approach in prose ("the sandbox
+  // install below shadows the system npm with npm@latest", "In-place `npm
+  // install -g npm@latest` ... races") to explain why the sandbox exists at
+  // all — a whole-text ban on the substring "npm@latest" false-positives on
+  // that prose. Only a real, executable line matters here.
+  const offendingLines = text.split(/\r?\n/).filter((line) => {
+    const trimmed = line.trim();
+    if (trimmed.startsWith('#')) return false;
+    return /npm@latest/.test(trimmed);
+  });
+  assert.deepEqual(
+    offendingLines,
+    [],
+    `the sandbox install must never resolve npm@latest in a REAL (non-comment) line — no lockfile, no integrity pin, inside the one job with id-token: write (F-c0348ff6). Offending line(s):\n${offendingLines.join('\n')}`,
+  );
+  assert.match(
+    text,
+    /npm install[^\n]*--ignore-scripts npm@\d+\.\d+\.\d+/,
+    'the sandbox install must pin an EXACT npm version (npm@X.Y.Z) with --ignore-scripts on the SAME line (F-c0348ff6)',
+  );
+});

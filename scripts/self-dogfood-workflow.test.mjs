@@ -89,6 +89,37 @@ test('self-dogfood.yml parses as YAML', () => {
   assert.ok('workflow_dispatch' in on, 'must keep workflow_dispatch as a manual fallback');
 });
 
+test('F-84b11aa9: the concurrency group is keyed on the triggering run, not github.ref, and does not cancel in progress', () => {
+  // Under a workflow_run event github.ref is ALWAYS the default-branch ref
+  // (this file's Build-submission step documents the identical property for
+  // $GITHUB_SHA) — so a group keyed on github.ref evaluates to the SAME
+  // constant string for every workflow_run AND every workflow_dispatch run,
+  // collapsing all runs into one mutually-cancelling group. A red CI run is
+  // typically followed minutes later by its own fix push; cancel-in-progress
+  // then systematically cancels the FAIL verdict in favor of the incoming
+  // PASS, silently dropping exactly the evidence the honesty gate (NEVER
+  // hardcode passes) exists to report. A revert back to `github.ref` or to
+  // `cancel-in-progress: true` must go RED here.
+  const text = readFileSync(workflowPath, 'utf8');
+  const doc = yaml.load(text);
+  assert.ok(doc.concurrency, 'self-dogfood.yml must declare a concurrency block');
+  assert.doesNotMatch(
+    String(doc.concurrency.group),
+    /github\.ref\b/,
+    'the concurrency group must not be keyed on github.ref — under workflow_run it is always the default-branch ref, collapsing every run into one mutually-cancelling group',
+  );
+  assert.match(
+    String(doc.concurrency.group),
+    /workflow_run\.id/,
+    'the concurrency group must key on the triggering workflow_run.id so each CI verdict gets its own group',
+  );
+  assert.equal(
+    doc.concurrency['cancel-in-progress'],
+    false,
+    'cancel-in-progress must be false — a cancelled self-dogfood run silently drops the CI verdict it was submitting',
+  );
+});
+
 test('F-CI-SELF-DOGFOOD-001: job carries contents: write and no DOGFOOD_TOKEN remains', () => {
   const text = readFileSync(workflowPath, 'utf8');
   // POST /dispatches requires contents: write on the workflow token. A
@@ -140,6 +171,37 @@ test('F-CI-SELF-DOGFOOD-001: the `ingest:` head-commit loop guard is present in 
     guard,
     /workflow_dispatch/,
     'the guard must let workflow_dispatch runs through (manual fallback)',
+  );
+});
+
+test('F-87dfc8e6: the workflow_run leg rejects fork-originated runs and non-push-triggered CI runs', () => {
+  // Untrusted-input privilege boundary. workflow_run fires in the BASE
+  // repo's context after a fork PR's CI run completes (the documented "pwn
+  // request" surface), so github.event.workflow_run.* is
+  // attacker-influenced for a fork PR — and opening a PR from your own
+  // fork's `main` is the default casual-contributor flow, not exotic, so
+  // head_branch == 'main' alone (pinned by the sibling test above) does NOT
+  // reject a fork. Without BOTH conditions asserted here, a fork PR from
+  // `main` that deliberately reds its own CI causes a `verdict: fail`
+  // record ABOUT dogfood-lab/testing-os to be dispatched and committed to
+  // main, flipping the public shields.io badge at will. A revert dropping
+  // either condition must go RED here.
+  const text = readFileSync(workflowPath, 'utf8');
+  const doc = yaml.load(text);
+  const jobs = doc.jobs ?? {};
+  const guard = Object.values(jobs)
+    .map((j) => (j && typeof j.if === 'string' ? j.if : ''))
+    .filter(Boolean)
+    .join('\n');
+  assert.match(
+    guard,
+    /workflow_run\.head_repository\.full_name == github\.repository/,
+    'the guard must reject workflow_run events whose head_repository is not this repo (rejects forks) — head_branch alone is insufficient because a fork PR opened from the fork\'s own `main` passes that check',
+  );
+  assert.match(
+    guard,
+    /workflow_run\.event == 'push'/,
+    'the guard must reject workflow_run events whose underlying trigger was not a push (rejects pull_request-triggered CI runs, including this repo\'s own PRs — a PR\'s CI result is not evidence about main\'s gate)',
   );
 });
 

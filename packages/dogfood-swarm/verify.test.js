@@ -12,7 +12,7 @@
 
 import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -142,6 +142,33 @@ describe('Runner — runStep', () => {
     const result = runStep('.', { name: 'opt', cmd: 'node', args: ['-e', '"process.exit(1)"'], optional: true });
     assert.equal(result.passed, false);
     assert.equal(result.optional, true);
+  });
+});
+
+describe('Runner — subprocess invocation discipline (F-W1-BACK-003)', () => {
+  // F-W1-BACK-003: runStep mirrors the v1.2.0 doctrine established in
+  // lib/worktree.js's gitArgs() helper and lib/domains.js — every subprocess
+  // call uses execFileSync(cmd, args[]) rather than building a shell command
+  // string and handing it to execSync(). This is a source-text gate, not a
+  // behavioral injection round-trip: runStep's own header documents that
+  // `shell: true` means the argv array does NOT neutralize shell
+  // metacharacters (every live step.args entry is a hardcoded literal, which
+  // is the actual safety guarantee) — so the property worth pinning is that
+  // the CALL SHAPE stays execFileSync(step.cmd, cmdArgs, ...), matching the
+  // package-wide convention, not execSync of a joined string. Same test shape
+  // as F-21240958's persist.js pin.
+  const RUNNER_SRC = readFileSync(new URL('./lib/verify/runner.js', import.meta.url), 'utf-8');
+
+  it('GATE: no execSync( call in runner.js — execFileSync with a real argv array only', () => {
+    assert.doesNotMatch(RUNNER_SRC, /execSync\(/,
+      'runner.js must not call execSync( — every subprocess invocation uses execFileSync with an argv array (F-W1-BACK-003)');
+    assert.match(RUNNER_SRC, /execFileSync\(step\.cmd,\s*cmdArgs,/,
+      'runStep must call execFileSync(step.cmd, cmdArgs, ...) — the argv-array form, matching lib/worktree.js#gitArgs and lib/domains.js (F-W1-BACK-003)');
+  });
+
+  it('execFileSync receives the argv array (cmdArgs), never the human-readable joined display string (fullCmd)', () => {
+    assert.doesNotMatch(RUNNER_SRC, /execFileSync\(step\.cmd,\s*fullCmd/,
+      'fullCmd is display-only (returned to callers/tests as `command`) — it must never be the value handed to execFileSync');
   });
 });
 

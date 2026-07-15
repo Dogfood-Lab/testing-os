@@ -12,6 +12,22 @@
     "F-742440-012": {
       "reason": "Cross-reference in packages/dogfood-swarm/db/schema.js naming a wave-1 sibling. Test coverage lives with the sibling fix in wave-1.",
       "file": "packages/dogfood-swarm/db/schema.js"
+    },
+    "F-COORD-004": {
+      "reason": "Cross-reference in .github/workflows/ci.yml naming the doc-drift CLASS (error code / status enum / legacy path added without its sibling doc entry) that scripts/check-doc-drift.mjs catches generically via scripts/doc-drift-patterns.json. There is no single fix-site to pin: the check is config-driven (error-codes, statuses, and further entries in doc-drift-patterns.json), and each entry is exercised by scripts/check-doc-drift.test.mjs — including the non-vacuity 'error-codes META' test that strips an enforced code from the handbook and asserts drift fires. Real coverage lives there, not at this citation.",
+      "file": ".github/workflows/ci.yml"
+    },
+    "F-5b0996e4": {
+      "reason": "Doc-only correction in packages/dogfood-swarm/commands/dispatch.js's dispatch() header: fixes a prior version of the SAME header that wrongly claimed both worktree creation and prompt-file writes were 'EXPLICITLY outside the tx'. Worktree creation running INSIDE db.transaction() (so a thrown IsolationError rolls back all DB writes while any already-created worktree survives as an FS orphan) is exactly what packages/dogfood-swarm/amend2-d3b-002-dispatch-tx.test.js's D3B-002 suite exercises ('mid-loop failure rolls back ALL DB writes' — triggered via --isolate with no .git, i.e. IsolationError propagating out of the tx). That coverage predates and is independent of this id; the fix here is the corrected prose, not new behavior.",
+      "file": "packages/dogfood-swarm/commands/dispatch.js"
+    },
+    "F-W1-CI-001": {
+      "reason": "Cross-reference in .github/workflows/pages.yml naming the historical id for the pa11y job-permission-isolation restructure — the same restructure the file elsewhere attributes to F-a52776d5 (both appear independently in prose, not dual-labeled at one site). Real behavioral coverage is scripts/stageC-check-pages-a11y-isolation.test.mjs's F-a52776d5/F-32c517c4 tests, which assert the a11y job is dedicated with `permissions: {}` and that pa11y does NOT run inside the elevated deploy job — the exact property this citation describes.",
+      "file": ".github/workflows/pages.yml"
+    },
+    "F-e241fa61": {
+      "reason": "Doc-only correction in packages/dogfood-swarm/commands/redrive.js's AGENT_ELIGIBLE_SOURCES comment, clarifying that a WAVE-level 'failed' status (unlike an agent-level 'failed') is BLOCKED and needs the override path. The behavior itself — a failed wave redriven only via override — is exercised by packages/dogfood-swarm/redrive.test.js's 'failed wave is redriven via override path (BLOCKED source)' test (describe block 'redrive — wave-level transition paths'), which predates and is independent of this id.",
+      "file": "packages/dogfood-swarm/commands/redrive.js"
     }
   }
 }

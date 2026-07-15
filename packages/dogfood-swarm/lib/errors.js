@@ -201,6 +201,47 @@ export class ControlPlaneSchemaTooNewError extends Error {
   }
 }
 
+/**
+ * Thrown by buildCriterionIntent (lib/case-file/prism-jury.js) when the
+ * MANDATORY head section (rubric.objective + the criterion under test) alone
+ * exceeds prism's 4000-char intent cap, before any optional section (evidence,
+ * out-of-scope) is even considered.
+ *
+ * Pre-fix history (F-ca495e53): fits() only ever measured `[head, ...parts]`,
+ * so head was a fixed cost the budget was spent against but never itself
+ * checked. When head alone overflowed, fits() returned false for every
+ * candidate, body stayed empty, and the function returned `intent: head` —
+ * still over the cap — while `omitted` reported {evidence:0, out_of_scope:0},
+ * i.e. affirmatively claiming nothing was dropped. prism's pydantic
+ * max_length=4000 then rejected the request, every seat abstained uniformly,
+ * and the operator was told the jury could not reach the artifact
+ * (insufficient_context, Director disposition) when the actual cause was a
+ * deterministic, locally-detectable input error: their rubric objective (or
+ * one criterion's check text) was too long. This directly contradicts the
+ * module's own stated discipline: "Anything that does not fit is REPORTED,
+ * not silently dropped." An over-cap head was neither reported nor dropped.
+ *
+ * Fail fast at the case-file boundary instead: this is knowable without
+ * spending a single ~27s seat call.
+ */
+export class CriterionIntentOverflowError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} opts
+   * @param {string} opts.criterionId — the criterion under test when the overflow was found
+   * @param {number} opts.headLength — the mandatory section's actual length
+   * @param {number} opts.maxChars — prism's intent cap (MAX_INTENT_CHARS)
+   */
+  constructor(message, opts) {
+    super(message);
+    this.name = 'CriterionIntentOverflowError';
+    this.code = 'CRITERION_INTENT_OVERFLOW';
+    this.criterionId = opts.criterionId;
+    this.headLength = opts.headLength;
+    this.maxChars = opts.maxChars;
+  }
+}
+
 export class StateMachineRejectionError extends Error {
   /**
    * @param {string} message

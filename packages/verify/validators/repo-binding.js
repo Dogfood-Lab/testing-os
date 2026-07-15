@@ -88,13 +88,28 @@ export const RUN_URL_PARSERS = {
 /**
  * Decode the owner/repo a run_url attests to, for the given provider.
  *
+ * F-7ce07baa: family sibling of F-2965699b (validators/provenance.js). Plain
+ * bracket access resolves inherited Object.prototype keys, so
+ * `RUN_URL_PARSERS[provider]` for `provider: '__proto__'` (etc.) returns a
+ * truthy Object.prototype method instead of `undefined` — the `if (!parser)`
+ * unknown-provider gate cannot fire for that key space, and `parser(runUrl)`
+ * goes on to call an unrelated Object.prototype method. This site is reached
+ * even EARLIER in the trust chain than provenanceForProvider: verify/
+ * index.js's repo-binding guard runs at step 0, before the schema gate, so
+ * `submission.source.provider` is raw untrusted input here too.
+ * `Object.hasOwn` matches the safeGet()/provenanceForProvider idiom so every
+ * prototype-safety site in this codebase reads the same.
+ *
  * @param {string} provider The `source.provider` token (e.g. 'github').
  * @param {string} runUrl   The `source.run_url`.
  * @returns {RunUrlRepo | null} `{ owner, repo }`, or `null` when the provider
- *   has no parser or the URL does not match the provider's shape.
+ *   has no parser (including every Object.prototype key) or the URL does not
+ *   match the provider's shape.
  */
 export function parseRunUrlRepo(provider, runUrl) {
-  const parser = RUN_URL_PARSERS[provider];
+  const parser = typeof provider === 'string' && Object.hasOwn(RUN_URL_PARSERS, provider)
+    ? RUN_URL_PARSERS[provider]
+    : null;
   if (!parser) return null;
   return parser(runUrl);
 }

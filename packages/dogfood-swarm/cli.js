@@ -45,7 +45,11 @@ import { verifyUnverified as runVerifyUnverified } from './commands/verify-unver
 import { verifyApproved as runVerifyApproved } from './commands/verify-approved.js';
 import { advance as runAdvance, checkGates, getPromotions } from './lib/advance.js';
 import { persist as runPersist, formatPersist } from './commands/persist.js';
-import { runAdjudicate, formatAdjudication } from './commands/adjudicate.js';
+import {
+  runAdjudicate, formatAdjudication,
+  previewAdjudicate, formatAdjudicationPreview,
+  undoAdjudication, formatAdjudicationUndo,
+} from './commands/adjudicate.js';
 import { makeOllamaJury, LOCAL_JURY_SEATS } from './lib/case-file/ollama-jury.js';
 import { makePrismJury, PRISM_JURY_SEATS, PRISM_CLOUD_SEATS } from './lib/case-file/prism-jury.js';
 import { DEFAULT_JURY_SEATS } from './lib/case-file/adjudicate.js';
@@ -1089,7 +1093,7 @@ function cmdRedrive(args) {
 
 function cmdClean(args) {
   if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm clean <run-id> [--apply] [--format=text|json]');
+    console.log('Usage: swarm clean <run-id> [--apply] [--force] [--format=text|json]');
     console.log('');
     console.log('Reclaim the stranded --isolate worktrees + swarm/* branches for a run.');
     console.log('Under --isolate, dispatch creates a per-agent git worktree; recordPromotion');
@@ -1102,20 +1106,35 @@ function cmdClean(args) {
     console.log('');
     console.log('Optional:');
     console.log('  --apply              Remove (default: dry-run preview)');
+    console.log('  --force              Required IN ADDITION to --apply to remove a');
+    console.log('                       DIRTY or UNMERGED worktree (uncommitted/unpushed');
+    console.log('                       agent work). --apply alone SKIPS those, mirroring');
+    console.log('                       `swarm rewind`\'s --force-on-top-of---apply contract.');
     console.log('  --format=text|json   Output format (default: text)');
+    console.log('');
+    console.log('--apply refuses while this run\'s latest wave is still `dispatched`/');
+    console.log('`collecting` — finish it first (`swarm collect` / `swarm redrive` /');
+    console.log('`swarm rewind`) so a live agent\'s worktree is never reclaimed mid-flight.');
     return;
   }
 
   const runId = args[0];
   if (!runId || runId.startsWith('--')) {
-    console.error('Usage: swarm clean <run-id> [--apply] [--format=text|json]');
+    console.error('Usage: swarm clean <run-id> [--apply] [--force] [--format=text|json]');
     process.exit(1);
   }
 
   const format = parseFormatFlag(args);
   const apply = args.includes('--apply');
+  // F-d2025a4d(b): --force is required in ADDITION to --apply to remove a
+  // dirty/unmerged worktree — mirrors rewind's --force-on-top-of---apply.
+  const force = args.includes('--force');
 
-  const result = clean({ runId, dbPath: getDbPath(), apply });
+  // F-d2025a4d(a): an in-flight-wave refusal (CLEAN_WAVE_IN_FLIGHT) propagates
+  // to main()'s top-level renderTopLevelError seam, which prints the coded
+  // envelope (message + named recovery verbs) and exits 1 — same as every
+  // other typed CLI error in this file; no bespoke catch needed here.
+  const result = clean({ runId, dbPath: getDbPath(), apply, force });
 
   if (format === 'json') {
     console.log(JSON.stringify(result, null, 2));
@@ -1125,7 +1144,10 @@ function cmdClean(args) {
   process.stdout.write(formatClean(result));
 
   if (apply) {
-    console.log(`\nClean applied. ${result.removed} removed, ${result.stranded} stranded.`);
+    const skippedNote = result.skippedAtRisk > 0
+      ? `, ${result.skippedAtRisk} skipped (dirty/unmerged — re-run with --force)`
+      : '';
+    console.log(`\nClean applied. ${result.removed} removed, ${result.stranded} stranded${skippedNote}.`);
   } else {
     console.log('\nDry-run only — re-run with --apply to remove the worktrees.');
   }
@@ -1217,7 +1239,15 @@ function cmdVerify(args) {
         ? `required step '${failedStep.name}' failed (exit ${failedStep.exit_code})`
         : 'not a verified pass');
     console.error(`swarm verify: ${result.verdict.toUpperCase()} — ${why}`);
-    process.exit(1);
+    // F-5dabf101: process.exitCode + return, NOT process.exit() — exit()
+    // terminates without waiting for the pending async write of the
+    // formatVerify(result) console.log above to drain. stdout is async
+    // whenever it's a pipe (every `swarm verify ... | ...`) and, per Node's
+    // own docs, on Windows even for a TTY — this repo's own platform. Node
+    // exits naturally with the set code once stdout drains. Mirrors
+    // cmdAdjudicate, the one verb in this file that already did this right.
+    process.exitCode = 1;
+    return;
   }
 }
 
@@ -1319,7 +1349,16 @@ function cmdVerifyFixed(args) {
   // Exit with the 3-way state: 0 clean / 1 threshold exceeded /
   // 2 pipeline broken. The CLI seam preserves this signal so CI gates
   // can use `swarm verify-fixed` as a check.
-  process.exit(result.exitCode);
+  //
+  // F-5dabf101: process.exitCode + return, not process.exit() — the
+  // `console.log(result.output)` above (and the `Delta written to:`
+  // footer) are pending async stdout writes that process.exit() does not
+  // wait to drain (pipes always, Windows TTY too). A large digest exceeding
+  // the pipe buffer would truncate mid-write for every
+  // `swarm verify-fixed ... --format=json | jq` consumer — defeating the
+  // JSON-purity work this exact verb exists to protect (see the format
+  // note above cmdVerifyFixed).
+  process.exitCode = result.exitCode;
 }
 
 function cmdVerifyRecurring(args) {
@@ -1341,7 +1380,9 @@ function cmdVerifyRecurring(args) {
     console.log('');
     console.log(`Delta written to: ${result.deltaPath}`);
   }
-  process.exit(result.exitCode);
+  // F-5dabf101: process.exitCode, not process.exit() — see cmdVerifyFixed's
+  // note; identical truncation hazard on the same JSON-purity contract.
+  process.exitCode = result.exitCode;
 }
 
 function cmdVerifyUnverified(args) {
@@ -1363,7 +1404,9 @@ function cmdVerifyUnverified(args) {
     console.log('');
     console.log(`Delta written to: ${result.deltaPath}`);
   }
-  process.exit(result.exitCode);
+  // F-5dabf101: process.exitCode, not process.exit() — see cmdVerifyFixed's
+  // note; identical truncation hazard on the same JSON-purity contract.
+  process.exitCode = result.exitCode;
 }
 
 function cmdVerifyApproved(args) {
@@ -1387,7 +1430,9 @@ function cmdVerifyApproved(args) {
   }
   // Exit code 2 on broken anchor blocks subsequent amend dispatch — the
   // CLI seam carries the signal so a CI step can gate dispatch on it.
-  process.exit(result.exitCode);
+  // F-5dabf101: process.exitCode, not process.exit() — see cmdVerifyFixed's
+  // note; identical truncation hazard on the same JSON-purity contract.
+  process.exitCode = result.exitCode;
 }
 
 function cmdReceipt(args) {
@@ -1451,11 +1496,50 @@ function buildCheckGatesJSON(g) {
 
 async function cmdAdjudicate(args) {
   const runId = args[0];
+
+  // F-fa047531: --undo is the compensator CLI surface for
+  // lib/adjudication-store.js#deleteAdjudication — pre-fix that function
+  // was wired to NOTHING (no CLI verb reached it), so the only way an
+  // operator could invoke it was raw SQL surgery, exactly what its own
+  // docstring says the compensator exists to prevent. Checked first,
+  // before the --case-file requirement below, since undo needs no
+  // case-file. Dry-run by default like every other recovery verb.
+  const undoRaw = parseValueFlag(args, '--undo');
+  if (undoRaw !== undefined) {
+    if (!runId) {
+      console.error('Usage: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]');
+      process.exit(1);
+    }
+    const adjudicationId = Number(undoRaw);
+    if (!Number.isInteger(adjudicationId) || adjudicationId <= 0) {
+      console.error(`adjudicate --undo: <adjudication-id> must be a positive integer (got ${JSON.stringify(undoRaw)})`);
+      process.exit(1);
+    }
+    const applyUndo = args.includes('--apply');
+    const db = openDb(getDbPath());
+    const undoReport = undoAdjudication(db, { adjudicationId, apply: applyUndo });
+    console.log(formatAdjudicationUndo(undoReport));
+    return;
+  }
+
   const caseFilePath = parseValueFlag(args, '--case-file');
   if (!runId || !caseFilePath) {
-    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json]');
+    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]');
+    console.error('   or: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]');
     process.exit(1);
   }
+
+  // F-a7eb2d09: parse + enum-validate EVERY flag up front, before ANY work
+  // (DB open, case-file read, jury dispatch) runs — mirrors every sibling
+  // verb (cmdClean, cmdStatus, cmdHistory, parseVerifyFlags). adjudicate's
+  // own --jury/--cloud were already parsed here; --format was the lone
+  // straggler, validated AFTER runAdjudicate — a --format typo burned the
+  // entire (slow, and under --cloud BILLED) jury run and mutated the
+  // control plane before the CLI_INVALID_FORMAT throw ever fired.
+  const cloud = args.includes('--cloud');
+  const tier = parseJuryFlag(args);
+  const format = parseFormatFlag(args);
+  const dryRun = args.includes('--dry-run');
 
   const db = openDb(getDbPath());
   const caseFile = readBoundedJson(resolve(caseFilePath));
@@ -1465,14 +1549,43 @@ async function cmdAdjudicate(args) {
   // criterion, adding L3/L4 WITHIN the seat — stronger evidence, but slower and more
   // abstention-prone (prism caps a call at 30s). Both default to free seats; --cloud
   // opts into the paid cloud seats on either tier.
-  const cloud = args.includes('--cloud');
-  const tier = parseJuryFlag(args);
   const seats = tier === 'prism'
     ? (cloud ? PRISM_CLOUD_SEATS : PRISM_JURY_SEATS)
     : (cloud ? DEFAULT_JURY_SEATS : LOCAL_JURY_SEATS);
+
+  // F-fa047531: --dry-run — resolves the wave and runs the SAME fail-closed
+  // neutrality gate the apply path runs first, reporting seats/tier/billing
+  // WITHOUT dispatching the jury or persisting. The highest-value preview
+  // in the verb set: adjudicate is the only verb that spends real money.
+  if (dryRun) {
+    let preview;
+    try {
+      preview = previewAdjudicate(db, { runId, caseFile, seats, tier, cloud });
+    } catch (e) {
+      if (e instanceof CaseFileNeutralityError) {
+        console.error(`ADJUDICATION REFUSED: ${e.message}`);
+        if (e.hint) console.error(`Hint: ${e.hint}`);
+        process.exit(1);
+      }
+      throw e;
+    }
+    if (format === 'json') {
+      console.log(JSON.stringify(preview, null, 2));
+    } else {
+      console.log(formatAdjudicationPreview(preview));
+    }
+    return;
+  }
+
   const log = (m) => console.error(`  · ${m}`);
   const runJury = tier === 'prism' ? makePrismJury({ log }) : makeOllamaJury({ log });
-  const swarmDir = dirname(getDbPath());
+  // F-18a5579c: run-scoped output dir, matching every other artifact-writing
+  // verb — receipt (getOutputDir), persist, all four verify-*. Pre-fix this
+  // was dirname(getDbPath()), the swarms/ ROOT: every run's receipts piled
+  // into one flat swarms/adjudications/ dir (wave-1 receipts from every run
+  // of every repo sharing one directory), un-navigable and unreachable by
+  // run-scoped tooling like `swarm clean`.
+  const swarmDir = getOutputDir(runId);
   console.error(`Jury tier: ${tier}${cloud ? ' (--cloud: paid seats)' : ' (free seats)'}`);
 
   let out;
@@ -1490,7 +1603,6 @@ async function cmdAdjudicate(args) {
     throw e;
   }
 
-  const format = parseFormatFlag(args);
   if (format === 'json') {
     console.log(JSON.stringify(
       { adjudication_id: out.adjudicationId, receipt_path: out.receiptPath, ...out.result },
@@ -1843,7 +1955,12 @@ function cmdFindings(args) {
   // can distinguish clean (0), findings-present (1), and audit-pipeline-broken
   // (2). Operator using `swarm findings` as a CI gate needs the machine
   // signal AND the visual signal, not just the visual.
-  process.exit(exitCode);
+  //
+  // F-5dabf101: process.exitCode, not process.exit() — the console.log(output)
+  // above renders buildDigest's full findings text/markdown/JSON, exactly the
+  // large-payload case the finding names; truncation risk is identical to the
+  // four verify-* siblings.
+  process.exitCode = exitCode;
 }
 
 /**
@@ -2218,7 +2335,7 @@ Commands:
                              advance --check-only --format=json emits the
                              checkGates() {verdict,nextPhase,reason,gates[],
                              overridable} object for machine consumers.
-  adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json]
+  adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]
                              Dispatch a case-file to the cross-family jury and
                              record the advisory verdict on the current wave (the
                              checkAdjudication gate reads it). Free local panel by
@@ -2229,6 +2346,17 @@ Commands:
                              slower and more abstention-prone (prism caps a call at
                              30s). Needs prism-verify importable by python
                              (PRISM_PYTHON overrides the interpreter).
+                             --dry-run: resolve the wave, run the neutrality gate,
+                             and print seats/tier/billing WITHOUT dispatching the
+                             jury or persisting — adjudicate is the only verb that
+                             spends real money, so preview before you pay.
+  adjudicate <run-id> --undo <adjudication-id> [--apply]
+                             Compensator: remove a persisted adjudication row so
+                             a mis-run or superseded verdict can be rolled back
+                             without raw SQL. Dry-run by default; the gate then
+                             falls back to the prior adjudication for the wave
+                             (or none). The full receipt artifact on disk is left
+                             in place — only the gate-readable summary row goes.
   persist <run-id> [opts]    Export canonical truth to downstream systems
   status <run-id> [--format=text|json]
                              Control plane status. --format=json emits the

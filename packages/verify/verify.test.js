@@ -311,6 +311,63 @@ describe('verdict computation', () => {
     assert.equal(result.verified, 'blocked');
     assert.equal(result.downgraded, true);
   });
+
+  // F-937733ee: family sibling of F-2965699b/F-7ce07baa — VERDICT_RANK is a
+  // lookup table keyed by external strings (scenario_results[].verdict and
+  // the proposed overall_verdict). Currently unreachable from untrusted
+  // input (index.js only ever passes schema-enum-valid verdicts into
+  // scenarioResults, and the early-return at computeVerdict's top forces
+  // 'fail' for any invalid schema regardless of `proposed`), but sealed here
+  // — via Object.create(null) — so a future caller that skips the schema
+  // gate cannot silently reopen the class. Deletion/emptiness proof: revert
+  // VERDICT_RANK to a plain `{ fail: 0, ... }` literal and both tests below
+  // go red — `Object.prototype.constructor` and `.toString` are truthy, so
+  // the `== null` / `rank == null` "unrecognized verdict" guards stop firing
+  // and an Object.prototype method flows into the rank arithmetic instead.
+  it('an Object.prototype-key scenario verdict is treated as unrecognized (floors to fail), not as a rank', () => {
+    const result = computeVerdict('pass', {
+      schemaValid: true,
+      policyValid: true,
+      provenanceConfirmed: true,
+      scenarioResults: [{ verdict: 'constructor' }],
+      reasons: []
+    });
+    assert.equal(result.verified, 'fail');
+    assert.ok(
+      result.downgrade_reasons.some(r => r.includes('unrecognized scenario verdict')),
+      `expected an unrecognized-verdict diagnostic; got ${JSON.stringify(result.downgrade_reasons)}`
+    );
+  });
+
+  it('an Object.prototype-key PROPOSED verdict is treated IDENTICALLY to ordinary unrecognized garbage (e.g. "bogus")', () => {
+    // Not asserting a specific `verified` value here — computeVerdict's
+    // "echo the raw proposed string when the floor isn't worse" behavior
+    // (see the `verified = proposed || 'fail'` branch) is a PRE-EXISTING
+    // design choice orthogonal to F-937733ee, reproducible with plain
+    // garbage like 'bogus' and unrelated to prototype safety. What
+    // F-937733ee actually claims — the thing worth proving — is PARITY: an
+    // Object.prototype key must be treated by the `== null` unrecognized-
+    // verdict guard exactly like any other unrecognized string, not
+    // resolved as a truthy inherited rank that skips the guard.
+    const args = (proposed) => ({
+      schemaValid: true, policyValid: true, provenanceConfirmed: true,
+      scenarioResults: [{ verdict: 'pass' }], reasons: []
+    });
+    const poisoned = computeVerdict('toString', args());
+    const ordinary = computeVerdict('bogus', args());
+
+    const normalize = (r) => ({
+      downgraded: r.downgraded,
+      reasons: r.downgrade_reasons.map(m => m.replace(/"[^"]*"/, '"<x>"')),
+    });
+    assert.deepEqual(normalize(poisoned), normalize(ordinary),
+      `an Object.prototype key must be diagnosed exactly like ordinary unrecognized input; ` +
+        `poisoned=${JSON.stringify(poisoned)} ordinary=${JSON.stringify(ordinary)}`);
+    assert.ok(
+      poisoned.downgrade_reasons.some(r => r.includes('unrecognized proposed verdict')),
+      `expected an unrecognized-proposed-verdict diagnostic; got ${JSON.stringify(poisoned.downgrade_reasons)}`
+    );
+  });
 });
 
 // ── Full Verifier Pipeline (Pilot 0) ──────────────────────────

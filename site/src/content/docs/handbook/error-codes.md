@@ -458,6 +458,17 @@ A `swarm verify --ingest` run (or `persist-results.js`) reached the dogfood-inge
   2. The most common cause is a schema-invalid submission — inspect the AJV failure against `packages/schemas/src/json/dogfood-record.schema.json` and fix the swarm's submission emitter, not the schema.
   3. Re-run `swarm verify --ingest` once the emitter is corrected. The human-readable summary still prints `Ingested: NO` to stdout so the failure is visible in both streams.
 
+### `CRITERION_INTENT_OVERFLOW`
+
+- **Class:** `config` — a locally-detectable input error in the case-file, not an operational fault.
+- **Trigger:** Assembling a `--jury=prism` seat call, when `rubric.objective` plus a single criterion's `check` text already exceed prism's 4000-char `intent` cap **before** any optional evidence or out-of-scope sections are added. Raised by `buildCriterionIntent` in `packages/dogfood-swarm/lib/case-file/prism-jury.js`.
+- **Message shape:** `rubric.objective + criterion '<id>' exceed prism's 4000-char intent cap by <n> chars — shorten the objective or split the criterion`
+- **Hint:** carried as structured fields on the error — `criterionId`, `headLength`, `maxChars`.
+- **Operator action:**
+  1. Shorten `objective` in the case-file, or split the named criterion into two narrower checks. The mandatory head (objective + one criterion) must fit the cap on its own; evidence and out-of-scope are the parts that get trimmed, and the trimming is always reported.
+  2. Re-run `swarm adjudicate <run-id> --case-file <path> --jury=prism`.
+- **Why this fails fast rather than trimming:** the prism tier's assembly is priority-ordered, so anything dropped is reported and never silent. An over-cap *head*, however, was neither reported nor dropped — it was a fixed cost measured against the budget but never checked. prism's own pydantic `max_length=4000` then rejected the request on **every seat uniformly**, so the panel returned `insufficient_context` and the operator was told the jury could not reach the artifact — when the real cause was a deterministic input error knowable without spending a single ~27s seat call. This is the [case-file contract](../../case-file-contract/)'s "anything that does not fit is REPORTED, not silently dropped" applied to the one section that had escaped it.
+
 ## Cross-references
 
 - Hard Gate B (Errors): structured shape (code/message/hint), exit codes for CLI, no raw stacks. See [README threat model](https://github.com/dogfood-lab/testing-os#threat-model).

@@ -12,7 +12,7 @@
 import { mkdirSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
 import { buildRunExport, computeRunVerdict } from '../lib/persist/export.js';
@@ -79,7 +79,16 @@ export function persist(opts) {
       // See persist-results.js:222 for the canonical pattern. F-742440-002.
       const ingestScript = resolve(REPO_ROOT, 'packages/ingest/run.js');
       if (existsSync(ingestScript)) {
-        execSync(`node "${ingestScript}" --provenance=stub --file "${submissionPath}"`, {
+        // F-21240958: argv-array form (execFileSync), never a shell-string
+        // exec — this was the only shell-string exec in the package's
+        // command layer. `submissionPath` carries the operator-settable
+        // SWARM_DB env var AND the <run-id> CLI positional (neither
+        // shell-metacharacter-validated), and `ingestScript` derives from
+        // the install path. execFileSync never invokes a shell, so there is
+        // no quoting to get right and no metacharacter surface at all —
+        // matching every sibling git/node invocation in this package
+        // (dispatch.js's execFileSync('git', [...]), lib/worktree.js).
+        execFileSync('node', [ingestScript, '--provenance=stub', '--file', submissionPath], {
           stdio: ['ignore', 'pipe', 'pipe'],
           encoding: 'utf-8',
           // SEED-2: forward the ingest DATA root so it stays overridable. run.js

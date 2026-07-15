@@ -2,11 +2,12 @@
  * lint-policies.test.mjs (VERIFY-F3) — the author-time policy lint, run as an
  * `npm run verify` gate over the LIVE policies/ tree.
  *
- * Why a scripts/*.test.mjs and not a 5th workflow: `test:scripts` already runs in
+ * Why a scripts/*.test.mjs and not a new workflow: `test:scripts` already runs in
  * BOTH `npm run verify` (local pre-commit) and ci.yml — so wiring the policy lint
- * here gates every shipped policy file with no new workflow (the repo caps at 4;
- * see .claude/rules/github-actions.md). ci.yml's `policies/**` path filter ensures
- * a policy-only edit still triggers this run.
+ * here gates every shipped policy file with no new workflow. The repo is at 5
+ * workflows against an org-wide soft cap of 2 (.claude/rules/github-actions.md);
+ * adding a sixth needs explicit justification per CLAUDE.md. ci.yml's
+ * `policies/**` path filter ensures a policy-only edit still triggers this run.
  *
  * Contract: every committed policy file under policies/ must lint with ZERO errors
  * (a structural/schema fault, an unknown leading field, over-depth, or node-budget

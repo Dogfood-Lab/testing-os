@@ -328,8 +328,28 @@ export async function verify(submission, options) {
   });
 
   // 7. Assemble persisted record
+  //
+  // A schema-invalid submission is marked `_skipPersist` — the SAME sentinel
+  // the null/non-object branch above sets, because it is the same claim: we
+  // could not parse the submission, so there is nothing to file. The record is
+  // still assembled and returned (the submitter needs the `schema:` reasons);
+  // it is simply never written.
+  //
+  // This is not merely an economy. isDuplicate checks the _rejected path, so
+  // persisting the rejection would permanently consume the run_id and silently
+  // drop the submitter's CORRECTED resubmission as a duplicate (exit 0) — the
+  // V2-CROSS-BO-001 / F-82429f90 poisoning pathology, reached from a new
+  // direction. It would also be unfilable in the first place whenever the
+  // invalid field is one the storage path is derived from (repo, run_id,
+  // timing.finished_at).
+  //
+  // The line: the duplicate guard consumes a run_id when we rendered a VERDICT
+  // on a run. A policy or provenance rejection is a verdict — it persists, and
+  // consuming the run_id is the intended anti-retry behavior. "We could not
+  // read your submission" is not a verdict.
   const persisted = {
     schema_version: RECORD_SCHEMA_VERSION,
+    ...(schemaResult.valid ? {} : { _skipPersist: true }),
     policy_version: policyVersion,
     run_id: submission.run_id,
     repo: submission.repo,

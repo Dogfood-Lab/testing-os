@@ -440,11 +440,15 @@ function saltByContent(base, member, ordinal) {
  * @param {string[]} [scope.scopePaths] — path prefixes covered by the current wave.
  *   A prior finding's path is "in scope" iff it starts with one of these prefixes.
  *   Path comparison is normalized via normalizePath() (forward slashes, lowercase).
- * @returns {{ new: Array, recurring: Array, fixed: Array, unverified: Array }}
+ * @returns {{ new: Array, recurring: Array, fixed: Array, unverified: Array, recurred_while_closed: Array }}
+ *   recurred_while_closed holds priors rediscovered this wave while
+ *   deferred/rejected (F-130dee59) — NOT reclassified into `recurring`, so
+ *   their status is untouched; upsertFindings logs an observability event for
+ *   each without overwriting status.
  */
 export function classifyFindings(currentFindings, priorFingerprints, scope = null) {
   const currentSet = new Set();
-  const result = { new: [], recurring: [], fixed: [], unverified: [] };
+  const result = { new: [], recurring: [], fixed: [], unverified: [], recurred_while_closed: [] };
 
   // fp-002 Part 1 (fp-r-001 repair): salt the NON-keeper members of any
   // within-wave base-fingerprint collision so two genuinely-distinct findings
@@ -463,8 +467,31 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
     const fp = finding.fingerprint || computeFingerprint(finding);
     currentSet.add(fp);
 
-    if (priorFingerprints.has(fp)) {
-      result.recurring.push({ ...finding, fingerprint: fp, prior: priorFingerprints.get(fp) });
+    const prior = priorFingerprints.get(fp);
+    if (prior) {
+      // F-130dee59: a coordinator's deferred/rejected verdict is a decision
+      // NOT to act — the operator has seen the defect and chosen to accept or
+      // reject it, not claimed it is gone. Rediscovery is not new information
+      // that should silently overturn that decision; it is exactly what the
+      // not-rediscovered branch below already protects via the identical
+      // terminal-status check, but this branch previously had no check at
+      // all, so `upsertFindings`' updateRecurring blindly overwrote
+      // status='deferred' -> 'recurring' with no log line — unlike
+      // 'rejected', which the (fp not in priorFingerprints) INSERT-OR-IGNORE
+      // path already protects explicitly (see upsertFindings). `rejected` is
+      // checked here too, defensively: buildPriorMap excludes it today so
+      // this branch cannot currently observe it, but a future change to that
+      // exclusion should not silently reopen this exact gap.
+      //
+      // `fixed` is deliberately NOT covered here: a fixed finding recurring
+      // IS new information — a regression — so it flows through the ordinary
+      // recurring path below and reopens, mirroring the asymmetry the
+      // not-rediscovered branch documents for its own terminal check.
+      if (prior.status === 'deferred' || prior.status === 'rejected') {
+        result.recurred_while_closed.push({ ...finding, fingerprint: fp, prior, priorStatus: prior.status });
+        continue;
+      }
+      result.recurring.push({ ...finding, fingerprint: fp, prior });
     } else {
       result.new.push({ ...finding, fingerprint: fp });
     }
@@ -479,8 +506,15 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
 
   for (const [fp, prior] of priorFingerprints) {
     if (currentSet.has(fp)) continue;
-    // Terminal statuses are not re-classified — once fixed/deferred/rejected,
-    // a finding stays out of the new/recurring/fixed/unverified buckets.
+    // Terminal-WHEN-ABSENT statuses: once fixed/deferred/rejected and NOT
+    // seen again this wave, a finding stays put — absence never invents a
+    // new verdict for a closed finding. `fixed` is NOT also
+    // terminal-when-REDISCOVERED (see the disambiguated loop above): a fixed
+    // finding reappearing is a regression, which reopens via the ordinary
+    // recurring path. `deferred`/`rejected` ARE terminal-when-rediscovered
+    // too (same loop, `recurred_while_closed`) — an operator's decision not
+    // to act is not overturned by the defect still being there; only an
+    // operator can reopen it.
     if (prior.status === 'deferred' || prior.status === 'rejected' || prior.status === 'fixed') continue;
 
     const priorPath = normalizePath(prior.file_path || prior.file || '');
@@ -544,7 +578,7 @@ export function buildPriorMap(db, runId) {
  * @param {string} runId
  * @param {number} waveId
  * @param {object} classified — output of classifyFindings
- * @returns {{ inserted: number, updated: number, fixed: number, unverified: number }}
+ * @returns {{ inserted: number, updated: number, fixed: number, unverified: number, preserved: number }}
  */
 export function upsertFindings(db, runId, waveId, classified) {
   // fp-002 Part 2 (safety net): INSERT OR IGNORE so a residual within-wave
@@ -588,7 +622,7 @@ export function upsertFindings(db, runId, waveId, classified) {
     UPDATE findings SET status = 'unverified' WHERE id = ?
   `);
 
-  let inserted = 0, updated = 0, fixed = 0, unverified = 0;
+  let inserted = 0, updated = 0, fixed = 0, unverified = 0, preserved = 0;
 
   const tx = db.transaction(() => {
     // Insert new findings.
@@ -659,6 +693,25 @@ export function upsertFindings(db, runId, waveId, classified) {
       }
     }
 
+    // F-130dee59: findings rediscovered while deferred/rejected. classifyFindings
+    // already kept their status untouched (see recurred_while_closed's header
+    // comment) — this loop only adds the same observability 'rejected' already
+    // had via the INSERT-OR-IGNORE conflict path above, generalized to
+    // whichever closed status applied, so an operator can see "this keeps
+    // coming back" without the recurrence overturning their decision. Callers
+    // that hand-build a partial classified-shaped object (revalidate.js) simply
+    // omit this bucket — status-preservation itself does not depend on it,
+    // since classifyFindings already never routed these into `recurring`.
+    for (const f of (classified.recurred_while_closed || [])) {
+      if (f.prior?.id) {
+        insertEvent.run(
+          f.prior.id, 'recurred', waveId,
+          `recurred-while-${f.priorStatus}: rediscovered by this wave; ${f.priorStatus} status preserved`
+        );
+        preserved++;
+      }
+    }
+
     // Mark fixed findings.
     // F-2c6d825d: classified.fixed holds priors that were IN a full-coverage
     // wave's scope but NOT re-reported — closed by absence, not by a
@@ -685,5 +738,5 @@ export function upsertFindings(db, runId, waveId, classified) {
   });
 
   tx();
-  return { inserted, updated, fixed, unverified };
+  return { inserted, updated, fixed, unverified, preserved };
 }

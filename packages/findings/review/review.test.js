@@ -91,6 +91,29 @@ describe('State transitions: forbidden', () => {
     assert.equal(result.valid, false);
     assert.ok(result.error.includes('Unknown status'));
   });
+
+  // F-937733ee: family sibling of F-2965699b/F-7ce07baa/verdict.js's
+  // VERDICT_RANK. TRANSITIONS is a lookup table keyed by an external string
+  // (`from`). Object.create(null) means `TRANSITIONS['constructor']` is
+  // `undefined`, not the truthy `Object.prototype.constructor` — sealed
+  // here so a future caller isn't the one who discovers this the hard way.
+  // Deletion/emptiness proof: revert TRANSITIONS to a plain `{ candidate:
+  // ..., ... }` literal and both tests below go red — `isLawfulTransition`
+  // would call `.has()` on `Object.prototype.constructor` (not a Set) and
+  // throw a raw TypeError instead of returning `false`.
+  it('an Object.prototype-key `from` status is unlawful (no throw), exactly like an ordinary unknown status', () => {
+    for (const from of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      assert.equal(isLawfulTransition(from, 'accepted'), false, `from="${from}" must be unlawful, not throw`);
+    }
+  });
+
+  it('validateTransition treats an Object.prototype-key `from` status as "Unknown status", exactly like "bogus"', () => {
+    for (const from of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      const result = validateTransition(from, 'accepted');
+      assert.equal(result.valid, false, `from="${from}" must be invalid`);
+      assert.ok(result.error.includes('Unknown status'), `from="${from}": expected "Unknown status", got "${result.error}"`);
+    }
+  });
 });
 
 // ============================================================

@@ -137,6 +137,10 @@ describe('Item 5 — `swarm dispatch --skip-verify` appends parallel-wave direct
       dbPath,
       outputDir: tmpDir,
     });
+    // Found hunting F-6a78ffdd's family: the sibling test above (line 120)
+    // guards this; this one didn't — an empty result.agents would pass with
+    // no prompt ever checked for the (absent) directive.
+    assert.equal(result.agents.length, 2);
 
     for (const a of result.agents) {
       const prompt = readFileSync(a.promptPath, 'utf-8');

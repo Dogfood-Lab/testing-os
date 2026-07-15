@@ -131,7 +131,7 @@ describe('Wave-9 SQL family filter discipline (mechanical guard)', () => {
     // per-FILE — if a file imported the helper for query A, query B in the
     // same file could omit the filter and the test still passed. That's
     // exactly what advisor Lens 1 caught at commands/status.js:80 (the
-    // violations subquery — L1-001 same-file unlisted sibling). This
+    // violations subquery — F-L1-001 same-file unlisted sibling). This
     // stricter check inspects every template literal containing
     // `FROM agent_runs` and requires it ALSO contain LATEST_AGENT_RUN_PER_DOMAIN
     // unless the surrounding file is on the (file-level) allowlist.

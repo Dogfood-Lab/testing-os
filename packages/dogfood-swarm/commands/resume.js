@@ -14,13 +14,39 @@
  *   timed_out           → redispatch
  *   invalid_output      → BLOCKED — report, do not redispatch
  *   ownership_violation → BLOCKED — report, do not redispatch
+ *
+ * COORD-002 — compensators table (workflow-standards NAMED_COMPENSATORS; no
+ * skip allowed for an irreversible action):
+ *
+ *   Irreversible action: redispatching a candidate whose predecessor ran
+ *   --isolate calls createWorktree() (lib/worktree.js), which does
+ *   `git worktree remove <path> --force` (discards uncommitted/untracked
+ *   edits) then `git branch -D` (force-deletes the branch) before
+ *   recreating both fresh from HEAD.
+ *
+ *   Command-to-undo: NONE. Once --force proceeds over a dirty/unmerged
+ *   worktree, the destroyed content is gone — untracked files never enter
+ *   git's object store, so `git fsck` finds nothing to recover (this is not
+ *   hypothetical: it is exactly how this wave's own prior salvage attempt
+ *   was lost). There is no compensator for THIS action; the only lever is
+ *   PREVENTION, which is what the guard below is. This is stated plainly
+ *   per the standing rule rather than skipped.
+ *
+ *   Post-refusal state: nothing is touched — no DB row, no FS write. The
+ *   refusal is checked and thrown before the db.transaction() below opens.
+ *
+ *   Owner: the operator invoking `swarm resume`. --force (opts.force) is
+ *   the explicit, named escape hatch (mirrors `swarm rewind`'s
+ *   --force-on-top-of---apply contract for the same blast radius); the
+ *   operator accepts the loss by passing it after inspecting the named
+ *   at-risk worktree(s) in the refusal error.
  */
 
 import { openDb } from '../db/connection.js';
 import { getDomains } from '../lib/domains.js';
 import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../lib/templates.js';
 import { findingsForDomain } from '../lib/findings-filter.js';
-import { createWorktree } from '../lib/worktree.js';
+import { createWorktree, worktreeDisposition } from '../lib/worktree.js';
 import { IsolationError } from '../lib/errors.js';
 import { SKIP_VERIFY_DIRECTIVE } from './dispatch.js';
 import {
@@ -41,6 +67,10 @@ import { mintCorrelationId } from '../lib/correlation-id.js';
  * @param {string} opts.dbPath
  * @param {string} opts.outputDir — where to write re-dispatch prompts
  * @param {number} [opts.nowMs] — override current time for testing
+ * @param {boolean} [opts.force] — COORD-002: proceed even when a redispatch
+ *   candidate's existing --isolate worktree has uncommitted or unmerged
+ *   work that createWorktree() would force-destroy. Without this, resume
+ *   REFUSES (touching nothing) and names the at-risk worktree(s).
  * @returns {object} — resume report
  */
 export function resume(opts) {
@@ -77,8 +107,14 @@ export function resume(opts) {
   // domain's current state drives at most one redispatch per resume call.
   // F-H6/H7/H8 (Wave A1 D3): SQL fragment now lives in
   // lib/queries/latest-agent-runs.js (shared with read-side callers).
+  // F-6d0e966c: d.ownership_class is selected here (alongside the
+  // pre-existing d.name / d.globs) so the redispatch prompt below can carry
+  // it forward — dispatch.js's promptOpts already includes it (cli.js/
+  // dispatch.js:560), and lib/templates.js#renderDomainContract silently
+  // omits the `## Your domain` block's ownership-class line when it is
+  // undefined, rather than failing loud.
   const agentRuns = db.prepare(`
-    SELECT ar.*, d.name as domain_name, d.globs
+    SELECT ar.*, d.name as domain_name, d.globs, d.ownership_class
     FROM agent_runs ar
     JOIN domains d ON ar.domain_id = d.id
     WHERE ar.wave_id = ?
@@ -149,6 +185,43 @@ export function resume(opts) {
 
     if (isRedispatchable(ar.status)) {
       redispatchCandidates.push(ar);
+    }
+  }
+
+  // COORD-002: refuse BEFORE any mutation when a redispatch candidate's
+  // existing --isolate worktree has uncommitted or unmerged work that
+  // createWorktree() (below) would force-destroy on recreation. Checked for
+  // every candidate up front — a pure read-only git probe, no DB write, no
+  // FS write — so a refusal is total and atomic: either every candidate is
+  // safe to recreate, or NOTHING happens and the operator sees exactly
+  // which worktree(s) are at risk. This mirrors dispatch.js's in-flight
+  // precondition (checked before its own tx) and rewind's
+  // --force-on-top-of---apply contract for the identical blast radius —
+  // resume previously had NEITHER a dry-run/--apply split NOR this gate,
+  // making it the only work-destroying verb in the package with no gate at
+  // all (see the module header's compensators note: there is no undo once
+  // --force proceeds, so prevention is the only lever).
+  if (!opts.force) {
+    const atRisk = [];
+    for (const ar of redispatchCandidates) {
+      if (!ar.worktree_path) continue;
+      const disposition = worktreeDisposition(run.local_path, ar.worktree_path, ar.worktree_branch, run.branch);
+      if (disposition.dirty || disposition.unmerged) {
+        atRisk.push({ domain: ar.domain_name, agentRunId: ar.id, worktreePath: ar.worktree_path, ...disposition });
+      }
+    }
+    if (atRisk.length > 0) {
+      const err = new Error(
+        `resume: ${atRisk.length} worktree(s) have uncommitted or unmerged work that redispatch's ` +
+        `worktree recreation would DESTROY: ` +
+        atRisk.map(a => `${a.domain} (${a.worktreePath}${a.dirty ? ', dirty' : ''}${a.unmerged ? ', unmerged' : ''})`).join('; ') +
+        `. Nothing was mutated. Salvage the work first (commit + push from inside the worktree, or copy it out), ` +
+        `then either re-run \`swarm resume\` (clean now) or pass { force: true } (CLI: --force) to proceed anyway ` +
+        `and accept the loss — there is no undo once --force destroys uncommitted work.`
+      );
+      err.code = 'RESUME_WORKTREE_AT_RISK';
+      err.atRisk = atRisk;
+      throw err;
     }
   }
 
@@ -238,6 +311,14 @@ export function resume(opts) {
       repo: run.repo,
       domainName: ar.domain_name,
       globs,
+      // F-6d0e966c: dispatch.js's promptOpts (cli.js's dispatch call site)
+      // always includes both of these; resume's redispatch prompt dropped
+      // them, so a resumed wave's agent contract read "the snapshot ID
+      // below is the audit anchor for this wave" with no snapshot ID below
+      // it — self-contradictory prose handed to an LLM agent on exactly the
+      // recovery path (timeout/failure) most likely to already be degraded.
+      ownershipClass: ar.ownership_class,
+      domainSnapshotId: wave.domain_snapshot_id,
       phase: wave.phase,
       waveNumber: wave.wave_number,
     };

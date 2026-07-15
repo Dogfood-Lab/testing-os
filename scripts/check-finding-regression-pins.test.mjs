@@ -21,10 +21,11 @@
  */
 import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 
 import {
   runRegressionPinGate,
@@ -134,6 +135,111 @@ test('orphan from one file does not mask a clean orphan elsewhere', async (t) =>
 
   assert.equal(result.ok, false);
   assert.deepEqual([...result.orphans].sort(), ['F-400000-001', 'F-400000-002']);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-3ec5b54f / F-5eafee44 META — non-vacuity across ID format and file
+// extension. CROSS-DOMAIN: F_ID_PATTERN and DEFAULT_SOURCE_EXTENSIONS are
+// defined in packages/portfolio/lib/parse-regression-pins.js, which this
+// gate CONSUMES (see the import at the top of check-finding-regression-pins.mjs)
+// but does not define. That file matches packages/portfolio/**, owned
+// exclusively by the backend domain per the frozen wave-2 domain map — out
+// of scope for this domain (.github/**, scripts/**, tsconfig*.json).
+//
+// The three tests immediately below assert the CORRECT, desired gate
+// behavior for every finding-id shape this repo actually mints (hash
+// F-xxxxxxxx, prefixed F-AAA-NNN, and workflow-YAML source pins) — matching
+// the standard this file's own legacy-format tests already hold the gate
+// to. THEY ARE EXPECTED TO FAIL (RED) until packages/portfolio/lib/
+// parse-regression-pins.js is fixed. That is not a bug in the tests; it is
+// the honest, non-vacuous signal F-3ec5b54f exists to surface, in the style
+// scripts/check-doc-drift.test.mjs already uses for its own META tests
+// ("error-codes META: removing any enforced code from the handbook MUST
+// trigger drift"). Confirmed empirically against the live tree via a
+// read-only diagnostic (reusing the real walkSourceFiles/classifyFile
+// exports with the finding's proposed widened pattern substituted in — no
+// repo file was edited to measure this): of 133 source-side F-id pins that
+// exist under the widened pattern (40 legacy already visible today + 77
+// hash-style + 16 prefixed, both currently invisible), 13 are true orphans
+// — 3 legacy already known and allowlisted in scripts/regression-pin-allowlist.json,
+// plus 10 newly-discovered (3 hash-style, 7 prefixed) that would need a
+// regression-test pin or an allowlist entry once the pattern lands. See the
+// ci-tooling wave-2 output for the full accounting and the exact 10 ids.
+//
+// DO NOT mark these `todo`, weaken the assertions, or delete them to reach
+// a green — that is exactly the "narrow the pattern to get a green"
+// anti-pattern the finding's fix explicitly forbids. Once the backend-domain
+// fix lands, these three tests go green with no further edit needed here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-3ec5b54f META: a HASH-style source pin (F-xxxxxxxx) with no test pin must fail the gate', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('packages/foo/index.js', '// F-42e57a77 — defer the red run past the commit step\n');
+  // Deliberately no test pin for F-42e57a77.
+
+  const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
+
+  assert.equal(
+    result.ok,
+    false,
+    'CROSS-DOMAIN BLOCKED (F-3ec5b54f): F_ID_PATTERN in packages/portfolio/lib/parse-regression-pins.js ' +
+      '(backend domain, out of scope for scripts/**) does not match hash-style ids, so this pin is currently ' +
+      `INVISIBLE to the gate (got source_ids=${result.json.summary.source_ids}, expected 1) and result.ok is wrongly true. ` +
+      'This assertion documents the desired behavior and will pass once the pattern is widened per F-3ec5b54f\'s fix — do not soften it to get a green.',
+  );
+});
+
+test('F-3ec5b54f META: a PREFIXED-style source pin (F-AAA-NNN) with no test pin must fail the gate', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('packages/foo/index.js', '// F-W1-CI-999 — orphaned prefixed-format pin for this test\n');
+
+  const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
+
+  assert.equal(
+    result.ok,
+    false,
+    'CROSS-DOMAIN BLOCKED (F-3ec5b54f): the prefixed format (F-AAA-NNN, e.g. F-W1-CI-008 / F-CI-001) is also ' +
+      `invisible to the unwidened F_ID_PATTERN (got source_ids=${result.json.summary.source_ids}, expected 1). Same cross-domain blocker as the hash-style test above.`,
+  );
+});
+
+test('F-5eafee44 META: a workflow YAML source pin with no test pin must fail the gate (extension not scanned today)', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('.github/workflows/example.yml', '# F-999999-002 — a fix pinned in a workflow file, no test coverage\n');
+
+  const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
+
+  assert.equal(
+    result.ok,
+    false,
+    'CROSS-DOMAIN BLOCKED (F-5eafee44): DEFAULT_SOURCE_EXTENSIONS in packages/portfolio/lib/parse-regression-pins.js ' +
+      `(backend domain) does not include .yml/.yaml, so this file is never scanned (got files_scanned=${result.json.files_scanned}, expected 1) ` +
+      'and result.ok is wrongly true. Land together with F-3ec5b54f\'s regex widening — the next test guards the ' +
+      'specific live claim that 12 real F-ids already rely on this extension being scanned.',
+  );
+});
+
+test('F-5eafee44: the 12 workflow-pinned F-ids named in the finding are still present in .github/workflows/*.yml (guards the claim, not the gate)', () => {
+  // Independently verifies the finding's own factual claim about today's
+  // live tree, using a LOCAL regex over the real repo — not the (out-of-
+  // domain) parser and not a fixture — so the claim can't silently go stale
+  // if a future edit drops one of these pins without updating this list.
+  // Genuinely load-bearing pins per F-5eafee44: the deferred-fault
+  // evidence-preservation ordering in ingest.yml, the release
+  // concurrency-group normalization, and the pa11y permission isolation.
+  const ids = [
+    'F-362d4131', 'F-42e57a77', 'F-50558cb2', 'F-60f0c4f5', 'F-68818085',
+    'F-a52776d5', 'F-bc123f41', 'F-caeeacc3', 'F-d31dfc55', 'F-e4a24655',
+    'F-ef512e21', 'F-f05363e2',
+  ];
+  const workflowsDir = resolve(repoRoot, '.github/workflows');
+  const text = readdirSync(workflowsDir)
+    .filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'))
+    .map((f) => readFileSync(resolve(workflowsDir, f), 'utf-8'))
+    .join('\n');
+
+  const missing = ids.filter((id) => !text.includes(id));
+  assert.deepEqual(missing, [], `expected every listed F-id to still be pinned somewhere in .github/workflows/*.yml; missing: ${missing.join(', ')}`);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -284,4 +390,50 @@ test('live testing-os tree passes the regression-pin gate', async () => {
     );
   }
   assert.equal(result.ok, true);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-W1-CI-006 — ESM main-entry guard: only run main() when invoked as a
+// script, not when imported by tests. Previous heuristic used a hand-built
+// `file://${process.argv[1]}` plus an `endsWith` fallback; both fail on
+// Windows because process.argv[1] uses backslashes while import.meta.url is
+// always POSIX/URL form. `pathToFileURL(process.argv[1]).href` is the
+// canonical Node cross-platform pattern (matches apply-finding-migration.mjs's
+// W31-BACK-001 fix).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-W1-CI-006: main-entry guard uses pathToFileURL(process.argv[1]).href === import.meta.url, not a file://+endsWith fallback', () => {
+  const src = readFileSync(resolve(repoRoot, 'scripts/check-finding-regression-pins.mjs'), 'utf8');
+  const stripped = src
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const guardLine = stripped
+    .split(/\r?\n/)
+    .find((l) => /^\s*const isMain\s*=/.test(l));
+  assert.ok(guardLine, 'expected a `const isMain = ...` line in check-finding-regression-pins.mjs — pin is stale');
+  assert.match(
+    guardLine,
+    /process\.argv\[1\]\s*&&/,
+    'main-entry guard must short-circuit on `process.argv[1] &&`',
+  );
+  assert.match(
+    guardLine,
+    /pathToFileURL\(\s*process\.argv\[1\]\s*\)\.href\s*===\s*import\.meta\.url/,
+    'main-entry guard must compare pathToFileURL(process.argv[1]).href against import.meta.url, not a hand-built file:// string or an endsWith fallback (F-W1-CI-006)',
+  );
+  assert.doesNotMatch(
+    guardLine,
+    /endsWith|`file:\/\/\$\{/,
+    'main-entry guard must not revert to the file://${process.argv[1]} + endsWith fallback — process.argv[1] uses backslashes on Windows while import.meta.url is always POSIX/URL form (F-W1-CI-006)',
+  );
+});
+
+test('F-W1-CI-006: --help invokes the main-entry block (proves isMain fires on a real script invocation), prints Usage, exits 0', () => {
+  const targetScript = resolve(repoRoot, 'scripts/check-finding-regression-pins.mjs');
+  const result = spawnSync(process.execPath, [targetScript, '--help'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `--help must exit 0 (proves the main-entry block ran).\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`);
+  assert.match(result.stdout, /Usage:/, '--help must print the Usage block, proving isMain fired');
 });

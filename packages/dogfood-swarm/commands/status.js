@@ -161,6 +161,24 @@ export function status(opts) {
   // Timeout policy
   const timeoutPolicy = getTimeoutPolicy(db, opts.runId);
 
+  // COORD-003: read-only staleness detection. `applyTimeoutPolicy` (lib/
+  // state-machine.js) is the ONE non-test caller of the timeout policy —
+  // and it is resume.js's, which MUTATES (transitions a stale agent_run to
+  // `timed_out`). status must stay a pure read (it is the operator's
+  // inspect-only verb), so this recomputes the IDENTICAL predicate
+  // (now - started_at > timeoutMs) without calling transitionAgent — a dead
+  // agent should not have to wait for `swarm resume` to be told it is dead,
+  // and status already holds both inputs (timeoutPolicy above, started_at
+  // on every agent row) without ever doing the subtraction pre-fix.
+  // nowMs is overridable for deterministic tests, mirroring resume's own
+  // opts.nowMs. A NULL started_at is never stale — same defensive posture
+  // as applyTimeoutPolicy's own NULL-started_at skip: we cannot prove
+  // timing we do not have, so we do not guess.
+  const nowMs = opts.nowMs || Date.now();
+  const isStaleAgent = (a) => isInFlight(a.status) && !!a.started_at &&
+    (nowMs - new Date(a.started_at).getTime()) > timeoutPolicy;
+  const staleAgentCount = inFlightAgents.filter(isStaleAgent).length;
+
   // Compute advanceability + next action
   const assessment = computeAssessment(
     currentWave, currentAgents, openBySeverity, blockedAgents, inFlightAgents,
@@ -170,6 +188,7 @@ export function status(opts) {
       lastVerificationPassed: lastReceipt ? !!lastReceipt.passed : null,
       currentWaveArtifactCount,
       currentWaveFindingCount,
+      staleAgentCount,
     }
   );
 
@@ -214,12 +233,17 @@ export function status(opts) {
       started: a.started_at,
       completed: a.completed_at,
       error: a.error_message,
+      // COORD-003: computed here (not stored) — a read-only projection of
+      // the same timeout-policy subtraction resume.js's applyTimeoutPolicy
+      // performs mutably. Always `false` for a non-in-flight status.
+      stale: isStaleAgent(a),
     })),
     agentSummary: {
       total: currentAgents.length,
       complete: completeAgents.length,
       inFlight: inFlightAgents.length,
       blocked: blockedAgents.length,
+      stalePastTimeout: staleAgentCount,
     },
     findings: {
       total: allFindings.length,
@@ -293,9 +317,17 @@ export function formatStatus(s) {
     for (const a of s.agents) {
       const icon = STATUS_ICONS[a.status] || a.status;
       const detail = a.error ? ` — ${a.error}` : '';
-      lines.push(`  [${icon}] ${a.domain}${detail}`);
+      // COORD-003: the ONE line an operator scanning `swarm status` reads
+      // per agent — a stale in-flight agent must be visibly distinguishable
+      // from one that is genuinely still working, not indistinguishable
+      // until `swarm resume` (a mutating verb) is run to find out.
+      const staleTag = a.stale ? ' [STALE — past timeout policy]' : '';
+      lines.push(`  [${icon}] ${a.domain}${detail}${staleTag}`);
     }
-    lines.push(`  (${s.agentSummary.complete} complete, ${s.agentSummary.inFlight} in-flight, ${s.agentSummary.blocked} blocked)`);
+    const staleSuffix = s.agentSummary.stalePastTimeout > 0
+      ? `, ${s.agentSummary.stalePastTimeout} stale (past timeout)`
+      : '';
+    lines.push(`  (${s.agentSummary.complete} complete, ${s.agentSummary.inFlight} in-flight, ${s.agentSummary.blocked} blocked${staleSuffix})`);
     lines.push('');
   }
 
@@ -478,10 +510,25 @@ export function computeAssessment(wave, agents, openBySeverity, blocked, inFligh
 
   // In-flight agents
   if (inFlight.length > 0) {
+    // COORD-002(c) + COORD-003: this hint previously told the operator to
+    // "run `swarm resume` to check timeouts" — but resume is a MUTATING
+    // redispatch verb (and, pre-COORD-002, could force-destroy uncommitted
+    // worktree work with no gate at all), not a check. status now computes
+    // staleness itself (ctx.staleAgentCount, from the read-only timeout
+    // subtraction above), so the hint can point at resume for what it
+    // actually is — redispatching agents the operator has decided are
+    // dead — instead of framing it as a safe inspection step.
+    const staleCount = ctx.staleAgentCount || 0;
+    const nextAction = staleCount > 0
+      ? `Waiting on ${inFlight.length} agent(s), ${staleCount} past the timeout policy (see [STALE] above). ` +
+        `Dead agents don't report their own death; \`swarm resume\` will redispatch them, but it force-recreates ` +
+        `each isolated worktree — uncommitted work there is destroyed unless the worktree is clean (refuses by ` +
+        `default; --force overrides). See \`swarm resume --help\`.`
+      : `Waiting on ${inFlight.length} agent(s). Run \`swarm resume\` once you believe they have finished or exceeded the timeout policy.`;
     return {
       state: 'IN PROGRESS',
       blockers,
-      nextAction: `Waiting on ${inFlight.length} agent(s). Run \`swarm resume\` to check timeouts.`,
+      nextAction,
     };
   }
 

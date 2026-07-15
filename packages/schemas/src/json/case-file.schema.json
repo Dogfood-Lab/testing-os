@@ -80,6 +80,11 @@
           "ref": {
             "type": "string",
             "description": "Optional pointer to where the claim was extracted from (a file:line, a test id, a ticket url) so a reviewer can check the extraction."
+          },
+          "criterion_ids": {
+            "type": "array",
+            "items": { "type": "string" },
+            "description": "Optional. Names the acceptance_criteria[].id values this claim grounds. Absent is the default and means GLOBAL — the claim grounds every criterion exactly as it did before this field existed, so a case-file with no criterion_ids on any claim keeps validating and keeps behaving identically (backward-compatible). When present, the claim grounds ONLY the listed criteria and is omitted from every other criterion's evidence pack — this is what lets a capped verifier tier (e.g. --jury=prism, which budgets a fixed per-call character limit) spend that budget on claims relevant to the criterion being judged instead of every claim competing for one shared cap. Each entry SHOULD name an id that exists in this case-file's acceptance_criteria[], but that cross-field reference cannot be expressed in JSON Schema — a typo'd id is structurally valid here and would silently drop the claim from every criterion's brief with no schema-level symptom. The neutrality lint (packages/dogfood-swarm/lib/case-file/lint.js) is what actually enforces that every criterion_ids entry resolves to a real criterion id; this schema only shapes the field as an array of strings. Routing only — never itself forwarded to the jury as a judging input."
           }
         }
       }

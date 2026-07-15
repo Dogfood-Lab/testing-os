@@ -289,6 +289,11 @@ describe('makePrismJury — the seat-major panel loop', () => {
       runSeat: async (_env, request) => prismResponse(request.intent.includes('AC-1') ? 'refuse' : 'accept'),
     });
     const verdicts = await runJury(SPEC);
+    // F-c729644d: this test's whole point is pinning per-criterion
+    // discrimination (the L3/L4 within-seat tier) — an unguarded loop over
+    // an empty verdicts array would report that discrimination is pinned
+    // when nothing was actually checked.
+    assert.equal(verdicts.length, PRISM_JURY_SEATS.length, 'every seat returns a verdict');
     for (const v of verdicts) {
       assert.deepEqual(v.criteria, { 'AC-1': 'fail', 'AC-2': 'pass' }, 'a per-seat verdict would have flattened these');
     }
@@ -312,6 +317,7 @@ describe('makePrismJury — the seat-major panel loop', () => {
       runSeat: async () => prismResponse('refuse', { findings: [{ category: 'x', evidence: 'y', severity: 'major' }] }),
     });
     const verdicts = await runJury(SPEC);
+    assert.equal(verdicts.length, PRISM_JURY_SEATS.length, 'every seat returns a verdict');
     for (const v of verdicts) {
       assert.deepEqual(v.out_of_brief, [], 'classifying these as out-of-brief would be invention');
       assert.equal(v.prism.criteria[0].findings.length, 1, 'but they are preserved for a human');

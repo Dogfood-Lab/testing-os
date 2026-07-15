@@ -234,14 +234,16 @@ describe('Gate checks — BLOCK verdict', () => {
 // ═══════════════════════════════════════════
 // Latest-per-domain filter — guards against stale agent_run rows
 // from prior `swarm resume` cycles silently blocking advance.
-// F-084568-005: when resume.js INSERTs a new agent_run for a redispatched
+// F-084568-005 (source comment at lib/advance.js:97 dual-labels this
+// "F-W1-BACK-005 / F-084568-005" — the mutation-side fix for checkGates'
+// agents query): when resume.js INSERTs a new agent_run for a redispatched
 // domain, the OLD failed/timed_out row stays in the table. checkGates() must
 // only look at the LATEST agent_run per (wave_id, domain_id) — otherwise the
 // stale row makes checkAgentCompletion() report "<N> agent(s) not complete"
 // even when every redispatched agent finished cleanly.
 // ═══════════════════════════════════════════
 
-describe('Gate checks — latest-per-domain filter (F-084568-005)', () => {
+describe('Gate checks — latest-per-domain filter (F-084568-005 / F-W1-BACK-005)', () => {
   let db;
 
   beforeEach(() => { db = openMemoryDb(); });

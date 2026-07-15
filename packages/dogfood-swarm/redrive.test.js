@@ -39,15 +39,75 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { join, dirname, resolve as resolvePath } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { openDb, closeDb } from './db/connection.js';
 import { transitionAgent } from './lib/state-machine.js';
 import { transitionWave } from './lib/wave-state-machine.js';
-import { redrive } from './commands/redrive.js';
+import { redrive, formatRedrive } from './commands/redrive.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+// ──────────────────────────────────────────────────────────────
+// F-a5f6b585 mutation-proof helper — load a MODIFIED COPY of redrive.js
+// ──────────────────────────────────────────────────────────────
+//
+// The brief's own proof for this finding: move 'complete' from
+// AGENT_PRESERVED_SOURCES into AGENT_ELIGIBLE_SOURCES and show the
+// receipt-byte-identity gate goes RED where it previously certified success
+// (`receipt_byte_identity_verified: true` on a wave where every 'complete'
+// row was actually reclassified and destroyed). AGENT_PRESERVED_SOURCES /
+// AGENT_ELIGIBLE_SOURCES are module-private consts, not exported — the only
+// way to exercise the REAL mutant (not a hand-simulated stand-in) is to
+// patch a copy of the actual source text and import that copy.
+//
+// The copy is written to a fresh mkdtemp dir (never inside the real repo
+// tree — same cordoning discipline as the DB fixtures below) with its
+// relative imports rewritten to absolute file:// URLs pointing at the REAL
+// sibling modules (db/connection.js, lib/state-machine.js, etc.) so the
+// mutant exercises the real state machine, real DB layer, real logStage —
+// only the two Set literals differ from production.
+const REDRIVE_PATH = join(__dirname, 'commands', 'redrive.js');
+const REDRIVE_SRC = readFileSync(REDRIVE_PATH, 'utf-8');
+const REDRIVE_DIR = dirname(REDRIVE_PATH);
+
+function rewriteRelativeImportsToAbsolute(src, fromDir) {
+  return src.replace(/from '(\.\.?\/[^']+)'/g, (_m, spec) => {
+    return `from '${pathToFileURL(resolvePath(fromDir, spec)).href}'`;
+  });
+}
+
+/**
+ * Load redrive.js with `complete` moved from AGENT_PRESERVED_SOURCES into
+ * AGENT_ELIGIBLE_SOURCES — the exact deletion-operator mutant the finding
+ * names. Throws (test failure, loudly) if either literal is not found,
+ * so a future rename/reformat of these constants cannot silently turn this
+ * into a no-op mutant that always "passes".
+ */
+async function importRedriveWithCompletePromotedToEligible() {
+  const before = "const AGENT_PRESERVED_SOURCES = new Set(['complete']);";
+  const after = "const AGENT_PRESERVED_SOURCES = new Set([]);";
+  const eligibleBefore = "const AGENT_ELIGIBLE_SOURCES = new Set([\n  'pending', 'dispatched', 'failed', 'timed_out',\n]);";
+  const eligibleAfter = "const AGENT_ELIGIBLE_SOURCES = new Set([\n  'pending', 'dispatched', 'failed', 'timed_out', 'complete',\n]);";
+  assert.ok(REDRIVE_SRC.includes(before), 'AGENT_PRESERVED_SOURCES literal not found — mutant patch is stale, update it');
+  assert.ok(REDRIVE_SRC.includes(eligibleBefore), 'AGENT_ELIGIBLE_SOURCES literal not found — mutant patch is stale, update it');
+
+  const mutatedSrc = rewriteRelativeImportsToAbsolute(
+    REDRIVE_SRC.replace(before, after).replace(eligibleBefore, eligibleAfter),
+    REDRIVE_DIR,
+  );
+  assert.notEqual(mutatedSrc, REDRIVE_SRC, 'mutant source must differ from the real module');
+
+  const mutantDir = mkdtempSync(join(tmpdir(), 'redrive-mutant-'));
+  const mutantPath = join(mutantDir, 'redrive-mutant.mjs');
+  writeFileSync(mutantPath, mutatedSrc, 'utf-8');
+  try {
+    return await import(pathToFileURL(mutantPath).href);
+  } finally {
+    rmSync(mutantDir, { recursive: true, force: true });
+  }
+}
 
 // Cordoned-test HEAD guard — record the actual repo's HEAD by walking up
 // the filesystem from this file's location. This avoids typing the repo
@@ -501,6 +561,248 @@ describe('redrive — receipt-byte-identity (proof gate)', () => {
 
       assert.equal(eventsAfter, eventsBefore,
         'preserved complete agent must not gain new audit rows on redrive');
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// F-a5f6b585 — independent watch-set + honest not_applicable reporting
+// ──────────────────────────────────────────────────────────────
+
+describe('redrive — F-a5f6b585: receipts_checked + not_applicable (never vacuous true)', () => {
+  it('zero complete agent_runs (the common redrive case) reports not_applicable, never true', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      // The common redrive case per the finding: a wave whose agents all
+      // failed. Zero 'complete' rows exist — pre-fix this vacuously reported
+      // receipt_byte_identity_verified: true (hashesAreEqual({}, {}) === true).
+      const { waveId } = seedWaveWithSources(dbPath, ['failed', 'pending']);
+
+      const r = redrive({ waveId, reason: 'zero-complete apply', dbPath, apply: true });
+
+      assert.equal(r.receipts_checked, 0);
+      assert.equal(r.receipt_byte_identity_verified, 'not_applicable',
+        'a wave with zero complete agent_runs must never report `true` — nothing was verified');
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('non-zero complete agent_runs reports the true count and true (verified, not vacuous)', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      const { waveId } = seedWaveWithSources(dbPath, ['complete', 'complete', 'failed']);
+
+      const r = redrive({ waveId, reason: 'non-zero apply', dbPath, apply: true });
+
+      assert.equal(r.receipts_checked, 2);
+      assert.equal(r.receipt_byte_identity_verified, true);
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('dry-run reports receipts_checked (preview) without claiming verified: true', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      const { waveId } = seedWaveWithSources(dbPath, ['complete', 'failed']);
+
+      const r = redrive({ waveId, reason: 'dry-run preview', dbPath });
+
+      assert.equal(r.dryRun, true);
+      assert.equal(r.receipts_checked, 1, 'receipts_checked previews the watch-set even without --apply');
+      assert.equal(r.receipt_byte_identity_verified, false,
+        'dry-run never claims a verification that did not run');
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('formatRedrive prints the VERIFIED claim next to Preserved: on apply (F-a5f6b585 operator-surface fix)', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      const { waveId } = seedWaveWithSources(dbPath, ['complete', 'failed']);
+      const r = redrive({ waveId, reason: 'operator surface', dbPath, apply: true });
+      const text = formatRedrive(r);
+
+      assert.match(text, /Preserved:\s+1 complete agent_runs \(receipts unchanged\) — byte-identity: VERIFIED \(1 checked\)/,
+        'the printed Preserved: line must carry the VERIFIED claim, not just the classified count');
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('formatRedrive prints not_applicable (not a bare unqualified Preserved: line) when nothing was checked', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      const { waveId } = seedWaveWithSources(dbPath, ['failed']);
+      const r = redrive({ waveId, reason: 'operator surface empty', dbPath, apply: true });
+      const text = formatRedrive(r);
+
+      assert.match(text, /byte-identity: not_applicable \(0 checked\)/);
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+});
+
+// ──────────────────────────────────────────────────────────────
+// F-a5f6b585 + F-ad3004f4 — mutation proof (deletion-operator methodology)
+// ──────────────────────────────────────────────────────────────
+//
+// This is THE proof the finding and the wave brief both name explicitly:
+// move 'complete' from AGENT_PRESERVED_SOURCES into AGENT_ELIGIBLE_SOURCES
+// and show the gate goes RED where it previously certified success.
+//
+// HONEST FINDING WHILE WRITING THIS TEST (worth recording, not papering
+// over): this exact single-line mutant does NOT reach the byte-identity
+// check at all in this codebase, because lib/state-machine.js's
+// `transitionAgent` has its OWN, independent guard — `override` only
+// bypasses validation for BLOCKED_STATUSES (invalid_output/
+// ownership_violation); 'complete' is a TERMINAL status, a DIFFERENT set,
+// and TERMINAL is checked unconditionally regardless of `override`
+// (state-machine.js:92-98, 145-156). So the eligible-processing loop's
+// `transitionAgent(db, ar.agent_run_id, 'dispatched', reason, true)` call
+// throws `StateMachineRejectionError` (kind: TERMINAL) the moment it tries
+// to move the reclassified 'complete' row — BEFORE this function's own
+// byte-identity check would ever run. This is true of BOTH the pre-fix and
+// post-fix redrive.js, since the eligible-processing loop itself is
+// unchanged by this fix — verified by constructing the identical mutant
+// against the pre-fix shape of the file.
+//
+// This does NOT invalidate the finding. It means THIS ONE mutant is
+// (fortunately) caught by a redundant, independent guard in a sibling
+// module — belt-and-suspenders, not evidence the byte-identity fix is
+// unnecessary. The gate's independence from the classification remains
+// necessary on its own terms (see the two tests below): (1) the mutant
+// test still proves anti-vacuity holds — SOME loud failure occurs, never a
+// silent `true` — and that the whole tx rolls back either way; (2) the
+// "computeReceiptHashes ignores a broken watch-set" test isolates the
+// F-a5f6b585 property directly, independent of the state-machine's
+// incidental protection, by breaking the classification a different way
+// (the source query, not the target-status buckets) so the only thing
+// standing between the DB's real 'complete' row and a silently-vacuous
+// report is the independent re-query this fix adds.
+describe('redrive — mutation proof: complete reclassified as eligible', () => {
+  it('the mutant (complete -> AGENT_ELIGIBLE_SOURCES) never reports success — it throws loudly and the whole tx rolls back', async () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      const { waveId, agentRunIds } = seedWaveWithSources(dbPath, ['complete', 'failed']);
+      const completeId = agentRunIds[0].id;
+
+      const db0 = openDb(dbPath);
+      const before = db0.prepare('SELECT status, started_at, completed_at FROM agent_runs WHERE id = ?').get(completeId);
+      assert.equal(before.status, 'complete');
+      closeDb(dbPath);
+
+      const { redrive: mutantRedrive } = await importRedriveWithCompletePromotedToEligible();
+
+      // Anti-vacuity: whichever guard fires (this repo's redundant
+      // state-machine TERMINAL check, or — on a codebase without that
+      // guard — this fix's own RECEIPT_BYTE_IDENTITY_VIOLATION), the
+      // mutant must NEVER return a report claiming
+      // receipt_byte_identity_verified: true. Accepting either code keeps
+      // this test honest about WHAT actually fires here today, while still
+      // pinning the property the finding cares about.
+      assert.throws(
+        () => mutantRedrive({ waveId, reason: 'mutation proof', dbPath, apply: true }),
+        (err) => {
+          assert.ok(
+            err.code === 'RECEIPT_BYTE_IDENTITY_VIOLATION' || /terminal/i.test(err.message),
+            `expected a loud failure (byte-identity violation OR the state-machine's terminal-status guard); got code=${err.code} message=${err.message}`,
+          );
+          return true;
+        },
+        'F-a5f6b585: reclassifying complete as eligible must never report a vacuous true',
+      );
+
+      // F-ad3004f4 (and the pre-existing per-agent tx wrapper): PREVENTED,
+      // not merely detected — the complete row must still read 'complete'
+      // (untouched), and so must its sibling, because the whole tx rolled
+      // back on the throw regardless of which guard produced it.
+      const db1 = openDb(dbPath);
+      const after = db1.prepare('SELECT status, started_at, completed_at FROM agent_runs WHERE id = ?').get(completeId);
+      assert.deepEqual(after, before,
+        'the previously-complete row must be byte-identical after the rolled-back mutant --apply — a violation must be PREVENTED, not just observed post-mutation');
+      const sibling = db1.prepare('SELECT id FROM agent_runs WHERE wave_id = ? AND id != ?').get(waveId, completeId);
+      const siblingRow = db1.prepare('SELECT status FROM agent_runs WHERE id = ?').get(sibling.id);
+      assert.equal(siblingRow.status, 'failed',
+        'the whole tx must roll back on the mutant, including sibling agent_run transitions in the same --apply');
+      closeDb(dbPath);
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('computeReceiptHashes ignores a broken watch-set: a classification that sees ZERO agent_runs still finds the real complete row (F-a5f6b585 independence, isolated from the state-machine guard above)', async () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      const { waveId, agentRunIds } = seedWaveWithSources(dbPath, ['complete']);
+      const completeId = agentRunIds[0].id;
+
+      // A DIFFERENT mutant: break the classification at its SOURCE — the
+      // `agentRuns` query redrive() itself reads to build `preserved` /
+      // `eligible` — rather than the target-status buckets. This makes
+      // `preserved = []` (classification sees NOTHING) while the DB still
+      // genuinely has a 'complete' row, WITHOUT the eligible-loop ever
+      // attempting a transition on it (nothing is in `eligible` either —
+      // there is nothing to attempt, so the state-machine guard from the
+      // test above never enters the picture). This isolates exactly the
+      // property F-a5f6b585 demands: computeReceiptHashes must not trust
+      // `preserved`'s emptiness — it must independently re-query the DB and
+      // find the row regardless.
+      const brokenQuerySrc = REDRIVE_SRC.replace(
+        `  const agentRuns = db.prepare(\`\n    SELECT ar.id, ar.wave_id, ar.status, ar.output_path, ar.completed_at, d.name AS domain_name\n    FROM agent_runs ar\n    JOIN domains d ON ar.domain_id = d.id\n    WHERE ar.wave_id = ?\n    ORDER BY ar.id\n  \`).all(waveId);`,
+        `  const agentRuns = db.prepare(\`\n    SELECT ar.id, ar.wave_id, ar.status, ar.output_path, ar.completed_at, d.name AS domain_name\n    FROM agent_runs ar\n    JOIN domains d ON ar.domain_id = d.id\n    WHERE ar.wave_id = ? AND 1=0\n    ORDER BY ar.id\n  \`).all(waveId);`,
+      );
+      assert.notEqual(brokenQuerySrc, REDRIVE_SRC, 'broken-query mutant patch is stale — the agentRuns SQL text changed, update this test');
+
+      const mutantDir = mkdtempSync(join(tmpdir(), 'redrive-mutant2-'));
+      const mutantPath = join(mutantDir, 'redrive-mutant2.mjs');
+      writeFileSync(mutantPath, rewriteRelativeImportsToAbsolute(brokenQuerySrc, REDRIVE_DIR), 'utf-8');
+      let mutantModule;
+      try {
+        mutantModule = await import(pathToFileURL(mutantPath).href);
+      } finally {
+        rmSync(mutantDir, { recursive: true, force: true });
+      }
+
+      const r = mutantModule.redrive({ waveId, reason: 'broken classification', dbPath, apply: true });
+
+      // The classification saw zero agent_runs (preserved=[], eligible=[],
+      // refused=[]) — a pre-fix, classification-driven computeReceiptHashes
+      // would have hashed `preserved` (empty) and reported the vacuous
+      // `receipt_byte_identity_verified: true` with receipts_checked
+      // implicitly 0. This fix's independent re-query finds the REAL
+      // complete row regardless of what the (broken) classification saw.
+      assert.equal(r.preserved.length, 0, 'sanity: the broken query must make the classification see nothing');
+      assert.equal(r.receipts_checked, 1,
+        'F-a5f6b585: computeReceiptHashes must find the real complete row independent of the (broken) classification, not report 0 just because `preserved` was empty');
+      assert.equal(r.receipt_byte_identity_verified, true);
+      assert.ok(r.preserved_receipt_hashes_before[completeId], 'the independent watch-set must key the real agent_run id, not derive from the empty `preserved` array');
+
+      const db1 = openDb(dbPath);
+      const row = db1.prepare('SELECT status FROM agent_runs WHERE id = ?').get(completeId);
+      assert.equal(row.status, 'complete', 'untouched — nothing was ever eligible, so nothing was transitioned');
+      closeDb(dbPath);
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  it('control: the UNMODIFIED module (real AGENT_PRESERVED_SOURCES) does NOT throw for the same fixture — isolates the mutant as the cause', () => {
+    const { tempDir, dbPath } = setupFixture();
+    try {
+      const { waveId } = seedWaveWithSources(dbPath, ['complete', 'failed']);
+      // Same fixture shape as the mutant test above, run through the REAL
+      // (unmutated) redrive — must succeed cleanly. This is the differential
+      // half of the proof: the mutant test shows RED, this shows the
+      // identical scenario is GREEN on real production code, so the RED
+      // above is attributable to the mutant, not to fixture flakiness.
+      const r = redrive({ waveId, reason: 'control', dbPath, apply: true });
+      assert.equal(r.receipt_byte_identity_verified, true);
     } finally {
       teardown(tempDir, dbPath);
     }

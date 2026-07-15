@@ -879,6 +879,74 @@ test('schema-conformance: allowEmpty gate allows zero-target glob', async (t) =>
   assert.equal(result.clean, true, JSON.stringify(result.reports));
 });
 
+test('F-5d126106 META: a sibling glob matching files does NOT mask a different glob matching zero', async (t) => {
+  // Mutation proof for the exact bug F-5d126106 found on the live tree:
+  // 'fixtures/*.json' matches a real file (mirrors swarms/__schema-fixtures__/),
+  // 'nonexistent/*.json' matches nothing (mirrors the gitignored live-run
+  // glob) and is declared in NEITHER allowEmpty NOR allowEmptyGlobs. Before
+  // the per-glob fix, the union-level guard saw targetFiles.length > 0 (from
+  // the fixtures glob) and never inspected the empty one — this exact
+  // fixture shape would have returned clean:true. It must not.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write('fixtures/valid-basic.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json', 'nonexistent/*.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'a glob matching zero files must fail loud even when a sibling glob matches real files');
+  assert.equal(result.reports[0].severity, 'config-error');
+  assert.match(result.reports[0].message, /no target files matched: nonexistent\/\*\.json/, 'the config-error must name the SPECIFIC unmatched glob, not the whole target list');
+  assert.doesNotMatch(result.reports[0].message, /fixtures\/\*\.json/, 'the glob that DID match files must not be named as unmatched');
+});
+
+test('schema-conformance: allowEmptyGlobs permits one specific glob to match zero while still requiring the other', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write('fixtures/valid-basic.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json', 'nonexistent/*.json'],
+      allowEmptyGlobs: ['nonexistent/*.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('schema-conformance: allowEmptyGlobs does NOT excuse a glob it does not name', async (t) => {
+  // Declaring one glob empty-ok must not accidentally waive the check for a
+  // THIRD glob that rotted for an unrelated reason — allowEmptyGlobs is an
+  // allowlist of specific patterns, not a boolean escape hatch.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write('fixtures/valid-basic.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json', 'nonexistent-a/*.json', 'nonexistent-b/*.json'],
+      allowEmptyGlobs: ['nonexistent-a/*.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  assert.match(result.reports[0].message, /nonexistent-b\/\*\.json/);
+  assert.doesNotMatch(result.reports[0].message, /nonexistent-a\/\*\.json/, 'the glob named in allowEmptyGlobs must not be reported');
+});
+
 test('schema-conformance: schema file missing reports config-error', async (t) => {
   const fx = makeFixture(t);
   fx.write('outputs/agent.json', JSON.stringify(VALID_AMEND_OUTPUT));
@@ -1054,6 +1122,25 @@ test('LIVE WIRING: agent-output-schema check does NOT carry allowEmpty:true (D4-
     true,
     'D4-004: `allowEmpty: true` was the vacuous-gate enabler. Drop it. ' +
       'If both target globs match zero files, the gate must fail loud — that is the whole point.',
+  );
+});
+
+test('LIVE WIRING: agent-output-schema allowEmptyGlobs names ONLY the structurally-unmatchable live-run glob (F-5d126106)', async () => {
+  // F-5d126106: swarms/swarm-*/wave-*/outputs/*.json can never match a
+  // committed file (swarms/.gitignore ignores swarm-*/ wholesale) — that is
+  // the one glob allowed to report zero on CI. swarms/__schema-fixtures__/*.json
+  // is the real, committed, meaningfully-checked glob and must stay OUT of
+  // allowEmptyGlobs, or a future config edit could silently re-introduce the
+  // exact vacuous-gate class D4-004 closed for the fixtures path.
+  const cfgPath = resolve(repoRoot, 'scripts/doc-drift-patterns.json');
+  const { readFileSync: read } = await import('node:fs');
+  const config = JSON.parse(read(cfgPath, 'utf8'));
+  const entry = config.checks.find((c) => c.id === 'agent-output-schema');
+  assert.ok(entry);
+  assert.deepEqual(
+    entry.allowEmptyGlobs,
+    ['swarms/swarm-*/wave-*/outputs/*.json'],
+    'allowEmptyGlobs must name exactly the gitignored live-run glob — not the committed fixtures glob',
   );
 });
 
@@ -1940,6 +2027,83 @@ test('CLI: --config <path> is honored — a nonexistent path yields the config-n
   );
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// F-a80acc6d: the CLI header names the severity ACTUALLY present, not a
+// hardcoded 'DRIFT' literal. Prior behavior printed 'DRIFT' for every
+// non-clean result, even a config-error-only run (the check ITSELF is
+// broken and is gating nothing) — a different problem from real drift (the
+// docs disagree with the source). All three fixture configs below point
+// `targets`/`schema` at paths resolved against the REAL repoRoot (these
+// tests invoke the real driftScript with `cwd: repoRoot`, only the config
+// file is a temp override via --config), so no fixture repo copy is needed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function writeTempConfig(t, obj) {
+  const p = join(tmpdir(), `doc-drift-header-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  writeFileSync(p, JSON.stringify(obj, null, 2));
+  t.after(() => rmSync(p, { force: true }));
+  return p;
+}
+
+test('F-a80acc6d: a CONFIG-ERROR-only result prints "CONFIG-ERROR", not "DRIFT"', (t) => {
+  const cfg = writeTempConfig(t, {
+    checks: [{
+      id: 'missing-schema',
+      kind: 'schema-conformance',
+      title: 'deliberately missing schema',
+      schema: 'scripts/definitely-missing-schema-xyz.json',
+      targets: ['scripts/check-doc-drift.mjs'],
+    }],
+  });
+  const result = spawnSync(process.execPath, [driftScript, '--config', cfg], { cwd: repoRoot, encoding: 'utf8' });
+  assert.equal(result.status, 2, 'a config-error-only run must exit 2');
+  assert.match(result.stderr, /\[check-doc-drift\] CONFIG-ERROR — /, 'the header must say CONFIG-ERROR when every report is a config-error');
+  assert.doesNotMatch(result.stderr, /\[check-doc-drift\] DRIFT/, 'the header must NOT say DRIFT when no report is actually drift');
+});
+
+test('F-a80acc6d: a DRIFT-only result prints "DRIFT", not "CONFIG-ERROR"', (t) => {
+  const cfg = writeTempConfig(t, {
+    checks: [{
+      id: 'synthetic-drift',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'synthetic drift for the header test',
+      targets: ['package.json'],
+      patterns: [{ regex: '"name"', label: 'synthetic drift — package.json always declares "name"' }],
+    }],
+  });
+  const result = spawnSync(process.execPath, [driftScript, '--config', cfg], { cwd: repoRoot, encoding: 'utf8' });
+  assert.equal(result.status, 1, 'a drift-only run must exit 1');
+  assert.match(result.stderr, /\[check-doc-drift\] DRIFT — /, 'the header must say DRIFT when every report is real drift');
+  assert.doesNotMatch(result.stderr, /\[check-doc-drift\] CONFIG-ERROR/, 'the header must NOT say CONFIG-ERROR when no check is actually broken');
+});
+
+test('F-a80acc6d: a MIXED result prints "CONFIG-ERROR + DRIFT", naming both severities present', (t) => {
+  const cfg = writeTempConfig(t, {
+    checks: [
+      {
+        id: 'missing-schema',
+        kind: 'schema-conformance',
+        title: 'deliberately missing schema',
+        schema: 'scripts/definitely-missing-schema-xyz.json',
+        targets: ['scripts/check-doc-drift.mjs'],
+      },
+      {
+        id: 'synthetic-drift',
+        kind: 'forbidden-pattern-in-targets',
+        title: 'synthetic drift for the header test',
+        targets: ['package.json'],
+        patterns: [{ regex: '"name"', label: 'synthetic drift — package.json always declares "name"' }],
+      },
+    ],
+  });
+  const result = spawnSync(process.execPath, [driftScript, '--config', cfg], { cwd: repoRoot, encoding: 'utf8' });
+  // Exit code takes the STRICTER path (config-error, 2) even though drift is
+  // also present — unaffected by this fix, asserted here as a sanity check
+  // that the header change didn't accidentally alter the exit-code mapping.
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /\[check-doc-drift\] CONFIG-ERROR \+ DRIFT — /, 'the header must name BOTH severities when both are present');
+});
+
 test('CLI: the config-not-found hint promises --config, and that flag now exists (F-eda5a0db honesty pin)', () => {
   // Read the source: the hint that says "pass --config explicitly" must be
   // matched by a real parser. We assert both the hint text and the parser are
@@ -2502,4 +2666,54 @@ test('F-1c99c064: an opener whose info string contains a backtick is not a fence
   });
   const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
   assert.equal(result.clean, true, `a backtick-bearing info string must not open a fence (and must not trip state for the real fence below): ${JSON.stringify(result.reports)}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-W1-CI-005 — ESM main-entry guard uses the canonical pathToFileURL
+// comparison, not a fragile resolve()-based path-string compare.
+//
+// Previous heuristic compared `resolve(fileURLToPath(import.meta.url))` to
+// `resolve(process.argv[1])` — on Windows the two strings can disagree on
+// drive-letter casing or 8.3-vs-long-name resolution, silently no-op'ing the
+// CLI entry block even when check-doc-drift.mjs IS the invoked script. The
+// fix (matching sync-version.mjs / check-finding-regression-pins.mjs /
+// apply-finding-migration.mjs's W31-BACK-001) is
+// `pathToFileURL(process.argv[1]).href === import.meta.url` — URL-vs-URL
+// comparison, reliable everywhere.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-W1-CI-005: main-entry guard uses pathToFileURL(process.argv[1]).href === import.meta.url, not a resolve()-based compare', () => {
+  const src = readFileSync(resolve(repoRoot, 'scripts/check-doc-drift.mjs'), 'utf8');
+  const stripped = src
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const guardLine = stripped
+    .split(/\r?\n/)
+    .find((l) => /^\s*const isMain\s*=/.test(l));
+  assert.ok(guardLine, 'expected a `const isMain = ...` line in check-doc-drift.mjs — pin is stale');
+  assert.match(
+    guardLine,
+    /process\.argv\[1\]\s*&&/,
+    'main-entry guard must short-circuit on `process.argv[1] &&`',
+  );
+  assert.match(
+    guardLine,
+    /pathToFileURL\(\s*process\.argv\[1\]\s*\)\.href\s*===\s*import\.meta\.url/,
+    'main-entry guard must compare pathToFileURL(process.argv[1]).href against import.meta.url, not resolve()d path strings (F-W1-CI-005)',
+  );
+  assert.doesNotMatch(
+    guardLine,
+    /resolve\(\s*fileURLToPath/,
+    'main-entry guard must not revert to the resolve(fileURLToPath(...)) === resolve(process.argv[1]) comparison — that class disagrees on Windows drive-letter casing / 8.3 resolution and silently no-ops (F-W1-CI-005)',
+  );
+});
+
+test('F-W1-CI-005: --help invokes the main-entry block (proves isMain fires on a real script invocation), prints Usage, exits 0', () => {
+  const targetScript = resolve(repoRoot, 'scripts/check-doc-drift.mjs');
+  const result = spawnSync(process.execPath, [targetScript, '--help'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `--help must exit 0 (proves the main-entry block ran).\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`);
+  assert.match(result.stdout, /Usage:/, '--help must print the Usage block, proving isMain fired');
 });

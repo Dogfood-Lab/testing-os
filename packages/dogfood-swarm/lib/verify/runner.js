@@ -95,6 +95,18 @@ export function runStep(repoPath, step) {
       stdout: out.text,
       stderr: '',
       truncated: out.truncated,
+      // ve-trunc-001: MEASURE the full stream here, STORE the bounded copy.
+      // These are different concerns and the bound was destroying the former to
+      // serve the latter: runSteps used to call extractTestCount on the
+      // TRUNCATED text, so on this repo (898,923 chars of `npm test`, first
+      // summary at byte 483,236 — 112x past the 8,000 bound) the count was
+      // unfindable and a 2,853-test run was reported `no_tests`. The floor
+      // truncated the evidence and then reported that there was no evidence —
+      // in the ONE gate that cannot be overridden, so it deadlocked rather than
+      // degraded. The full text is deliberately NOT returned: the step result
+      // is the persisted receipt, and an 899 KB receipt is what the bound
+      // exists to prevent.
+      ...measureStep(step, stdout),
       optional: !!step.optional,
     };
   } catch (e) {
@@ -131,6 +143,9 @@ export function runStep(repoPath, step) {
       stdout: stdout.text,
       stderr: stderr.text,
       truncated: stdout.truncated || stderr.truncated,
+      // Measure the failure path too: a test step that exits non-zero still
+      // reports how many tests ran, and that count is real evidence.
+      ...measureStep(step, e.stdout || ''),
       tool_missing: toolMissing,
       timed_out: timedOut,
       reason: toolMissing
@@ -168,10 +183,12 @@ export function runSteps(repoPath, steps, opts = {}) {
     const result = runStep(repoPath, step);
     results.push(result);
 
-    // Try to extract test count from stdout
-    if (step.name === 'test' && result.stdout) {
-      const count = extractTestCount(result.stdout);
-      if (count != null) testCount = count;
+    // ve-trunc-001: the count is measured inside runStep against the FULL
+    // stream (see measureStep). It is NOT re-derived from `result.stdout` here
+    // — that is the bounded copy kept for the receipt, and measuring it is the
+    // bug this fixes.
+    if (step.name === 'test' && result.test_count != null) {
+      testCount = result.test_count;
     }
 
     // Stop on required failure unless configured otherwise
@@ -236,11 +253,52 @@ export function runSteps(repoPath, steps, opts = {}) {
   // node `# tests 0` scored a clean `pass`. The node adapter still refines the
   // human-readable reason for its no-`test`-script case; the verdict decision
   // is made here, once.
+  // ve-trunc-001: `no_tests` used to conflate two OPPOSITE conditions — "the
+  // test step genuinely ran zero tests" (a defect in the WORK) and "I could not
+  // measure what ran" (a defect in the INSTRUMENT). Both produced the identical
+  // verdict, so an operator reading NO_TESTS went hunting for missing tests in
+  // a repo that has thousands. That is the instrument reporting its own
+  // blindness in the vocabulary of the subject's failure — the same flattening
+  // as an adjudication receipt turning BUDGET_EXCEEDED into
+  // insufficient_context.
+  //
+  // Both still BLOCK. Neither is a pass, and an exit-0 with no countable tests
+  // must never become one: that would trade an honest false-negative for a
+  // vacuous gate, in the only gate that is law. What changes is WHICH defect
+  // gets named, and where the operator is pointed.
+  // The discriminator is OUTPUT, not the count being null. Two ways to reach
+  // "no countable tests", and they are opposite conditions:
+  //
+  //   full_output_chars === 0  -> the step produced NOTHING. `npm test
+  //                               --if-present` with no `test` script exits 0
+  //                               and emits exactly 0 chars (measured). Nothing
+  //                               ran; `no_tests` is the honest, correct answer
+  //                               and stays exactly as it was.
+  //   output > 0, count null   -> something ran and emitted output this floor
+  //                               does not recognize. Calling that "zero tests"
+  //                               is a claim the instrument cannot support.
+  //
+  // Both still BLOCK. An exit-0 with no countable tests must never become a
+  // pass — that would trade an honest false-negative for a vacuous gate, in the
+  // only gate that is law.
+  //
+  // NOTE on scope: the condition originally scoped for this verdict —
+  // "truncated before the summary" — is now UNREACHABLE, because measureStep
+  // reads the full stream before truncation, so the bound can no longer blind
+  // the count. What remains, and what this serves, is the sibling condition:
+  // an unrecognized runner. Same principle, still live — the instrument must
+  // not report its own blindness in the vocabulary of the subject's failure.
   let noTests = false;
   if (verdict === 'pass' && testStep && testStep.passed && !testsRan) {
-    verdict = 'no_tests';
-    noTests = true;
-    reason = 'test step ran zero tests — no positive evidence the fix works; not a verified pass';
+    const fullChars = testStep.full_output_chars ?? 0;
+    if (testCount == null && fullChars > 0) {
+      verdict = 'unmeasured_tests';
+      reason = `could not measure test count — the test step produced ${fullChars} chars of output matching no known runner summary. The count is unproven, not zero.`;
+    } else {
+      verdict = 'no_tests';
+      noTests = true;
+      reason = 'test step ran zero tests — no positive evidence the fix works; not a verified pass';
+    }
   }
 
   const out = {
@@ -263,16 +321,75 @@ export function runSteps(repoPath, steps, opts = {}) {
 }
 
 /**
+ * Measure a step's FULL stdout before the caller truncates it for storage.
+ *
+ * Returns the fields worth keeping on the (bounded) step result: the test count
+ * measured from the complete stream, and how big that stream actually was — so
+ * an operator reading a truncated receipt can see what fraction they are
+ * looking at, and a `could not measure` reason can quote real numbers instead
+ * of gesturing.
+ *
+ * Only the `test` step is measured; running the count patterns over lint/build
+ * output would be wasted work and a chance for a stray match.
+ */
+function measureStep(step, fullStdout) {
+  if (step.name !== 'test') return {};
+  return {
+    test_count: extractTestCount(fullStdout),
+    full_output_chars: fullStdout.length,
+  };
+}
+
+/**
  * Try to extract test count from various test runner outputs.
  */
 function extractTestCount(stdout) {
-  // Node test runner: "# tests 42"
-  const nodeMatch = stdout.match(/# tests? (\d+)/);
-  if (nodeMatch) return parseInt(nodeMatch[1], 10);
+  // ve-trunc-001 — three defects, all measured on this repo's real `npm test`
+  // (898,923 chars, 7 workspaces):
+  //
+  // 1. ANCHOR. The old `/# tests? (\d+)/` was unanchored, so it matched a TEST
+  //    NAME. This repo contains a test literally named
+  //    "node `# tests 0` → verdict no_tests", whose TAP line sits at byte
+  //    258,390 — BEFORE the first real summary at 483,236. The first match was
+  //    therefore `0`, meaning that even with an unbounded stream the floor
+  //    would still have reported no_tests. Fixing the truncation alone would
+  //    NOT have unblocked this repo. `^` (with /m) is what excludes indented
+  //    TAP name lines. Same disease DS-PROAC-04 fixed for the pytest branch:
+  //    output echoed by the code under test outranking the real summary.
+  //
+  // 2. SUM. `npm test --workspaces --if-present` emits ONE summary per
+  //    workspace. Taking the FIRST reported 1328 of 2853 — a silent 62%
+  //    under-count even once the stream is unbounded.
+  //
+  // 3. MIXED RUNNERS. This fan-out is 6x `node --test` + 1x vitest, and vitest
+  //    prints `  Tests  144 passed (144)` — NO colon. The old
+  //    `/Tests:\s+(\d+)\s+passed/` required one and so never matched vitest at
+  //    all; the node branch returning first hid that it was also broken.
+  //
+  // node and jest/vitest are summed TOGETHER because a real fan-out mixes them.
+  // The pytest/cargo branches below keep their existing first/last-match shape
+  // — they have the same theoretical exposure, but nothing here proves it and a
+  // blind refactor of a gate that is law is not worth the risk.
+  let total = 0;
+  let found = false;
 
-  // Jest/Vitest: "Tests: 42 passed"
-  const jestMatch = stdout.match(/Tests:\s+(\d+)\s+passed/);
-  if (jestMatch) return parseInt(jestMatch[1], 10);
+  // node --test TAP: "# tests 42" at LINE START. A nested summary or a test
+  // name is always indented, so the anchor excludes both.
+  for (const m of stdout.matchAll(/^# tests? (\d+)/gm)) {
+    total += parseInt(m[1], 10);
+    found = true;
+  }
+
+  // jest "Tests:  42 passed" / vitest "  Tests  144 passed (144)". Colon
+  // optional; indent tolerated (vitest indents), but still line-anchored — a
+  // TAP name line begins with `#`/`ok`/`not ok` after its indent, never
+  // `Tests`. `Test Files  14 passed` does not match: the literal is `Tests`.
+  for (const m of stdout.matchAll(/^\s*Tests:?\s+(\d+)\s+passed/gm)) {
+    total += parseInt(m[1], 10);
+    found = true;
+  }
+
+  if (found) return total;
 
   // pytest: the session-summary line, e.g. "===== 42 passed, 1 skipped in
   // 4.21s =====". DS-PROAC-04: a bare /(\d+)\s+passed/ grabbed the FIRST

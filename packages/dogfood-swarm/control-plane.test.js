@@ -22,6 +22,9 @@ import {
   computeFingerprint, classifyFindings, upsertFindings, buildPriorMap,
 } from './lib/fingerprint.js';
 
+// ── Advance gate (F-130dee59 rediscovery-vs-disposition regression) ──
+import { checkGates } from './lib/advance.js';
+
 // ── Output validation ──
 import {
   validateAuditOutput, validateFeatureOutput, validateAmendOutput,
@@ -253,6 +256,110 @@ describe('Finding classification', () => {
 
     const result = classifyFindings(current, prior, { scopePaths: ['/'] });
     assert.equal(result.fixed.length, 0);
+  });
+
+  it('does not reclassify a deferred finding as recurring when the SAME fingerprint is rediscovered (F-130dee59)', () => {
+    // F-130dee59: the test above passes an EMPTY `current`, so the finding is
+    // never rediscovered — it only exercises the not-rediscovered branch
+    // (line 484's terminal-status guard), which already correctly skips
+    // deferred/rejected/fixed. It provides zero coverage for the SEPARATE
+    // rediscovered branch (line 462-471), which has no status check at all:
+    // `if (priorFingerprints.has(fp)) result.recurring.push(...)` fires for
+    // ANY prior hit, including a deferred one. This test seeds the SAME
+    // fingerprint in `current` — the exact shape a wave-2 collect produces
+    // when an already-deferred issue is found again with nothing changed.
+    //
+    // This is RED against lib/fingerprint.js today by design: the production
+    // fix (a terminal-status guard on the rediscovered branch, mirroring
+    // line 484's) is swarm-cp-core's, not this domain's — see
+    // cross_domain_notes in swarms/*/wave-2/swarm-cp-tests/output.json.
+    const current = [
+      { fingerprint: 'fp-defer', severity: 'HIGH', category: 'bug', file_path: 'src/x.js', description: 'still there' },
+    ];
+    const prior = new Map([['fp-defer', { id: 1, status: 'deferred', fingerprint: 'fp-defer', file_path: 'src/x.js' }]]);
+
+    const result = classifyFindings(current, prior, { scopePaths: ['/'] });
+    assert.equal(result.recurring.length, 0,
+      'a rediscovered DEFERRED finding must not flip back to recurring — deferred is a coordinator ' +
+      'decision, not an open question that mere rediscovery gets to overturn');
+    assert.equal(result.new.length, 0,
+      'a rediscovered finding with a known fingerprint is not a NEW finding either');
+  });
+});
+
+describe('Rediscovery preserves operator dispositions end-to-end (F-130dee59)', () => {
+  // Unlike the classifyFindings-level pin above, this drives the REAL
+  // upsertFindings + checkGates call path across two waves — the same
+  // end-to-end shape the finding's own proof used ("wave 1 with a deferred
+  // HIGH -> checkGates verdict ADVANCE; wave 2 rediscovers the identical
+  // fingerprint -> status flips deferred->recurring -> checkGates verdict
+  // AMEND"). classifyFindings could theoretically be fixed in a way that
+  // still lets upsertFindings or checkGates regress this at a different
+  // seam; this pins the OBSERVABLE contract (the findings.status column and
+  // the gate verdict an operator actually sees), not just the classifier's
+  // return shape.
+  const RUN_ID = 'test-run-rediscover-defer-e2e';
+
+  it('a deferred HIGH finding stays deferred (not recurring) across rediscovery, and checkGates still ADVANCEs', () => {
+    const db = openMemoryDb();
+    db.prepare('INSERT INTO runs (id, repo, local_path, commit_sha) VALUES (?, ?, ?, ?)')
+      .run(RUN_ID, 'org/repo', '/tmp/repo', 'c'.repeat(40));
+    saveDomainDraft(db, RUN_ID, [
+      { name: 'backend', globs: ['src/**'], ownership_class: 'owned' },
+    ]);
+    freezeDomains(db, RUN_ID);
+
+    // Wave 1: report the finding, then the operator defers it.
+    const wave1Id = Number(db.prepare(
+      "INSERT INTO waves (run_id, phase, wave_number, status) VALUES (?, 'health-audit-a', 1, 'collected')"
+    ).run(RUN_ID).lastInsertRowid);
+    for (const d of db.prepare('SELECT id FROM domains WHERE run_id = ?').all(RUN_ID)) {
+      db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'complete')").run(wave1Id, d.id);
+    }
+    upsertFindings(db, RUN_ID, wave1Id, {
+      new: [{ fingerprint: 'fp-rediscover-defer', severity: 'HIGH', category: 'bug', description: 'flaky retry', file_path: 'src/retry.js' }],
+      recurring: [],
+      fixed: [],
+    });
+    // Mirrors what `swarm defer` writes to the findings row — the operator's
+    // conscious "this does not block the stage" decision.
+    db.prepare("UPDATE findings SET status = 'deferred' WHERE run_id = ? AND fingerprint = ?")
+      .run(RUN_ID, 'fp-rediscover-defer');
+
+    assert.equal(checkGates(db, RUN_ID).verdict, 'ADVANCE',
+      'sanity: a single deferred HIGH must already ADVANCE before rediscovery enters the picture');
+
+    // Wave 2: the identical fingerprint reappears — nothing about the
+    // underlying issue changed, this is the real collect-cycle input shape.
+    const wave2Id = Number(db.prepare(
+      "INSERT INTO waves (run_id, phase, wave_number, status) VALUES (?, 'health-audit-a', 2, 'collected')"
+    ).run(RUN_ID).lastInsertRowid);
+    for (const d of db.prepare('SELECT id FROM domains WHERE run_id = ?').all(RUN_ID)) {
+      db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status) VALUES (?, ?, 'complete')").run(wave2Id, d.id);
+    }
+
+    const prior = buildPriorMap(db, RUN_ID);
+    assert.equal(prior.get('fp-rediscover-defer').status, 'deferred',
+      'sanity: buildPriorMap excludes only rejected, so the deferred row is present for classifyFindings to see');
+
+    const classified = classifyFindings(
+      [{ fingerprint: 'fp-rediscover-defer', severity: 'HIGH', category: 'bug', description: 'flaky retry', file_path: 'src/retry.js' }],
+      prior,
+      { scopePaths: ['src/'] },
+    );
+    upsertFindings(db, RUN_ID, wave2Id, classified);
+
+    const row = db.prepare('SELECT status FROM findings WHERE run_id = ? AND fingerprint = ?')
+      .get(RUN_ID, 'fp-rediscover-defer');
+    assert.equal(row.status, 'deferred',
+      'F-130dee59: rediscovering an already-deferred finding must NOT flip its status to recurring — ' +
+      'that silently destroys a coordinator decision the operator consciously made, with no log and no warning');
+
+    assert.equal(checkGates(db, RUN_ID).verdict, 'ADVANCE',
+      'checkGates must still ADVANCE after rediscovery — every re-audit wave must not silently re-block ' +
+      'a gate the coordinator already, consciously cleared');
+
+    db.close();
   });
 });
 

@@ -48,11 +48,14 @@ const REQUIRED_PATHS = [
   // this very guard — built to catch that trigger-gap class — stayed green
   // because the dropped path was never in its list.
   'policies/**',
-  // F-CI-001: live-run wave outputs. The agent-output-schema conformance gate
-  // is meant to catch the fixes_applied-vs-fixes drift on real wave outputs at
-  // push time, but a push touching ONLY these files ran no CI — green-by-absence.
-  // Gated in both legs exactly like __schema-fixtures__ above.
-  'swarms/swarm-*/wave-*/outputs/**',
+  // F-CI-001 (amended by F-5d126106): 'swarms/swarm-*/wave-*/outputs/**' used
+  // to be REQUIRED here too, on the theory that a push touching ONLY live-run
+  // wave outputs needed its own trigger. That trigger was dead on arrival:
+  // swarms/.gitignore ignores `swarm-*/` wholesale, so a push can never
+  // contain a path under swarms/swarm-*/ in the first place — the entry was
+  // removed from ci.yml's paths filters, and it is deliberately NOT listed
+  // here anymore. Do not re-add it without first removing the swarm-*/
+  // ignore rule (or scoping a negation for wave-*/outputs/ specifically).
   // F-362d4131: runtime data dirs the test suite reads as REAL fixtures
   // (CLAUDE.md rule 6). setupTestRoot() copies from fixtures/; the scenario
   // validation suite (dogfood/scenarios/*.test.mjs, run via test:scripts)
@@ -142,4 +145,23 @@ test('d6-infra-001: the gated honesty-surface files actually exist at repo root 
     existsSync(resolve(repoRoot, 'swarms/__schema-fixtures__/invalid-missing-domain.json')),
     'the schema-conformance negative fixture must exist under swarms/__schema-fixtures__/',
   );
+});
+
+test('F-5d126106: neither paths filter lists the dead swarm-outputs trigger (structurally unmatchable — swarms/.gitignore ignores swarm-*/ wholesale)', () => {
+  const text = readFileSync(ciPath, 'utf8');
+  const gitignorePath = resolve(repoRoot, 'swarms/.gitignore');
+  assert.ok(existsSync(gitignorePath), 'swarms/.gitignore must exist — this test\'s premise depends on it');
+  const gitignore = readFileSync(gitignorePath, 'utf8');
+  assert.match(
+    gitignore,
+    /^swarm-\*\/\s*$/m,
+    'swarms/.gitignore must still ignore swarm-*/ wholesale — if this ever changes, the dead-trigger reasoning below no longer holds and the F-CI-001 removal should be revisited',
+  );
+  for (const trigger of ['push', 'pull_request']) {
+    const paths = extractPathsFor(text, trigger);
+    assert.ok(
+      !paths.includes('swarms/swarm-*/wave-*/outputs/**'),
+      `ci.yml ${trigger} paths must NOT list 'swarms/swarm-*/wave-*/outputs/**' — it can never match a tracked file (swarms/.gitignore ignores swarm-*/ wholesale) and re-adding it re-introduces the dead-trigger F-CI-001 documented gate coverage that never actually existed`,
+    );
+  }
 });

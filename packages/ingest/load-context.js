@@ -272,6 +272,52 @@ function defaultSleep(ms) {
 }
 
 /**
+ * COORD-001: parse a scenario body fetched from a consumer's source repo —
+ * the one `yaml.load` call site in this file that sees content a hostile or
+ * compromised submitter controls end to end. js-yaml 4.1.1 (the workspace
+ * floor; see package.json `"js-yaml": "^4.1.0"`) carries
+ * GHSA-h67p-54hq-rp68: chained `<<` merge keys cost O(depth) per level,
+ * because `mergeMappings()` (js-yaml lib/loader.js:304-321) re-copies
+ * `Object.keys(source)` for the FULL accumulated mapping at every level —
+ * so an n-level merge chain costs O(n^2) total. The attack is small BY
+ * CONSTRUCTION (each level adds only a couple of YAML lines), so
+ * GITHUB_SCENARIO_MAX_BYTES (a 1 MiB cap on the wire size) does not defend
+ * it: measured on the reference rig, a chain sized right at that 1 MiB cap
+ * costs ~61s of CPU, and scaling is ~quadratic (68 KB -> 127ms, 145 KB ->
+ * 656ms). Bumping js-yaml to v5 (which drops merge-key support outright)
+ * is blocked — Dependabot #50 is held open because v5 breaks two scripts/
+ * gates — so the mitigation lives here instead of in the dependency.
+ *
+ * CORE_SCHEMA is DEFAULT_SCHEMA minus exactly the YAML-1.1 extras
+ * (`timestamp`, `merge`, `binary`, `omap`, `pairs`, `set` — see js-yaml
+ * lib/schema/default.js). Without the registered `merge` type, the
+ * loader's `keyTag === 'tag:yaml.org,2002:merge'` branch in
+ * storeMappingPair() never matches a `<<` key, so `mergeMappings()` is
+ * never invoked and the O(depth) copy loop simply cannot run — `<<`
+ * resolves as an ordinary (and, against scenario.schema.json, rejected —
+ * `additionalProperties: false`) string key instead. This is verified
+ * behaviourally, not assumed from the option name, in
+ * coord-001-scenario-merge-bomb.test.js: a probe document proves the
+ * merge-key never fires, and a second probe proves the real fetch path
+ * (not just this helper in isolation) stays protected. Every field
+ * scenario.schema.json declares is a plain string/object/array/boolean —
+ * none relies on the dropped timestamp/binary/omap/pairs/set types — so
+ * this is a pure security hardening with no behavioural cost to a
+ * conforming scenario document.
+ *
+ * Scoped deliberately to THIS call site only. The other three `yaml.load`
+ * calls in this file (loadGlobalPolicy, loadRepoPolicy,
+ * localScenarioFetcher) all read maintainer-committed local files — the
+ * attacker does not control their content, only (in loadRepoPolicy's
+ * case) which existing file gets selected, and that selection is already
+ * segment-validated above. Widening this schema change to those sites is
+ * unnecessary risk for zero additional coverage.
+ */
+export function parseUntrustedScenarioYaml(text) {
+  return yaml.load(text, { schema: yaml.CORE_SCHEMA });
+}
+
+/**
  * GitHub scenario fetcher. Loads scenario definitions from a source repo
  * via the GitHub API at a specific commit SHA.
  *
@@ -458,7 +504,10 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
 
     let scenario;
     try {
-      scenario = yaml.load(text);
+      // COORD-001: merge-key DoS defense — see parseUntrustedScenarioYaml's
+      // doc comment. `text` is untrusted (fetched from the submitter's
+      // source repo), so it must never reach plain yaml.load().
+      scenario = parseUntrustedScenarioYaml(text);
     } catch {
       return { scenario: null, reason: 'parse_error', retryable: false };
     }

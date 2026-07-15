@@ -6,7 +6,15 @@
  * Verdict severity (highest to lowest): fail > blocked > partial > pass
  */
 
-const VERDICT_RANK = { fail: 0, blocked: 1, partial: 2, pass: 3 };
+// F-937733ee: family sibling of F-2965699b/F-7ce07baa. Object.create(null)
+// removes the prototype chain entirely — `VERDICT_RANK['constructor']` is
+// `undefined`, not `Object.prototype.constructor` — so the `== null` guards
+// below fire correctly for every Object.prototype key, not just for a
+// literal typo. Currently unreachable in production (index.js:326 only ever
+// passes schema-enum-valid verdicts into `scenarioResults`), but sealing it
+// here keeps a future caller that skips the schema gate from silently
+// reopening the class.
+const VERDICT_RANK = Object.assign(Object.create(null), { fail: 0, blocked: 1, partial: 2, pass: 3 });
 
 /**
  * Compute the verified verdict.

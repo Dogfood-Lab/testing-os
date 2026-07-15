@@ -36,19 +36,70 @@ import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join, sep, posix } from 'node:path';
 
 /**
- * Strict F-id pattern. Six digits, dash, three digits — matches the
- * convention every fix in this repo has used since the dogfood-labs era.
+ * F-id pattern — three formats, unioned, because this repo has minted three
+ * distinct id shapes over its history and the gate that consumes this
+ * pattern must see all of them (F-3ec5b54f):
+ *
+ *   1. LEGACY   `F-NNNNNN-NNN`      — six digits, dash, three digits
+ *      (the dogfood-labs era; still the majority of source pins).
+ *   2. HASH     `F-xxxxxxxx`        — exactly 8 lowercase hex chars, the
+ *      short-hash style every fix minted in current sessions uses
+ *      (e.g. this file's own F-3ec5b54f / F-5eafee44). Pre-fix this whole
+ *      class was INVISIBLE to the gate — 77 of 133 real source pins.
+ *   3. PREFIXED `F-AAA[-AAA...]-NNN` — one or more dash-joined uppercase-
+ *      alnum segments (`CI`, `W1`, `VERIFYCLI`, `CI-SELF-DOGFOOD`, …) then a
+ *      three-digit suffix. Also invisible pre-fix — 16 of 133.
+ *
+ * Each branch's trailing quantifier is followed by a same-class negative
+ * lookahead (`(?!\d)` for a digit suffix, `(?![0-9a-f])` for the hex run) so
+ * a LONGER run than the branch expects (a 4-digit suffix, a 9-char hex run)
+ * produces NO match rather than a silently truncated wrong id — fail closed,
+ * never guess.
+ *
+ * Case is the load-bearing disambiguator between branches 2 and 3: hash ids
+ * are always lowercase hex, prefixed segments are always uppercase alnum, so
+ * `[0-9a-f]{8}` and `[A-Z][A-Z0-9]*` never contend for the same text (JS
+ * regex classes are case-sensitive by default; no `/i` flag here on purpose).
+ *
+ * The three EXISTING negative cases this file's tests pin (`F-005`, an
+ * under-length legacy shape; `F-XXX-yyy`, uppercase-then-LOWERCASE, which
+ * fails branch 3's uppercase-only continuation; `F-12-345`, digit-led,
+ * which fails branch 3's uppercase-FIRST-char requirement) all still
+ * correctly fail every branch — verified in parse-regression-pins.test.js
+ * alongside the new positive cases, not just asserted here.
+ *
+ * Known accepted false positive: a prose example that is ITSELF shaped like
+ * a valid prefixed id (e.g. a comment illustrating a hypothetical collision
+ * with the literal text `F-XXXXXX-001`) is structurally indistinguishable
+ * from a real prefixed id — "XXXXXX" satisfies `[A-Z][A-Z0-9]*` exactly like
+ * "COORD" or "VERIFY" does. This is not a regex problem to over-fit away
+ * (a curated exclude-list of placeholder tokens is its own maintenance
+ * burden and the next placeholder just needs a different token); it is
+ * exactly what `scripts/regression-pin-allowlist.json` exists to absorb —
+ * the same mechanism the 3 pre-existing legacy orphans already use.
  */
-export const F_ID_PATTERN = /F-\d{6}-\d{3}/g;
+export const F_ID_PATTERN = /F-(?:\d{6}-\d{3}(?!\d)|[0-9a-f]{8}(?![0-9a-f])|[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-\d{3}(?!\d))/g;
 
 /**
  * Less-strict shape detector for "looks like a finding id but isn't" so the
  * parser can deliberately skip prose F-005 / F-XXX-yyy / F-12-345 style refs
- * without having to enumerate them.
+ * without having to enumerate them. NOT currently consumed anywhere (dead
+ * code, pre-dates F_ID_PATTERN's own widening) — F_ID_PATTERN now excludes
+ * those same three examples by its own branch structure (see its JSDoc)
+ * rather than through a separate hint pass. Left in place, unexported,
+ * documenting the original design intent rather than removed as unrelated
+ * cleanup to the F-3ec5b54f/F-5eafee44 fix.
  */
 const F_ID_PROSE_HINT = /F-[A-Za-z0-9]+(?:-[A-Za-z0-9]+)?/g;
 
-const DEFAULT_SOURCE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx']);
+/**
+ * F-5eafee44: `.yml`/`.yaml` were absent, so a finding id pinned in a GitHub
+ * Actions workflow (a real, committed convention — see
+ * `.github/workflows/self-dogfood.yml`'s `F-CI-SELF-DOGFOOD-001`) was never
+ * scanned at all. `walkSourceFiles` filters purely by extension before any
+ * content is read, so this was a total blind spot, not a partial one.
+ */
+const DEFAULT_SOURCE_EXTENSIONS = new Set(['.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.yml', '.yaml']);
 
 const DEFAULT_SKIP_DIRS = new Set([
   'node_modules',
@@ -60,6 +111,27 @@ const DEFAULT_SKIP_DIRS = new Set([
   '.cache',
   '.vitest',
 ]);
+
+/**
+ * F-5eafee44: the blanket "always skip dot-prefixed dirs" rule below
+ * (F-PORT-002) is correct for tooling/editor noise (`.git`, `.claude`,
+ * `.vscode`, `.idea`, …) but was ALSO silently eating `.github/workflows/`
+ * — a versioned, human-authored directory that carries real F-id pins (see
+ * `.github/workflows/self-dogfood.yml`'s `F-CI-SELF-DOGFOOD-001`). Widening
+ * DEFAULT_SOURCE_EXTENSIONS to include `.yml`/`.yaml` alone does NOT surface
+ * those pins — `.github` never reaches the extension check because it is
+ * pruned one level up, as a directory. Confirmed empirically: a fixture
+ * asserting `.github/workflows/example.yml` gets walked failed until this
+ * carve-out was added (see parse-regression-pins.test.js).
+ *
+ * A named, single-entry exception — not a general "opt back in" mechanism —
+ * so F-PORT-002's invariant ("no opt-in via skipDirs") still holds for every
+ * OTHER dot-directory. Widen this set deliberately if a future workflow
+ * convention needs a second dot-directory scanned; do not turn it into a
+ * general dot-dir allowlist without re-deriving the risk (an unbounded
+ * `.anything/` walk is exactly what F-PORT-002 was filed to prevent).
+ */
+const DOT_DIR_SCAN_ALLOWLIST = new Set(['.github']);
 
 /**
  * Posixify a filesystem path at a serialization/classification boundary.
@@ -144,7 +216,10 @@ export function walkSourceFiles(rootDir, { extensions = DEFAULT_SOURCE_EXTENSION
         if (skipDirs.has(entry.name)) continue;
         // Dot-prefixed dirs (.claude/.vscode/.idea/.git/…) are always skipped;
         // there is no opt-in via skipDirs — that set only ever adds skips.
-        if (entry.name.startsWith('.')) continue;
+        // F-5eafee44: `.github` is the one named exception (see
+        // DOT_DIR_SCAN_ALLOWLIST) — it carries real, versioned workflow YAML
+        // that legitimately pins F-ids, unlike every other dot-directory here.
+        if (entry.name.startsWith('.') && !DOT_DIR_SCAN_ALLOWLIST.has(entry.name)) continue;
         stack.push(fullPath);
         continue;
       }

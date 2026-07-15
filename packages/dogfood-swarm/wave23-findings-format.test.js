@@ -21,7 +21,10 @@
  *   3. DOGFOOD_FINDINGS_FORMAT env override (raw → markdown, human → text, json → json)
  *   4. Markdown regression guard            (rendered shape unchanged from pre-wave-23)
  *   5. F-091578-034 disambiguation survives in every format
- *   6. Sweep invariant                      (no other CLI subcommand emits raw markdown)
+ *   6. Sweep invariant                      (no other CLI subcommand reaches the
+ *                                             buildDigest TTY-aware path cmdFindings owns —
+ *                                             the verify-* family has its own, separately
+ *                                             choke-pointed markdown path, out of scope here)
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -409,24 +412,64 @@ describe('F-091578-034 — 3-way disambiguation preserved in text + markdown + j
 });
 
 // ═══════════════════════════════════════════
-// 6. Sweep invariant — no other CLI subcommand emits raw markdown to stdout
+// 6. Sweep invariant — no other CLI subcommand reaches the buildDigest path
 // ═══════════════════════════════════════════
+
+/**
+ * F-c5593165: the prior version of this sweep asserted five hardcoded
+ * `console.log(formatX(...))` call-site strings plus a literal-spelling
+ * regex (`console.log(renderMarkdown`). Neither is anchored to a specific
+ * command's body, so neither enumerates cli.js's actual command set — a NEW
+ * subcommand added tomorrow as
+ *   `const { output } = buildDigest({...}); console.log(output);`
+ * (the exact shape cmdFindings itself already uses) satisfies every one of
+ * those checks, because the danger is in calling `buildDigest(`, not in the
+ * literal string `console.log(buildDigest`.
+ *
+ * This extracts every `cmd*` handler's real source span by brace-depth
+ * matching from its own `function`/`async function` line to its OWN closing
+ * brace — not "until the next `function`/`export` keyword", the layout-
+ * dependent pattern F-a7bf6f4e found unsound in a sibling file — and
+ * requires `buildDigest(`, the one markdown-capable primitive cli.js itself
+ * imports and calls, to appear inside exactly one handler's body. That is a
+ * true sweep: it inspects every command cli.js routes, not a fixed list of
+ * names assumed safe.
+ */
+function extractCmdFunctionBodies(src) {
+  const lines = src.split('\n');
+  const starts = [];
+  const fnRe = /^(?:async\s+)?function\s+(cmd[A-Za-z]+)\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(fnRe);
+    if (m) starts.push({ name: m[1], startLine: i });
+  }
+  assert.ok(starts.length >= 10,
+    `expected to find cli.js's cmd* handlers by scanning for top-level \`function cmd*(\` — got ${starts.length}; extraction regex is wrong`);
+
+  const bodies = new Map();
+  for (const { name, startLine } of starts) {
+    let depth = 0, seenOpen = false, endLine = -1;
+    for (let i = startLine; i < lines.length && endLine === -1; i++) {
+      for (const ch of lines[i]) {
+        if (ch === '{') { depth++; seenOpen = true; }
+        else if (ch === '}') { depth--; if (seenOpen && depth === 0) { endLine = i; break; } }
+      }
+    }
+    assert.ok(endLine !== -1, `could not find the closing brace of ${name} — brace-depth extraction is broken`);
+    bodies.set(name, lines.slice(startLine, endLine + 1).join('\n'));
+  }
+  return bodies;
+}
 
 describe('Class #9 sweep invariant — only `swarm findings` may emit markdown to stdout', () => {
   it('cli.js routes every other subcommand through plain-text format helpers (formatStatus/formatVerify/formatPersist/formatResume/formatProbe) — not markdown', () => {
-    // The audit: read cli.js as text and check that the only markdown-bearing
-    // call is the cmdFindings path (which now goes through buildDigest's
-    // TTY-aware renderer). Any future regression that adds another
-    // `console.log(buildDigest(...).output)` or pipes markdown through stdout
-    // for a different subcommand must update this sweep — the test's purpose
-    // is to MAKE such regressions visible at PR time.
     const cliPath = resolve(__dirname, 'cli.js');
     const cli = readFileSync(cliPath, 'utf-8');
 
     // Every console.log of a value coming back from a `format*` helper is
-    // a plain-text helper, not markdown. We assert these are the ONLY
-    // top-level subcommand renderers reaching stdout (besides cmdFindings,
-    // which now routes through the TTY-aware buildDigest path).
+    // a plain-text helper, not markdown. Spot-check that a representative
+    // sample stays wired — the real safety net is the per-handler sweep
+    // below, which does not depend on this list being exhaustive.
     const formatCallSites = [
       'console.log(formatStatus(s))',
       'console.log(formatResume(r))',
@@ -445,15 +488,46 @@ describe('Class #9 sweep invariant — only `swarm findings` may emit markdown t
     assert.match(cli, /buildDigest\(\s*\{[^}]*format[^}]*stream:\s*process\.stdout/s,
       'cmdFindings must route through buildDigest with format + stream args (wave-23 TTY-aware path)');
 
-    // Anti-regression: a future caller that does `console.log(renderMarkdown(...))`
-    // or `console.log(buildDigest(...).output)` for a NEW subcommand without
-    // routing through the format flag would bypass the TTY-aware path.
-    // We don't currently have such a call — assert it stays that way.
+    // Narrow supplementary guard: cli.js does not import renderMarkdown at
+    // all today (it only imports buildDigest — a level above), so an inline
+    // `console.log(renderMarkdown(...))` would mean someone reached past the
+    // digest choke-point on purpose. Cheap to keep; the sweep below is the
+    // primary defense.
     assert.equal(
       (cli.match(/console\.log\(renderMarkdown/g) || []).length,
       0,
       'cli.js must never call renderMarkdown directly — always go through renderDigest/buildDigest'
     );
+
+    // The real sweep (F-c5593165): enumerate EVERY cmd* handler cli.js
+    // defines — not a fixed list assumed safe — and require the one
+    // markdown-capable primitive cli.js calls directly (buildDigest) to
+    // live inside exactly cmdFindings's body.
+    const bodies = extractCmdFunctionBodies(cli);
+    const BUILD_DIGEST_ALLOWED = new Set(['cmdFindings']);
+    let totalInBodies = 0;
+    for (const [name, body] of bodies) {
+      const hits = (body.match(/buildDigest\(/g) || []).length;
+      totalInBodies += hits;
+      if (BUILD_DIGEST_ALLOWED.has(name)) {
+        assert.ok(hits > 0,
+          `${name} is the allowed buildDigest caller but its body no longer calls buildDigest( — sweep allowlist is stale`);
+      } else {
+        assert.equal(hits, 0,
+          `${name} calls buildDigest( — only ${[...BUILD_DIGEST_ALLOWED].join(', ')} may emit the markdown-capable digest path. ` +
+          `A future subcommand doing \`const { output } = buildDigest(...); console.log(output);\` is exactly the ` +
+          `regression this sweep exists to catch (F-c5593165) — route it through a plain-text format* helper instead, ` +
+          `or add it to BUILD_DIGEST_ALLOWED with a comment explaining why it also needs the TTY-aware digest path.`);
+      }
+    }
+    // Reconciliation: confirm no buildDigest( call is hiding outside every
+    // enumerated cmd* body (e.g. a shared top-level helper multiple
+    // commands funnel through) — the sum across every handler must equal
+    // the file-wide count, so nothing is invisible to this sweep.
+    const totalInFile = (cli.match(/buildDigest\(/g) || []).length;
+    assert.equal(totalInBodies, totalInFile,
+      `buildDigest( appears ${totalInFile} time(s) in cli.js but only ${totalInBodies} were attributable to a cmd* handler body — ` +
+      `a call site outside every handler is invisible to this sweep`);
   });
 
   it('lib/findings-digest.js is the only choke-point — markdown rendering is delegated, not duplicated', () => {

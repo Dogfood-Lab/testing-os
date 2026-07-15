@@ -342,6 +342,38 @@ test('d6-infra-B003: Read result — valid JSON extracts status/run_id/written i
   assert.match(ghOut, /written=true/, 'written=true must reach GITHUB_OUTPUT so the rejected record commits');
 });
 
+test('F-b68c7e52: Read result — an embedded newline in run_id cannot forge an extra GITHUB_OUTPUT key (tr -d hardening)', (t) => {
+  if (!CAN_EXEC) return t.skip('Linux-CI-targeted');
+  const h = makeHarness(t);
+  const script = extractRunBlock(readFileSync(ingestYml, 'utf8'), 'Read result');
+  // run_id/status/written are read from run.js's stdout, itself derived from
+  // an untrusted repository_dispatch client_payload. persist.js's
+  // /^[\w-]+$/ run_id guard makes this unreachable in production today, but
+  // — per the ingest.yml F-b68c7e52 comment — the workflow's own hardening
+  // must not depend on a guard living in a different package. Simulate the
+  // pre-guard shape directly: a run_id containing a literal embedded newline
+  // followed by what looks like a second GITHUB_OUTPUT `key=value` line —
+  // GitHub's documented output-injection class for the single-line
+  // `echo "key=value" >> "$GITHUB_OUTPUT"` form.
+  const maliciousRunId = 'r-legit\ninjected_output=evil';
+  writeFileSync(h.resultPath, JSON.stringify({ status: 'accepted', run_id: maliciousRunId, written: true }));
+  h.writeJqStub({ valid: true });
+  const { status, ghOut, stdout } = h.run(script);
+  assert.equal(status, 0, `valid JSON must still parse cleanly.\n${stdout}`);
+  assert.doesNotMatch(
+    ghOut,
+    /^injected_output=evil$/m,
+    `an embedded newline in run_id must NOT forge a standalone "injected_output=evil" GITHUB_OUTPUT line (F-b68c7e52 output-injection hardening) — got:\n${ghOut}`,
+  );
+  // tr -d '\n\r' concatenates the value onto one line rather than silently
+  // dropping it — the run_id still reaches GITHUB_OUTPUT, just newline-free.
+  assert.match(
+    ghOut,
+    /^run_id=r-legitinjected_output=evil$/m,
+    `run_id must reach GITHUB_OUTPUT as ONE line with the embedded newline stripped (tr -d '\\n\\r'), not split across lines — got:\n${ghOut}`,
+  );
+});
+
 test('d6-infra-B003 + F-caeeacc3: Read result — malformed JSON emits a structured ::error:: and DEFERS the failure (parse_failed=true, exit 0) so the commit step still runs', (t) => {
   if (!CAN_EXEC) return t.skip('Linux-CI-targeted');
   const h = makeHarness(t);
@@ -524,5 +556,47 @@ test('STRUCTURAL F-68818085: git pull --rebase runs only inside the another-atte
     block.slice(ifIdx, rebaseIdx),
     /\bfi\b/,
     'the rebase must sit INSIDE the `if [ $attempt -lt 3 ]` branch so no wasted (and possibly conflicting) rebase runs after the final failed push (F-68818085)',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-FA-001 (Phase 10 Step 1): the push-retry loop itself — 3 attempts with
+// exponential backoff and per-attempt structured telemetry. Pre-amend the
+// loop ran 3 tight attempts with NO backoff and a single generic "All push
+// attempts failed" terminus — an operator looking at the run after a
+// transient push failure (concurrent ingest, GitHub-API blip) had the SAME
+// signal as a real conflict, with no way to see which attempt (if any)
+// recovered. F-68818085 above pins a narrower detail of this SAME loop (the
+// rebase-only-when-retrying branch); this test pins the retry mechanism's
+// own shape — attempt count, backoff, and the per-attempt/terminal
+// annotations — mirroring the Stage D pa11y retry pattern in pages.yml.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('STRUCTURAL F-FA-001: the push-retry loop makes 3 attempts with scaling backoff and per-attempt telemetry', () => {
+  const block = extractRunBlock(readFileSync(ingestYml, 'utf8'), 'Commit records and indexes');
+  assert.match(
+    block,
+    /for attempt in 1 2 3;\s*do/,
+    'the push loop must attempt exactly 3 times (F-FA-001)',
+  );
+  assert.match(
+    block,
+    /wait_s=\$\(\(attempt \* 10\)\)/,
+    'retry backoff must scale with the attempt number (10s, then 20s), not a fixed or absent delay (F-FA-001)',
+  );
+  assert.match(
+    block,
+    /::notice::Push succeeded on attempt \$attempt for run \$\{RUN_ID\}/,
+    'a successful push must name WHICH attempt succeeded — an operator reading the run after a transient failure needs this, not just a bare green run (F-FA-001)',
+  );
+  assert.match(
+    block,
+    /::warning::Push attempt \$attempt failed for run \$\{RUN_ID\}/,
+    'each failed attempt must emit its OWN ::warning:: — the pre-amend loop had a single generic terminus with no per-attempt visibility (F-FA-001)',
+  );
+  assert.match(
+    block,
+    /::error::All 3 push attempts failed for run \$\{RUN_ID\}/,
+    'the terminal failure after all 3 attempts must be a named, structured ::error:: naming the run (F-FA-001)',
   );
 });

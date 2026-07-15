@@ -32,3 +32,4 @@ indexes/*.tmp.json
 # release otherwise produces a large noise diff that crowds out the real
 # changes. Astro regenerates the directory cleanly on each build.
 site/.astro/
+.swarm/

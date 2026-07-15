@@ -191,7 +191,33 @@ export function normalizeAdjudication(jurorVerdicts, juryRequest, opts = {}) {
       return JUROR_ANSWERS.includes(a) ? a : 'insufficient_context';
     });
     const agg = aggregateCriterion(answers, opts);
-    return { id: c.id, ...agg };
+    // Brief completeness, onto the RECEIPT (sm-oos-002). A tier that trims the
+    // brief to fit a cap (prism's 4000-char intent ceiling) reports what it
+    // dropped per criterion; that record used to live only in the operator's
+    // terminal and was discarded here, so the signed receipt attested a verdict
+    // while omitting the single fact most likely to undermine it. The contract's
+    // honest-boundary claim — "anything that does not fit is REPORTED, not
+    // silently dropped" — is only true if REPORTED means the durable artifact.
+    //
+    // Absent (rather than zeroed) for a tier with no cap, so "no record" means
+    // "this tier delivered the whole brief" and `{0,0}` means "it trims, and
+    // dropped nothing here". Aggregated by WORST across seats: the intent is
+    // seat-independent today (buildCriterionIntent is a pure function of
+    // criterion + payload), but a receipt must not under-report if a future
+    // per-seat budget ever breaks that.
+    const omissions = jurorVerdicts
+      .map(jv => (jv.prism?.criteria || []).find(d => d.criterion === c.id)?.omitted)
+      .filter(o => o && typeof o === 'object');
+    if (omissions.length === 0) return { id: c.id, ...agg };
+
+    return {
+      id: c.id,
+      ...agg,
+      brief_omitted: {
+        evidence: Math.max(...omissions.map(o => Number(o.evidence) || 0)),
+        out_of_scope: Math.max(...omissions.map(o => Number(o.out_of_scope) || 0)),
+      },
+    };
   });
 
   // Overall = the highest-precedence criterion outcome present.

@@ -164,6 +164,118 @@ export function lintCaseFile(caseFile) {
     }
   });
 
+  // ── criterion_ids referential integrity ───────────────────────────────────
+  // `context[].criterion_ids` scopes a claim to the criteria it grounds so a
+  // capped tier can spend its budget on relevant evidence. A typo'd id is
+  // STRUCTURALLY VALID against the schema — a cross-field reference (this
+  // string must match an id in a sibling array) is not expressible in JSON
+  // Schema, and the schema's own description says so and defers here. Left
+  // unchecked, the claim matches no criterion and is silently dropped from
+  // every brief in the run: a self-inflicted evidence-starvation path with no
+  // symptom, which is the exact failure this field was introduced to fix.
+  //
+  // ERROR, not warning, for one reason: silence IS the failure mode. A warning
+  // scrolls past, the jury is starved, and the receipt reports
+  // `brief_omitted: {evidence: 0}` — truthfully, because a claim that grounds
+  // nothing was never owed to any criterion. Nothing downstream can detect it.
+  // It has to fail closed at the boundary.
+  const criterionIds = new Set(
+    criteria.map(c => (c && typeof c === 'object' ? c.id : undefined)).filter(id => typeof id === 'string'),
+  );
+  const rawContext = Array.isArray(cf.context) ? cf.context : [];
+  rawContext.forEach((c, i) => {
+    if (!c || typeof c !== 'object' || c.criterion_ids === undefined) return; // absent => global; the default
+
+    if (!Array.isArray(c.criterion_ids)) {
+      findings.push({
+        code: 'case-file-criterion-ids',
+        severity: 'error',
+        field: `/context/${i}/criterion_ids`,
+        message: `criterion_ids must be an array of criterion ids, got ${typeof c.criterion_ids} — a malformed value would be treated as an unscoped (global) claim and hide the mistake`,
+        hint: 'Use an array of acceptance_criteria[].id values, or omit the field entirely to ground every criterion.',
+      });
+      return;
+    }
+
+    if (c.criterion_ids.length === 0) {
+      findings.push({
+        code: 'case-file-criterion-ids',
+        severity: 'error',
+        field: `/context/${i}/criterion_ids`,
+        message: 'criterion_ids is empty — this claim grounds NO criterion and would be silently dropped from every brief',
+        hint: 'A global claim is expressed by OMITTING criterion_ids, not by an empty list. Either omit the field or name the criteria this claim grounds.',
+      });
+      return;
+    }
+
+    c.criterion_ids.forEach((id, j) => {
+      if (criterionIds.has(id)) return;
+      findings.push({
+        code: 'case-file-criterion-ids',
+        severity: 'error',
+        field: `/context/${i}/criterion_ids/${j}`,
+        message: `criterion_ids names "${id}", which is not an acceptance_criteria[].id in this case-file — the claim would be silently dropped from every criterion's brief`,
+        hint: `Use one of: ${[...criterionIds].join(', ') || '(this case-file declares no criteria)'}. Omit criterion_ids entirely to ground every criterion.`,
+      });
+    });
+  });
+
+  // ── orphaned criteria ─────────────────────────────────────────────────────
+  // The same disease one door over from the referential check above, and
+  // strictly worse: a typo is a mistake, an OMISSION looks like a decision.
+  // Once scoping is in use, a criterion no claim names receives zero evidence
+  // and the case-file lints clean, so on a capped tier it is judged from the
+  // artifact alone with nothing anywhere saying so.
+  //
+  // WARNING, not error, on purpose. A criterion judged from the artifact alone
+  // is legitimate. An error would force the clerk to INVENT grounding it does
+  // not have — the extraction floor pointed backwards, manufacturing
+  // `fable-inference` to satisfy a gate. Surface the fact; leave the judgement
+  // with the clerk and the reader, exactly as the contract does with
+  // `insufficient_context`.
+  //
+  // THE CONDITION, stated exactly, because the obvious one is wrong:
+  //
+  //   warn on X  iff  context[] is non-empty  AND  reachable(X) = {}
+  //   reachable(X) = { global claims } ∪ { claims naming X }
+  //
+  // Starvation is "nothing REACHES this criterion", NOT "nothing was SCOPED to
+  // it". A global claim reaches everything, so NO criterion can starve while a
+  // single global claim exists — which means a mixed pack (some scoped, some
+  // global) must produce zero warnings even for a criterion no scoped claim
+  // names. The tempting rule — "fire whenever any claim carries criterion_ids"
+  // — gets that case backwards and warns about criteria that are fully briefed.
+  // A warning that fires when nothing is wrong is noise, and noise is how a
+  // real signal gets missed.
+  //
+  // An empty context[] is deliberately NOT this check's business: a case-file
+  // with no evidence at all is the grounding lint's report to make (see the
+  // extraction-floor findings below), and double-reporting it here would be the
+  // same nag in two voices.
+  const scopingInUse = rawContext.some(c => c && typeof c === 'object' && Array.isArray(c.criterion_ids));
+  if (scopingInUse) {
+    const grounded = new Set();
+    for (const c of rawContext) {
+      if (!c || typeof c !== 'object') continue;
+      if (!Array.isArray(c.criterion_ids)) {
+        // A global claim grounds EVERY criterion — it cannot leave an orphan.
+        criterionIds.forEach(id => grounded.add(id));
+        continue;
+      }
+      c.criterion_ids.forEach(id => grounded.add(id));
+    }
+    for (const id of criterionIds) {
+      if (grounded.has(id)) continue;
+      findings.push({
+        code: 'case-file-criterion-orphaned',
+        severity: 'warning',
+        field: '/acceptance_criteria',
+        message: `criterion '${id}' has no scoped evidence; it will be judged from the artifact alone on capped tiers`,
+        hint: 'Scope a claim to this criterion via context[].criterion_ids, or leave a claim global (omit criterion_ids) so it grounds every criterion. Advisory: a criterion decided from the artifact alone is sometimes legitimate — this warns so it is a choice you made, not one that happened to you.',
+      });
+    }
+  }
+
   const context = Array.isArray(cf.context) ? cf.context : [];
   context.forEach((c, i) => {
     const claim = c && typeof c === 'object' ? c.claim : undefined;

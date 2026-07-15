@@ -72,6 +72,19 @@ function mkFinding(overrides = {}) {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('ds-verify-001 — a clean-compile / zero-test run yields no_tests, not pass', () => {
+  // DO NOT "TIDY" THE NAME OF THE TEST BELOW. Its backticked `# tests 0` is
+  // load-bearing, and not for this test — for extractTestCount's anchor.
+  //
+  // This title prints into the TAP stream as a plain line containing a
+  // summary-shaped string, at roughly byte 258k of a full `npm test` run —
+  // ~225k BEFORE the first real `# tests` summary. An unanchored
+  // /# tests? (\d+)/ therefore matched THIS TEST'S NAME and reported the whole
+  // repo as 0 tests, so the run that proves "zero tests must not pass" was
+  // itself what made the floor report zero tests. The gate's own regression pin
+  // became the adversarial input that broke the gate.
+  //
+  // Renaming it costs nothing here and silently retires the only in-repo
+  // attacker the anchor has. Keep it hostile.
   it('node `# tests 0` → verdict no_tests (not pass)', () => {
     // extractTestCount reads "# tests 0" as 0 (not null); pre-fix tests_ran was
     // `0 != null` === true, so the run scored a clean pass despite running

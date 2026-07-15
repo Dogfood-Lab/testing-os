@@ -269,7 +269,7 @@ describe('classifyFindingV2 — allowlist (coordinator_resolved)', () => {
 // ═══════════════════════════════════════════════════════════════════════
 
 describe('classifyFindingV2 — agent_attestation', () => {
-  it('verified_via=agent_attestation when finding carries structured attestation', () => {
+  it('verified_via=agent_attestation when anchor+cross_ref are unverifiable and the attestation is valid', () => {
     const f = mkFinding({
       agent_attestation: { summary: 'feature ripped out; doc-only finding', proof_id: 'PR-2026' },
     });
@@ -278,6 +278,52 @@ describe('classifyFindingV2 — agent_attestation', () => {
     assert.equal(r.verified_via, VERIFIED_VIA.AGENT_ATTESTATION);
     assert.match(r.evidence, /agent attestation/);
     assert.match(r.evidence, /feature ripped out/);
+  });
+
+  // F-7cc809c4: the guard used to be `typeof === 'object'` — `{}` alone was
+  // sufficient to mint `verified`. This is the core deletion-shaped proof
+  // that the fix closes it: an attestation with no content whatsoever must
+  // fall through to whatever the mechanical path (here: unverifiable)
+  // already determined, never to 'verified'.
+  it('an empty-object attestation does NOT classify as verified', () => {
+    const f = mkFinding({ agent_attestation: {} });
+    const r = classifyFindingV2(f, REPO, { readLines: fakeReader({}, REPO) });
+    assert.notEqual(r.classification, 'verified');
+    assert.equal(r.classification, 'unverifiable');
+    assert.notEqual(r.verified_via, VERIFIED_VIA.AGENT_ATTESTATION);
+  });
+
+  it('an attestation with a summary but no machine-checkable pointer does NOT classify as verified', () => {
+    const f = mkFinding({ agent_attestation: { summary: 'trust me' } });
+    const r = classifyFindingV2(f, REPO, { readLines: fakeReader({}, REPO) });
+    assert.notEqual(r.classification, 'verified');
+    assert.notEqual(r.verified_via, VERIFIED_VIA.AGENT_ATTESTATION);
+  });
+
+  it('agent_attestation is NON-authoritative: a mechanical anchor verdict wins even with a valid attestation present', () => {
+    const file = Array.from({ length: 60 }, (_, i) => `// line ${i + 1}`);
+    const f = mkFinding({
+      symbol: 'gone', // absent from `file` — the anchor itself resolves verified
+      line_number: 42,
+      agent_attestation: { summary: 'i also fixed it', commit_sha: 'a'.repeat(40) },
+    });
+    const r = classifyFindingV2(f, REPO, { readLines: fakeReader({ 'src/a.js': file }, REPO) });
+    assert.equal(r.classification, 'verified');
+    assert.equal(r.verified_via, VERIFIED_VIA.ANCHOR, 'the anchor must win — attestation never gets consulted');
+  });
+
+  it('agent_attestation can NEVER override a claimed-but-still-present anchor verdict, even when valid', () => {
+    const claimedFile = Array.from({ length: 60 }, (_, i) => `// line ${i + 1}`);
+    claimedFile[41] = 'function doThing() {}'; // the old symbol is mechanically still present
+    const f = mkFinding({
+      symbol: 'doThing',
+      line_number: 42,
+      agent_attestation: { summary: 'i promise it is fixed', commit_sha: 'b'.repeat(40) },
+      // deliberately no cross_ref — nothing legitimate to override the anchor with
+    });
+    const r = classifyFindingV2(f, REPO, { readLines: fakeReader({ 'src/a.js': claimedFile }, REPO) });
+    assert.equal(r.classification, 'claimed-but-still-present');
+    assert.notEqual(r.verified_via, VERIFIED_VIA.AGENT_ATTESTATION);
   });
 });
 
@@ -366,7 +412,16 @@ describe('buildV2Delta — Pattern #8 envelope', () => {
       }), // allowlist
       mkFinding({
         finding_id: 'F-T',
-        agent_attestation: { summary: 'doc-only' },
+        // F-7cc809c4: agent_attestation is now a tie-breaker consulted ONLY
+        // when anchor AND cross_ref are both unverifiable — a file_path
+        // absent from the readLines table (an architectural/doc-level
+        // finding with no anchorable file) puts the anchor in that state.
+        // The attestation must also satisfy isValidAgentAttestation's
+        // content contract: a required summary PLUS a machine-checkable
+        // pointer (commit_sha here).
+        file_path: 'docs/architecture.md',
+        symbol: null,
+        agent_attestation: { summary: 'doc-only, no code anchor', commit_sha: 'c'.repeat(40) },
       }), // agent_attestation
       mkFinding({
         finding_id: 'F-U',

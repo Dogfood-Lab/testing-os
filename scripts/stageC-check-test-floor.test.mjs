@@ -122,11 +122,20 @@ const TEST_FILE_RE = /\.(?:test|spec)\.(?:js|mjs|cjs|ts|tsx)$/;
 // is the F-4d5e0db4 / F-113b0115 over-claim.
 const NODE_BARE_DISCOVERY_RE = /(?:\.test\.(?:js|mjs|cjs)$)|(?:(?:^|\/)test\/.*\.(?:js|mjs|cjs)$)/;
 // Directory names never walked: generated/vendored trees, plus swarm run
-// artifacts (swarms/ can hold agent worktrees — full repo copies whose test
-// files are counted in their own checkouts, not this one).
+// artifacts (agent worktrees are full repo copies whose test files are counted
+// in their own checkouts, not this one).
+//
+// `.swarm` is where the control plane actually creates `--isolate` worktrees
+// today (see dogfood-swarm's `clean` verb and its .gitignore fixture); the
+// older `swarms` / `.dogfood-worktrees` names are kept so a tree carrying
+// either layout still sweeps clean. Omitting `.swarm` made every stranded
+// worktree's test files read as orphans — one bogus entry per test file per
+// worktree, drowning a real orphan in thousands of false ones. That is this
+// gate lying by the same mechanism it exists to catch, so the skip-list has to
+// track the directory name whenever it moves.
 const SKIP_DIRS = new Set([
   'node_modules', 'dist', 'build', 'coverage', '.git', '.cache',
-  '__test_root__', 'swarms', '.dogfood-worktrees',
+  '__test_root__', '.swarm', 'swarms', '.dogfood-worktrees',
 ]);
 
 function collectTestFiles(root) {

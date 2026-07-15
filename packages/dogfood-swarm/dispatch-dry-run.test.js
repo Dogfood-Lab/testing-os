@@ -132,6 +132,11 @@ describe('dispatch --dry-run — control plane + tree unchanged', () => {
       runId: RUN_ID, phase: 'health-audit-a', dbPath, outputDir: join(tmpDir, 'out'),
       dryRun: true, isolate: true,
     });
+    // Found hunting F-6a78ffdd's family: unguarded loop — an empty
+    // report.agents would report "no worktree created" as a pass with
+    // nothing actually checked. Same two owned domains as the sibling test
+    // above (backend, frontend).
+    assert.equal(report.agents.length, 2, 'shared is a zone, not an agent');
     for (const a of report.agents) {
       assert.ok(a.worktreePath, 'isolate dry-run names the would-create worktree path');
       assert.ok(a.worktreeBranch, 'isolate dry-run names the would-create branch');

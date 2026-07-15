@@ -34,16 +34,26 @@
  * on transitionWave(... override=true) existing. Phase 5A leaves the verbs
  * unbuilt by design.
  *
- * Legacy-state notes (kept for documentation; explicit design call):
+ * Legacy-state notes (kept for documentation — F-017409f3 corrected 2026-07,
+ * see below for what changed):
  *   - 'pending' is the SQL DEFAULT for waves.status but no production writer
  *     ever transitions a wave TO 'pending'. dispatch.js INSERTs new waves
  *     directly at 'dispatched'. Some test fixtures still rely on the default
  *     (the column accepts whatever the DEFAULT clause emits at INSERT time).
- *     We KEEP 'pending' as a known source state with no outbound edges in
- *     TRANSITIONS so a legacy fixture-driven wave is observable but immovable
- *     without explicit override. Migrating fixtures is out of scope for 5A.
- *   - 'collecting' is in STATUS.wave but no writer uses it. Same KEEP/document
- *     stance; no outbound edges.
+ *   - 'collecting' is in STATUS.wave but no production writer uses it.
+ *
+ * Both are legacy/unwritten SOURCE states — no writer ever transitions a wave
+ * TO either one — but as of Phase 5B-2 (redrive) BOTH have outbound edges in
+ * TRANSITIONS, same as every other non-terminal source: 'dispatched' (a
+ * fixture-driven wave IS movable via `swarm redrive`) and 'aborted_for_rewind'
+ * (via `swarm rewind`). This section previously claimed the opposite —
+ * "no outbound edges... immovable without explicit override" — which was
+ * true at Phase 5A but was never reconciled when 5B-2 gave every non-terminal
+ * source those two edges (see the Phase 5B-1/5B-2 notes below, which ARE
+ * accurate: "every non-terminal source can reach it" / "every non-terminal
+ * source gains a transition back to 'dispatched'"). The TABLE was always
+ * correct; this prose drifted. Pinned by wave-state-machine.test.js so the
+ * two cannot silently diverge again.
  *
  * BLOCKED_STATUSES require explicit override + reason to leave. 'failed' is
  * the canonical blocked source — recovery to 'collected' MUST carry an

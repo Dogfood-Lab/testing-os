@@ -300,6 +300,45 @@ export function collect(opts) {
   const domains = getDomains(db, opts.runId);
   const domainMap = new Map(domains.map(d => [d.name, d]));
 
+  // F-16bab049: a --domain=<name>:<path> pair whose NAME does not match any
+  // domain in this run is a CLI typo, not a missing agent — refuse loudly
+  // and BEFORE any mutation. Nothing below this point has written to the DB
+  // yet (agentRuns/domains above are reads), so the wave stays 'dispatched'
+  // and a corrected `swarm collect` re-runs immediately — no `swarm redrive`
+  // detour. Pre-fix, collect() only ever looked up
+  // `opts.outputs?.[domain.name]` (iterating FROM the domain side), so an
+  // extra/misspelled key in `opts.outputs` was silently never read: the
+  // REAL domain for that typo'd slot then had no output, got marked
+  // 'failed' downstream ('Output file not found'), and the wave flipped to
+  // 'failed' with no diagnostic naming the typo. Mirrors revalidate.js's
+  // unknown-domain refusal (revalidate.js's validation pass) for the same
+  // class of operator mistake.
+  const unknownDomains = Object.keys(opts.outputs || {}).filter(name => !domainMap.has(name));
+  if (unknownDomains.length > 0) {
+    const validDomains = domains.map(d => d.name).sort();
+    logStage('collect_unknown_domain', {
+      component: 'dogfood-swarm',
+      correlation_id: mintCorrelationId(),
+      runId: opts.runId,
+      waveId: wave.id,
+      waveNumber: wave.wave_number,
+      unknownDomains,
+      validDomains,
+    });
+    const err = new Error(
+      `collect: unknown domain(s) in --domain=<name>:<path>: ${unknownDomains.join(', ')}. ` +
+      `Valid domains for this run: ${validDomains.join(', ') || '(none)'}. ` +
+      `The wave was NOT modified — re-run \`swarm collect\` with the corrected name.`
+    );
+    err.code = 'COLLECT_UNKNOWN_DOMAIN';
+    err.runId = opts.runId;
+    err.waveId = wave.id;
+    err.unknownDomains = unknownDomains;
+    err.validDomains = validDomains;
+    err.hint = `valid domains for this run: ${validDomains.join(', ') || '(none)'}`;
+    throw err;
+  }
+
   const report = {
     waveId: wave.id,
     waveNumber: wave.wave_number,

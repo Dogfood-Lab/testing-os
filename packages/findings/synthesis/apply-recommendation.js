@@ -95,8 +95,24 @@ export function applyRecommendation(rootDir, params) {
   // org/repo carrying `..` or a separator would escape the policies tree on
   // BOTH the dry-run (path leaked in preview) and write (file touched) paths,
   // so reject here before either branch resolves a path.
+  //
+  // F-853dbce9: the two-segment repo contract (F-54e5fde7 / V2-CROSS-BO-003)
+  // was NOT enforced here — the bare 2-way destructure silently DROPS every
+  // segment past the second, so `--policy group/subgroup/project` yielded
+  // pOrg='group', pRepo='subgroup' and resolved a DIFFERENT repo's policy
+  // file than the operator named, with no error on either the dry-run
+  // preview or the --write path. Matches persist.js:51's `segments.length
+  // !== 2` guard verbatim so the family reads identically.
   if (params.policyRepo) {
-    const [pOrg, pRepo] = String(params.policyRepo).split('/');
+    const segments = String(params.policyRepo).split('/');
+    if (segments.length !== 2) {
+      return structuredError(
+        'RECOMMENDATION_UNSAFE_POLICY',
+        `policy repo "${params.policyRepo}" is not a two-segment org/repo slug`,
+        'Nested GitLab subgroups are unsupported — pass --policy <org>/<repo>.'
+      );
+    }
+    const [pOrg, pRepo] = segments;
     if (!pOrg || !pRepo || isUnsafeSegment(pOrg) || isUnsafeSegment(pRepo)) {
       return structuredError(
         'RECOMMENDATION_UNSAFE_POLICY',
@@ -252,8 +268,23 @@ export function applyRecommendation(rootDir, params) {
   };
 }
 
-/** Resolve the on-disk path for a repo policy under rootDir. */
+/**
+ * Resolve the on-disk path for a repo policy under rootDir.
+ *
+ * F-853dbce9: fails closed on the same two-segment invariant the guard above
+ * enforces, rather than trusting every caller to have checked first —
+ * mirrors persist.js's computeRecordPath, which owns this same invariant at
+ * the write layer instead of trusting its own callers. Both of this
+ * function's current callers (the dry-run preview and the --write path) are
+ * already gated by the guard above, so this throw is defense-in-depth, not
+ * the primary enforcement point — but a future call site that skips the
+ * guard must fail loud here, not silently resolve a different repo's file.
+ */
 function policyPathFor(rootDir, orgRepo) {
-  const [org, repo] = orgRepo.split('/');
+  const segments = String(orgRepo).split('/');
+  if (segments.length !== 2 || !segments[0] || !segments[1]) {
+    throw new Error(`policy repo "${orgRepo}" is not a two-segment org/repo slug`);
+  }
+  const [org, repo] = segments;
   return resolve(rootDir, 'policies', 'repos', org, `${repo}.yaml`);
 }

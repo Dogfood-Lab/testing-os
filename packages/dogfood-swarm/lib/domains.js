@@ -28,6 +28,41 @@ import { minimatch } from 'minimatch';
 import { isSafeDomainName } from './worktree.js';
 
 /**
+ * Server-side source extensions for backend's ROOT-LEVEL entry-point
+ * heuristics (`main.`, `index.`, `app.`, `server.`, `cli.`).
+ *
+ * These were bare `main.*` / `index.*` / … and so claimed EVERY extension,
+ * including frontend's. Measured against globSpecificity the damage was not
+ * uniform, and "both globs match" is not the same as "the freeze gate flags
+ * it":
+ *
+ *   index.*  [0,6,0] beats *.html [0,5,0] -> backend won OUTRIGHT, no tie, so
+ *            the gate never fired: `index.html` was SILENTLY backend's.
+ *   main.*   [0,5,0] ties  *.html [0,5,0] -> flagged ('main.' and '.html' are
+ *            coincidentally both 5 literal chars).
+ *   server.* [0,7,0] beats *.html [0,5,0] -> silently backend's.
+ *
+ * The silent mis-assignments were the worse half: a tie at least fails the
+ * freeze loudly. Nothing should have to ADJUDICATE whether `index.html` is
+ * frontend — constraining the extension set removes the question rather than
+ * arbitrating it. Frontend's `*.html` is correct and is left alone.
+ *
+ * `.html` / `.css` / `.jsx` / `.tsx` / `.vue` / `.svelte` are deliberately
+ * EXCLUDED: frontend owns those.
+ *
+ * Honest gap, named rather than left silent: this trades the old catch-all's
+ * OVER-claiming for UNDER-claiming. A root-level entry point in a language
+ * outside this set (`main.zig`, `main.dart`, `server.erl`) is no longer
+ * auto-claimed by backend, and a root-level `index.tsx` is now unclaimed by
+ * ANY bucket — frontend's JSX/TSX globs are `src/`-scoped (`src/**\/*.tsx`),
+ * so they do not reach the repo root. Both land in detectDomains' `unmatched`
+ * list, which the operator sees and can assign. That is the safe direction:
+ * unmatched is visible and fixable, a silent wrong owner is neither.
+ */
+const BACKEND_ENTRY_EXT =
+  '{js,mjs,cjs,ts,mts,cts,py,go,rs,rb,java,kt,cs,php,c,cc,cpp,swift,ex,exs,scala,sh}';
+
+/**
  * Default domain buckets with detection heuristics.
  * Order matters: first match wins for a file.
  */
@@ -60,7 +95,9 @@ const DEFAULT_BUCKETS = [
   {
     name: 'backend',
     globs: ['src/**', 'lib/**', 'packages/**', 'crates/**',
-            'server.*', 'main.*', 'index.*', 'cli.*', 'app.*',
+            `server.${BACKEND_ENTRY_EXT}`, `main.${BACKEND_ENTRY_EXT}`,
+            `index.${BACKEND_ENTRY_EXT}`, `cli.${BACKEND_ENTRY_EXT}`,
+            `app.${BACKEND_ENTRY_EXT}`,
             'cmd/**', 'internal/**', 'pkg/**'],
     ownership_class: 'owned',
   },
@@ -263,40 +300,6 @@ export function removeDomain(db, runId, domainName) {
 // ── Ownership arbitration ──
 
 /**
- * Derive a representative concrete path from a glob by substituting its
- * wildcard segments with a fixed token. Used only to probe whether two owned
- * domains' glob sets can match a common file (overlap detection) — it does NOT
- * need to enumerate every match, just to produce one path the glob owns.
- *
- * `src/**\/*.tsx` → `src/x/x.tsx`; `src/**` → `src/x`; `*.md` → `x.md`.
- *
- * sm-p-001: brace alternations `{a,b}` and char classes `[abc]` are collapsed
- * to one representative literal FIRST, so an operator-authored owned glob like
- * `src/{ui,frontend}/**` yields a probe path (`src/ui/x`) that minimatch still
- * matches against the source glob. Without this, the sampled path kept the
- * literal brace/bracket syntax, minimatch returned false against its own glob,
- * and findOwnedGlobOverlaps was BLIND to brace/class owned domains — two
- * identical `src/{a,b}/**` owners would freeze silently. Defense-in-depth only:
- * runtime checkOwnership matches real file paths where minimatch handles braces
- * natively; this only restores the freeze-time overlap probe.
- */
-function sampleGlobPath(glob) {
-  return glob
-    // `{a,b,c}` → first alternative (`a`); `{a}` and empty `{}` collapse too.
-    .replace(/\{([^},]*)(?:,[^}]*)*\}/g, '$1')
-    // `[abc]` / `[a-z]` char class → a concrete char the class ACTUALLY matches
-    // (the range start `a` for `[a-z]`, the first literal for `[abc]`). A fixed
-    // token like `x` would not be a member of `[ab]`, so minimatch would still
-    // miss the sample against its own glob and the overlap probe would stay
-    // blind. Negated classes `[^…]` fall back to `x` (a safe non-member).
-    .replace(/\[(\^?)([^\]])[^\]]*\]/g, (_, neg, first) => (neg ? 'x' : first))
-    .replace(/\*\*\//g, 'x/')   // `**/` directory wildcard → one segment
-    .replace(/\*\*/g, 'x')      // bare `**` → one segment
-    .replace(/\*/g, 'x')        // `*` → token (keeps the extension on `*.tsx`)
-    .replace(/\?/g, 'x');
-}
-
-/**
  * Score a glob's specificity as a comparable tuple. A glob with more literal
  * path before its first wildcard is more specific; ties break on total literal
  * character count (so `src/**` `*.tsx` outranks `src/**` on its `.tsx` literal);
@@ -344,6 +347,130 @@ function bestMatchingGlob(globs, file) {
 }
 
 /**
+ * Whether two single-segment wildcard patterns (`*` = zero-or-more chars,
+ * `?` = exactly one char, everything else literal) can match a COMMON
+ * string. The classic two-pattern wildcard-intersection recursion, memoized
+ * on (i, j) -- segments are short operator-authored config, not attacker
+ * input, but memoizing costs nothing and rules out any pathological blowup.
+ *
+ * @returns {boolean}
+ */
+function segmentsCanIntersect(a, b) {
+  const memo = new Map();
+  function go(i, j) {
+    const key = `${i},${j}`;
+    if (memo.has(key)) return memo.get(key);
+    let result;
+    if (i === a.length && j === b.length) {
+      result = true;
+    } else if (i < a.length && a[i] === '*') {
+      result = go(i + 1, j) || (j < b.length && go(i, j + 1));
+    } else if (j < b.length && b[j] === '*') {
+      result = go(i, j + 1) || (i < a.length && go(i + 1, j));
+    } else if (i < a.length && j < b.length && (a[i] === '?' || b[j] === '?' || a[i] === b[j])) {
+      result = go(i + 1, j + 1);
+    } else {
+      result = false;
+    }
+    memo.set(key, result);
+    return result;
+  }
+  return go(0, 0);
+}
+
+/**
+ * Collapse brace-alternation and char-class syntax to ONE representative
+ * literal, leaving `*` / `?` / `**` wildcards untouched -- globsCanIntersect
+ * reasons about wildcard SEGMENTS, so it must not flatten them to a sample.
+ *
+ * sm-p-001 (inherited from the retired sampleGlobPath probe, which this
+ * replaced): an operator-authored owned glob like `src/{ui,frontend}/**` must
+ * reduce to a representative the comparison can actually reason about
+ * (`src/ui/**`). Left literal, the brace/bracket syntax is compared as opaque
+ * text and the overlap gate goes BLIND to brace/class domains -- two identical
+ * `src/{a,b}/**` owners would freeze silently. A char class collapses to a
+ * member the class ACTUALLY matches (the range start `a` for `[a-z]`, the first
+ * literal for `[abc]`); a fixed token like `x` would not be a member of `[ab]`
+ * and would reintroduce the same blindness. Negated classes `[^...]` fall back
+ * to `x`, a safe non-member.
+ *
+ * Honest bound: collapsing to the FIRST alternative is an approximation --
+ * `{a,b}` vs `{b,c}` genuinely intersect at `b`, but both collapse to their
+ * first member (`a` vs `b`) and compare disjoint, so this can produce a false
+ * "disjoint" for brace globs whose overlap lives outside the first
+ * alternative. That is the ONE place this module's error direction inverts
+ * (everywhere else it over-approximates toward flagging). It is inherited
+ * behavior, not introduced here, and it is why runtime checkOwnership --
+ * which matches real paths with minimatch, where braces expand natively --
+ * remains the enforcement of record; this gate is defense-in-depth at the
+ * freeze boundary.
+ */
+function collapseAlternation(glob) {
+  return glob
+    // `{a,b,c}` -> first alternative (`a`); `{a}` and empty `{}` collapse too.
+    .replace(/\{([^},]*)(?:,[^}]*)*\}/g, '$1')
+    .replace(/\[(\^?)([^\]])[^\]]*\]/g, (_, neg, first) => (neg ? 'x' : first));
+}
+
+/**
+ * Whether two globs' path languages can share a common member -- computed
+ * EXACTLY for the fragment of glob syntax domain globs actually use (literal
+ * segments, single-segment `*`/`?`, multi-segment `**`), not by sampling one
+ * representative path per glob (sm-p-002: findOwnedGlobOverlaps' sampler
+ * misses the case where two globs genuinely intersect but neither glob's OWN
+ * sample happens to land in the other's language -- PROVEN: owned
+ * `src/a*\/f.js` and owned `src/*b\/f.js` both minimatch `src/ab/f.js`, but
+ * `src/a*\/f.js` samples to `src/ax/f.js` (rejected by `src/*b\/f.js`) and
+ * `src/*b\/f.js` samples to `src/xb/f.js` (rejected by `src/a*\/f.js`), so
+ * neither probe ever sees the other).
+ *
+ * `**` is handled conservatively, not exactly: a glob containing `**` can
+ * absorb any number of segments (including zero) at that position, and
+ * proving NON-intersection in that general case needs reasoning this
+ * function does not attempt. When either side contains `**`, or the two
+ * `**`-free segment sequences have different lengths, this returns
+ * true/false by the one thing that IS decidable without it (constant
+ * segment-count parity) -- see the two early returns below -- and otherwise
+ * assumes POSSIBLE intersection rather than risk a false "disjoint". The
+ * safe direction for an ownership gate is to flag a possible conflict, not
+ * silently clear one; a false positive here costs an operator a glob
+ * rewrite, a false negative costs a silently misattributed file.
+ */
+function globsCanIntersect(globA, globB) {
+  const segsA = collapseAlternation(globA).split('/');
+  const segsB = collapseAlternation(globB).split('/');
+
+  const starA = segsA.indexOf('**');
+  const starB = segsB.indexOf('**');
+
+  // Every segment BEFORE the first `**` is positionally fixed in BOTH globs,
+  // so ONE provably-disjoint constant pair there proves the whole languages
+  // share no member. sm-p-002-r-001: the first draft of this function skipped
+  // straight to `return true` whenever either side contained `**`, which
+  // discarded exactly this information -- and since essentially every real
+  // domain glob ends in `**`, freezeDomains then rejected every multi-domain
+  // map (`packages/a/**` vs `packages/b/**` scored as a conflict). The
+  // over-approximation direction was right; making it TOTAL was the defect.
+  const fixedLen = Math.min(
+    starA === -1 ? segsA.length : starA,
+    starB === -1 ? segsB.length : starB,
+  );
+  for (let i = 0; i < fixedLen; i++) {
+    if (!segmentsCanIntersect(segsA[i], segsB[i])) return false;
+  }
+
+  // A `**` on either side absorbs a variable-length gap, so from the first one
+  // onward the two globs' segments no longer line up positionally and this
+  // method decides nothing further -- fall back to the safe direction.
+  if (starA !== -1 || starB !== -1) return true;
+
+  // Neither glob has `**`: each segment consumes EXACTLY one path segment, so
+  // a length mismatch is provably disjoint. When the lengths do match, the
+  // loop above already compared every segment (fixedLen is both lengths).
+  return segsA.length === segsB.length;
+}
+
+/**
  * Find pairs of OWNED domains whose globs overlap — i.e. some file is claimed
  * by more than one exclusive owner WITH EQUAL specificity (a genuine
  * criss-cross, e.g. two `**` domains, or `src/a/**` vs `src/a/**`). A
@@ -352,35 +479,75 @@ function bestMatchingGlob(globs, file) {
  * arbitrates it to a single owner by specificity, exactly as detectDomains'
  * first-match-wins does. sm-002 rejected ANY glob-level overlap, which broke
  * freezing the auto-detected default full-stack map (sm-r-001); only an
- * equal-specificity tie actually breaches per-domain isolation. We sample a
- * concrete path from each owned glob and, for any OTHER owned domain that also
- * matches it, compare both domains' best-matching specificity.
+ * equal-specificity tie actually breaches per-domain isolation.
  *
- * @returns {Array<{ a: string, b: string, file: string }>} conflicting pairs
+ * sm-p-002: compares glob PAIRS directly rather than sampling one point per
+ * glob -- globSpecificity is a pure function of the glob STRING (no sample
+ * needed), so two globs (one from each domain) are a genuine tie candidate
+ * whenever their specificity scores are equal AND globsCanIntersect proves
+ * their languages share a member. This is sound and complete for the
+ * single-glob-per-domain shape the regression proves; a domain whose OWN
+ * glob LIST has a more-specific glob that shadows the compared one at every
+ * point of the compared intersection is a residual gap this does not chase
+ * (it would require reasoning about a witness FILE, not just glob pairs) --
+ * documented, not hidden, and it only widens the SAFE direction (an
+ * occasional over-flag an operator must disambiguate, never a silent miss).
+ *
+ * Evidence, in two tiers:
+ *
+ *   - With `files` (the run's real checkout — the normal path): a candidate
+ *     tie is a conflict only when an ACTUAL file matches BOTH globs, and that
+ *     file is reported as the `witness`. Nothing is assumed, nothing is
+ *     fabricated.
+ *   - Without `files` (no reachable local_path): fall back to the
+ *     glob-language over-approximation and report the GLOB PAIR. There is no
+ *     honest witness to name on this path -- when globsCanIntersect returns
+ *     true via its `**` branch it has ASSUMED intersection rather than proven
+ *     it, so no member of both languages is known to exist. The pre-fix
+ *     message sampled a path from the FIRST glob and asserted "both claim" it
+ *     -- for `packages/schemas/**` vs `swarms/templates/**` it named
+ *     `packages/schemas/x`, which the second glob cannot match under any
+ *     expansion, so the cited witness disproved the very claim it was cited
+ *     for. The glob pair is accurate in every case AND is the thing the
+ *     operator actually has to edit.
+ *
+ * The witness tier deliberately narrows the gate from "these globs COULD
+ * collide" to "these globs DO collide in this checkout" -- see freezeDomains
+ * for what that trade buys and what it gives up.
+ *
+ * @param {Array<object>} domains — getDomains() rows (globs parsed)
+ * @param {string[]|null} [files] — the run's real file list, or null when unreachable
+ * @returns {Array<{ a: string, b: string, globA: string, globB: string, witness: string|null }>}
  */
-function findOwnedGlobOverlaps(domains) {
+function findOwnedGlobOverlaps(domains, files = null) {
   const owned = domains.filter(d => d.ownership_class === 'owned');
   const conflicts = [];
   const seen = new Set();
 
   for (const domain of owned) {
     for (const glob of domain.globs) {
-      const sample = sampleGlobPath(glob);
+      const domainScore = globSpecificity(glob);
       for (const other of owned) {
         if (other.name === domain.name) continue;
-        const here = bestMatchingGlob(domain.globs, sample);
-        const there = bestMatchingGlob(other.globs, sample);
-        if (!here || !there) continue;
-        // Only an EQUAL-specificity tie is a genuine breach; if one glob is
-        // strictly more specific, resolveExclusiveOwner arbitrates the file to
-        // a single owner (same as detectDomains' first-match-wins), so a
-        // strict-subset overlap (frontend's src/ui/** ⊂ backend's src/**) is
-        // legal — not a conflict (sm-r-001).
-        if (compareSpecificity(here.score, there.score) !== 0) continue;
-        const key = [domain.name, other.name].sort().join('\u0000') + '\u0000' + sample;
-        if (seen.has(key)) continue;
-        seen.add(key);
-        conflicts.push({ a: domain.name, b: other.name, file: sample });
+        for (const otherGlob of other.globs) {
+          if (compareSpecificity(domainScore, globSpecificity(otherGlob)) !== 0) continue;
+          if (!globsCanIntersect(glob, otherGlob)) continue;
+
+          let witness = null;
+          if (files !== null) {
+            witness = files.find(f =>
+              minimatch(f, glob, { dot: true }) && minimatch(f, otherGlob, { dot: true })) || null;
+            // Provably no file in this checkout is doubly-claimed, so these two
+            // exclusive owners cannot actually contend for anything.
+            if (witness === null) continue;
+          }
+
+          const key = [domain.name, other.name].sort().join('\u0000')
+            + '\u0000' + [glob, otherGlob].sort().join('\u0000');
+          if (seen.has(key)) continue;
+          seen.add(key);
+          conflicts.push({ a: domain.name, b: other.name, globA: glob, globB: otherGlob, witness });
+        }
       }
     }
   }
@@ -448,13 +615,37 @@ export function freezeDomains(db, runId) {
   const domains = getDomains(db, runId);
   if (domains.length === 0) throw new Error('No domains to freeze');
 
+  // Resolve the run's real checkout so a candidate tie can be settled against
+  // actual files rather than assumed from the glob languages. The gate's own
+  // stated purpose is about FILES ("two exclusive owners that both claim the
+  // same file"), so a tie no file can realize is not the bad state it exists
+  // to prevent, and refusing the freeze for it is a false positive.
+  //
+  // The honest cost, stated rather than buried: this narrows a decidable
+  // STATIC property to a point-in-time SNAPSHOT. A colliding file created
+  // after the freeze is not re-checked here, and would surface later as a
+  // checkOwnership arbitration (possibly a phantom violation) with no
+  // freeze-time warning. The glob-only path below remains the fallback and
+  // keeps the static guarantee whenever the checkout is unreachable.
+  const run = db.prepare('SELECT local_path FROM runs WHERE id = ?').get(runId);
+  let files = null;
+  if (run?.local_path && existsSync(run.local_path)) {
+    try {
+      files = walkDir(run.local_path);
+    } catch {
+      files = null; // unreadable checkout — fall back rather than freeze on a lie
+    }
+  }
+
   // sm-002: reject overlapping OWNED globs at the freeze boundary so the bad
   // state never exists. Two exclusive owners that both claim the same file
   // defeat per-domain worktree isolation — fail fast and name the conflict.
-  const overlaps = findOwnedGlobOverlaps(domains);
+  const overlaps = findOwnedGlobOverlaps(domains, files);
   if (overlaps.length > 0) {
     const detail = overlaps
-      .map(c => `"${c.a}" and "${c.b}" both claim ${c.file}`)
+      .map(c => (c.witness
+        ? `"${c.a}" (${c.globA}) and "${c.b}" (${c.globB}) both claim ${c.witness}`
+        : `"${c.a}" (${c.globA}) and "${c.b}" (${c.globB}) overlap at equal specificity`))
       .join('; ');
     throw new Error(
       `Cannot freeze: overlapping owned domains breach exclusive ownership — ${detail}. ` +
@@ -474,11 +665,32 @@ export function freezeDomains(db, runId) {
 }
 
 /**
- * Statuses a wave is in while its agents are dispatched or being collected —
- * the window during which the frozen domain map is the live ownership contract.
- * Editing globs here would drift the map out from under in-flight agents.
+ * Statuses a wave is in while its agents are dispatched, being collected, or
+ * mid-recovery — the window during which the frozen domain map is the live
+ * ownership contract. Editing globs here would drift the map out from under
+ * agents that were dispatched (or briefed) against the OLD map.
+ *
+ * F-60309675: 'failed' belongs here too. commands/revalidate.js re-runs the
+ * ownership check on the 'failed' -> 'collected' recovery path, and
+ * checkOwnership resolves against the LIVE domain map (getDomains), not the
+ * wave's captured domain_snapshot_id (that snapshot is forensic only — see
+ * this module's header). Without 'failed' in this list, an operator could
+ * unfreeze a 'failed' wave, broaden the globs to cover files that violated
+ * ownership at dispatch time, re-freeze, then `swarm revalidate --apply` —
+ * laundering the violation into a pass against a map the agents were never
+ * briefed with, with no error and only an auditable-but-easy-to-miss
+ * unfrozen/frozen domain_events pair. Blocking unfreeze here keeps the
+ * documented `{force:true}` + reason escape hatch for an operator who has
+ * genuinely halted the wave by hand.
+ *
+ * 'collecting' has NO writer anywhere in this package (verified: no INSERT
+ * or UPDATE sets a wave's status to the literal 'collecting' — only
+ * db/schema.js's STATUS.wave enum and this module's own header mention it).
+ * It is kept in this list — a phantom coverage gap costs nothing since it can
+ * never fire — but its real coverage today is 'dispatched' and 'failed'; the
+ * next writer that DOES use 'collecting' inherits the guard automatically.
  */
-const ACTIVE_WAVE_STATUSES = ['dispatched', 'collecting'];
+const ACTIVE_WAVE_STATUSES = ['dispatched', 'collecting', 'failed'];
 
 /**
  * Is there a wave for this run that is still in flight (dispatched/collecting)?

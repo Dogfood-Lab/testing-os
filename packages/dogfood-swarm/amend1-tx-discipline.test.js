@@ -93,9 +93,52 @@ function isAllowlisted(relPath) {
   return ALLOWLIST.some(entry => entry.file === relPath);
 }
 
+/**
+ * F-a02393b2 / F-a7bf6f4e: brace-balanced function-body extraction.
+ *
+ * Both probes below used to bound a function's body by TEXT LAYOUT — one by
+ * "the file contains db.transaction( SOMEWHERE" (no function scope at all),
+ * the other by "capture until the next top-level `export`". F-a7bf6f4e
+ * proved the second binds the capture to file ORDER: any non-exported
+ * helper inserted between two functions silently widens the capture to
+ * include the neighbour's code, so an assertion about "the function under
+ * test" can actually pass or fail on ITS NEIGHBOUR's body instead.
+ *
+ * This walks real brace depth from each function's own `{` to its own
+ * matching `}`, so a reorder or an inserted helper cannot change what a
+ * probe sees. Scope: named `function` declarations only (`function name(` /
+ * `async function name(` / `export function name(`) — the shape every
+ * function in this package uses at module scope. Arrow functions and object
+ * methods are not extracted; a file that needs those covered needs a wider
+ * extractor, not a silent stretch of this one.
+ */
+function extractFunctionBodies(text) {
+  const lines = text.split('\n');
+  const fnRe = /^(?:export\s+)?(?:async\s+)?function\s+(\w+)\s*\(/;
+  const bodies = new Map();
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(fnRe);
+    if (!m) continue;
+    let depth = 0, seenOpen = false, endLine = -1;
+    for (let j = i; j < lines.length && endLine === -1; j++) {
+      for (const ch of lines[j]) {
+        if (ch === '{') { depth++; seenOpen = true; }
+        else if (ch === '}') { depth--; if (seenOpen && depth === 0) { endLine = j; break; } }
+      }
+    }
+    if (endLine !== -1) bodies.set(m[1], lines.slice(i, endLine + 1).join('\n'));
+  }
+  return bodies;
+}
+
 describe('Tx discipline — UPDATE agent_runs + INSERT agent_state_events co-occurrence (H9)', () => {
   it('any file containing BOTH writes wraps them in db.transaction (executeTransition pattern)', () => {
     const all = walkSync(PKG_ROOT).filter(p => !TEST_FILE_PATTERN.test(relativeFromPkg(p)));
+    // F-a02393b2 anti-vacuity insurance: PKG_ROOT is __dirname and always
+    // contains .js files today, so this is currently unreachable — but a
+    // future refactor that hands walkSync the wrong root must not be able
+    // to pass this gate by visiting nothing.
+    assert.ok(all.length > 0, 'sweep must visit at least one source file');
 
     const offenders = [];
     for (const f of all) {
@@ -104,32 +147,65 @@ describe('Tx discipline — UPDATE agent_runs + INSERT agent_state_events co-occ
       const hasUpdate = /UPDATE\s+agent_runs/.test(text);
       const hasInsertEvent = /INSERT\s+INTO\s+agent_state_events/.test(text);
       if (!hasUpdate || !hasInsertEvent) continue;
-      if (text.includes('db.transaction(')) continue;
       if (isAllowlisted(rel)) continue;
-      offenders.push(rel);
+
+      // F-a02393b2: a file-level `db.transaction(` anywhere used to exempt
+      // EVERY write in the file (line 107's old `continue`), and a
+      // co-occurrence split across two functions in the same file was
+      // invisible to a file-scope regex. Narrow to function scope: find the
+      // function bodies that actually contain BOTH statements, and require
+      // db.transaction( inside THAT body specifically.
+      const bodies = [...extractFunctionBodies(text).values()];
+      const pairedBodies = bodies.filter(b =>
+        /UPDATE\s+agent_runs/.test(b) && /INSERT\s+INTO\s+agent_state_events/.test(b));
+
+      if (pairedBodies.length === 0) {
+        // Both statements exist in the file but no single function's body
+        // contains both — the pairing this invariant polices has no
+        // function-scoped referent to check here. Fail loud rather than
+        // fall back to the old file-level heuristic: a human needs to
+        // confirm the split write path is genuinely atomic, or allowlist
+        // it with a documented reason (see commands/redrive.js above).
+        offenders.push(`${rel} — UPDATE agent_runs and INSERT INTO agent_state_events are both ` +
+          `present but not co-located in one function body; cannot verify atomicity at function scope`);
+        continue;
+      }
+      const unwrapped = pairedBodies.filter(b => !b.includes('db.transaction('));
+      if (unwrapped.length > 0) {
+        offenders.push(`${rel} — ${unwrapped.length} function body(ies) pair UPDATE agent_runs + ` +
+          `INSERT INTO agent_state_events with no db.transaction( wrapper in that same body`);
+      }
     }
 
     assert.deepEqual(offenders, [],
       `H9 tx discipline violation — file has both UPDATE agent_runs AND ` +
-      `INSERT INTO agent_state_events but no db.transaction() wrapper:\n  ${offenders.join('\n  ')}\n` +
+      `INSERT INTO agent_state_events but the pair is not co-located inside a single ` +
+      `db.transaction()-wrapped function body:\n  ${offenders.join('\n  ')}\n` +
       `Route through transitionAgent (which goes through executeTransition in ` +
       `lib/state-machine.js, the self-wrapping helper), or wrap the pair in ` +
-      `db.transaction() at the call site.`);
+      `db.transaction() inside the same function at the call site.`);
   });
 
   it('lib/state-machine.js executeTransition body contains db.transaction(', () => {
     const text = readFileSync(join(PKG_ROOT, 'lib/state-machine.js'), 'utf-8');
-    const fnMatch = text.match(/function executeTransition\([^)]*\) \{([\s\S]*?)\n\}/);
-    assert.ok(fnMatch, 'executeTransition function must be defined');
-    assert.ok(fnMatch[1].includes('db.transaction('),
+    const body = extractFunctionBodies(text).get('executeTransition');
+    assert.ok(body, 'executeTransition function must be defined');
+    assert.ok(body.includes('db.transaction('),
       'executeTransition body must wrap in db.transaction()');
   });
 
   it('lib/state-machine.js applyTimeoutPolicy routes through transitionAgent (no raw SQL)', () => {
     const text = readFileSync(join(PKG_ROOT, 'lib/state-machine.js'), 'utf-8');
-    const fnMatch = text.match(/export function applyTimeoutPolicy\([^)]*\) \{([\s\S]*?)\nexport /);
-    assert.ok(fnMatch, 'applyTimeoutPolicy function must be defined and findable');
-    const body = fnMatch[1];
+    // F-a7bf6f4e: this used to capture from applyTimeoutPolicy's signature
+    // to the NEXT top-level `export` keyword — file-order-bound, not
+    // syntax-bound. That already over-ran applyTimeoutPolicy's real `}` by
+    // one JSDoc block; a helper inserted between applyTimeoutPolicy and
+    // export function getTimeoutPolicy would have let the NEIGHBOUR's code
+    // satisfy assert.ok(body.includes('transitionAgent(')) even if
+    // applyTimeoutPolicy itself stopped calling it. extractFunctionBodies
+    // bounds on applyTimeoutPolicy's own closing brace instead.
+    const body = extractFunctionBodies(text).get('applyTimeoutPolicy');
+    assert.ok(body, 'applyTimeoutPolicy function must be defined and findable');
 
     // applyTimeoutPolicy must NOT contain raw UPDATE agent_runs (the per-agent
     // transition must go through transitionAgent, which wraps).

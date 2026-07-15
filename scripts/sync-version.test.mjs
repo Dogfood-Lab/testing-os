@@ -31,11 +31,16 @@ import { test } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { mkdtempSync, writeFileSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
 import { syncVersion, DriftError } from './sync-version.mjs';
 // H10 regression: per-workspace version drift + engines.node drift. See
 // scripts/check-lockfile-drift.test.mjs for the contract.
 import './check-lockfile-drift.test.mjs';
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, '..');
 
 function makeRepo(t, version, { readmeVersion, lockTopVersion, lockRootVersion, omitLockRoot, omitLockfile } = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'sync-version-'));
@@ -185,4 +190,58 @@ test('package.json without a version field throws', (t) => {
     () => syncVersion({ repoRoot: dir, check: false }),
     /no version field/
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-W1-CI-007 — ESM main-entry guard: only run main() when invoked as a
+// script, not when imported by tests. Previous heuristic compared
+// `resolve(fileURLToPath(import.meta.url))` to `resolve(process.argv[1])` —
+// on Windows the two strings can disagree on drive-letter casing or 8.3 vs
+// long-name resolution and the entry block silently no-ops. The canonical
+// Node cross-platform pattern is `pathToFileURL(process.argv[1]).href ===
+// import.meta.url` (matches apply-finding-migration.mjs's W31-BACK-001 fix;
+// this id is dual-pinned in scripts/build.mjs's own main-entry guard too —
+// see build.test.mjs for that sibling fix site).
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-W1-CI-007: main-entry guard uses pathToFileURL(process.argv[1]).href === import.meta.url, not a resolve()-based compare', () => {
+  const src = readFileSync(resolve(repoRoot, 'scripts/sync-version.mjs'), 'utf8');
+  const stripped = src
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const guardLine = stripped
+    .split(/\r?\n/)
+    .find((l) => /^\s*const isMain\s*=/.test(l));
+  assert.ok(guardLine, 'expected a `const isMain = ...` line in sync-version.mjs — pin is stale');
+  assert.match(
+    guardLine,
+    /process\.argv\[1\]\s*&&/,
+    'main-entry guard must short-circuit on `process.argv[1] &&`',
+  );
+  assert.match(
+    guardLine,
+    /pathToFileURL\(\s*process\.argv\[1\]\s*\)\.href\s*===\s*import\.meta\.url/,
+    'main-entry guard must compare pathToFileURL(process.argv[1]).href against import.meta.url, not resolve()d path strings (F-W1-CI-007)',
+  );
+  assert.doesNotMatch(
+    guardLine,
+    /resolve\(\s*fileURLToPath/,
+    'main-entry guard must not revert to the resolve(fileURLToPath(...)) === resolve(process.argv[1]) comparison — that class disagrees on Windows drive-letter casing / 8.3 resolution and silently no-ops (F-W1-CI-007)',
+  );
+});
+
+test('F-W1-CI-007: `--check` invokes the main-entry block on a real script invocation (proves isMain fires), exits 0 on the in-sync live tree', () => {
+  const targetScript = resolve(repoRoot, 'scripts/sync-version.mjs');
+  const result = spawnSync(process.execPath, [targetScript, '--check'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  // --check is read-only regardless of outcome — safe to run against the real
+  // repo. A non-zero/non-one status would mean an uncaught (non-DriftError)
+  // exception; either 0 (in-sync) or 1 (DriftError) proves main() ran.
+  assert.ok(
+    result.status === 0 || result.status === 1,
+    `expected main() to run and exit 0 (in-sync) or 1 (drift), got ${result.status}.\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+  );
+  assert.match(result.stdout, /\[sync-version\]/, '--check must print the [sync-version] status line, proving isMain fired');
 });

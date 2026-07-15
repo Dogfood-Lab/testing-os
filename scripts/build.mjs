@@ -160,5 +160,21 @@ if (isMain) {
     process.exit(1);
   }
 
-  execSync('tsc --build', { stdio: 'inherit', cwd: repoRoot });
+  // F-b27d6c0c: every other failure path in this file prints a structured
+  // '[testing-os build] ...' message with a concrete remediation before
+  // exiting non-zero (see the tsconfig reference-drift gate above and
+  // isReadableDirectory's fs-error humanization). An uncaught execSync
+  // throw here would instead surface a raw 'Error: Command failed: tsc
+  // --build' Node stack on top of tsc's own diagnostics — noise, not signal,
+  // since stdio: 'inherit' has already streamed the real diagnostics to the
+  // operator. Swallowing the error object is correct: nothing it carries is
+  // more useful than what tsc already printed.
+  try {
+    execSync('tsc --build', { stdio: 'inherit', cwd: repoRoot });
+  } catch {
+    console.error(
+      '[testing-os build] tsc --build failed — see the TypeScript diagnostics above. Fix the reported type errors, then re-run `npm run build`.'
+    );
+    process.exit(1);
+  }
 }

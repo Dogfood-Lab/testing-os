@@ -350,7 +350,28 @@ export async function ingest(submission, options) {
       timing: submission.timing,
       verification: { status: 'accepted' }
     };
-    if (isDuplicate(submission.run_id, probeRecord, repoRoot)) {
+    // F-a37d36f5: isDuplicate -> computeRecordPath runs against RAW untrusted
+    // submission.repo/run_id, three steps BEFORE verify()'s schema gate. A
+    // malformed repo ('a/b/c', a path-traversal attempt, etc.) makes
+    // computeRecordPath THROW ('invalid repo format' / 'unsafe repo segment'
+    // / 'unsafe run_id') — good, the traversal guards hold — but letting that
+    // throw escape here inverts this repo's submission-bad vs operational
+    // doctrine: it propagates as an uncaught fault (exit 2, "operator error"
+    // per the CLI's own USAGE block) for input that is squarely the
+    // SUBMITTER's to fix, and no `_rejected` evidence record is ever
+    // written. A malformed repo/run_id can never collide with an existing
+    // record anyway, so treating an unpathable submission as "not a
+    // duplicate" is semantically free — verify()'s schema gate is the
+    // authoritative judge of bad input, and writeRecord's own
+    // computeRecordPath (which runs AFTER validateRecord, on the SCHEMA-
+    // VALIDATED persisted record) remains the real enforcement point.
+    let duplicate;
+    try {
+      duplicate = isDuplicate(submission.run_id, probeRecord, repoRoot);
+    } catch {
+      duplicate = false;
+    }
+    if (duplicate) {
       logStage('rejected_pre_persist', {
         submission_id: submissionId,
         correlation_id,

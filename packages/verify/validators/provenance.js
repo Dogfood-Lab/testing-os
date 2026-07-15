@@ -459,10 +459,34 @@ export const PROVENANCE_ADAPTERS = {
 /**
  * Resolve the provenance-adapter factory for a `source.provider`.
  *
+ * F-2965699b: `PROVENANCE_ADAPTERS[provider]` alone resolves inherited
+ * `Object.prototype` keys (`provider: 'valueOf'` returns
+ * `Object.prototype.valueOf`, a truthy function) — the `??` operator only
+ * catches `null`/`undefined`, so the `if (!factory)` unknown-provider gate at
+ * this function's ONE caller (`resolveProviderProvenance`, packages/ingest/
+ * run.js) never fires for the whole Object.prototype key space, and
+ * `factory(token)` goes on to call an unrelated Object.prototype method with
+ * an unbound `this`, producing an uncaught TypeError (`valueOf`/`__proto__`)
+ * or a misleading downstream error (`constructor`/`toString`/
+ * `isPrototypeOf`) instead of the correct "unknown provenance provider"
+ * message. This site is reached on FULLY UNTRUSTED input — `submission.
+ * source.provider` — BEFORE verify()'s schema gate constrains it to the
+ * [github, gitlab] enum.
+ *
+ * `Object.hasOwn` restricts the lookup to the registry's own properties,
+ * matching the idiom `safeGet()` already uses in validators/predicate.js —
+ * the two prototype-safety sites now read the same.
+ *
  * @param {string} provider The `source.provider` token (e.g. 'github', 'gitlab').
  * @returns {((token: string, opts?: object) => { confirm: Function }) | null}
- *   The adapter factory, or `null` when the provider has no registered adapter.
+ *   The adapter factory, or `null` when the provider has no registered adapter
+ *   (including every Object.prototype key — `constructor`, `toString`,
+ *   `valueOf`, `__proto__`, `hasOwnProperty`, `isPrototypeOf`,
+ *   `propertyIsEnumerable`, `toLocaleString` — none of which are OWN
+ *   properties of PROVENANCE_ADAPTERS).
  */
 export function provenanceForProvider(provider) {
-  return PROVENANCE_ADAPTERS[provider] ?? null;
+  return typeof provider === 'string' && Object.hasOwn(PROVENANCE_ADAPTERS, provider)
+    ? PROVENANCE_ADAPTERS[provider]
+    : null;
 }
