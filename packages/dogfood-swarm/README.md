@@ -179,6 +179,20 @@ swarm clean <run-id>
 swarm clean <run-id> --apply
 ```
 
+### Cleaning phantom violation claims — `swarm clean-claims`
+
+A corrected pass (a `revalidate` repair, a fixed diff base) supersedes an earlier pass's `violation=1` file_claims rows — but once the wave is **terminal** (`advanced` / `aborted_for_rewind`), no lawful verb can revisit them: `collect` needs a `dispatched` wave, `revalidate` only repairs blocked agents on the run's latest wave, and `redrive` refuses terminal waves. The stranded rows corrupt `swarm status`'s violation count and every exported receipt for that wave. `swarm clean-claims` is the lawful reclaim: file_claims rows are *claims about what a pass observed*, not audit events — deleting a superseded claim is the lawful write, and the `agent_state_events` audit trail is never touched (the dry-run shows it as the evidence that supersedes each row).
+
+```bash
+# Preview the phantom rows + the state-event evidence that supersedes them
+swarm clean-claims <run-id>
+
+# Delete them (scoped to wave 4), with a restorable domain_events audit row
+swarm clean-claims <run-id> --wave=4 --apply --reason "broken diff base superseded"
+```
+
+Rows on non-terminal waves are refused with the verb that still owns them; `violation=0` rows and other runs' rows are never touched (re-verified inside the delete transaction — a violated invariant rolls everything back).
+
 ## Exit codes
 
 The verbs designed to gate CI propagate a machine-readable exit code, not just human-readable stdout. Wire these into a workflow step or a `&&` chain and the gate fails closed:
@@ -214,6 +228,7 @@ Then map the symptom to the recovery verb:
 | Wave stuck in `dispatched` — never reached `collected` | Agents didn't all finish, or the run was interrupted before `collect`. | `swarm resume <run-id>` to re-dispatch the incomplete agents; or `swarm redrive <wave-id> --reason "..." --apply` to resume only the failed/unstarted tail while preserving completed receipts byte-identical. |
 | Agents `BLOCKED` (`invalid_output` / `ownership_violation`) | Schema mismatch, or an agent wrote outside its frozen domain. | `invalid_output` → `swarm revalidate`. `ownership_violation` → extend the domain via `swarm domains --unfreeze … --edit … --freeze`, then `swarm revalidate`. |
 | Wave wedged — tree state needs a full reset | The working tree drifted and the wave must restart from a save-point. | `swarm rewind <save-point-tag> --reason "..." --apply` — `git reset --hard <tag>` plus lawful abort of orphaned in-flight runs, audit chain preserved. |
+| `swarm status` / `swarm receipt` report violations on a wave that already **advanced** clean | Stale `violation=1` file_claims from a superseded pass (a revalidate repair or corrected diff base) stranded on a terminal wave — collect/revalidate/redrive can no longer reach them. | `swarm clean-claims <run-id>` to preview the phantom rows + superseding evidence, then `--apply --reason "..."` to delete them with a restorable `domain_events` audit row. |
 
 All recovery verbs are **dry-run by default** — run them without `--apply` first to preview the transitions, then add `--apply`. Every error carries a typed `code` and a `Next:` hint; the full table is in the handbook.
 
@@ -305,7 +320,7 @@ SQLite-backed. Each swarm run gets `swarms/<run-id>/control-plane.db`:
 | `wave_state_events` | Append-only wave-status audit log (from_status, to_status, reason, created_at) |
 | `agent_state_events` | Append-only agent-status audit log (mirror shape of wave_state_events) |
 | `findings` | Findings derived from agent outputs |
-| `domain_events` | Domain-map mutation audit log (unfreeze / edit / freeze) |
+| `domain_events` | Domain-map mutation audit log (unfreeze / edit / freeze), plus the restorable `file_claims_cleaned` audit rows written by `swarm clean-claims --apply` |
 
 Read via `swarm status`, `swarm history`, `swarm receipt`. Never via raw SQL in scripts — the state-machine helpers are the supported interface and the audit chain depends on going through them.
 

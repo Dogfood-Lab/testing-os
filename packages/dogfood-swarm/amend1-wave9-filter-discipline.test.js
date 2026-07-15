@@ -66,6 +66,10 @@ const ALLOWLIST = [
     file: 'commands/rewind.js',
     reason: 'rewind scans ALL non-terminal agent_runs across runs to build the destructive plan; the wave-9 filter is irrelevant — every row, terminal or not, is what the plan must enumerate.',
   },
+  {
+    file: 'commands/clean-claims.js',
+    reason: 'clean-claims deliberately sweeps EVERY agent_run\'s violation claims (its main query anchors on file_claims) — stale claims on SUPERSEDED agent_runs are exactly its target, and its --agent-run owner check is a single-row-by-id lookup that must resolve superseded rows too. Its one latest-per-domain site (the revalidate-jurisdiction refusal) does adopt LATEST_AGENT_RUN_PER_DOMAIN.',
+  },
 ];
 
 const TEST_FILE_PATTERN = /\.test\.(js|mjs)$/;

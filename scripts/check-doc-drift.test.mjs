@@ -2177,14 +2177,14 @@ test('CLI: the config-not-found hint promises --config, and that flag now exists
 // relative-count claims (sibling = total-1, "the other N" = total-K).
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('FT-g: countCommandMapEntries counts the real cli.js commands map as 27', () => {
+test('FT-g: countCommandMapEntries counts the real cli.js commands map as 28', () => {
   const cliSrc = readFileSync(
     resolve(repoRoot, 'packages/dogfood-swarm/cli.js'),
     'utf8',
   );
   assert.equal(
     countCommandMapEntries(cliSrc, 'commands', 'packages/dogfood-swarm/cli.js'),
-    27,
+    28,
     'The authoritative verb count is the key count of the `commands` dispatch map. ' +
       'If this changed, every prose surface stating the count (and its offsets) must follow.',
   );

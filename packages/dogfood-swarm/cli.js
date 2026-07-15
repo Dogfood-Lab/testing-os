@@ -37,6 +37,7 @@ import { history, formatHistory } from './commands/history.js';
 import { rewind, formatRewind } from './commands/rewind.js';
 import { redrive, formatRedrive } from './commands/redrive.js';
 import { clean, formatClean } from './commands/clean.js';
+import { cleanClaims, formatCleanClaims } from './commands/clean-claims.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
@@ -1168,6 +1169,79 @@ function cmdClean(args) {
   }
 }
 
+function cmdCleanClaims(args) {
+  if (args.includes('--help') || args.includes('-h')) {
+    console.log('Usage: swarm clean-claims <run-id> [--wave=N] [--agent-run=ID] [--apply --reason "<text>"] [--format=text|json]');
+    console.log('');
+    console.log('Delete phantom violation=1 file_claims rows stranded on TERMINAL waves');
+    console.log('(advanced / aborted_for_rewind) — rows no lawful verb can revisit:');
+    console.log('collect only runs on a dispatched wave, revalidate only repairs blocked');
+    console.log('agents on the run\'s latest wave, redrive refuses terminal waves.');
+    console.log('');
+    console.log('file_claims rows are CLAIMS about what a pass observed, not audit');
+    console.log('events — deleting a superseded claim is the lawful write. The');
+    console.log('agent_state_events audit trail is NEVER touched. Dry-run by default;');
+    console.log('the preview shows each agent_run\'s claims plus the state-event');
+    console.log('evidence that supersedes them.');
+    console.log('');
+    console.log('Required:');
+    console.log('  <run-id>             The run whose phantom claims to clean');
+    console.log('');
+    console.log('Required to mutate:');
+    console.log('  --apply              Delete (default: dry-run preview)');
+    console.log('  --reason "<text>"    Non-empty audit reason, required with --apply;');
+    console.log('                       recorded in domain_events with the clean-claims:');
+    console.log('                       prefix (one restorable audit row per domain)');
+    console.log('');
+    console.log('Optional:');
+    console.log('  --wave=N             Only wave N (wave_number within this run)');
+    console.log('  --agent-run=ID       Only this agent_runs.id (must belong to this run)');
+    console.log('  --format=text|json   Output format (default: text)');
+    console.log('');
+    console.log('Scope guards: rows on non-terminal waves are REFUSED with the verb that');
+    console.log('still owns them (collect / revalidate / redrive); violation=0 rows and');
+    console.log('other runs\' rows are never touched (re-verified inside the delete');
+    console.log('transaction — a violated invariant rolls everything back).');
+    return;
+  }
+
+  const runId = args[0];
+  if (!runId || runId.startsWith('--')) {
+    console.error('Usage: swarm clean-claims <run-id> [--wave=N] [--agent-run=ID] [--apply --reason "<text>"] [--format=text|json]');
+    process.exit(1);
+  }
+
+  const format = parseFormatFlag(args);
+  const apply = args.includes('--apply');
+  const reason = parseValueFlag(args, '--reason');
+  const wave = parseValueFlag(args, '--wave');
+  const agentRun = parseValueFlag(args, '--agent-run');
+
+  if (apply && (!reason || !reason.trim())) {
+    console.error('clean-claims: --reason "<text>" is required with --apply (non-empty)');
+    process.exit(1);
+  }
+
+  // Typed errors (RUN_NOT_FOUND, WAVE_NOT_FOUND, AGENT_RUN_NOT_IN_RUN, the
+  // in-tx CLEAN_CLAIMS_* guards) propagate to main()'s renderTopLevelError
+  // seam — same posture as cmdClean.
+  const result = cleanClaims({ runId, dbPath: getDbPath(), wave, agentRun, reason, apply });
+
+  if (format === 'json') {
+    console.log(JSON.stringify(result, null, 2));
+    return;
+  }
+
+  process.stdout.write(formatCleanClaims(result));
+
+  if (apply) {
+    console.log(`\nClean-claims applied. ${result.totals.deleted} row(s) deleted. ` +
+      `Inspect with \`swarm status ${runId}\` / \`swarm domains ${runId} --history\`.`);
+  } else {
+    console.log('\nDry-run only — re-run with --apply --reason "<text>" to delete the eligible rows.');
+  }
+}
+
 function cmdHistory(args) {
   if (args.includes('--help') || args.includes('-h')) {
     console.log('Usage: swarm history <wave-id> [--format=text|json]');
@@ -2169,6 +2243,7 @@ const commands = {
   rewind: cmdRewind,
   redrive: cmdRedrive,
   clean: cmdClean,
+  'clean-claims': cmdCleanClaims,
   verify: cmdVerify,
   'verify-fixed': cmdVerifyFixed,
   'verify-recurring': cmdVerifyRecurring,
@@ -2317,6 +2392,21 @@ Commands:
                              Run-scoped (not repo-wide). Dry-run by default;
                              --apply removes. Reports a {removed, stranded,
                              total} rollup. --format=text|json.
+  clean-claims <run-id> [opts]
+                             Delete phantom violation=1 file_claims rows
+                             stranded on TERMINAL waves (advanced /
+                             aborted_for_rewind) — rows no lawful verb can
+                             revisit (collect: wave not dispatched; revalidate:
+                             agents not blocked on the latest wave; redrive:
+                             terminal waves refused). Claims are what a pass
+                             OBSERVED, not audit events — the agent_state_events
+                             trail is never touched. Dry-run by default (lists
+                             rows + the superseding state-event evidence);
+                             --apply --reason "<text>" deletes, writing one
+                             restorable domain_events audit row per domain.
+                             --wave=N / --agent-run=ID narrow scope; refusals
+                             name the verb that still owns the row.
+                             --format=text|json.
   verify <run-id> [opts]     Run build verification (auto-detect or --adapter)
   verify-fixed <run-id> [opts]
                              Re-audit findings marked [fixed]; classify into
