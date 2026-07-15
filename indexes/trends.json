@@ -2,8 +2,8 @@
   "dogfood-lab/testing-os": {
     "cli": {
       "current": {
-        "finished_at": "2026-07-15T00:04:45.063Z",
-        "run_id": "00mrlbizyf-Ld9PmZYMOfUcCw",
+        "finished_at": "2026-07-15T00:44:01.644Z",
+        "run_id": "00mrlcxib1-TNyoD8z1QQUMOQ",
         "verified": "pass"
       },
       "history": [
@@ -26,15 +26,20 @@
           "finished_at": "2026-07-15T00:04:45.063Z",
           "run_id": "00mrlbizyf-Ld9PmZYMOfUcCw",
           "verified": "pass"
+        },
+        {
+          "finished_at": "2026-07-15T00:44:01.644Z",
+          "run_id": "00mrlcxib1-TNyoD8z1QQUMOQ",
+          "verified": "pass"
         }
       ],
-      "latest_path": "records/dogfood-lab/testing-os/2026/07/15/run-00mrlbizyf-Ld9PmZYMOfUcCw.json",
+      "latest_path": "records/dogfood-lab/testing-os/2026/07/15/run-00mrlcxib1-TNyoD8z1QQUMOQ.json",
       "pass_rate": 1,
-      "pass_rate_sample": 4,
+      "pass_rate_sample": 5,
       "pass_rate_window_days": 30,
       "previous": {
-        "finished_at": "2026-07-14T06:43:26.988Z",
-        "run_id": "00mrkabvkc-69HeNePnOHfIxw",
+        "finished_at": "2026-07-15T00:04:45.063Z",
+        "run_id": "00mrlbizyf-Ld9PmZYMOfUcCw",
         "verified": "pass"
       },
       "recovered": false,
