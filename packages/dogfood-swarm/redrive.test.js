@@ -161,18 +161,11 @@ function recordActualHead() {
 
 /**
  * Strip BOTH block and line comments from JS source so the forbidden-pattern
- * grep at the bottom of this file scans live code only.
+ * grep at the bottom of this file scans live code only. Shared scanner —
+ * see test-support/strip-comments.js (and rewind.test.js's note on the
+ * string-visibility direction change).
  */
-function stripCommentsForGrep(source) {
-  let cleaned = source.replace(/\/\*[\s\S]*?\*\//g, '');
-  cleaned = cleaned.split('\n')
-    .map(line => {
-      const idx = line.indexOf('//');
-      return idx >= 0 ? line.slice(0, idx) : line;
-    })
-    .join('\n');
-  return cleaned;
-}
+import { stripComments as stripCommentsForGrep } from './test-support/strip-comments.js';
 
 before(() => {
   ACTUAL_HEAD_AT_SUITE_START = recordActualHead();

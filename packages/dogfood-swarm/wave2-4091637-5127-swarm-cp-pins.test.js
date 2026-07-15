@@ -94,16 +94,7 @@ function initGitRepo(repoPath) {
  * migration BY NAME, which would otherwise self-trigger the F-5dabf101
  * scan below). Mirrors redrive.test.js#stripCommentsForGrep.
  */
-function stripComments(source) {
-  return source
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .split('\n')
-    .map(line => {
-      const idx = line.indexOf('//');
-      return idx >= 0 ? line.slice(0, idx) : line;
-    })
-    .join('\n');
-}
+import { stripComments } from './test-support/strip-comments.js';
 
 function teardown(dbPath, tmp) {
   try { closeDb(dbPath); } catch { /* best-effort */ }

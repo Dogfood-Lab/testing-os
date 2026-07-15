@@ -153,17 +153,11 @@ describe('D3B-002 — dispatch wave-build atomicity (db.transaction)', () => {
   });
 });
 
-// Strip JSDoc block comments and single-line comments so prose references
-// to SQL fragments inside header documentation don't confuse the
-// mechanical guard (the guard cares about whether the actual db.prepare(...)
-// call lives inside the tx body, not whether the prose mentions it).
-function stripComments(src) {
-  // Remove /* ... */ block comments first (largest match)
-  let out = src.replace(/\/\*[\s\S]*?\*\//g, '');
-  // Then strip // line comments (after the block-strip so we don't eat // inside /* */)
-  out = out.replace(/\/\/[^\n]*/g, '');
-  return out;
-}
+// Strip comments so prose references to SQL fragments inside header
+// documentation don't confuse the mechanical guard. Shared scanner —
+// the old per-file regex pair ate real code when comment prose contained
+// glob-shaped sequences; see test-support/strip-comments.js.
+import { stripComments } from './test-support/strip-comments.js';
 
 describe('D3B-002 — dispatch.js source mechanical guard', () => {
   const dispatchCode = stripComments(DISPATCH_SRC);

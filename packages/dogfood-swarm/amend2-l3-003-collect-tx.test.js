@@ -29,16 +29,11 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COLLECT_SRC = readFileSync(join(__dirname, 'commands/collect.js'), 'utf-8');
 
-// Strip line comments first so substrings like `/**` inside a `//` comment
-// (e.g. a `//` comment referencing `packages/dogfood-swarm/double-star`)
-// are not parsed as the open of a JSDoc block-comment by the block-strip
-// regex, which would swallow real code until the next close-block marker.
-// Block comments are stripped second.
-function stripComments(src) {
-  let out = src.replace(/\/\/[^\n]*/g, '');
-  out = out.replace(/\/\*[\s\S]*?\*\//g, '');
-  return out;
-}
+// Strip comments before the mechanical scan. Shared scanner — this file's
+// old copy stripped line comments first, which merely mirrored the hazard
+// (a single-line block comment containing a URL lost its own closer);
+// see test-support/strip-comments.js for the state-machine replacement.
+import { stripComments } from './test-support/strip-comments.js';
 
 describe('L3-003 — collect.js per-agent loop atomicity (family seal of D3B-002)', () => {
   const collectCode = stripComments(COLLECT_SRC);
