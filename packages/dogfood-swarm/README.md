@@ -60,6 +60,17 @@ swarm history <wave-id>
 # Generate per-wave receipt artifact
 swarm receipt <run-id>
 
+# Approve findings so the next amend phase routes them to agents
+# (or close them without a fix — see Finding disposition)
+swarm approve <run-id> --all
+
+# Hand a case-file to the cross-family jury — advisory evidence for the
+# advance gate. Free local seats by default.
+swarm adjudicate <run-id> --case-file <path>
+
+# The stronger per-criterion tier (slower, more abstention-prone)
+swarm adjudicate <run-id> --case-file <path> --jury=prism
+
 # Advance to the next phase once gates pass
 swarm advance <run-id>
 ```
@@ -156,6 +167,18 @@ swarm redrive <wave-id> --reason "GitHub API outage retry" --apply
 swarm history <wave-id>
 ```
 
+### Reclaiming stranded worktrees — `swarm clean`
+
+Under `--isolate` each agent works in its own git worktree, torn down when the run reaches its terminal `complete` transition. A run abandoned, rewound, or interrupted before `complete` strands those worktrees on disk. `swarm clean` is the operator reclaim — dry-run by default, like the Three R's:
+
+```bash
+# Preview the stranded worktrees + swarm/* branches for a run
+swarm clean <run-id>
+
+# Remove them
+swarm clean <run-id> --apply
+```
+
 ## Exit codes
 
 The verbs designed to gate CI propagate a machine-readable exit code, not just human-readable stdout. Wire these into a workflow step or a `&&` chain and the gate fails closed:
@@ -167,6 +190,7 @@ The verbs designed to gate CI propagate a machine-readable exit code, not just h
 | `swarm verify-recurring` | `0` / `1` / `2` (same 3-way contract as `verify-fixed`) |
 | `swarm verify-unverified` | `0` / `1` / `2` (same 3-way contract) |
 | `swarm verify-approved` | `0` / `1` / `2` — exit `2` (broken finding anchor) is the pre-amend gate that blocks subsequent `swarm dispatch` of an amend phase |
+| `swarm adjudicate` | `0` **only** when the overall jury verdict is `corroborate`; `1` for every other verdict (`refute`, `contested`, `insufficient_context`) — the same pass-only-exit-0 contract as `swarm verify`, so a CI `&&` chain fails closed. The verdict is **advisory**, and this exit code is not the wave gate: what a non-corroborate blocks is the adjudication gate in `swarm advance`, which is Director-overridable. See [Adjudication](#adjudication). |
 | `swarm findings` | `0` clean / `1` findings present / `2` audit pipeline broken |
 | `swarm persist --ingest` | `0` when the dogfood ingest succeeded (or was a `--dry-run`); `1` when the ingest failed. A bare `swarm persist` with no `--ingest` exits `0`. |
 
@@ -221,6 +245,54 @@ Discipline:
 | `tool_missing` | A required tool (e.g. `npm`, `npx`) is absent from `PATH`, so verification could not run in this environment. **Not** a failure of the code under test — install the tool or run on a host that has it. | No |
 
 `no_tests` and `tool_missing` exist precisely so the wave gate stays honest: it refuses to advance without positive evidence, but it does not falsely report `FAIL` when the cause is a missing test script or a missing build tool rather than a real regression.
+
+## Adjudication
+
+`swarm adjudicate <run-id> --case-file <path>` hands a neutral case-file to a jury of **non-Claude** models and fuses their per-criterion answers into one overall verdict. The panel is family-different by construction — the crew that produces the work under test is Claude-family, so only a non-Claude jury is an independent check, and the producing family never holds a seat.
+
+Two tiers sit behind the same boundary:
+
+- **`--jury=local`** (default) — one model call per seat, over all criteria. Free, fast, family-diverse.
+- **`--jury=prism`** — one prism verification *per criterion* (four decorrelated lenses, with collapse-refusal). Stronger per-criterion evidence, bought with wall clock and a higher abstention rate.
+
+`--cloud` opts either tier into the paid cloud seats. `PRISM_PYTHON` selects the interpreter that runs the prism seat shim — see [Environment variables](#environment-variables).
+
+The verdict is **evidence, not law**:
+
+| Overall | Means | `swarm advance` gate |
+|---|---|---|
+| `corroborate` | The panel agrees the artifact meets its criteria. | Passes |
+| `refute` | The panel decided a criterion is unmet. | Blocks — overridable |
+| `contested` | The panel split. Genuine disagreement, surfaced rather than averaged away. | Blocks — overridable |
+| `insufficient_context` | The panel could not reach quorum — a gap in the brief to fill, **not** a fail. | Blocks — overridable |
+
+Only the deterministic floor (`swarm verify` — the real tests) is law. A `corroborate` does not advance a wave on its own; a wave that never ran the jury advances on the floor plus findings; and a non-corroborate blocks *overridably*, requiring a Director disposition (`swarm advance --override --reason "..."`) so the verdict is consciously dispositioned rather than silently rolled past.
+
+📖 Both tiers side by side, the honest boundary of the prism tier, and the case-file neutrality rules: **[The two jury tiers](https://github.com/dogfood-lab/testing-os/blob/main/docs/case-file-contract.md#the-two-jury-tiers)**
+
+## Finding disposition
+
+An open `CRITICAL` or `HIGH` finding blocks the severity gate on the finding-gated phases (`health-audit-a`, `health-audit-b`, `health-audit-c`, `stage-d-audit`) until it reaches a closed status: `fixed`, `deferred`, or `rejected`. Lower severities never block that gate — a `MEDIUM` or `LOW` can stay open across an advance.
+
+Three verbs act on an open finding:
+
+| Verb | What it does | Closes the finding? |
+|---|---|---|
+| `swarm approve` | Routes it to the next amend phase for an agent to fix. | Not by itself — the amend's fix is what marks it `fixed` |
+| `swarm defer` | Accepted and postponed: a real defect, but not this wave. | Yes, without a fix |
+| `swarm reject` | Not a defect: the finding itself is wrong. | Yes, without a fix |
+
+```bash
+# Approve every open finding, or a subset by id
+swarm approve <run-id> --all
+swarm approve <run-id> --ids F-001,F-002
+
+# Close without a fix — targeted only, --reason required
+swarm defer <run-id> --ids F-001,F-002 --reason "accepted; scheduled for v2"
+swarm reject <run-id> --ids F-001,F-002 --reason "false positive — the guard is upstream"
+```
+
+`defer` and `reject` are deliberately targeted: there is no `--all`, and a non-empty `--reason` is mandatory. The reason lands in the append-only `finding_events` log in the same transaction as the status flip, so a finding closed without a fix always carries the operator's justification. Both are idempotent — an already-closed finding is skipped rather than re-evented.
 
 ## Control plane
 

@@ -22,12 +22,14 @@
  *   (c) the README's "Requires Node ≥ N" string equals package.json
  *       `engines.node`'s floor.
  *   (d) every operator-facing environment variable the package READS
- *       (`process.env.<NAME>` in non-test source) is documented in the README.
+ *       (`process.env.<NAME>` in non-test source) is documented in the README;
+ *   (e) every verb cli.js ROUTES (its `commands` map) is mentioned in README.md
+ *       — the converse of (a).
  *
  * If a future edit reintroduces a wrong example (a renamed command, a dropped
  * required flag, a `<wave-number>` placeholder, a stale Node floor) — or adds /
- * renames an env var without documenting it — this test fails at that edit
- * instead of in an operator's terminal.
+ * renames an env var or a verb without documenting it — this test fails at that
+ * edit instead of in an operator's terminal.
  *
  * td-p-005 (Wave-3 amend-C, tests-docs domain) added (d): the original td-006
  * guard pinned the COMMAND surface only, so an undocumented env var (the exact
@@ -35,6 +37,22 @@
  * silently rot the README. (d) closes that hole with the same read-the-real-
  * source discipline as (a): it extracts the env-var literals from source rather
  * than hardcoding them, so a new operator-facing var cannot drift undocumented.
+ *
+ * (e) closes the remaining direction. (a) pins README → CLI (every verb the
+ * README documents exists); NOTHING pinned CLI → README, so a shipped verb could
+ * reach an operator's terminal without ever reaching the front door. It did:
+ * `swarm adjudicate` shipped with a CI-gating exit-code contract and two jury
+ * tiers and was never in Quick start or the Exit codes table, and `clean`,
+ * `approve`, `defer`, and `reject` were not mentioned anywhere at all.
+ *
+ * (e)'s honest boundary: it pins that a verb is MENTIONED, not that its flags or
+ * its exit code are documented — one passing mention satisfies it. That is
+ * deliberately the same strength as (d), where an env var need only appear. It
+ * catches the total-omission class (the four verbs above), which is what a new
+ * verb will hit. It would NOT have caught `adjudicate`, whose name was dragged
+ * into the README incidentally by (d) via the `PRISM_PYTHON` row. Pinning the
+ * full per-verb contract — a fenced, copy-pasteable example for every verb — is
+ * the strictly stronger gate, and this is not it.
  */
 
 import { describe, it } from 'node:test';
@@ -245,6 +263,27 @@ describe('README → CLI contract (td-006)', () => {
         `Add it to the "Environment variables" section (or remove the read). ` +
         `Documented-or-removed is the contract — an operator scripting against ` +
         `\`${name}\` must be able to learn it from the README.`
+      );
+    }
+  });
+
+  it('(e) every verb cli.js routes is mentioned in README.md', () => {
+    const commands = extractCliCommands(CLI_SRC);
+
+    for (const cmd of commands) {
+      // The trailing lookahead keeps `swarm verify` from being vacuously
+      // satisfied by `swarm verify-fixed` — the four verify-* siblings all
+      // carry its name as a prefix. Every key extractCliCommands yields
+      // matches /^[a-z][a-z0-9-]*$/, so the name is safe to interpolate.
+      assert.match(
+        README,
+        new RegExp(`swarm ${cmd}(?![a-z0-9-])`),
+        `cli.js routes \`swarm ${cmd}\` but README.md never mentions it. ` +
+        `Document the verb — Quick start, or whichever section owns its ` +
+        `contract (a CI-gating verb belongs in the Exit codes table) — or ` +
+        `remove the route. Documented-or-removed is the contract, the same one ` +
+        `(d) enforces for env vars: an operator who has to read cli.js to ` +
+        `discover a verb has been failed by the front door.`
       );
     }
   });
