@@ -40,6 +40,7 @@ import {
 import { AUDIT_CATEGORIES, validateAuditOutput } from './lib/output-schema.js';
 import { formatHumanBanner } from './lib/log-stage.js';
 import { renderTopLevelError } from './lib/error-render.js';
+import { stripComments } from './test-support/strip-comments.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -263,7 +264,27 @@ describe('W2-BACK-003 — atomic-write helper adopted by 6 in-scope callers', ()
     it(`${rel} no longer calls raw writeFileSync at the migrated callsites`, () => {
       const src = readFileSync(join(__dirname, rel), 'utf-8');
       // No bare writeFileSync( calls — comments allowed (they're stripped).
-      const noComments = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+      //
+      // F-911b18ef (wave 22): migrated off a local two-step regex stripper
+      // onto the shared test-support/strip-comments.js. This was not just a
+      // hygiene migration: the naive pair (`/\*...\*\//g` then `//.*$/gm`)
+      // is NOT lexer-aware, and direct differential testing against this
+      // file's own real targets found it silently over-stripping TWO of the
+      // six migrated files today — commands/persist.js and
+      // persist-results.js both carry a `//` comment whose PROSE contains a
+      // glob-shaped `/**` or `/*` substring (`commands/**+cli.js`,
+      // `audit/*` respectively); the naive regex reads that as a phantom
+      // block-comment OPEN and non-greedily consumes real code all the way
+      // to the next unrelated `*/` (persist.js: swallows the entire
+      // ingest-catch block, ~48 lines; persist-results.js: swallows five
+      // whole helper function definitions, ~56 lines) — the exact wave-8
+      // defect class strip-comments.js's own header documents. Neither
+      // swallowed span currently contains a `writeFileSync(` call, so this
+      // assertion is not live-broken today, but the blind spot is real and
+      // silent: a future writeFileSync( added inside either erased span
+      // would be invisible to this gate. The shared, lexer-aware stripper
+      // closes it for all six files uniformly.
+      const noComments = stripComments(src);
       assert.doesNotMatch(noComments, /(?<![A-Za-z])writeFileSync\(/,
         `${rel} still has a raw writeFileSync( callsite after migration`);
     });

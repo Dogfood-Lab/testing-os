@@ -247,11 +247,28 @@ describe('parseRejectionReason retryable field (F-f8952a50, wave 10)', () => {
     // F-be0deacd (wave 20): CONTRACT_SCHEMA_TOO_NEW moved from submission-bad
     // to operational — and, per the invariant this describe block's header
     // states ("every operational... reason is retryable: false"), its
-    // retryable value flips WITH it. This is not just formal consistency:
-    // resubmitting under the SAME still-outdated build hits the identical
-    // `major > maxMajor` comparison every time, so no correction the
-    // submitter makes can ever turn this into an acceptance — only a
-    // testing-os upgrade can, which is exactly what 'retryable: false' means.
+    // retryable value flips WITH it. parseRejectionReason(...).retryable is a
+    // STATIC classification of the prefix, frozen at parse time, and stays
+    // false forever: resubmitting under the SAME still-outdated build hits
+    // the identical `major > maxMajor` comparison every time, so THIS FIELD
+    // ALONE can never turn into true.
+    //
+    // F-51780da9 (wave 22) corrects what this comment used to claim here: a
+    // testing-os upgrade is NOT what `retryable: false` itself detects or
+    // means — this flag has no way to see a later upgrade; it is computed
+    // once, from the reason string alone, with no access to the CURRENT
+    // build's supported version range. The actual unblocking, once an
+    // operator upgrades testing-os past the declared major, happens one
+    // layer up, in this field's one production consumer:
+    // packages/ingest/persist.js's isRetryableRejection() carries an
+    // additional, narrow re-check found nowhere else in the taxonomy — for
+    // this ONE prefix, it re-derives whether the STORED rejection's declared
+    // major is still above the build's CURRENT SUPPORTED_SCHEMA_VERSIONS
+    // ceiling, instead of trusting this frozen boolean. See
+    // isRetryableRejection's own doc comment and
+    // f-51780da9-contract-schema-too-new-upgrade-unblocks.test.js for the
+    // end-to-end proof that a stale TOO_NEW rejection unblocks post-upgrade
+    // even though the assertion below (this flag, in isolation) still holds.
     ['CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 but this build supports v1.0.0', false],
   ];
 

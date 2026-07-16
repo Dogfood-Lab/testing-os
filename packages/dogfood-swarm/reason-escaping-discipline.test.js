@@ -63,10 +63,21 @@ const ALLOWLIST = [
     file: 'commands/resume.js',
     reason: '`swarm resume` has no --reason flag. report.reason is a computed action-classifier string (e.g. "Some agents not complete — run `swarm resume`") built entirely from counts/statuses this function already knows — never operator free text.',
   },
-  {
-    file: 'commands/verify.js',
-    reason: '`swarm verify` has no --reason flag. result.reason / probe.reason are verifier-computed diagnostic text (e.g. test-runner failure detail) from the verification integration, never operator free text.',
-  },
+  // F-7ef099e3 (wave 22): the commands/verify.js entry that used to sit here
+  // is REMOVED, not reworded. Its text was the factually inverted safety
+  // argument wave 19/20's own F-5d330a4f / F-4773fb77 findings corrected:
+  // probe.reason is NOT "verifier-computed diagnostic text" in the safe
+  // sense that entry implied — it embeds the AUDITED TARGET REPO's own
+  // manifest `name` field verbatim (node.js/rust.js's probe()), reachable at
+  // zero operator privilege, which is exactly WHY verify.js now calls
+  // escapeReasonForDisplay on result.probe.reason (verify.js:254) and
+  // p.reason (verify.js:286). The entry was already inert before this
+  // removal — verify.js independently satisfies this gate's own
+  // `stripped.includes(ESCAPE_CALL)` check via those two real calls, so the
+  // allowlist text was never actually consulted by the running check — but a
+  // dead entry with an inverted safety argument is a foot-gun for the next
+  // maintainer who searches this array for prior art, not documentation.
+  // Leaving wrong text in place is strictly worse than no entry at all.
   {
     file: 'commands/persist.js',
     reason: 'r.dogfood.reason is the dogfood-ingest HTTP/API rejection reason (system-computed), not an operator --reason value.',

@@ -182,8 +182,32 @@ export function posixifyPath(filePath) {
  * `tests/` directory repo-wide for a real, now-orphaned pin — left as
  * optional future hardening if this repo's naming conventions actually
  * drift, per the finding's own "no action required unless" framing.
+ *
+ * F-d01977e5 (LOW, wave 22, confirming audit of F-a27680f9): the fix above
+ * names three additional default-discovery forms but `node --test` (v22.22.3,
+ * this repo's CI matrix) collects a FOURTH, distinct one: a leading `test-`
+ * PREFIX component (e.g. `test-foo.js`) — empirically confirmed to run under
+ * a bare `node --test`, while `test_foo.js` (underscore prefix) and
+ * `testFoo.js` (no separator) do NOT run, isolating the prefix form
+ * specifically to a dash. This is a fourth, separate glob from the three
+ * NODE_TEST_SUFFIX_PATTERN above already encodes — none of those three match
+ * "test-" as a LEADING path component (they only match "test." as a
+ * TRAILING one). The alternation below adds it: `(?:^|\/)` requires either
+ * start-of-string or a `/` immediately before "test-" (mirroring the
+ * suffix-side boundary discipline one alternative over), then `[^/]*`
+ * consumes the rest of the basename before the extension — so it cannot
+ * cross a `/` and match a `test-*` DIRECTORY name the way a naive substring
+ * search would. Verified against the same live-tree grep the F-a27680f9 fix
+ * used (`test-*.{js,mjs,cjs,ts,tsx,jsx}`, excluding node_modules/.swarm/
+ * dist/.git): exactly one hit anywhere in the repo
+ * (`packages/dogfood-swarm/test-support-strip-comments.test.js`, outside this
+ * package's domain), and that file already ends in `.test.js`, so it is
+ * independently caught by classifyFile()'s FIRST rule regardless of this
+ * widening — a pure widening with zero observable reclassification, exactly
+ * like its three siblings (see the "F-d01977e5" cases in the "F-a27680f9"
+ * describe block in parse-regression-pins.test.js).
  */
-const NODE_TEST_SUFFIX_PATTERN = /(?:^|[/_-])test\.[mc]?[jt]sx?$/;
+const NODE_TEST_SUFFIX_PATTERN = /(?:^|[/_-])test\.[mc]?[jt]sx?$|(?:^|\/)test-[^/]*\.[mc]?[jt]sx?$/;
 
 /**
  * Classify a path as "test" or "source" by convention. Mirrors how

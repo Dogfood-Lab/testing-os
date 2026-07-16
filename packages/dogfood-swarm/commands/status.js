@@ -353,7 +353,15 @@ export function formatStatus(s) {
     lines.push('Agents:');
     for (const a of s.agents) {
       const icon = STATUS_ICONS[a.status] || a.status;
-      const detail = a.error ? ` — ${a.error}` : '';
+      // F-f1dae277 (wave 22): a.error is agent_runs.error_message, which for
+      // an 'ownership_violation' status agent is collect.js's `violMsg` —
+      // unescaped joined ownership.violations[].file paths. Escaped HERE,
+      // not inside status()/computeAssessment() above — that data layer's
+      // return value also feeds this same field's --format=json output
+      // (buildStatusJSON is an identity projection of the status() object),
+      // which must stay lossless. Mirrors the w.history.lastReason
+      // precedent a few lines up in this same function (F-463c7179).
+      const detail = a.error ? ` — ${escapeReasonForDisplay(a.error)}` : '';
       // COORD-003: the ONE line an operator scanning `swarm status` reads
       // per agent — a stale in-flight agent must be visibly distinguishable
       // from one that is genuinely still working, not indistinguishable
@@ -406,7 +414,14 @@ export function formatStatus(s) {
   //   neutral       →  `--- LABEL ---`              (current)
   lines.push(frameAssessment(s.assessment.state));
   if (s.assessment.blockers.length > 0) {
-    for (const b of s.assessment.blockers) lines.push(`  BLOCKER: ${b}`);
+    // F-f1dae277 (wave 22): each `b` is computeAssessment()'s pre-composed
+    // `${a.domain_name}: ${a.status} — ${reason}` string, where `reason`
+    // falls back to `a.error_message` when present — the SAME
+    // ownership-violation-file-path carrier as the Agents list above.
+    // Escaped as a whole HERE, at render, not inside computeAssessment()
+    // itself: `s.assessment.blockers` is part of the same status() return
+    // value buildStatusJSON projects losslessly for --format=json.
+    for (const b of s.assessment.blockers) lines.push(`  BLOCKER: ${escapeReasonForDisplay(b)}`);
   }
   lines.push(`Next: ${s.assessment.nextAction}`);
 

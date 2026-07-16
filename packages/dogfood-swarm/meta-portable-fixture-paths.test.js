@@ -89,15 +89,58 @@
  * detector change) and is scoped out of this fix as a disclosed residual,
  * not a silent claim of completeness.
  *
+ * A FIFTH gap shipped undisclosed too (F-0797fb16, wave 22): the one-hop
+ * wrapper above does not survive an ADDITIONAL fileURLToPath(...) hop
+ * around it. The real, package-wide idiom for reading a fixture back off a
+ * URL object — `fileURLToPath(new URL('./relative', import.meta.url))`, live
+ * in case-file-prism-seat-encoding.test.js:49, meta-amendA-findings-persist.
+ * test.js:738, and wave2-swarm-cp-pins.test.js:71, all three genuinely
+ * relative and correctly unflagged — has an ABSOLUTE twin this file never
+ * checked for. Direct construction proved two related misses at once:
+ * `readFileSync(fileURLToPath(new URL('<abs>', import.meta.url)), 'utf-8')`
+ * (that idiom's absolute twin) and `readFileSync(fileURLToPath('file:///<abs>'),
+ * 'utf-8')` (fileURLToPath's OTHER legal call form — a bare file:// URL
+ * string, no new URL(...) at all) both scored 0 offenders pre-fix. The
+ * second miss is not just a missing wrapper name: a file:// URL literal
+ * does not itself start with a bare drive letter or POSIX slash — it starts
+ * with the `file://` scheme — so the literal check needed a scheme-prefix
+ * allowance too, not merely a new wrapper alternative. A minimal one-line
+ * fix — adding fileURLToPath( as a same-level alternative to `new URL(`,
+ * the shape a first pass reaches for — was written and checked directly
+ * against both constructions above (and against every *.test.js file in
+ * this package's live tree) before being trusted: it caught NEITHER,
+ * because it neither stacks the two wrapper hops (this package's real
+ * idiom nests fileURLToPath AROUND new URL, not beside it) nor tolerates
+ * the file:// scheme prefix. No live instance existed when this was found
+ * — confirmed empirically: old and new patterns agree on 0 matches across
+ * every file in this package's flat root except the constructed fixtures —
+ * so this was a coverage gap in the guard, matching how every prior
+ * generation of this class was rated. Closed below: the call-site pattern
+ * now allows an optional `fileURLToPath(` hop BEFORE the optional
+ * `new URL(` hop (independently optional, so either, both — in that order
+ * — or neither may appear), and the literal check tolerates an optional
+ * `file://` (or `file:///`) scheme prefix immediately before the
+ * drive-letter/POSIX-slash check. Two self-test fixtures (the doubly-wrapped
+ * absolute form and the bare file://-string form) plus a negative control
+ * proving the doubly-wrapped RELATIVE form — the real idiom in the three
+ * files above — stays unflagged. Still NOT extended to
+ * import.meta.resolve(/require.resolve(/path.resolve( — unchanged residual,
+ * see SCOPE below.
+ *
  * SCOPE, STATED PLAINLY (a narrow, honest guard beats a broad, noisy one):
  *   - Catches: a single-quoted, double-quoted, or backtick-quoted string
  *     literal shaped like a Windows drive-letter path (`X:\` / `X:/`) or a
- *     POSIX-absolute path (`/something`) passed DIRECTLY as the argument
- *     to readFileSync(/readFile(/require(/import(, OPTIONALLY wrapped one
- *     level in `new URL(<literal>, import.meta.url)` (F-c3034954, wave 20)
- *     — i.e. the literal may sit either immediately after the call's own
- *     paren, or immediately after a `new URL(` that itself immediately
- *     follows the call's paren. The last named call is a dynamic import()
+ *     POSIX-absolute path (`/something`) — OPTIONALLY prefixed by a
+ *     `file://` or `file:///` URL scheme (F-0797fb16, wave 22) — passed
+ *     DIRECTLY as the argument to readFileSync(/readFile(/require(/import(,
+ *     OPTIONALLY wrapped in up to two STACKED hops: `fileURLToPath(`
+ *     (F-0797fb16, wave 22) and/or `new URL(<literal>, import.meta.url)`
+ *     (F-c3034954, wave 20), each independently optional so either, both
+ *     (in that order — the real package-wide idiom is
+ *     fileURLToPath(new URL(...))), or neither may be present. The literal
+ *     may therefore sit immediately after the call's own paren, immediately
+ *     after a lone `new URL(` or `fileURLToPath(`, or immediately after
+ *     `fileURLToPath(new URL(`. The last named call is a dynamic import()
  *     CALL EXPRESSION (`import('...')`), not a static
  *     `import ... from '...'` declaration — a static import never has an
  *     open-paren immediately after the `import` keyword, so it cannot match
@@ -205,8 +248,24 @@ function walkTestFiles(dir, files = []) {
 // cover this, just with one optional extra hop before the literal. `\s+`/
 // `\s*` here tolerate the same multi-line wrapping the rest of this pattern
 // already does (see above).
+//
+// The optional `(?:fileURLToPath\(\s*)?` group closes F-0797fb16 (wave 22):
+// stacked BEFORE the new-URL hop (not merged into the same alternation),
+// because the real package-wide idiom wraps fileURLToPath(...) AROUND
+// new URL(...) — case-file-prism-seat-encoding.test.js:49,
+// meta-amendA-findings-persist.test.js:738, wave2-swarm-cp-pins.test.js:71
+// (all three relative, so none are offenders). A first-pass fix that added
+// fileURLToPath( as a same-level ALTERNATIVE to new URL( — rather than an
+// independently stackable hop — was checked directly against that idiom's
+// ABSOLUTE twin and against fileURLToPath's other legal call form (a bare
+// `file://` URL string, no new URL(...) at all) before being trusted: it
+// caught neither. The `(?:file:\/\/\/?)?` group right after the quote class
+// closes the second half of that same gap — a file:// URL literal does not
+// itself begin with a drive letter or POSIX slash, it begins with the
+// scheme, so the drive-letter/POSIX-slash check needed an optional scheme
+// prefix to look through, not just a new wrapper name.
 const HARDCODED_ABSOLUTE_PATH_ARG =
-  /\b(?:readFileSync|readFile|require|import)\(\s*(?:new\s+URL\(\s*)?[`'"](?:[A-Za-z]:[\\/]|\/[A-Za-z])/g;
+  /\b(?:readFileSync|readFile|require|import)\(\s*(?:fileURLToPath\(\s*)?(?:new\s+URL\(\s*)?[`'"](?:file:\/\/\/?)?(?:[A-Za-z]:[\\/]|\/[A-Za-z])/g;
 
 // Extracted so the two self-test fixtures below can exercise the exact
 // detection logic the real sweep uses, without writing throwaway files to
@@ -339,5 +398,39 @@ describe('meta — no hardcoded absolute fixture paths in any test file (closes 
     const safeRelative = `${fn}(new URL(${q}./README.md${q}, import.meta.url), ${q}utf-8${q})`;
     assert.deepEqual(findHardcodedAbsolutePathOffenders(safeRelative), [],
       'new URL(...) with a genuine relative first argument must never be flagged — that is the portable, recommended idiom');
+  });
+
+  it('catches a hardcoded absolute path literal reached via fileURLToPath(...), both its bare file:// string and new-URL-wrapped call forms (the F-0797fb16 gap), while leaving the safe relative form — the real idiom in case-file-prism-seat-encoding.test.js / meta-amendA-findings-persist.test.js / wave2-swarm-cp-pins.test.js — unflagged', () => {
+    // Same "built from parts" reasoning as every fixture above: this file is
+    // itself a *.test.js under PKG_ROOT, so walkTestFiles() visits it too.
+    const fn = 'readFileSync';
+    const wrap = 'fileURLToPath';
+    const q = "'";
+
+    // (1) fileURLToPath's OTHER legal call form: a bare file:// URL string,
+    // no new URL(...) in between. Structurally identical to the just-fixed
+    // new URL(<literal>, import.meta.url) miss — a wrapper call sits between
+    // the outer call's paren and the literal — but the literal itself also
+    // needs the `file://` scheme tolerated, since it isn't a bare drive
+    // letter/POSIX path.
+    const bareFileUrl = `${fn}(${wrap}(${q}file:///E:/AI/testing-os/fixtures/case-files/example.json${q}), ${q}utf-8${q})`;
+    const bareOffenders = findHardcodedAbsolutePathOffenders(bareFileUrl);
+    assert.equal(bareOffenders.length, 1,
+      `a readFileSync(fileURLToPath(<file:// literal>)) call must be caught; got ${JSON.stringify(bareOffenders)}`);
+
+    // (2) the ABSOLUTE twin of this package's real fileURLToPath(new URL(...))
+    // idiom — the two wrapper hops must STACK, not merely alternate.
+    const stackedAbsolute = `${fn}(${wrap}(new URL(${q}E:/AI/testing-os/README.md${q}, import.meta.url)), ${q}utf-8${q})`;
+    const stackedOffenders = findHardcodedAbsolutePathOffenders(stackedAbsolute);
+    assert.equal(stackedOffenders.length, 1,
+      `a readFileSync(fileURLToPath(new URL(<absolute literal>, import.meta.url))) call must be caught; got ${JSON.stringify(stackedOffenders)}`);
+
+    // Negative control alongside the positives: the SAME stacked shape with a
+    // genuine RELATIVE first argument — the form all three real
+    // fileURLToPath(new URL(...)) call sites in this package actually use
+    // today — must stay unflagged.
+    const stackedRelative = `${fn}(${wrap}(new URL(${q}./relative${q}, import.meta.url)), ${q}utf-8${q})`;
+    assert.deepEqual(findHardcodedAbsolutePathOffenders(stackedRelative), [],
+      'fileURLToPath(new URL(...)) with a genuine relative first argument must never be flagged — that is the portable, package-wide idiom');
   });
 });

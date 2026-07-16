@@ -85,17 +85,13 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve, isAbsolute } from 'node:path';
 import { MAX_AGENT_OUTPUT_BYTES } from './bounded-json-read.js';
+import { bucketForLine, findAnchorInBucket } from './verify-window.js';
 
 /**
  * Tolerance window (lines) around the recorded line where finding the
  * anchor still counts as "exact match". Mirrors v1.
  */
 const EXACT_LINE_TOLERANCE = 2;
-
-/**
- * Width of the line-bucket window (lines). Mirrors v1.
- */
-const FINGERPRINT_BUCKET = 10;
 
 /**
  * Full enum of `verified_via` values. Importable for test/assertion use.
@@ -170,44 +166,6 @@ function defaultReadLines(absolutePath) {
   } catch {
     return null;
   }
-}
-
-/**
- * Compute the bucket [start, end] inclusive that contains `recordedLine`.
- * If no line was recorded (0 / null), scan the entire file.
- *
- * The window is SYMMETRIC: it spans the finding's own 10-line bucket plus
- * one full adjacent bucket in EACH direction. An asymmetric (upward-only)
- * window let a still-present symbol that drifted into the adjacent LOWER
- * bucket escape the search and misclassify as `verified` (ve-003). Example:
- * a finding recorded at line 42 (bucket [40,50]) whose symbol drifted to
- * line 38 must still be found — line 38 is below the recorded bucket, so the
- * window must reach down a full bucket, not just by one line.
- */
-function bucketForLine(recordedLine, totalLines) {
-  if (!recordedLine || recordedLine <= 0) {
-    return { start: 1, end: totalLines };
-  }
-  const bucket = Math.floor(recordedLine / FINGERPRINT_BUCKET) * FINGERPRINT_BUCKET;
-  return {
-    start: Math.max(1, bucket - FINGERPRINT_BUCKET),
-    end: bucket + FINGERPRINT_BUCKET,
-  };
-}
-
-/**
- * Search for `anchor` in `lines` between bucket bounds (1-indexed). Return
- * the matched line number or null.
- */
-function findAnchorInBucket(lines, anchor, bucketStart, bucketEnd) {
-  const end = Math.min(bucketEnd, lines.length);
-  for (let lineNo = bucketStart; lineNo <= end; lineNo++) {
-    const text = lines[lineNo - 1];
-    if (typeof text === 'string' && anchor.test(text)) {
-      return lineNo;
-    }
-  }
-  return null;
 }
 
 /**

@@ -15,6 +15,7 @@ import { isUnsafeSegment } from './lib/unsafe-segment.js';
 import { submissionDigest } from './lib/integrity.js';
 import { readChainHead, appendChainEntry } from './lib/chain-manifest.js';
 import { parseRejectionReason } from '@dogfood-lab/verify';
+import { SUPPORTED_SCHEMA_VERSIONS } from '@dogfood-lab/schemas';
 
 /**
  * Error thrown when writeRecord loses a TOCTOU race for the same canonical path.
@@ -165,23 +166,92 @@ export function computeRecordPath(record, repoRoot) {
  * reasons are not actually reachable here in production (F-82429f90 and its
  * provenance-fault:/scenario-fetch-fault: siblings THROW instead of
  * persisting a `_rejected` record — see runValidator in verify/index.js).
- * `CONTRACT_SCHEMA_TOO_NEW:` is the documented exception (F-be0deacd, wave
- * 20): `validators/schema-version.js` RETURNS it as an ordinary rejection
- * string rather than throwing, so a too-new-major submission genuinely does
- * persist to `_rejected/` and IS read by this function — `retryable: false`
- * is still the right answer (only a testing-os upgrade fixes it, never a
- * submitter resubmission), it just arrives via the normal per-prefix flag
- * here rather than the "never reachable" case the rest of this paragraph
- * describes. Either way, the flag still fails closed on a read/parse failure,
- * matching this function's existing discipline below.
+ *
+ * F-51780da9 (wave 22, confirming audit of F-be0deacd): `CONTRACT_SCHEMA_TOO_NEW:`
+ * is the one documented exception where the frozen `retryable: false` is NOT
+ * the whole story. `validators/schema-version.js` RETURNS it as an ordinary
+ * rejection string rather than throwing, so a too-new-major submission
+ * genuinely does persist to `_rejected/` and IS read by this function.
+ * `retryable` is a STATIC per-prefix classification stamped at parse time —
+ * it has no way to observe that testing-os has SINCE been upgraded past the
+ * declared major, so trusting it alone lets one stale TOO_NEW rejection
+ * permanently poison a run_id even after the exact condition it was
+ * rejecting no longer holds (proven live: seed a `_rejected` record with a
+ * TOO_NEW reason declaring a major the CURRENT build already understands —
+ * pre-fix this function still returns `false` forever, because it never asks
+ * whether the stored major is still actually too new). `reevaluateTooNewRetry`
+ * below is the correction: for this ONE prefix, re-derive whether the STORED
+ * rejection's declared major is still above the CURRENT build's
+ * `SUPPORTED_SCHEMA_VERSIONS.<contract>.maxMajor`, instead of trusting the
+ * frozen boolean. The other nine prefixes were swept for the same trap (any
+ * retryable semantics that depend on mutable environment rather than the
+ * submission itself) and none qualify: schema:/policy-config:/repo:/
+ * submission-contains-verifier-field:/unsafe-record-path:/steps[<id>]:/
+ * CONTRACT_SCHEMA_TOO_OLD: are already retryable:true (an already-permissive
+ * prefix has no "stuck forever" direction to fix); policy:/provenance: are a
+ * DELIBERATE, permanent anti-gaming verdict on the run's own reported
+ * content, not an environment-dependent snapshot that goes stale;
+ * provenance-fault:/scenario-fetch-fault:/submission-malformed:/
+ * VALIDATOR_FAULT_*: all throw rather than persist (never reach this
+ * function); scenario-load: is evaluated against an immutable git
+ * commit_sha, not a build-version boundary, so the same committed content at
+ * the same ref parses the same way forever — there is no analogous integer
+ * ceiling to re-derive the way TOO_NEW's `maxMajor` comparison allows.
  *
  * Any read/parse failure fails closed (blocking): a corrupted or unreadable
- * evidence file must never silently unblock a path collision.
+ * evidence file must never silently unblock a path collision. The same
+ * failure mode covers a CONTRACT_SCHEMA_TOO_NEW: reason whose shape
+ * `reevaluateTooNewRetry` cannot parse, or whose contract key is no longer
+ * registered in `SUPPORTED_SCHEMA_VERSIONS` — both fail closed to "still
+ * blocking" rather than guessing.
  *
  * @param {string} rejectedPath - Absolute path already confirmed to exist.
  * @returns {boolean} true when every rejection reason is individually
- *   retryable (see parseRejectionReason's `retryable` field).
+ *   retryable (see parseRejectionReason's `retryable` field), OR — for
+ *   CONTRACT_SCHEMA_TOO_NEW: specifically — no longer applicable because
+ *   testing-os has since been upgraded past the declared major.
  */
+
+/**
+ * F-51780da9: matches a `CONTRACT_SCHEMA_TOO_NEW:` reason string emitted by
+ * `validators/schema-version.js` — `CONTRACT_SCHEMA_TOO_NEW: <contract>
+ * schema v<major>.<minor>.<patch> ...` — capturing the contract key and the
+ * declared MAJOR, the two pieces of information needed to re-ask, against
+ * the CURRENT build, the exact question the stored rejection answered
+ * against a possibly-older one. Anchored to the literal TOO_NEW prefix only
+ * (never TOO_OLD:, a distinct literal) and requires a trailing space after
+ * the three-part version so it matches both the full production message
+ * (`... but this build supports v...`) and a shortened test fixture
+ * (`... — upgrade testing-os`) without over-matching a malformed variant.
+ */
+const TOO_NEW_DECLARED_VERSION = /^CONTRACT_SCHEMA_TOO_NEW: (\S+) schema v(\d+)\.\d+\.\d+ /;
+
+/**
+ * F-51780da9: re-evaluate a single STORED `CONTRACT_SCHEMA_TOO_NEW:` reason
+ * against the CURRENT build's `SUPPORTED_SCHEMA_VERSIONS`, instead of
+ * trusting the frozen `retryable: false` parse-rejection.js stamps on this
+ * prefix. `validators/schema-version.js` emits this prefix precisely when
+ * `declaredMajor > supported.maxMajor`; this re-runs that identical
+ * comparison against whatever `maxMajor` is TODAY, which a testing-os
+ * upgrade may have since raised past the stored declared major.
+ *
+ * @param {string} reason - a single rejection_reasons[] entry.
+ * @returns {boolean} `true` when the declared major is no longer above the
+ *   current build's supported ceiling (the rejection has been resolved by a
+ *   since-applied upgrade); `false` when it is still genuinely too new, the
+ *   contract key is unrecognized, or `reason` is not a
+ *   CONTRACT_SCHEMA_TOO_NEW: reason at all — every non-match fails closed to
+ *   "still blocking" rather than guessing.
+ */
+function reevaluateTooNewRetry(reason) {
+  const match = typeof reason === 'string' ? reason.match(TOO_NEW_DECLARED_VERSION) : null;
+  if (!match) return false;
+  const [, contract, declaredMajorStr] = match;
+  const supported = SUPPORTED_SCHEMA_VERSIONS[contract];
+  if (!supported) return false;
+  return Number(declaredMajorStr) <= supported.maxMajor;
+}
+
 function isRetryableRejection(rejectedPath) {
   let parsed;
   try {
@@ -193,7 +263,13 @@ function isRetryableRejection(rejectedPath) {
   if (parsed?.verification?.status !== 'rejected' || !Array.isArray(reasons) || reasons.length === 0) {
     return false;
   }
-  return reasons.every(r => parseRejectionReason(r).retryable === true);
+  // F-51780da9: a reason counts as retryable either via the classifier's own
+  // static per-prefix flag, or — for CONTRACT_SCHEMA_TOO_NEW: specifically —
+  // via the re-derived, current-environment check above. Every other prefix
+  // is unaffected: reevaluateTooNewRetry returns false for any reason it
+  // does not recognize, so `.every()`'s existing behavior is unchanged for
+  // schema:/policy:/repo:/provenance:/etc.
+  return reasons.every(r => parseRejectionReason(r).retryable === true || reevaluateTooNewRetry(r));
 }
 
 /**

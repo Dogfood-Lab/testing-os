@@ -688,7 +688,19 @@ export function formatRevalidate(report) {
   if (report.refusals.length > 0) {
     out += '\nRefused:\n';
     for (const r of report.refusals) {
-      out += `  [REFUSE] ${r.domain}: ${r.reason}\n`;
+      // F-f1dae277 (wave 22): r.reason is a composite string — for an
+      // ownership refusal it is built above by joining
+      // `ownership (reported + git-observed): ${check.violations.map(v =>
+      // v.file).join(', ')}` (zero-privilege file paths from the SAME
+      // family F-4773fb77/wave 20 routed through escapeReasonForDisplay
+      // elsewhere), for the other refusal shapes it is a fixed template.
+      // Escaped HERE, at render, not at the join site above: `swarm
+      // revalidate` has no --format=json branch today, but escaping only at
+      // the text-rendering boundary (this file's, and this package's,
+      // established pattern) means one never has to be un-escaped if that
+      // branch is ever added, and avoids double-escaping the two refusal
+      // shapes differently.
+      out += `  [REFUSE] ${r.domain}: ${escapeReasonForDisplay(r.reason)}\n`;
     }
   }
 

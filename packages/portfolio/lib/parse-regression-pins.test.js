@@ -200,6 +200,51 @@ describe('classifyFile', () => {
       assert.equal(classifyFile('C:\\repo\\packages\\report\\report-test.js'), 'test');
       assert.equal(classifyFile('C:\\repo\\packages\\report\\test.js'), 'test');
     });
+
+    // F-d01977e5 (LOW, wave 22, confirming audit of F-a27680f9): a FOURTH
+    // default-discovery shape distinct from the three above — a leading
+    // `test-` PREFIX component (`test-foo.js`), empirically confirmed to run
+    // under a bare `node --test` (v22.22.3) while `test_foo.js` (underscore)
+    // and `testFoo.js` (no separator) do not. None of the three suffix forms
+    // above match a LEADING "test-" — they only match "test." as a TRAILING
+    // component — so this is a genuinely separate glob, not a duplicate of
+    // the bare-"test.js" case.
+    /** @pins F-d01977e5 */
+    describe('F-d01977e5: node --test\'s fourth default-discovery form — a leading "test-" PREFIX component', () => {
+      it('classifies "test-foo.js" (dash PREFIX) as test', () => {
+        assert.equal(classifyFile('/repo/packages/report/test-foo.js'), 'test');
+      });
+
+      it('classifies the .ts/.mjs/.cjs/.jsx/.tsx variants of the prefix form as test', () => {
+        assert.equal(classifyFile('/repo/lib/test-foo.ts'), 'test');
+        assert.equal(classifyFile('/repo/lib/test-foo.mjs'), 'test');
+        assert.equal(classifyFile('/repo/lib/test-foo.cjs'), 'test');
+        assert.equal(classifyFile('/repo/lib/test-foo.jsx'), 'test');
+        assert.equal(classifyFile('/repo/lib/test-foo.tsx'), 'test');
+      });
+
+      it('does NOT match "test_foo.js" (underscore prefix) — empirically confirmed NOT collected by node --test, unlike the dash form', () => {
+        assert.equal(classifyFile('/repo/lib/test_foo.js'), 'source');
+      });
+
+      it('does NOT match "testFoo.js" (no separator at all) — empirically confirmed NOT collected by node --test', () => {
+        assert.equal(classifyFile('/repo/lib/testFoo.js'), 'source');
+      });
+
+      it('does NOT match a "test-" substring that is not at a path boundary (e.g. "protest-foo.js")', () => {
+        assert.equal(classifyFile('/repo/lib/protest-foo.js'), 'source');
+      });
+
+      it('does NOT match "test-foo.js" appearing mid-path as a directory name, only as the final segment', () => {
+        // Mirrors the bare-"test.js" directory-vs-file boundary test above —
+        // "test-foo.js" here is a DIRECTORY, the file is "helper.js".
+        assert.equal(classifyFile('/repo/test-foo.js/helper.js'), 'source');
+      });
+
+      it('uses POSIX-normalised match logic so Windows backslashes still classify the prefix form', () => {
+        assert.equal(classifyFile('C:\\repo\\packages\\report\\test-foo.js'), 'test');
+      });
+    });
   });
 });
 

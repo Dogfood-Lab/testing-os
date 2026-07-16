@@ -60,6 +60,7 @@ import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 /**
  * @param {object} opts
@@ -454,7 +455,16 @@ export function formatResume(r) {
   if (r.manual_fix.length > 0) {
     lines.push(`Blocked — manual fix or \`swarm revalidate\` required (${r.manual_fix.length}):`);
     for (const a of r.manual_fix) {
-      lines.push(`  [STOP] ${a.domain} — ${a.status}: ${a.error || 'no details'}`);
+      // F-f1dae277 (wave 22): a.error is agent_runs.error_message (set at
+      // resume.js's report.manual_fix.push site above from ar.error_message
+      // verbatim), which for an 'ownership_violation' status agent is
+      // collect.js's `violMsg` — unescaped joined ownership.violations[].file
+      // paths. `swarm resume` has no --format=json branch, so this text
+      // render is the only surface this value reaches; escaped at render
+      // regardless, matching this package's uniform convention rather than
+      // relying on that absence to stay true.
+      const detail = a.error ? escapeReasonForDisplay(a.error) : 'no details';
+      lines.push(`  [STOP] ${a.domain} — ${a.status}: ${detail}`);
     }
     lines.push(`  Recovery: \`swarm revalidate <run-id> --reason "<text>" --domain=<domain>:<corrected.json> --apply\` (lawful override; dry-run without --apply).`);
   }

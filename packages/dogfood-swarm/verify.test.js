@@ -16,6 +16,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { stripComments } from './test-support/strip-comments.js';
+
 // ── Adapters ──
 import { nodeAdapter } from './lib/verify/adapters/node.js';
 import { pythonAdapter } from './lib/verify/adapters/python.js';
@@ -157,7 +159,16 @@ describe('Runner — subprocess invocation discipline (F-W1-BACK-003)', () => {
   // the CALL SHAPE stays execFileSync(step.cmd, cmdArgs, ...), matching the
   // package-wide convention, not execSync of a joined string. Same test shape
   // as F-21240958's persist.js pin.
-  const RUNNER_SRC = readFileSync(new URL('./lib/verify/runner.js', import.meta.url), 'utf-8');
+  //
+  // F-911b18ef (wave 22): routed through stripComments — this is the exact
+  // "raw-source-grep pin false-positiving on a comment" shape F-21240958
+  // itself was filed and fixed for (commands/persist.js's own header comment
+  // mentions execSync( in prose). lib/verify/runner.js carries no such
+  // comment today, so this was a latent, undisclosed fragility rather than a
+  // live failure — stripped anyway so a future doc comment describing this
+  // fix (the way persist.js's own F-21240958 comment does) cannot trip either
+  // assertion below.
+  const RUNNER_SRC = stripComments(readFileSync(new URL('./lib/verify/runner.js', import.meta.url), 'utf-8'));
 
   it('GATE: no execSync( call in runner.js — execFileSync with a real argv array only', () => {
     assert.doesNotMatch(RUNNER_SRC, /execSync\(/,

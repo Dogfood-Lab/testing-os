@@ -23,7 +23,7 @@ import { openDb } from '../db/connection.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { FINDING_GATED_PHASES } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
-import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { escapeReasonForDisplay, escapePathForDisplay } from './lib/escape-reason.js';
 
 /**
  * Build a receipt object from DB truth.
@@ -329,7 +329,18 @@ export function formatReceiptMarkdown(r) {
     // parse the boolean); only the human-readable cell shifts to surface
     // the obligation.
     const skipped = a.verification_skipped ? 'REQUIRED' : '—';
-    lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${skipped} | ${a.error || '—'} |`);
+    // F-f1dae277 (wave 22): a.error is agent_runs.error_message, which for an
+    // 'ownership_violation' status agent is collect.js's `violMsg` —
+    // 'Out-of-domain edits: <path1>, <path2>' built by joining
+    // ownership.violations[].file with zero escaping. Same zero-privilege
+    // field family the Ownership Violations section below now escapes,
+    // reached here via a different column — see escapePathForDisplay's own
+    // doc comment (commands/lib/escape-reason.js) for the full site list.
+    // escapeReasonForDisplay, not escapePathForDisplay: by the time it
+    // reaches this column it is a composite message (template prose + one
+    // or more joined paths), not a bare path.
+    const errorCell = a.error ? escapeReasonForDisplay(a.error) : '—';
+    lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${skipped} | ${errorCell} |`);
   }
   lines.push('');
 
@@ -356,7 +367,15 @@ export function formatReceiptMarkdown(r) {
     lines.push('## Ownership Violations');
     lines.push('');
     for (const v of r.ownership_violations) {
-      lines.push(`- **${v.domain}**: ${v.file} (${v.claim_type})`);
+      // F-f1dae277 (wave 22): v.file (file_claims.file_path) is exactly as
+      // zero-privilege as the package.json/Cargo.toml `name` F-4773fb77
+      // (wave 20) already routed through escapeReasonForDisplay — either a
+      // name the reporting agent chose, or a path already sitting in the
+      // audited repo's own tree. Proven live, unescaped, in this exact
+      // section: an RLO/PDF-wrapped path survives byte-for-byte into this
+      // checked-in, GitHub-rendered receipt, and a raw newline forges a
+      // second, fake `- **domain**: FORGED ...` bullet.
+      lines.push(`- **${v.domain}**: ${escapePathForDisplay(v.file)} (${v.claim_type})`);
     }
     lines.push('');
   }

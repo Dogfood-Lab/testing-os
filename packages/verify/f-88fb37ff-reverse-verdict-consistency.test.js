@@ -25,9 +25,12 @@
  * required step is already caught unconditionally by the sibling
  * [step-results-present] check regardless of verdict, so it is deliberately
  * excluded from "evidence of failure" here to avoid piling a second,
- * verdict-specific error onto the exact same gap). Scoped to fail/blocked
- * only — "partial" has no analogous contradiction and stays untouched, and the
- * existing pass-direction check is not weakened.
+ * verdict-specific error onto the exact same gap). Originally scoped to
+ * fail/blocked only; wave 22 (F-cc198701) widened the same check to "partial" —
+ * a partial claim backed by zero non-pass step evidence is the same
+ * self-contradiction shape, and leaving it unchecked was a free
+ * verdict-inflation path. Partial WITH non-pass evidence stays accepted, and
+ * the existing pass-direction check is not weakened.
  */
 import { describe, it, before } from 'node:test';
 import assert from 'node:assert/strict';
@@ -245,12 +248,18 @@ describe('F-88fb37ff: validateStepResults — verdict x step-evidence matrix (un
     assert.ok(errors.some(e => e.includes('have status fail/blocked')), `got: ${JSON.stringify(errors)}`);
   });
 
-  it('partial + all-pass -> untouched (out of scope for this fix)', () => {
+  // Wave 22 (F-cc198701) brought 'partial' INTO scope: the reverse-consistency
+  // check now covers all three non-pass verdicts. The two cases below pinned the
+  // pre-wave-22 behavior under "out of scope" titles; the scope has arrived.
+  it('partial + all-pass -> reverse-consistency error (in scope since F-cc198701, wave 22)', () => {
     const errors = validateStepResults(scenario('partial', ['pass', 'pass']));
-    assert.deepEqual(errors, []);
+    assert.ok(
+      errors.some(e => e.includes('scenario verdict is "partial"')),
+      `partial backed by zero non-pass evidence must be rejected; got: ${JSON.stringify(errors)}`
+    );
   });
 
-  it('partial + all-fail -> untouched (out of scope for this fix, pre-existing behavior)', () => {
+  it('partial + all-fail -> accepted (deliberately preserved by F-cc198701: non-pass evidence supports a partial claim)', () => {
     const errors = validateStepResults(scenario('partial', ['fail', 'fail']));
     assert.deepEqual(errors, []);
   });

@@ -79,17 +79,32 @@
  * below it — two descriptions of the same gap disagreeing is exactly the
  * self-contradiction class F-a544c1c4 found elsewhere in this wave, and
  * this file does not get to repeat it):
- *   - Tier 2 (mutation proof that a pinned test actually fails without its
- *     fix — dispatch C4) is NOT implemented here; it is wave 19 per the
- *     dispatch's explicit scope decision. A well-formed, correctly-
- *     attached, but semantically vacuous pin currently PASSES Tier 1 —
- *     including the worst case (F-21dc98e0): an empty `describe()` with
- *     zero test children, a `describe()` whose only children are all
- *     `.skip()`-ed, or a directly `.skip()`-ed test all qualify exactly as
- *     if they executed a real assertion. "Vacuous" tops out at ZERO test
- *     registration, not merely a trivial `assert.ok(true)`. This is real
- *     and disclosed — and strictly smaller than the retired gate's gap
- *     (there, a bare comment satisfied credit with no test at all).
+ *   - Tier 2 (mutation proof that a pinned test fails without its fix —
+ *     dispatch C4) is NOT implemented here; it is designed in
+ *     docs/pin-matcher-rewrite.dispatch.md and queued in the control
+ *     plane, not scheduled to any wave (an earlier version of this
+ *     sentence named a wave number; that plan was invalidated within the
+ *     hour and the stale claim then survived here — and in this gate's
+ *     own console output — for two further waves after the dispatch doc
+ *     had already been corrected; see that doc's "Scope decision"
+ *     section). Tier 1 performs NO reachability analysis at all: a
+ *     well-formed, correctly-attached, but semantically vacuous pin
+ *     currently PASSES Tier 1 exactly as if it executed a real assertion
+ *     — including the worst case disclosed so far: an empty `describe()`
+ *     with zero test children, a `describe()` whose only children are
+ *     all `.skip()`-ed, or a directly `test.skip()`-ed call (F-21dc98e0).
+ *     "Vacuous" tops out at ZERO test registration, not merely a trivial
+ *     `assert.ok(true)`. Even that understates the true floor
+ *     (F-e618b3e7): a tagged call sitting behind dead code (e.g.
+ *     `if (false) { ... }`) or inside a function that is never invoked
+ *     anywhere in the file is credited identically to a live call too —
+ *     and unlike a `.skip()`-ed test or an empty `describe()`, both of
+ *     which still print in test-runner output as a visible signal
+ *     something is off, a dead-code-gated call leaves NO trace in
+ *     test-runner output at all, indistinguishable from a file with no
+ *     test for that finding. This is real and disclosed — and strictly
+ *     smaller than the retired gate's gap (there, a bare comment
+ *     satisfied credit with no test at all).
  *   - The differential cross-check against the independently-coded
  *     reference matcher (dispatch finding 23) runs in
  *     pin-declarations-differential.test.mjs, part of `npm test`/
@@ -139,9 +154,18 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
 import { dirname, resolve, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash } from 'node:crypto';
 
 import { parseRegressionPins, toJSON } from '../packages/portfolio/lib/parse-regression-pins.js';
 import { scanRepoForDeclaredPins } from './pin-declarations.mjs';
+// F-dbc8b0d1: reuse the SAME canonicalization the record integrity chain
+// uses (packages/ingest/lib/integrity.js) rather than a second hand-rolled
+// stable-stringify — it is already hardened against the exact edge case
+// this finding's own evidence tested (a raw-JSON `__proto__` own-property
+// key must not silently vanish from, or corrupt, the hashed payload; see
+// that module's F-755d0f3f note). One canonicalizer, not two that could
+// silently drift on what "stable" means.
+import { canonicalize } from '../packages/ingest/lib/integrity.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = resolve(here, '..');
@@ -149,7 +173,7 @@ const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
 const defaultGrandfatherManifestPath = resolve(here, 'grandfathered-pins.json');
 
 const DISCLOSED_GAPS = [
-  'Tier 2 (mutation proof that a pinned test fails without its fix) is not implemented — see docs/pin-matcher-rewrite.dispatch.md for its design; the sequencing lives there, not here. A well-formed, correctly-attached, but semantically vacuous pin currently passes Tier 1 — including the worst case: an empty describe() with zero test children, a describe() whose only children are all .skip()-ed, or a directly test.skip()-ed call all qualify for a declared tag exactly as if they executed a real assertion (F-21dc98e0). "Vacuous" tops out at zero test registration, not merely a trivial assert.ok(true).',
+  'Tier 2 (mutation proof that a pinned test fails without its fix — dispatch C4) is not implemented here; it is designed in docs/pin-matcher-rewrite.dispatch.md and queued in the control plane, not scheduled to any wave (an earlier version of this sentence named a wave number; that plan was invalidated within the hour and the stale claim then survived here — and in this gate\'s own console output — for two further waves after the dispatch doc had already been corrected; see that doc\'s "Scope decision" section). Tier 1 performs no reachability analysis at all: a well-formed, correctly-attached, but semantically vacuous pin currently passes Tier 1 exactly as if it executed a real assertion — including the worst case disclosed so far: an empty describe() with zero test children, a describe() whose only children are all .skip()-ed, or a directly test.skip()-ed call (F-21dc98e0). "Vacuous" tops out at zero test registration, not merely a trivial assert.ok(true). Even that understates the true floor (F-e618b3e7): a tagged call sitting behind dead code (e.g. if (false) { ... }) or inside a function that is never invoked anywhere in the file is credited identically to a live call too — and unlike a .skip()-ed test or an empty describe(), both of which still print in test-runner output as a visible signal something is off, a dead-code-gated call leaves no trace in test-runner output at all, indistinguishable from a file with no test for that finding. This is real and disclosed — and strictly smaller than the retired gate\'s gap (there, a bare comment satisfied credit with no test at all).',
   "The differential cross-check against the independently-coded reference matcher runs in the test suite (npm test / pin-declarations-differential.test.mjs), not inside this CLI's own live execution.",
   '@pins tags are only scanned in files classifyFile() buckets as "test" — a tag placed in a source file is not evaluated.',
   'The grandfather bucket (scripts/grandfathered-pins.json) is a static snapshot frozen at commit 132dc18 — membership only, never a live heuristic re-check (F-ca8e7b44). It can still be WRONG at the id level (the retired heuristic that produced the original 132dc18 classification could itself have over- or under-counted), but that imprecision is now bounded to a fixed, auditable, shrinking set rather than a live, unboundedly-growing surface. Grandfathered status is exemption-with-disclosure, never verified credit.',
@@ -246,6 +270,93 @@ export function loadGrandfatherManifest(path) {
     }
   }
   return parsed;
+}
+
+/**
+ * F-dbc8b0d1: content-address the frozen manifest's ENTIRE protected
+ * surface (the id membership set, each entry's owner/revalidate_by, AND
+ * the header `$comment`/`frozen_at_commit`/`frozen_at_date` fields) —
+ * not just its cardinality. `Object.keys(manifest.grandfathered).length
+ * === 256` is a headcount: it cannot tell a genuine 256-id snapshot from
+ * one where an arbitrary real id was evicted and a fresh, never-frozen
+ * hash-style id was inserted in its place, holding the count constant —
+ * nor can it tell a genuine header from one whose $comment was
+ * edited to cite a fabricated finding id (the exact F-c6db5c78 shape).
+ * PROVEN end to end (see check-finding-regression-pins.test.mjs's
+ * F-dbc8b0d1 suite): loadGrandfatherManifest accepts the poisoned file
+ * (all C8 structural checks pass on the substituted entry), the count
+ * assertion still passes (256 === 256), and the live gate would silently
+ * exempt an id that did not exist at the freeze commit. A canonical-JSON
+ * SHA-256 over the whole manifest changes on ANY single-id substitution,
+ * insertion, or deletion, on any owner/revalidate_by edit, and on any edit
+ * to the header prose — because canonicalize() (packages/ingest/lib/
+ * integrity.js, already hardened against a raw-JSON `__proto__` own
+ * property silently vanishing or colliding — see that module's F-755d0f3f
+ * note) sorts every object's keys recursively before stringifying, so the
+ * digest is a pure function of CONTENT, never of on-disk key order.
+ *
+ * @param {{ grandfathered: Record<string, unknown> }} manifest - the
+ *   object loadGrandfatherManifest returns (not the raw file text).
+ * @returns {string} lowercase 64-char hex sha256 digest.
+ */
+export function grandfatherManifestFingerprint(manifest) {
+  return createHash('sha256').update(canonicalize(manifest), 'utf-8').digest('hex');
+}
+
+/**
+ * F-dbc8b0d1: the pinned expected digest of the REAL, canonical
+ * scripts/grandfathered-pins.json as frozen at commit 132dc18 (256 ids).
+ * Recompute from the repo root with:
+ *   node --input-type=module -e "import('./scripts/check-finding-regression-pins.mjs').then(m => console.log(m.grandfatherManifestFingerprint(m.loadGrandfatherManifest('scripts/grandfathered-pins.json'))))"
+ *
+ * LAWFUL DRAIN PROCEDURE: the manifest's own `$comment` permits exactly
+ * one kind of edit — removing an id once it has genuinely migrated to a
+ * declared `@pins` tag or an allowlist entry (never adding one, never
+ * removing an undeclared one). A drain, or any other deliberate, reviewed
+ * edit to this file (including its header prose), MUST recompute this
+ * constant in the SAME commit using the command above and say so in the
+ * commit message — that is what makes the update deliberate and reviewed
+ * rather than silent. verifyGrandfatherManifestIntegrity (below) throws,
+ * loudly and by design, on ANY mismatch, lawful or not; a lawful drain
+ * that forgets this step is caught by its own gate failing, the same
+ * fail-closed posture as every other check in this file — not a special
+ * case, just the cost of "deliberate and reviewed."
+ */
+export const EXPECTED_GRANDFATHER_MANIFEST_HASH =
+  'b30bd267d5d294fa970677aec45df80c6f6beb0f903c4325ee318b84e386d829';
+
+/**
+ * F-dbc8b0d1: throws if `manifest`'s content hash does not match
+ * `expectedHash` — the actual defense against editing
+ * scripts/grandfathered-pins.json's CONTENTS directly (as opposed to
+ * exempting a fresh id through the LIVE gate, which F-ca8e7b44 already
+ * closed — see this file's module docstring). Deliberately a SEPARATE
+ * function from loadGrandfatherManifest, not folded into it:
+ * loadGrandfatherManifest's C8 schema validation is generic and correctly
+ * applies to any manifest, including the small throwaway ones
+ * check-finding-regression-pins.test.mjs's fixtures construct — this
+ * integrity check is specific to the ONE real, canonical, 132dc18-frozen
+ * file, and callers opt in by not overriding the manifest path (see
+ * runRegressionPinGate below, which only calls this when
+ * grandfatherManifestPath is the untouched default).
+ *
+ * @param {{ grandfathered: Record<string, unknown> }} manifest
+ * @param {string} [expectedHash]
+ */
+export function verifyGrandfatherManifestIntegrity(manifest, expectedHash = EXPECTED_GRANDFATHER_MANIFEST_HASH) {
+  const actual = grandfatherManifestFingerprint(manifest);
+  if (actual !== expectedHash) {
+    throw new Error(
+      `grandfathered-pins.json content hash mismatch: expected ${expectedHash}, computed ${actual}. ` +
+      `This fires on ANY change to the frozen id set, any entry's owner/revalidate_by, or the header ` +
+      `$comment/frozen_at_commit/frozen_at_date fields -- including a legitimate migration drain (an id ` +
+      `removed because it now has a declared @pins tag or allowlist entry). If this is a deliberate, ` +
+      `reviewed edit: recompute the new hash (see EXPECTED_GRANDFATHER_MANIFEST_HASH's own doc comment ` +
+      `in check-finding-regression-pins.mjs) and update that constant in the SAME commit, with the ` +
+      `reason in the commit message. If you did NOT intend to edit scripts/grandfathered-pins.json, ` +
+      `treat this as a tampering signal, not a bug (F-dbc8b0d1).`,
+    );
+  }
 }
 
 /**
@@ -385,6 +496,22 @@ export async function runRegressionPinGate({
   const declared = scanRepoForDeclaredPins(repoRoot);
   const allowlist = loadAllowlist(allowlistPath);
   const grandfatherManifest = loadGrandfatherManifest(grandfatherManifestPath);
+
+  // F-dbc8b0d1: a headcount cannot detect a same-size swap (evict one real
+  // frozen id, insert a fresh never-frozen one) — only content-addressing
+  // the manifest can. Scoped to the UNTOUCHED DEFAULT path only: every
+  // fixture in check-finding-regression-pins.test.mjs deliberately writes
+  // its own small, throwaway manifest via an explicit
+  // grandfatherManifestPath override (see that file's module docstring,
+  // point 5) precisely so it is never mistaken for the real 256-id frozen
+  // snapshot — hashing one of those against EXPECTED_GRANDFATHER_MANIFEST_HASH
+  // would be comparing the wrong file's fingerprint to the real one's pin.
+  // A caller that did not override the path IS asking for the real,
+  // canonical, 132dc18-frozen file, which is exactly the file this
+  // constant protects.
+  if (grandfatherManifestPath === defaultGrandfatherManifestPath) {
+    verifyGrandfatherManifestIntegrity(grandfatherManifest);
+  }
 
   const coverage = classifyCoverage({ sourceIds, declared, allowlist, grandfatherManifest });
 

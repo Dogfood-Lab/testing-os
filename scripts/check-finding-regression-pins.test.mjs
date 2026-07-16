@@ -33,8 +33,14 @@
  *      for source-side pins)
  *   8. Live-tree assertion — the load-bearing test
  *   9. F-W1-CI-006 / F-c59bb518 — main-entry guard and --help contract
+ *  10. F-dbc8b0d1 — grandfather-manifest content-addressing: a headcount
+ *      cannot detect a same-cardinality id swap; the canonical-hash gate
+ *      (grandfatherManifestFingerprint / verifyGrandfatherManifestIntegrity)
+ *      must go RED on a swap, an eviction, an addition, or a header-comment
+ *      edit, stay GREEN on the real untouched file, and never fire against
+ *      a caller-supplied override path (every fixture in this file).
  */
-import { test } from 'node:test';
+import { test, describe } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -50,6 +56,9 @@ import {
   applyGrandfatherManifest,
   classifyCoverage,
   formatHuman,
+  grandfatherManifestFingerprint,
+  verifyGrandfatherManifestIntegrity,
+  EXPECTED_GRANDFATHER_MANIFEST_HASH,
 } from './check-finding-regression-pins.mjs';
 import { scanRepoForDeclaredPins } from './pin-declarations.mjs';
 
@@ -281,6 +290,57 @@ test('F-21dc98e0: verifies the disclosed floor against real scanFileForDeclaredP
   const directSkip = scanFileForDeclaredPins('x.test.js', "/** @pins F-100000-093 */\ntest.skip('this test never executes', () => { assert.ok(true); });\n");
   assert.equal(directSkip.issues.length, 0);
   assert.deepEqual(directSkip.pins.map((p) => p.id), ['F-100000-093']);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-e618b3e7 — F-21dc98e0's own corrected disclosure still understated the
+// true floor: Tier 1 does no reachability analysis at all, so a tagged call
+// behind dead code or inside a never-invoked function credits identically
+// to a live call, AND (unlike the disclosed .skip()/empty-describe() cases)
+// leaves no trace whatsoever in test-runner output.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @pins F-e618b3e7 */
+test('F-e618b3e7: the Tier-2 disclosure names the reachability boundary explicitly, not just an enumerated worst-case list', async (t) => {
+  const fx = makeFixture(t);
+  const result = await runRegressionPinGate({
+    repoRoot: fx.dir,
+    allowlistPath: fx.writeAllowlist({ allow: {} }),
+    grandfatherManifestPath: fx.writeGrandfatherManifest(EMPTY_GRANDFATHER),
+  });
+  const tier2Gap = result.disclosedGaps[0];
+  assert.match(tier2Gap, /no reachability analysis/i, 'the disclosure must name the actual boundary (no reachability analysis), not just enumerate specific shapes');
+  assert.match(tier2Gap, /dead code/i, 'the disclosure must name the dead-code-gated shape');
+  assert.match(tier2Gap, /never invoked/i, 'the disclosure must name the never-invoked-function shape');
+  assert.match(tier2Gap, /no trace/i, 'the disclosure must state that this shape leaves no trace in test-runner output — the property that makes it worse than the already-disclosed .skip()/empty-describe() cases');
+  // F-21dc98e0's own assertions must still hold — this fix WIDENS the
+  // disclosure, it does not regress the floor that finding already fixed.
+  assert.match(tier2Gap, /empty describe\(\)/i);
+  assert.match(tier2Gap, /\.skip\(\)/);
+  assert.match(tier2Gap, /zero test registration/i);
+});
+
+/**
+ * Companion behavioral proof (mirrors F-21dc98e0's own "real behavior, not
+ * just prose" test above): both claimed dead-code shapes are verified
+ * directly against the real, unmutated scanFileForDeclaredPins.
+ */
+test('F-e618b3e7: verifies the disclosed floor against real scanFileForDeclaredPins behavior — a tag on a call gated by if (false) and inside a never-invoked function both credit with zero issues', async () => {
+  const { scanFileForDeclaredPins } = await import('./pin-declarations.mjs');
+
+  const deadIfBlock = scanFileForDeclaredPins(
+    'x.test.js',
+    "if (false) {\n  /** @pins F-100000-094 */\n  test('never runs', () => { assert.ok(true); });\n}\n",
+  );
+  assert.equal(deadIfBlock.issues.length, 0, 'a tag on a call behind if (false) must currently credit with zero issues (the undisclosed floor this finding names)');
+  assert.deepEqual(deadIfBlock.pins.map((p) => p.id), ['F-100000-094']);
+
+  const neverInvokedFunction = scanFileForDeclaredPins(
+    'x.test.js',
+    "function neverCalledAnywhereInThisFile() {\n  /** @pins F-100000-095 */\n  test('lives inside a function nobody calls', () => { assert.ok(true); });\n}\n",
+  );
+  assert.equal(neverInvokedFunction.issues.length, 0);
+  assert.deepEqual(neverInvokedFunction.pins.map((p) => p.id), ['F-100000-095']);
 });
 
 test('orphan from one file does not mask a clean id elsewhere', async (t) => {
@@ -896,17 +956,211 @@ test('live tree sanity: scanRepoForDeclaredPins runs cleanly (zero parse errors)
  * live outstanding count can never exceed the frozen total, and the frozen
  * total itself is fixed at exactly what commit 132dc18 produced (256, per
  * that commit's own message and the module docstring's worked example).
+ *
+ * F-dbc8b0d1: the `length === 256` line below is now SECONDARY, not the
+ * primary guard — a headcount cannot tell a genuine 256-id snapshot from
+ * one where a real id was evicted and a fresh one inserted at the same
+ * count. The content-hash assertion immediately after it is what actually
+ * catches that; see the F-dbc8b0d1 suite below for the mutation proof.
  */
 test('live tree: the frozen grandfather manifest stays internally consistent with the live gate accounting', async () => {
   const manifestPath = resolve(repoRoot, 'scripts/grandfathered-pins.json');
   const manifest = loadGrandfatherManifest(manifestPath);
   assert.equal(Object.keys(manifest.grandfathered).length, 256, 'the frozen manifest is a fixed snapshot — its own SIZE must never change (only how much of it is still live-outstanding does)');
+  assert.equal(
+    grandfatherManifestFingerprint(manifest),
+    EXPECTED_GRANDFATHER_MANIFEST_HASH,
+    'F-dbc8b0d1: the manifest\'s content hash must match the pinned constant — a mismatch means either the file was tampered with, or a lawful drain forgot to update EXPECTED_GRANDFATHER_MANIFEST_HASH in check-finding-regression-pins.mjs in the same commit',
+  );
 
   const result = await runRegressionPinGate({ repoRoot });
   assert.equal(result.grandfatherFrozenTotal, 256);
   assert.ok(result.grandfatheredIds.length <= result.grandfatherFrozenTotal, 'live-outstanding grandfathered count can never exceed the frozen total');
   assert.ok(result.grandfatheredIds.every((id) => id in manifest.grandfathered), 'every id the live gate reports as grandfathered must be a member of the frozen manifest — no live path in');
   assert.equal(result.grandfatherFrozenTotal - result.grandfatheredIds.length, result.grandfatherDrainedCount, 'drained count must reconcile exactly with frozen total minus live-outstanding');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-dbc8b0d1 — a headcount is not integrity: content-address the frozen
+// manifest so a same-cardinality id swap, an addition, a deletion, or a
+// header-comment edit all flip the hash, while the untouched real file
+// (above) and a genuinely EMPTY manifest (the deletion/emptiness operator
+// "Proving a gate" requires) behave exactly as their own content dictates —
+// never a vacuous true regardless of input.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function ffEntry(owner = 'coordinator', revalidate_by = '2099-01-01') {
+  return { owner, revalidate_by };
+}
+
+describe('F-dbc8b0d1: grandfatherManifestFingerprint / verifyGrandfatherManifestIntegrity', () => {
+  test('two structurally-identical manifests (same ids, same $comment, same dates) hash identically', () => {
+    const a = { $comment: 'c', frozen_at_commit: 'abc123', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-100': ffEntry(), 'F-100000-101': ffEntry() } };
+    const b = { $comment: 'c', frozen_at_commit: 'abc123', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-101': ffEntry(), 'F-100000-100': ffEntry() } }; // different KEY ORDER on disk
+    assert.equal(grandfatherManifestFingerprint(a), grandfatherManifestFingerprint(b), 'on-disk key order must never affect the digest — canonicalize() sorts recursively');
+  });
+
+  /**
+   * THE CORE ATTACK, reconstructed as a pure-function mutation proof (dispatch
+   * "Proving a gate": mutate the thing the gate protects, assert it goes
+   * RED). Evict one real id, insert a fresh never-frozen one, hold the count
+   * constant — exactly the exploit the finding's evidence constructed
+   * end-to-end against the real 256-id file, reproduced here at small scale
+   * so the test does not depend on (or risk corrupting) the real manifest.
+   */
+  /** @pins F-dbc8b0d1 */
+  test('META: evicting one real id and inserting a fresh never-frozen id at the SAME count flips the hash (the count-only invariant would have missed this)', () => {
+    const before = { $comment: 'frozen set', frozen_at_commit: '132dc18', frozen_at_date: '2026-07-16', grandfathered: { 'F-100000-200': ffEntry(), 'F-100000-201': ffEntry(), 'F-100000-202': ffEntry() } };
+    const pinnedHash = grandfatherManifestFingerprint(before);
+
+    // The swap: F-100000-201 (a real, previously-frozen id) is evicted;
+    // F-decoyid9 (a fresh id that never existed in `before`) takes its
+    // place. Cardinality is UNCHANGED — 3 keys before, 3 keys after — so a
+    // `length === 3` (or, at real scale, `length === 256`) assertion would
+    // still pass. The hash must not.
+    const after = { $comment: 'frozen set', frozen_at_commit: '132dc18', frozen_at_date: '2026-07-16', grandfathered: { 'F-100000-200': ffEntry(), 'F-decoyid9': ffEntry(), 'F-100000-202': ffEntry() } };
+    assert.equal(Object.keys(after.grandfathered).length, Object.keys(before.grandfathered).length, 'sanity: the swap must hold cardinality constant — this is the whole point of the attack');
+    assert.throws(
+      () => verifyGrandfatherManifestIntegrity(after, pinnedHash),
+      /content hash mismatch/,
+      'a same-count id swap must be caught by the content hash even though a headcount would not catch it',
+    );
+  });
+
+  test('META: the realistic stealthier variant — swapping an ALREADY-DRAINED id (not currently outstanding) for a fresh one — is caught identically', () => {
+    // Per the finding's own evidence: swapping an id that had already left
+    // the live grandfathered bucket (declared or allowlisted elsewhere) is
+    // stealthier because the live outstanding/drained counts don't move by
+    // an unexpected amount. The manifest-level hash does not care whether
+    // the evicted id was "outstanding" or "drained" in the live gate's
+    // reporting — it only sees the FILE's own membership set change.
+    const before = { $comment: 'x', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-210': ffEntry(), 'F-100000-211': ffEntry() } };
+    const pinnedHash = grandfatherManifestFingerprint(before);
+    const after = { $comment: 'x', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-210': ffEntry(), 'F-freshid1': ffEntry() } };
+    assert.throws(() => verifyGrandfatherManifestIntegrity(after, pinnedHash), /content hash mismatch/);
+  });
+
+  test('DELETION operator: wiping the entire grandfathered map to empty flips the hash — never a vacuous pass regardless of content', () => {
+    const before = { $comment: 'x', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-220': ffEntry() } };
+    const pinnedHash = grandfatherManifestFingerprint(before);
+    const wiped = { $comment: 'x', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: {} };
+    assert.throws(() => verifyGrandfatherManifestIntegrity(wiped, pinnedHash), /content hash mismatch/);
+  });
+
+  test('EMPTINESS operator: two DIFFERENT empty manifests (different header prose, both zero ids) do not hash the same — the check is not vacuously satisfied by "empty"', () => {
+    const emptyA = { $comment: 'original header', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: {} };
+    const emptyB = { $comment: 'DIFFERENT header text', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: {} };
+    assert.notEqual(grandfatherManifestFingerprint(emptyA), grandfatherManifestFingerprint(emptyB), 'zero ids in both must not collapse to the same digest — the header is part of the protected surface too');
+  });
+
+  /**
+   * F-c6db5c78: the exact class this hash must also cover — the manifest's
+   * own header $comment cited a fabricated finding id (F-W19-CI-001) before
+   * it was corrected to the real canonical id (F-ca8e7b44). A future editor
+   * re-introducing a fabricated id into the header text (or any other
+   * header edit) must flip the hash exactly like an id-set swap does.
+   */
+  test('F-c6db5c78: editing ONLY the header $comment (ids and dates unchanged) still flips the hash', () => {
+    const before = { $comment: 'see F-ca8e7b44 for the vintage-boundary fix', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-230': ffEntry() } };
+    const pinnedHash = grandfatherManifestFingerprint(before);
+    const tamperedComment = { $comment: 'see F-W19-CI-001 for the vintage-boundary fix', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-230': ffEntry() } };
+    assert.throws(() => verifyGrandfatherManifestIntegrity(tamperedComment, pinnedHash), /content hash mismatch/);
+  });
+
+  test('LAWFUL DRAIN remains possible via a deliberate, reviewed hash update — it is not a permanently frozen shut door', () => {
+    const before = { $comment: 'x', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-240': ffEntry(), 'F-100000-241': ffEntry() } };
+    const beforeHash = grandfatherManifestFingerprint(before);
+
+    // A genuine migration: F-100000-241 now has a real declared @pins tag
+    // elsewhere, so it is deliberately REMOVED (never edited in place —
+    // exactly what the manifest's own $comment prescribes).
+    const drained = { $comment: 'x', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-240': ffEntry() } };
+    assert.throws(
+      () => verifyGrandfatherManifestIntegrity(drained, beforeHash),
+      /content hash mismatch/,
+      'a lawful drain still changes the hash — this is BY DESIGN: the maintainer must deliberately recompute and update the pinned constant in the same commit',
+    );
+
+    // The deliberate, reviewed step: recompute and re-pin.
+    const newHash = grandfatherManifestFingerprint(drained);
+    assert.doesNotThrow(
+      () => verifyGrandfatherManifestIntegrity(drained, newHash),
+      'once the constant is deliberately updated to match the drained file, the check passes again — draining is possible, silence about it is not',
+    );
+  });
+
+  test('the REAL scripts/grandfathered-pins.json verifies cleanly against the pinned constant', () => {
+    const manifest = loadGrandfatherManifest(resolve(repoRoot, 'scripts/grandfathered-pins.json'));
+    assert.doesNotThrow(() => verifyGrandfatherManifestIntegrity(manifest));
+  });
+
+  test('a wrong expected hash throws even for an otherwise well-formed, schema-valid manifest', () => {
+    const manifest = { $comment: 'x', frozen_at_commit: 'c', frozen_at_date: '2026-01-01', grandfathered: { 'F-100000-250': ffEntry() } };
+    assert.throws(() => verifyGrandfatherManifestIntegrity(manifest, '0'.repeat(64)), /content hash mismatch/);
+  });
+});
+
+describe('F-dbc8b0d1: runRegressionPinGate wiring — the integrity check fires ONLY for the untouched default manifest path', () => {
+  test('WIRING PROOF: a fixture manifest (deliberately mismatching EXPECTED_GRANDFATHER_MANIFEST_HASH) is rejected by verifyGrandfatherManifestIntegrity directly, yet runRegressionPinGate with that SAME fixture as an explicit override does NOT throw', async (t) => {
+    const fx = makeFixture(t);
+    const grandfatherManifestPath = fx.writeGrandfatherManifest({ grandfathered: { 'F-100000-260': ffEntry() } });
+    const fixtureManifest = loadGrandfatherManifest(grandfatherManifestPath);
+
+    // Direct call: proves the fixture's hash genuinely does NOT match the
+    // real constant (so the absence of a throw below is the override guard
+    // working, not a coincidence of the fixture happening to match).
+    assert.throws(
+      () => verifyGrandfatherManifestIntegrity(fixtureManifest),
+      /content hash mismatch/,
+      'sanity: the fixture manifest must NOT match the real 256-id manifest\'s pinned hash',
+    );
+
+    // Through the gate, with an explicit override path: every fixture in
+    // this whole test file relies on this NOT throwing (see this file's own
+    // module docstring, point 5) — if this regresses, every fixture test in
+    // this file starts throwing "internal error" instead of running.
+    fx.write('packages/foo/index.js', '// F-100000-260 — pre-existing pin\n');
+    await assert.doesNotReject(() => runRegressionPinGate({
+      repoRoot: fx.dir,
+      allowlistPath: fx.writeAllowlist({ allow: {} }),
+      grandfatherManifestPath,
+    }));
+  });
+
+  test('WIRING PROOF: the real default path (no override) DOES run the integrity check — verified via the live-tree test above passing, plus this explicit contrast', async () => {
+    // Calling with NO grandfatherManifestPath override resolves to the same
+    // default the CLI itself uses, so this exercises the exact code path
+    // `npm run check-regression-pins` runs in CI.
+    await assert.doesNotReject(() => runRegressionPinGate({ repoRoot }));
+  });
+});
+
+/**
+ * F-c6db5c78: scripts/grandfathered-pins.json's header `$comment` (and this
+ * gate's own DISCLOSED_GAPS / console output) once cited a fabricated
+ * finding id, "F-W19-CI-001" — no such id exists in the findings corpus.
+ * The real, canonical id for "the grandfather bucket has no vintage
+ * boundary" is F-ca8e7b44. Already swept from the tree by commit 3d3e30a
+ * (the coordinator's post-audit sweep) before this wave; re-verified here
+ * with a fresh grep of this worktree (zero hits for "F-W19-CI-001" anywhere
+ * under packages/, scripts/, swarms/, docs/, site/ — outside node_modules
+ * and .git). This test is the STANDING guard against the id recurring
+ * silently — a one-time interactive grep is evidence for one wave, not a
+ * permanent guarantee for the next one — and it is doubly protected now:
+ * the F-dbc8b0d1 content hash above ALSO flips if the header $comment is
+ * ever edited to reintroduce it (see that suite's dedicated
+ * "editing ONLY the header $comment" test).
+ */
+/** @pins F-c6db5c78 */
+test('F-c6db5c78: the manifest header and the gate\'s own disclosed-gaps text cite the canonical id F-ca8e7b44, never the fabricated F-W19-CI-001', async () => {
+  const manifest = loadGrandfatherManifest(resolve(repoRoot, 'scripts/grandfathered-pins.json'));
+  assert.match(manifest.$comment, /F-ca8e7b44/, 'the manifest header must cite the real canonical id');
+  assert.doesNotMatch(manifest.$comment, /F-W19-CI-001/, 'the manifest header must never cite the fabricated id again');
+
+  const result = await runRegressionPinGate({ repoRoot });
+  const disclosedGapsText = result.disclosedGaps.join('\n');
+  assert.match(disclosedGapsText, /F-ca8e7b44/, 'the gate\'s own disclosed-gaps text must cite the real canonical id');
+  assert.doesNotMatch(disclosedGapsText, /F-W19-CI-001/, 'the gate\'s own disclosed-gaps text must never cite the fabricated id again');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

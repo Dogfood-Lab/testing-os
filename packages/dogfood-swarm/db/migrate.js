@@ -78,6 +78,44 @@ const LEDGER_DDL = `
 `;
 
 /**
+ * Does `sql` contain exactly one statement? Splits on `;` and requires
+ * exactly one non-empty segment after trimming — a trailing terminator
+ * (`"...);"`) collapses to a single segment; two real statements joined by
+ * `;` (`"CREATE TABLE foo (...); CREATE INDEX idx_foo ON foo(x);"`) does not.
+ *
+ * F-318bdd79: parseArtifact()'s three regexes are all anchored at `^` but
+ * never checked there was only ONE statement to anchor against — a
+ * two-statement entry (e.g. a table plus its own index, joined by `;`
+ * instead of authored as two separate manifest entries, the way every other
+ * table/index pair in this manifest already is) matched only the FIRST
+ * statement and was silently treated as a single recognized artifact. On a
+ * FRESH db this was harmless (migrateDb's `db.exec(mig.sql)` below runs every
+ * statement in the string regardless of what parseArtifact saw). The gap is
+ * the RETROACTIVE-BOOTSTRAP path: artifactExists() below checks only the
+ * FIRST parsed artifact, so a legacy DB with the table but genuinely missing
+ * the index would have the WHOLE migration wrongly marked already-applied —
+ * the ledger row gets seeded, migrateDb never runs the SQL, and the index is
+ * never created, permanently (a ledger-recorded migration id is never
+ * re-attempted).
+ *
+ * Naive on purpose — no string-literal-aware SQL tokenizer, so a
+ * hypothetical embedded `;` inside a quoted DEFAULT value would also trip
+ * this check. Over-strict-but-safe (the same posture
+ * assertManifestShapesRecognized documents for "unrecognized ⇒ fail loud at
+ * import time" generally): the real MIGRATIONS_MANIFEST has zero entries
+ * with an embedded semicolon in a string literal today, and a false rejection
+ * fails LOUD at module load, in the author's own change, long before any
+ * operator sees a real DB — never a silent bypass.
+ *
+ * @param {string} sql
+ * @returns {boolean}
+ */
+function isSingleStatement(sql) {
+  const segments = sql.split(';').map((s) => s.trim()).filter((s) => s.length > 0);
+  return segments.length === 1;
+}
+
+/**
  * Parse the artifact a migration SQL statement creates, so we can detect
  * whether a pre-existing DB already has it (the retroactive-bootstrap signal).
  *
@@ -86,9 +124,13 @@ const LEDGER_DDL = `
  *   - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] <idx> ...` → { kind:'index', name }
  *   - `CREATE TABLE [IF NOT EXISTS] <t> ...`            → { kind:'table', name }
  *
- * Returns null if the shape is unrecognized. F-a4ced329: a null here used to
- * be silently read by artifactExists() as "not detectable as pre-applied,
- * fall through to running it" — an assumption (the SQL is unconditionally
+ * Returns null if the shape is unrecognized, OR (F-318bdd79) if `sql` is not
+ * exactly one statement — a multi-statement entry is unrecognized-BY-POLICY
+ * even when its first statement alone would match one of the three shapes,
+ * because artifactExists() below has no way to confirm every statement's
+ * artifact exists, only the first's. F-a4ced329: a null here used to be
+ * silently read by artifactExists() as "not detectable as pre-applied, fall
+ * through to running it" — an assumption (the SQL is unconditionally
  * idempotent) that was never actually checked. assertManifestShapesRecognized()
  * below now refuses to let this module import at all if MIGRATIONS_MANIFEST
  * contains an entry parseArtifact() cannot classify, so in production this
@@ -100,6 +142,7 @@ const LEDGER_DDL = `
  */
 function parseArtifact(sql) {
   const s = sql.trim();
+  if (!isSingleStatement(s)) return null;
   let m;
   if ((m = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/i.exec(s))) {
     return { kind: 'column', table: m[1], name: m[2] };

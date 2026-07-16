@@ -41,6 +41,17 @@
  * lives flat in lib/ instead, the same reasoning as the sibling
  * lib/migrate-current-version-unused.test.js (which documents this exact
  * discovery-glob constraint in full).
+ *
+ * F-318bdd79 (wave 22, added to this same file): a SECOND, independent way
+ * for parseArtifact()/artifactExists() to silently mis-recognize a manifest
+ * entry — not an unrecognized DDL keyword this time, but a RECOGNIZED
+ * keyword whose SQL string actually contains a SECOND statement after it
+ * (`"CREATE TABLE foo (...); CREATE INDEX idx_foo ON foo(x);"`). parseArtifact
+ * matched only the first statement and returned non-null, so
+ * assertManifestShapesRecognized never caught it — a distinct gap from the
+ * unrecognized-keyword case above, closed the same way (fail loud at
+ * module-load import time, see the describe block near the bottom of this
+ * file).
  */
 
 import { describe, it } from 'node:test';
@@ -121,5 +132,98 @@ describe('artifactExists — the hazard the gate above closes (F-a4ced329 direct
     assert.equal(artifactExists(db, 'ALTER TABLE runs ADD COLUMN synthetic_col TEXT'), true);
     assert.equal(artifactExists(db, 'ALTER TABLE runs ADD COLUMN never_added TEXT'), false);
     db.close();
+  });
+});
+
+/**
+ * F-318bdd79: parseArtifact()'s three regexes anchor at `^` but never
+ * checked the SQL was only ONE statement — a two-statement entry (table +
+ * its own index joined by `;`) matched only the FIRST statement and was
+ * silently treated as one recognized artifact. On a fresh DB this is
+ * harmless (migrateDb's db.exec(mig.sql) runs every statement regardless).
+ * The gap is retroactive-bootstrap: artifactExists() checked only the first
+ * parsed artifact, so a legacy DB with the table but genuinely missing the
+ * index would have the WHOLE migration wrongly marked already-applied — the
+ * ledger seeds, the SQL never runs, and the index is never created,
+ * permanently (a ledger-recorded id is never re-attempted).
+ *
+ * THE FIX. parseArtifact() now refuses (returns null) for any SQL that is
+ * not exactly one statement (isSingleStatement(), db/migrate.js), so a
+ * multi-statement entry is unrecognized-by-policy — assertManifestShapesRecognized()
+ * (describe block above) refuses it at author time, the identical fail-loud
+ * posture as the CREATE TRIGGER case.
+ */
+/** @pins F-318bdd79 */
+describe('parseArtifact / assertManifestShapesRecognized — multi-statement SQL is not silently treated as one recognized artifact (F-318bdd79)', () => {
+  it('sanity: the REAL MIGRATIONS_MANIFEST has zero multi-statement entries today', () => {
+    const multiStatement = MIGRATIONS_MANIFEST.filter((m) => {
+      const segments = m.sql.split(';').map((s) => s.trim()).filter((s) => s.length > 0);
+      return segments.length > 1;
+    });
+    assert.deepEqual(
+      multiStatement.map((m) => m.id),
+      [],
+      'a real manifest entry now joins two DDL statements with `;` — split it into two manifest ' +
+      'entries (table + index) instead, matching every other pair in this manifest',
+    );
+  });
+
+  it('GATE: a two-statement manifest entry (table + its own index joined by `;`) is refused loudly, not silently recognized as one artifact', () => {
+    const syntheticManifest = [{
+      id: 'synthetic-multi-stmt-mig',
+      target_version: 999,
+      sql: 'CREATE TABLE foo (id INTEGER); CREATE INDEX idx_foo ON foo(id);',
+    }];
+    assert.throws(
+      () => assertManifestShapesRecognized(syntheticManifest),
+      (err) => /synthetic-multi-stmt-mig/.test(err.message) && /cannot\s+recognize/i.test(err.message),
+      'a multi-statement entry must fail loud at author time — pre-fix, parseArtifact matched only ' +
+      'the first statement (CREATE TABLE foo) and returned non-null, so this gate never saw it',
+    );
+  });
+
+  it('the underlying mechanism, direct-construction proof: a two-statement SQL is never reported as an existing artifact from a partial (first-statement-only) match', () => {
+    const db = freshDb();
+    db.exec('CREATE TABLE foo (id INTEGER)'); // table exists; the index does NOT (simulates a legacy/out-of-band DB)
+    const twoStatementSql = 'CREATE TABLE foo (id INTEGER); CREATE INDEX idx_foo ON foo(id);';
+
+    // Post-fix: the whole entry is unrecognized (parseArtifact returns null
+    // because it now checks statement count before even trying the three
+    // shape regexes), so artifactExists reports false — the same
+    // safe-direction fallback the CREATE TRIGGER case above uses.
+    // assertManifestShapesRecognized (GATE test above) is what actually
+    // prevents this shape from ever reaching migrateDb in production; this
+    // test pins the mechanism directly, independent of the gate.
+    assert.equal(
+      artifactExists(db, twoStatementSql),
+      false,
+      'a multi-statement SQL string must never be reported as an existing artifact from a partial match',
+    );
+    assert.equal(
+      db.prepare("SELECT 1 AS present FROM sqlite_master WHERE type='index' AND name='idx_foo'").get(),
+      undefined,
+      'sanity: idx_foo genuinely does not exist in this DB, confirming the false above is the safe answer, not a coincidence',
+    );
+
+    db.close();
+  });
+
+  it('non-regression: a normal single-statement entry with a trailing semicolon still parses and detects correctly', () => {
+    assert.doesNotThrow(() => assertManifestShapesRecognized([
+      { id: 'trailing-semi', target_version: 1, sql: 'CREATE TABLE IF NOT EXISTS synthetic_trailing (id INTEGER);' },
+    ]));
+    const db = freshDb();
+    db.exec('CREATE TABLE synthetic_trailing (id INTEGER)');
+    assert.equal(artifactExists(db, 'CREATE TABLE IF NOT EXISTS synthetic_trailing (id INTEGER);'), true);
+    assert.equal(artifactExists(db, 'CREATE TABLE IF NOT EXISTS never_created (id INTEGER);'), false);
+    db.close();
+  });
+
+  it('non-regression: whitespace-only segments (blank lines between statements) do not falsely count as multiple statements', () => {
+    // A single statement with trailing blank lines / whitespace after the
+    // terminator must still resolve to exactly one non-empty segment.
+    assert.doesNotThrow(() => assertManifestShapesRecognized([
+      { id: 'whitespace-tail', target_version: 1, sql: 'CREATE TABLE IF NOT EXISTS synthetic_ws (id INTEGER);   \n  \n' },
+    ]));
   });
 });

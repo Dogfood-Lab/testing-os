@@ -138,6 +138,40 @@
  *     package's flat root during development; a future file that does not
  *     follow this formatting would degrade toward coarser, file-level-like
  *     grouping rather than silently passing.
+ *   - Does NOT catch a CLI-spawning helper imported from ANOTHER file
+ *     (F-06887676, wave 22, confirming audit): buildNamedSegments only ever
+ *     inspects THIS file's own top-level segments — it has no visibility
+ *     into any other module. Constructed directly: a describe block whose
+ *     afterEach calls `spawnCliFromHelper(['status'], dbPath)` — imported
+ *     via `import { spawnCliFromHelper } from './test-support/cli-helper.js'`,
+ *     not locally defined — immediately followed by a genuinely unguarded,
+ *     locally-defined `function teardown(dir) { rmSync(dir, ...); }` scores
+ *     ZERO offenders: the describe block's own segment text never matches
+ *     CLI_SPAWN_SHAPE+CLI_PATH (the call site is `spawnCliFromHelper(`, and
+ *     CLI_PATH lives in the imported file, not this one), so neither
+ *     findCliSpawningHelperNames' nor findCliExposedHelperNames' worklist is
+ *     ever seeded for that segment. Not live today: test-support/ contains
+ *     only strip-comments.js, no CLI-spawning export exists to import — but
+ *     this file's own header above already recommends extracting
+ *     walkTestFiles to test-support/ as the established next step (mirroring
+ *     how strip-comments.js itself replaced five duplicated per-file
+ *     copies), and that same move for a shared CLI-spawn helper would
+ *     silently reopen this exact class for every importing file. Known
+ *     residual, not a silent claim of completeness.
+ *   - Does NOT catch a CLI-spawn call reached through an ALIASED
+ *     child_process import (F-06887676, wave 22, confirming audit):
+ *     CLI_SPAWN_SHAPE matches only the four literal names execFileSync/
+ *     execSync/spawnSync/spawn — a file that writes
+ *     `import { execFileSync as run } from 'node:child_process'` and then
+ *     calls `run(process.execPath, [CLI_PATH, ...], ...)` produces a
+ *     call-site text of `run(`, which cannot match under any alias. Grepped
+ *     every `from 'node:child_process'` import across all 161 test files in
+ *     this package during this pass (44 import execFileSync/execSync/
+ *     spawnSync/spawn): zero use `as` aliasing today, so this is not live.
+ *     Distinct from the already-disclosed "differently named CLI_PATH
+ *     constant" residual above — that bullet discloses the PATH constant's
+ *     name is load-bearing; this one discloses the CALL SHAPE's name is
+ *     equally alias-fragile.
  */
 
 import { describe, it } from 'node:test';

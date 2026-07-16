@@ -129,6 +129,41 @@ describe('extractDeclaredIds', () => {
     assert.equal(issues.length, 0);
     assert.deepEqual(pins.map((p) => p.id), ['F-c1000003']);
   });
+
+  // F-a5f07b2b: F-d77ffe1a's fix over-corrected — it silently dropped EVERY
+  // post-valid-id failing token, including one that is itself id-shaped-but-
+  // wrong (a realistic typo), not just genuine free-text prose. A failing
+  // token that still starts with "F-" must be reported bad-shape and must
+  // not end the scan; only a token that does NOT start with "F-" is prose.
+  test('F-a5f07b2b: a second token that is id-shaped-but-wrong (one hex digit short) after a valid first id is flagged bad-shape, not silently dropped', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-2222222'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F-2222222', ok: false },
+    ]);
+  });
+
+  test('F-a5f07b2b: F-d77ffe1a\'s original case is NOT regressed — genuine prose (does not start with "F-") after a valid id is still silently dropped', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 - fixes the bug'), [{ token: 'F-11111111', ok: true }]);
+  });
+
+  test('F-a5f07b2b: a bad-shape id-attempt followed by genuine prose reports the bad-shape token, then stops scanning at the prose', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-2222222 - fixes the bug'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F-2222222', ok: false },
+    ]);
+  });
+
+  /** @pins F-a5f07b2b */
+  test('F-a5f07b2b end-to-end: a mistyped second id after a valid first id surfaces as a real bad-shape tagIssue, not a silent drop', () => {
+    const { pins, issues } = scanFileForDeclaredPins(
+      'x.test.js',
+      "/** @pins F-11111111 F-2222222 */\ntest('t', () => { assert.ok(true); });\n",
+    );
+    assert.deepEqual(pins.map((p) => p.id), ['F-11111111'], 'the well-formed first id is still credited');
+    assert.equal(issues.length, 1, 'the mistyped second id must surface as exactly one issue, not zero');
+    assert.equal(issues[0].kind, 'bad-shape');
+    assert.equal(issues[0].token, 'F-2222222');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────

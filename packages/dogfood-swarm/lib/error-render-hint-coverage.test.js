@@ -13,17 +13,31 @@
  * and a hand-shaped/JSON-round-tripped error object that kept `.code` but not
  * the real class's constructor logic.
  *
- * CLASS FIX (this file): the finding's own text asks "whether the missing
- * fallback is the real class defect" — a FUTURE typed error added to
- * errors.js with neither a constructor-set `.hint` NOR a deriveHintForCode()
- * case would silently lose its "Next:" line the exact same way
- * CriterionIntentOverflowError did, and nothing in the suite would catch it.
- * This file is that catch: it drives every exported typed error class from
- * errors.js through the real renderTopLevelError and asserts a "Next:" line
- * always prints. A negative control (a hint-less, code-only synthetic error)
- * proves the harness actually discriminates — a helper that always finds
- * SOME output line would rubber-stamp a broken class the same way the
- * pre-fix state went uncaught.
+ * CLASS FIX (this file, F-4b72faf9 first pass): the finding's own text asks
+ * "whether the missing fallback is the real class defect" — a FUTURE typed
+ * error added to errors.js with neither a constructor-set `.hint` NOR a
+ * deriveHintForCode() case would silently lose its "Next:" line the exact
+ * same way CriterionIntentOverflowError did, and nothing in the suite would
+ * catch it. This file drives every exported typed error class from errors.js
+ * through the real renderTopLevelError and asserts a "Next:" line always
+ * prints. A negative control (a hint-less, code-only synthetic error) proves
+ * the harness actually discriminates — a helper that always finds SOME
+ * output line would rubber-stamp a broken class the same way the pre-fix
+ * state went uncaught.
+ *
+ * F-7d4ac5ce (wave 22): the class-fix claim above was itself false AS A
+ * MECHANISM. TESTED_CLASSES (below) was a static, hand-typed list — nothing
+ * re-derived it from errors.js's actual exports. `grep -n "^export class"
+ * lib/errors.js` shows today's 7 named imports above are the complete set
+ * (this suite was not under-covering anything LIVE), but add an 8th
+ * `export class FooError extends Error {}` tomorrow with no `.hint` and no
+ * deriveHintForCode case, and every test below stays green — the exact
+ * regression this file claims to prevent ships silently. computeUncoveredErrorClasses
+ * makes the enumeration dynamic: it diffs errors.js's REAL exports against
+ * TESTED_CLASSES, and the "GATE (mutation control)" tests below prove the
+ * diff itself can go non-empty (PROTOCOL.md: "a gate that can't go red is
+ * theater") — mirroring this package's own dogfood on gates that assert
+ * their own falsifiability.
  *
  * SCOPE NOTE. Lives under lib/ (not the package root) because the
  * swarm-cp-core domain owns packages/dogfood-swarm/lib/**\ only.
@@ -32,6 +46,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
+import * as errorsModule from './errors.js';
 import {
   IsolationError,
   CollectUpsertError,
@@ -42,6 +57,37 @@ import {
   StateMachineRejectionError,
 } from './errors.js';
 import { renderTopLevelError } from './error-render.js';
+
+const TESTED_CLASSES = [
+  'IsolationError',
+  'CollectUpsertError',
+  'DispatchPreconditionError',
+  'CliInvalidGlobsError',
+  'ControlPlaneSchemaTooNewError',
+  'CriterionIntentOverflowError',
+  'StateMachineRejectionError',
+];
+
+function isErrorClass(v) {
+  return typeof v === 'function' && v.prototype instanceof Error;
+}
+
+/**
+ * F-7d4ac5ce: the sorted list of exported Error-subclass names in
+ * `moduleExports` that are NOT present in `testedNames`. Used both to gate
+ * the real errors.js module (should return `[]` today) and, in the mutation
+ * controls below, against a SYNTHETIC module object carrying an extra class
+ * (must NOT return `[]`) — proving the mechanism can actually fire, not just
+ * that today happens to be fully covered.
+ */
+function computeUncoveredErrorClasses(moduleExports, testedNames) {
+  const tested = new Set(testedNames);
+  return Object.entries(moduleExports)
+    .filter(([, v]) => isErrorClass(v))
+    .map(([name]) => name)
+    .filter((name) => !tested.has(name))
+    .sort();
+}
 
 function nextLineFor(err) {
   const orig = console.error;
@@ -119,5 +165,61 @@ describe('errors.js — every typed error renders a "Next:" hint (F-4b72faf9 cla
       const e = new StateMachineRejectionError('rejected', { kind, from: 'a', to: 'b', hint: 'do the thing' });
       assert.ok(nextLineFor(e), `StateMachineRejectionError[${kind}] must render a Next: hint`);
     }
+  });
+});
+
+// No @pins tag here by design (wave 22): F-7d4ac5ce's fix is entirely inside
+// THIS test file (the dynamic enumeration below), so no source-side pin exists
+// for a declared tag to resolve against — a tag would be dangling by the
+// Class #14 gate's own rule. The finding id stays in the title for humans.
+describe('errors.js coverage gate is DYNAMIC, not a hardcoded list (F-7d4ac5ce class-level fix)', () => {
+  it('today: every exported Error subclass in errors.js has dedicated coverage above', () => {
+    const uncovered = computeUncoveredErrorClasses(errorsModule, TESTED_CLASSES);
+    assert.deepEqual(
+      uncovered,
+      [],
+      `errors.js exports an Error subclass with no it() block above and no TESTED_CLASSES entry: ` +
+      `${uncovered.join(', ')} — add a dedicated test above asserting it renders a "Next:" line, ` +
+      `then add its name to TESTED_CLASSES`,
+    );
+  });
+
+  it('GATE (mutation control): a synthetic module with one extra Error subclass IS reported uncovered', () => {
+    // Proves the gate can actually go RED — the exact failure mode this
+    // finding described (a hardcoded list a new class silently escapes) would
+    // make this assertion produce [] too, indistinguishable from "genuinely
+    // fully covered". Deletion/addition-shaped mutation, not value
+    // perturbation (PROTOCOL.md: value-perturbing mutation is blind to
+    // exactly this class of gap).
+    class FutureError extends Error {}
+    const fakeModule = { ...errorsModule, FutureError };
+    const uncovered = computeUncoveredErrorClasses(fakeModule, TESTED_CLASSES);
+    assert.deepEqual(uncovered, ['FutureError']);
+  });
+
+  it('GATE (mutation control): two extra Error subclasses are both reported, sorted', () => {
+    class AlphaError extends Error {}
+    class ZetaError extends Error {}
+    const fakeModule = { ...errorsModule, ZetaError, AlphaError };
+    const uncovered = computeUncoveredErrorClasses(fakeModule, TESTED_CLASSES);
+    assert.deepEqual(uncovered, ['AlphaError', 'ZetaError']);
+  });
+
+  it('GATE (mutation control): a non-Error export is never reported as an uncovered class', () => {
+    // A plain function/const export (e.g. a future helper added to errors.js)
+    // must not false-positive as an "uncovered error class" — the filter is
+    // Error-subclass-shaped, not "any new export".
+    const fakeModule = { ...errorsModule, someHelper: function someHelper() {}, SOME_CONST: 42 };
+    const uncovered = computeUncoveredErrorClasses(fakeModule, TESTED_CLASSES);
+    assert.deepEqual(uncovered, []);
+  });
+
+  it('sanity: TESTED_CLASSES itself has no stale entry (a name not actually exported by errors.js)', () => {
+    // The inverse defect: a name lingering in TESTED_CLASSES after its class
+    // was renamed/removed from errors.js would silently mask a REAL removal
+    // going unnoticed by this gate (computeUncoveredErrorClasses only checks
+    // exports not-in tested, never tested not-in exports).
+    const staleEntries = TESTED_CLASSES.filter((name) => !isErrorClass(errorsModule[name]));
+    assert.deepEqual(staleEntries, [], `TESTED_CLASSES names a class errors.js no longer exports: ${staleEntries.join(', ')}`);
   });
 });

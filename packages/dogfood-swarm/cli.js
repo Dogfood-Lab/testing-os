@@ -39,7 +39,7 @@ import { redrive, formatRedrive } from './commands/redrive.js';
 import { clean, formatClean } from './commands/clean.js';
 import { cleanClaims, formatCleanClaims } from './commands/clean-claims.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
-import { escapeReasonForDisplay } from './commands/lib/escape-reason.js';
+import { escapeReasonForDisplay, escapePathForDisplay } from './commands/lib/escape-reason.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
 import { verifyRecurring as runVerifyRecurring } from './commands/verify-recurring.js';
@@ -727,7 +727,17 @@ function cmdCollect(args) {
   if (result.violations.length > 0) {
     console.log('OWNERSHIP VIOLATIONS:');
     for (const v of result.violations) {
-      console.log(`  ${v.file} — agent "${v.agent_domain}" touched file owned by "${v.actual_owner}"`);
+      // F-f1dae277 (wave 22): v.file is the SAME zero-privilege
+      // ownership.violations[].file field family F-4773fb77 (wave 20)
+      // established the escaping bar for, rendered here as a DIRECT
+      // console.log with zero escaping — this domain's own `swarm collect`
+      // output, independent of receipt.js/revalidate.js/clean-claims.js.
+      // v.agent_domain / v.actual_owner are domain NAMES from the frozen
+      // domain map (lib/domains.js), not target-repo content — the same
+      // trust tier as every other unescaped `.domain` field this package
+      // already renders bare (e.g. status.js's Agents table), so only
+      // v.file needs routing through the helper.
+      console.log(`  ${escapePathForDisplay(v.file)} — agent "${v.agent_domain}" touched file owned by "${v.actual_owner}"`);
     }
     console.log('');
   }
@@ -1349,6 +1359,19 @@ function cmdVerify(args) {
       || (failedStep
         ? `required step '${failedStep.name}' failed (exit ${failedStep.exit_code})`
         : 'not a verified pass');
+    // F-26adaf33 (LOW, wave 22): `why` is unescaped by the same reasoning
+    // commands/verify.js's formatVerify documents for this exact field
+    // (F-4773fb77, wave 20) — result.reason is runner.js's own fixed
+    // template-string output (never target-repo content), and the
+    // failedStep fallback branch interpolates only failedStep.name (always
+    // one of five hardcoded adapter step-name literals: lint/typecheck/
+    // test/build/check) and failedStep.exit_code (a number). This is a
+    // SECOND, independent render of the same invariant on the non-pass
+    // exit path — see commands/verify.js's comment above its own
+    // `if (result.reason) lines.push(...)` line for the full argument; a
+    // future change to runner.js that begins interpolating real content
+    // into `reason` must be checked against BOTH render sites, not just
+    // the one wave 20 happened to touch.
     console.error(`swarm verify: ${result.verdict.toUpperCase()} — ${why}`);
     // F-5dabf101: process.exitCode + return, NOT process.exit() — exit()
     // terminates without waiting for the pending async write of the

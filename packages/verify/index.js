@@ -414,13 +414,28 @@ export async function verify(submission, options) {
   // isRetryableRejection() — not a blanket "schema: only" allowlist. The
   // shape/addressing subset of `submission-bad` (schema:, repo:,
   // unsafe-record-path:, steps[<id>]:, policy-config:,
-  // submission-contains-verifier-field:, CONTRACT_SCHEMA_TOO_NEW/OLD:) is
+  // submission-contains-verifier-field:, CONTRACT_SCHEMA_TOO_OLD:) is
   // `retryable: true`; the content-verdict subset (policy:, provenance:)
   // stays `retryable: false`, exactly as this paragraph describes. See
   // parse-rejection.js's file header for the full rationale and
   // schema-invalid-skip-persist.test.js's "REGRESSION GUARD" /
   // "persist-a-verdict doctrine is preserved" tests for the pinned proof that
   // policy:/provenance: remain terminal.
+  //
+  // CONTRACT_SCHEMA_TOO_NEW: does NOT belong in the shape/addressing list
+  // above — corrected here, wave 22 (F-51780da9's sweep found this comment
+  // stale in the same way it found parse-rejection.test.js's F-be0deacd test
+  // comment stale). F-be0deacd (wave 20) moved it to class 'operational' with
+  // `retryable: false` permanently: only a testing-os upgrade satisfies
+  // `major > maxMajor`, never a payload correction. `retryable` is a static
+  // per-prefix flag with no visibility into a later upgrade, so
+  // persist.js's isRetryableRejection() carries one additional, narrow
+  // re-check for this prefix only — re-deriving whether the stored
+  // rejection's declared major is still above the CURRENT build's
+  // SUPPORTED_SCHEMA_VERSIONS ceiling, rather than trusting the frozen
+  // boolean — so a stale TOO_NEW rejection does not permanently poison a
+  // run_id once the operator upgrades past the declared major. See
+  // isRetryableRejection's own doc comment (packages/ingest/persist.js).
   const canFilePath = schemaResult.valid || hasFilablePathIdentity(submission);
   const persisted = {
     schema_version: RECORD_SCHEMA_VERSION,

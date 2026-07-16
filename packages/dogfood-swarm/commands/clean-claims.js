@@ -87,7 +87,7 @@ import { BLOCKED_STATUSES as AGENT_BLOCKED_STATUSES } from '../lib/state-machine
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
-import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { escapeReasonForDisplay, escapePathForDisplay } from './lib/escape-reason.js';
 
 // SQLite bind-parameter ceiling is host-dependent (999 on older builds);
 // batching the id-list DELETE keeps the verb safe at any row count.
@@ -567,8 +567,14 @@ export function formatCleanClaims(report) {
       } else {
         out += '    evidence: no agent_state_events rows for this agent_run\n';
       }
+      // F-f1dae277 (wave 22): c.file_path (file_claims.file_path) is the
+      // same zero-privilege field family F-4773fb77 (wave 20) routed
+      // probe.reason through — either a name the reporting agent chose, or
+      // a path already sitting in the audited repo's own tree. Proven live,
+      // unescaped, via this exact CLI stdout render (cli.js's
+      // `process.stdout.write(formatCleanClaims(result))`).
       for (const c of g.claims.slice(0, MAX_FILES_SHOWN)) {
-        out += `      ${c.file_path}\n`;
+        out += `      ${escapePathForDisplay(c.file_path)}\n`;
       }
       if (g.claims.length > MAX_FILES_SHOWN) {
         out += `      ... +${g.claims.length - MAX_FILES_SHOWN} more (see --format=json)\n`;

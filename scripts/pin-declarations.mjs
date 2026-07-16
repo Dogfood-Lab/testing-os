@@ -154,17 +154,33 @@ function parseOptsFor(filePath) {
  * (the "empty tag" defect) rather than silently contributing zero pins.
  *
  * F-d77ffe1a: once at least one well-formed id has been accepted on the
- * line, the FIRST subsequent token that fails F_ID_PATTERN ends id-scanning
- * — everything from that token onward is treated as a free-text
- * description, not further tokens to validate. This is what lets the
- * natural, JSDoc-conventional `@pins F-id - explanation` style (the same
- * `@tag value - description` shape `@param name - description` already
- * uses) credit the id without also raising one bad-shape issue per
- * whitespace-delimited word of prose. Before any valid id has been found,
- * every failing token is still reported as bad-shape (unchanged from
- * before this fix) — a genuinely malformed tag (`@pins NOT-AN-ID`, nothing
- * valid anywhere on the line) must still be a defect, never silently
- * swallowed as "just description text."
+ * line, the FIRST subsequent token that fails F_ID_PATTERN AND does not
+ * itself look like an id attempt ends id-scanning — everything from that
+ * token onward is treated as a free-text description, not further tokens
+ * to validate. This is what lets the natural, JSDoc-conventional
+ * `@pins F-id - explanation` style (the same `@tag value - description`
+ * shape `@param name - description` already uses) credit the id without
+ * also raising one bad-shape issue per whitespace-delimited word of prose.
+ * Before any valid id has been found, every failing token is still reported
+ * as bad-shape (unchanged from before this fix) — a genuinely malformed tag
+ * (`@pins NOT-AN-ID`, nothing valid anywhere on the line) must still be a
+ * defect, never silently swallowed as "just description text."
+ *
+ * F-a5f07b2b: F-d77ffe1a's original fix over-corrected — it treated EVERY
+ * post-valid-id failing token as free text, including one that is itself
+ * id-shaped-but-wrong (e.g. a hash-style id one hex digit short of a real
+ * second pin declared elsewhere in the same fixture). That silently
+ * dropped a realistic typo that, before F-d77ffe1a, correctly blocked the
+ * gate as a bad-shape tagIssue. Every F_ID_PATTERN alternative shares the
+ * literal "F-" prefix (see that pattern's own definition in
+ * parse-regression-pins.js — legacy F-NNNNNN-NNN, hash F-xxxxxxxx, or
+ * prefixed F-AAA-NNN all start "F-"), so a failing token that starts with
+ * "F-" is still trying to be an id, not describing a fix in prose —
+ * natural JSDoc prose is very unlikely to contain a bare "F-" + several
+ * more characters by coincidence. Only a token that does NOT start with
+ * "F-" is treated as the start of free text, preserving F-d77ffe1a's fix
+ * for the case it actually targeted (`@pins F-id - explanation`) while
+ * restoring the bad-shape signal for a mistyped second id.
  *
  * @param {string} commentValue - Babel Comment.value (delimiters stripped).
  * @returns {{ token: string | null, ok: boolean }[]}
@@ -187,7 +203,17 @@ export function extractDeclaredIds(commentValue) {
         foundValid = true;
         continue;
       }
-      if (foundValid) break; // F-d77ffe1a: remainder of the line is a free-text description, not more id attempts.
+      if (foundValid) {
+        // F-a5f07b2b: a failing token that still starts with "F-" reads as
+        // a botched id attempt, not prose — report it and keep scanning.
+        // Anything else is the free-text description F-d77ffe1a's fix
+        // exists to stop validating against F_ID_PATTERN.
+        if (token.startsWith('F-')) {
+          out.push({ token, ok: false });
+          continue;
+        }
+        break; // F-d77ffe1a: remainder of the line is a free-text description, not more id attempts.
+      }
       out.push({ token, ok: false });
     }
   }

@@ -334,10 +334,20 @@ describe('F-16bab049 — collect refuses a --domain=<name>:<path> whose name mat
 
 describe('F-18a5579c — cmdAdjudicate passes the run-scoped output dir, not the swarms/ root', () => {
   it('source scan: cmdAdjudicate builds swarmDir from getOutputDir(runId), not dirname(getDbPath())', () => {
-    const cmdAdjudicateBody = CLI_SRC.slice(
+    // F-911b18ef (wave 22): comments stripped BEFORE scanning. cli.js:1704-1709
+    // carries a real comment documenting this exact fix ("Pre-fix this was
+    // dirname(getDbPath()), the swarms/ ROOT: every run's receipts piled into
+    // one flat swarms/adjudications/ dir...") — today's prose phrasing happens
+    // not to trip the anchored doesNotMatch below (it lacks the literal
+    // "const swarmDir = " prefix and trailing ";"), but one entirely natural
+    // rephrase (quoting the old line in backticks, a documentation style used
+    // throughout this package — see this same file's F-5dabf101 block two
+    // sections down) DOES trip it on an unstripped slice. Same false-positive
+    // shape as the F-21240958 block below, just not yet triggered.
+    const cmdAdjudicateBody = stripComments(CLI_SRC.slice(
       CLI_SRC.indexOf('async function cmdAdjudicate'),
       CLI_SRC.indexOf('\nfunction cmdAdvance'),
-    );
+    ));
     assert.match(cmdAdjudicateBody, /const swarmDir = getOutputDir\(runId\);/,
       'pre-fix: swarmDir = dirname(getDbPath()) wrote every run\'s receipts into one flat swarms/adjudications/ dir');
     assert.doesNotMatch(cmdAdjudicateBody, /const swarmDir = dirname\(getDbPath\(\)\);/);

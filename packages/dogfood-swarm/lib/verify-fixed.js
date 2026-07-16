@@ -54,6 +54,7 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve, isAbsolute } from 'node:path';
 import { MAX_AGENT_OUTPUT_BYTES } from './bounded-json-read.js';
+import { bucketForLine, findAnchorInBucket } from './verify-window.js';
 
 /**
  * Tolerance window (lines) around the recorded line where finding the
@@ -63,14 +64,6 @@ import { MAX_AGENT_OUTPUT_BYTES } from './bounded-json-read.js';
  * blank-line edit but tight enough that an actual fix moves out of range.
  */
 const EXACT_LINE_TOLERANCE = 2;
-
-/**
- * Width of the line-bucket window (lines), matching the fingerprint
- * normalizeSpan() that buckets to the nearest 10 lines. Within this window
- * the bug-class is considered "near where it was"; outside it the bug-class
- * is gone from the recorded location regardless of what's at the file.
- */
-const FINGERPRINT_BUCKET = 10;
 
 /**
  * Fetch all findings WHERE run_id=? AND status='fixed', joined with each
@@ -241,37 +234,13 @@ export function classifyFixedFinding(finding, repoRoot, opts = {}) {
 
   const recordedLine = Number(finding.line_number) || 0;
 
-  // Bucket window — matches the fingerprint normalizeSpan() granularity.
-  // We scan the bucket the recorded line falls into PLUS one full adjacent
-  // bucket in EACH direction, so a still-present symbol that drifted into a
-  // neighbouring bucket is still found. The window must be SYMMETRIC: an
-  // upward-only window let a symbol that drifted into the adjacent LOWER
-  // bucket escape the search and misclassify as `verified` (ve-003). E.g. a
-  // finding recorded at line 42 (bucket [40,50]) whose symbol drifted to
-  // line 38 must still match — line 38 is a full bucket below the recorded
-  // line, so the window reaches down by FINGERPRINT_BUCKET, not one line.
-  let bucketStart, bucketEnd;
-  if (recordedLine > 0) {
-    const bucket = Math.floor(recordedLine / FINGERPRINT_BUCKET) * FINGERPRINT_BUCKET;
-    bucketStart = Math.max(1, bucket - FINGERPRINT_BUCKET);
-    bucketEnd = bucket + FINGERPRINT_BUCKET;
-  } else {
-    // No line recorded: scan the whole file. If anchor exists anywhere,
-    // we report claimed-but-still-present (best we can do without span).
-    bucketStart = 1;
-    bucketEnd = lines.length;
-  }
-
-  // Search for the anchor inside the bucket window. Note that the line
-  // array is 0-indexed but recorded line numbers are 1-indexed.
-  let matchedLine = null;
-  for (let lineNo = bucketStart; lineNo <= Math.min(bucketEnd, lines.length); lineNo++) {
-    const text = lines[lineNo - 1];
-    if (typeof text === 'string' && anchor.regex.test(text)) {
-      matchedLine = lineNo;
-      break;
-    }
-  }
+  // F-d4e09870: bucket window computation lives in ./verify-window.js,
+  // shared with lib/verify-classifier-v2.js — see that module for the
+  // symmetric-window contract (a full bucket below AND a full bucket above
+  // the recorded line's own bucket; previously this file inlined an
+  // asymmetric copy that only reached the first line of the bucket above).
+  const { start: bucketStart, end: bucketEnd } = bucketForLine(recordedLine, lines.length);
+  const matchedLine = findAnchorInBucket(lines, anchor.regex, bucketStart, bucketEnd);
 
   if (matchedLine === null) {
     // ve-001: only a missing code-identifier anchor (real `symbol`) proves

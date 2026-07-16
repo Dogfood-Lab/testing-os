@@ -17,7 +17,7 @@ import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
 import { buildRunExport, computeRunVerdict } from '../lib/persist/export.js';
 import { buildDogfoodSubmission } from '../lib/persist/dogfood-bridge.js';
-import { buildAuditPayload } from '../lib/persist/repoknowledge-bridge.js';
+import { buildAuditPayload, formatAuditStatusLine } from '../lib/persist/repoknowledge-bridge.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 // Resolve REPO_ROOT off this file (commands/persist.js → packages/dogfood-swarm → repo root).
@@ -137,6 +137,14 @@ export function persist(opts) {
     path: auditDir,
     status: auditPayload.run.overall_status,
     posture: auditPayload.run.overall_posture,
+    // F-882ed6c0 (routed to swarm-cp-core; wired here since commands/persist.js
+    // is outside that domain's owned glob): carried alongside the existing
+    // flattened status/posture fields (kept as-is — additive only, nothing
+    // reads this report shape via --format=json, but no reason to narrow an
+    // existing field either) so formatPersist() below can reconstruct the
+    // auditPayload shape formatAuditStatusLine() expects without threading
+    // the whole auditPayload object through the report.
+    runAborted: auditPayload.metrics.run_aborted,
   };
 
   return report;
@@ -180,11 +188,24 @@ export function formatPersist(r) {
   // fp-p-004: distinguish "artifacts written locally" from "submitted to the
   // repo-knowledge DB". The submission is the coordinator's downstream step;
   // say so rather than implying it already happened.
+  // F-882ed6c0 (routed to swarm-cp-core, wired here — see the field comment
+  // on report.repoKnowledge in persist() above): both lines used to
+  // hand-format `${status} (${posture})` directly, exactly the render
+  // formatAuditStatusLine() exists to standardize — an aborted run with zero
+  // open findings rendered a bare "fail (critical)" with nothing telling the
+  // operator a phantom critical did NOT trigger the block. Reconstructing the
+  // auditPayload shape from the flattened report fields rather than
+  // threading the whole object through keeps report.repoKnowledge's
+  // existing shape stable for any other reader.
+  const auditStatusLine = formatAuditStatusLine({
+    run: { overall_status: r.repoKnowledge?.status, overall_posture: r.repoKnowledge?.posture },
+    metrics: { run_aborted: r.repoKnowledge?.runAborted },
+  });
   if (r.repoKnowledge?.submitted) {
-    lines.push(`  Submitted: YES — status ${r.repoKnowledge?.status} (${r.repoKnowledge?.posture})`);
+    lines.push(`  Submitted: YES — status ${auditStatusLine}`);
   } else {
     lines.push(`  Submitted: NO — artifacts written, run \`rk audit import <path>\` to submit`);
-    lines.push(`  Status (pending): ${r.repoKnowledge?.status} (${r.repoKnowledge?.posture})`);
+    lines.push(`  Status (pending): ${auditStatusLine}`);
   }
   lines.push(`  Path:   ${r.repoKnowledge?.path}`);
 

@@ -236,6 +236,14 @@ export function formatVerify(result) {
   // and adapter run() branch that assigns `reason`). Escaping it anyway would
   // suggest a trust distinction that does not exist and would misdirect a
   // future reader auditing this file's escaping discipline.
+  //
+  // F-26adaf33 (LOW, wave 22): this same result.reason value has a SECOND,
+  // independent render site — cli.js's non-pass exit path
+  // (`swarm verify: ${result.verdict.toUpperCase()} — ${why}`, where `why`
+  // falls back to result.reason) — which carries a mirrored comment citing
+  // this one. If the safety argument above ever stops holding (e.g. a
+  // future runner.js change starts interpolating real content into
+  // `reason`), both render sites need to be checked, not just this one.
   if (result.reason) lines.push(`Reason: ${result.reason}`);
   lines.push(`Adapter: ${result.adapter || 'none'}`);
   if (result.probe) {

@@ -53,5 +53,6 @@ Every `scenario_results[]` item must include `step_results[]` with at least one 
 The verifier enforces:
 - Every `required_steps[]` in the scenario definition has a matching `step_results[]` entry
 - A scenario cannot have `verdict: pass` if any required step has `status: fail` or `status: blocked`
+- A scenario cannot have a non-pass verdict (`fail`, `blocked`, or `partial`) when every reported step actively has `status: pass` — a self-contradictory downgrade claim is rejected in both directions, not just the inflation direction. `skip` and `partial` *step* statuses are neutral evidence for this check (they neither justify nor contradict a non-pass verdict), so partial evidence under a `fail`/`blocked`/`partial` verdict is accepted. Before wave 22 (F-cc198701) `partial` scenario verdicts were exempt from this check entirely — an unchecked 2-of-4-rank verdict-inflation path.
 
 Both checks require the scenario *definition* to be resolvable at verify time: they run for `github`-provenance submissions (the scenario file is fetched from the submitting repo at the attested commit) and whenever a scenarios map is supplied to `verify()` directly. For `gitlab` submissions scenario fetching is not yet implemented, so these two checks are skipped there — a documented gap, not a silent one.

@@ -271,6 +271,86 @@ describe('Rule: blocked scenario', () => {
   });
 });
 
+// ============================================================
+// Rule: partial scenario evidence (F-cc198701 regression)
+// ============================================================
+//
+// Confirming audit of F-88fb37ff/F-e42e8f80 (steps.js) found the identical
+// blind spot one layer up: ruleBlockedScenario checks only verdict==='blocked'
+// and ruleScenarioStepFailure checks only verdict==='fail' — 'partial' (the
+// third of the four legal scenario_results[].verdict enum values) was
+// invisible to EVERY rule in this file regardless of its step evidence, so a
+// self-contradictory record (verdict:'partial', every step actively 'fail')
+// generated zero corrective/diagnostic finding anywhere in the intelligence
+// layer. Fix: rulePartialScenarioEvidence, a dedicated sibling rule (not a
+// widened ruleBlockedScenario — that rule's "was blocked: <reason>" wording
+// would misdescribe a 'partial' scenario, since blocking_reason is only ever
+// populated for a genuinely 'blocked' one).
+
+/** Record with a partial scenario corroborated by non-pass step evidence. */
+function makePartialWithEvidenceRecord() {
+  return makePassingRecord({
+    run_id: 'test-partial-001',
+    repo: 'mcp-tool-shop-org/test-cli',
+    scenario_results: [{
+      scenario_id: 'partial-evidence-scenario',
+      product_surface: 'cli',
+      execution_mode: 'bot',
+      verdict: 'partial',
+      step_results: [
+        { step_id: 'run-help', status: 'fail' },
+        { step_id: 'run-init', status: 'fail' }
+      ],
+      evidence: [{ kind: 'log', url: 'https://example.com/log' }]
+    }],
+    overall_verdict: { proposed: 'partial', verified: 'partial', downgraded: false }
+  });
+}
+
+describe('Rule: partial scenario evidence (F-cc198701)', () => {
+  /** @pins F-cc198701 */
+  it('fires on a "partial" verdict corroborated by non-pass step evidence (pre-fix: zero rules fired for this shape)', () => {
+    const candidates = deriveFromRecord(makePartialWithEvidenceRecord());
+    const match = candidates.find(c => c.derived.rule_id === 'rule-partial-scenario-evidence');
+    assert.ok(match, 'Should emit a partial-scenario-evidence finding');
+    assert.ok(match.summary.includes('run-help'), `expected the non-pass step ids in the summary, got: ${match.summary}`);
+    assert.equal(match.issue_kind, 'verification_gap');
+  });
+
+  it('does NOT fire on a passing record (verdict "pass", no partial scenario at all)', () => {
+    const candidates = deriveFromRecord(makePassingRecord());
+    const match = candidates.find(c => c.derived.rule_id === 'rule-partial-scenario-evidence');
+    assert.equal(match, undefined);
+  });
+
+  it('does NOT fire on "partial" backed by ZERO non-pass evidence (every step actively pass) — that shape is steps.js\'s job to reject at ingest, not this rule\'s job to diagnose post-hoc', () => {
+    const record = makePassingRecord({
+      run_id: 'test-partial-allpass-001',
+      scenario_results: [{
+        scenario_id: 'partial-allpass-scenario',
+        product_surface: 'cli',
+        execution_mode: 'bot',
+        verdict: 'partial',
+        step_results: [{ step_id: 'run-help', status: 'pass' }],
+        evidence: [{ kind: 'log', url: 'https://example.com/log' }]
+      }]
+    });
+    const candidates = deriveFromRecord(record);
+    const match = candidates.find(c => c.derived.rule_id === 'rule-partial-scenario-evidence');
+    assert.equal(match, undefined,
+      'a partial verdict with zero non-pass step evidence has no non-pass step ids to diagnose — hasNonPassStepEvidence must be false for this shape');
+  });
+
+  it('does NOT fire on "blocked"/"fail" verdicts — those stay owned by their own sibling rules', () => {
+    const candidates = [
+      ...deriveFromRecord(makeBlockedRecord()),
+      ...deriveFromRecord(makeStepFailureRecord())
+    ];
+    const match = candidates.find(c => c.derived.rule_id === 'rule-partial-scenario-evidence');
+    assert.equal(match, undefined);
+  });
+});
+
 describe('Rule: execution mode attestation gap', () => {
   it('fires on mixed mode without attested_by', () => {
     const candidates = deriveFromRecord(makeMissingAttestationRecord());
@@ -487,7 +567,10 @@ describe('Schema validity of derived candidates', () => {
     { name: 'verdict-downgrade', factory: makeDowngradeRecord, opts: { rejected: true } },
     { name: 'step-failure', factory: makeStepFailureRecord, opts: {} },
     { name: 'blocked', factory: makeBlockedRecord, opts: {} },
-    { name: 'attestation-gap', factory: makeMissingAttestationRecord, opts: {} }
+    { name: 'attestation-gap', factory: makeMissingAttestationRecord, opts: {} },
+    // F-cc198701: partial-scenario-evidence's candidate output goes through
+    // the same schema-validity floor as every other rule's.
+    { name: 'partial-evidence', factory: makePartialWithEvidenceRecord, opts: {} }
   ];
 
   for (const { name, factory, opts } of testRecords) {

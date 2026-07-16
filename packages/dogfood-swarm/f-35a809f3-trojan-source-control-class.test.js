@@ -24,6 +24,15 @@
  * BOTH history() (the exact object cli.js's --format=json branch
  * JSON.stringifies with zero escaping) and formatHistory() (the text table,
  * which must escape), so the same payload is proven both ways from one seed.
+ *
+ * CORRECTED wave 22 (F-6540ba3d / F-37ba8d85): four assertions this file
+ * originally pinned were themselves wrong, not merely superseded — see the
+ * comments directly above NEUTRALIZED_CLASS_REPRESENTATIVES and
+ * BOUNDARY_CODEPOINTS, below, for exactly which four and why. This is a
+ * correction to wave 20's own proof, kept in this file (not silently
+ * dropped) per this repo's rule against normalizing historical evidence —
+ * the bidi/zero-width/BOM assertions this file also pins are unaffected and
+ * still enforced exactly as wave 20 wrote them.
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -37,6 +46,19 @@ import { openDb, closeDb } from './db/connection.js';
 import { history, formatHistory } from './commands/history.js';
 
 // One representative codepoint per newly-covered class (dispatch F-35a809f3).
+//
+// F-37ba8d85 (wave 22) removed the single combining-mark representative this
+// list originally carried (U+0301 alone) — a single Combining Diacritical
+// Mark is no longer part of the single-character CONTROL_CLASS at all (see
+// commands/lib/escape-reason.js's ZALGO_RUN); escaping every isolated
+// occurrence was itself the defect that finding fixed (it mangled ordinary
+// NFD text — Vietnamese, polytonic Greek, IAST Sanskrit transliteration).
+// The current, correct combining-mark behavior (pass through below the
+// pathological-run threshold, escape at or above it) is pinned in
+// f-37ba8d85-combining-mark-and-zwj-precision.test.js, not here — this file
+// stays a historical record of wave 20's OWN proof, corrected only where
+// wave 22 demonstrated wave 20 was itself wrong (see the BOUNDARY_CODEPOINTS
+// comment below for the same discipline applied to the boundary table).
 const NEUTRALIZED_CLASS_REPRESENTATIVES = [
   { label: 'RLO — bidi override (U+202E)', cp: 0x202e },
   { label: 'LRI — bidi isolate (U+2066)', cp: 0x2066 },
@@ -44,7 +66,6 @@ const NEUTRALIZED_CLASS_REPRESENTATIVES = [
   { label: 'ALM — Arabic Letter Mark (U+061C)', cp: 0x061c },
   { label: 'ZWSP — zero-width space (U+200B)', cp: 0x200b },
   { label: 'BOM/ZWNBSP (U+FEFF)', cp: 0xfeff },
-  { label: 'combining acute accent (U+0301, zalgo stacking)', cp: 0x0301 },
 ];
 
 // [codepoint, expectEscaped] pairs bracketing every widened range's edges —
@@ -53,13 +74,36 @@ const NEUTRALIZED_CLASS_REPRESENTATIVES = [
 // widening bug that accidentally shifted a range by one codepoint would flip
 // one of these from pass-through to escaped (or vice-versa) and this table
 // would catch it.
+//
+// F-6540ba3d / F-37ba8d85 (wave 22) correctly changed FOUR of these entries
+// from wave 20's original values — re-verified directly against Node's real
+// `\p{Default_Ignorable_Code_Point}` engine, not assumed:
+//   - U+206A: false -> true. Wave 20's enumerated ranges stopped at the bidi
+//     isolates (U+2069); U+206A-U+206F (deprecated bidi-shaping controls) IS
+//     a Default_Ignorable_Code_Point member and is exactly one of the gaps
+//     F-6540ba3d asked the property switch to close.
+//   - U+2065: false -> true. Not named by either wave-22 finding, but
+//     discovered verifying this exact boundary table against the real
+//     property: U+2065 is UNASSIGNED in the current Unicode Standard, but
+//     Unicode's own derivation still marks the gap Default_Ignorable_Code_Point
+//     (reserving it for a future default-ignorable assignment). No legitimate
+//     text can contain an unassigned codepoint today, so escaping it
+//     pre-emptively costs nothing and is exactly the "next steganography-
+//     hazard codepoint is covered automatically" property the finding
+//     argued for adopting the real Unicode property in the first place.
+//   - U+0300 / U+036F: true -> false. The Combining Diacritical Marks block's
+//     boundary codepoints are no longer escaped in ISOLATION (F-37ba8d85) —
+//     they now require a run of 3-or-more to trigger ZALGO_RUN, which this
+//     file's single-occurrence boundary probe does not construct. See
+//     f-37ba8d85-combining-mark-and-zwj-precision.test.js for the run-length
+//     boundary this table's shape cannot express.
 const BOUNDARY_CODEPOINTS = [
   [0x061b, false], [0x061c, true], [0x061d, false], // ALM, single codepoint
   [0x200a, false], [0x200b, true], [0x200f, true], [0x2010, false], // ZW block + bidi marks
   [0x2029, true], [0x202a, true], [0x202e, true], [0x202f, false], // paragraph-sep (wave 18) + bidi embedding block
-  [0x2065, false], [0x2066, true], [0x2069, true], [0x206a, false], // bidi isolates
+  [0x2065, true], [0x2066, true], [0x2069, true], [0x206a, true], // bidi isolates + wave-22 Default_Ignorable_Code_Point corrections
   [0xfefe, false], [0xfeff, true], [0xff00, false], // BOM/ZWNBSP
-  [0x02ff, false], [0x0300, true], [0x036f, true], [0x0370, false], // combining diacritical marks
+  [0x02ff, false], [0x0300, false], [0x036f, false], [0x0370, false], // combining diacritical marks: isolated occurrence, wave-22 no longer escapes these (see ZALGO_RUN)
 ];
 
 /** @pins F-35a809f3 */

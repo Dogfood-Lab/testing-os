@@ -157,7 +157,7 @@ describe('F-e42e8f80: real verify() pipeline accepts an honest blocked/fail verd
   });
 });
 
-describe('F-e42e8f80: validateStepResults — {fail,blocked} x {all-skip, all-partial, mixed-skip-and-pass} matrix (unit level)', () => {
+describe('F-e42e8f80: validateStepResults — {fail,blocked,partial} x {all-skip, all-partial, mixed-skip-and-pass} matrix (unit level)', () => {
   function scenario(verdict, statuses) {
     return {
       scenario_id: 'matrix',
@@ -166,7 +166,14 @@ describe('F-e42e8f80: validateStepResults — {fail,blocked} x {all-skip, all-pa
     };
   }
 
-  for (const verdict of ['blocked', 'fail']) {
+  // F-cc198701 (wave 22): 'partial' added to this matrix — it is the third of
+  // scenario_results[].verdict's four legal enum values this loop now covers
+  // (only 'pass' — the OPPOSITE direction, checked separately above at line
+  // ~59 — remains outside this loop's scope). Pre-fix, 'partial' was never a
+  // member of this array at all, so the "unweakened" case below silently
+  // exercised zero coverage for it; now every row below runs for 'partial'
+  // exactly as it does for 'blocked'/'fail'.
+  for (const verdict of ['blocked', 'fail', 'partial']) {
     it(`${verdict} + all-skip -> no reverse-consistency error (steps never ran)`, () => {
       const errors = validateStepResults(scenario(verdict, ['skip', 'skip']));
       assert.ok(!errors.some(e => e.includes('no step reports')), `got: ${JSON.stringify(errors)}`);
@@ -190,7 +197,9 @@ describe('F-e42e8f80: validateStepResults — {fail,blocked} x {all-skip, all-pa
 });
 
 describe('F-e42e8f80: validateRequiredSteps — same matrix, scoped to REQUIRED steps', () => {
-  for (const verdict of ['blocked', 'fail']) {
+  // F-cc198701 (wave 22): same widening as the validateStepResults matrix
+  // above — validateRequiredSteps enumerated only 'fail'/'blocked' too.
+  for (const verdict of ['blocked', 'fail', 'partial']) {
     it(`${verdict} + every required step present as "skip" -> no [step-verdict-consistent] error`, () => {
       const sr = {
         verdict,
@@ -233,5 +242,91 @@ describe('F-e42e8f80: validateRequiredSteps — same matrix, scoped to REQUIRED 
     const errors = validateRequiredSteps(sr, ['a', 'b']);
     assert.equal(errors.length, 1, `got: ${JSON.stringify(errors)}`);
     assert.match(errors[0], /^\[step-results-present\] required step "b"/);
+  });
+});
+
+/**
+ * F-cc198701 (wave 22, confirming audit of F-e42e8f80/F-88fb37ff):
+ * 'partial' is a fully legal, first-class scenario verdict
+ * (dogfood-record-submission.schema.json line ~164, the identical enum
+ * `["pass","fail","blocked","partial"]` backs both scenario_results[].verdict
+ * and overall_verdict) that neither the fail/blocked-direction check above
+ * nor the pass-direction check at line ~59 ever enumerated. The two tests
+ * below run the REAL, unmutated verify() pipeline end-to-end (same harness as
+ * the F-e42e8f80 describe block above: cloned pilot-0, stubProvenance, real
+ * global+repo policy) to prove the exact shape this finding's audit proved
+ * live, and the exact shape that must NOT change as a result of closing it.
+ */
+describe('F-cc198701: real verify() pipeline — "partial" backed by zero non-pass evidence is now caught (steps.js)', () => {
+  /** @pins F-cc198701 */
+  it('REJECTS verdict="partial" with every step actively "pass" (zero corroborating evidence — the exact gap this fix closes)', async () => {
+    // Pre-fix: verdict==='partial' never entered the fail/blocked-direction
+    // branch at all, so this self-contradictory shape (a verdict claiming
+    // something less than full success, backed by SEVEN steps that all
+    // actively claim success) sailed through with rejection_reasons=[] —
+    // the identical vacuity the F-88fb37ff/F-e42e8f80 lineage already closed
+    // for 'blocked'/'fail', just for the one enum value neither ever checked.
+    const bad = structuredClone(pilot0);
+    bad.scenario_results[0].verdict = 'partial';
+    bad.overall_verdict = 'partial';
+
+    const record = await verify(bad, baseOptions());
+
+    assert.equal(record.verification.status, 'rejected',
+      `an all-pass "partial" verdict must now be rejected as self-contradictory; reasons: ${JSON.stringify(record.verification.rejection_reasons)}`);
+    assert.ok(
+      record.verification.rejection_reasons.some(r => r.includes('no step reports')),
+      `got: ${JSON.stringify(record.verification.rejection_reasons)}`
+    );
+  });
+
+  /** @pins F-cc198701 */
+  it('REGRESSION GUARD: still ACCEPTS verdict="partial" with every step actively "fail" — not inherently contradictory, unweakened by this fix', async () => {
+    // This is the finding's own PROVEN END-TO-END reproduction shape
+    // (verdict:'partial', all 7 steps 'fail') — and its outcome is
+    // DELIBERATELY UNCHANGED by this fix: 'partial' backed by non-pass step
+    // evidence (even all-fail) is not the self-contradictory shape steps.js
+    // guards against — reusing the identical "all present steps actively
+    // pass" bar means only a TOTAL ABSENCE of corroborating evidence (every
+    // step says pass) is now caught. The corrective signal for THIS
+    // (accepted-but-suspicious) shape comes from the derivation layer instead
+    // — see rules.js's rule-partial-scenario-evidence, tested in
+    // packages/findings/derive/derive.test.js.
+    const record = await verify(
+      (() => {
+        const s = structuredClone(pilot0);
+        s.scenario_results[0].verdict = 'partial';
+        for (const step of s.scenario_results[0].step_results) step.status = 'fail';
+        s.overall_verdict = 'partial';
+        return s;
+      })(),
+      baseOptions()
+    );
+
+    assert.equal(record.verification.status, 'accepted',
+      `reasons: ${JSON.stringify(record.verification.rejection_reasons)}`);
+    assert.deepEqual(record.verification.rejection_reasons, []);
+    assert.equal(record.overall_verdict.proposed, 'partial');
+    assert.equal(record.overall_verdict.verified, 'partial');
+    assert.equal(record.overall_verdict.downgraded, false);
+  });
+
+  /** @pins F-cc198701 */
+  it('sanity: the SAME all-fail evidence with verdict="pass" instead of "partial" is still REJECTED by the pre-existing, untouched pass-direction check', async () => {
+    // Confirms this fix did not touch line ~59's pass-direction check —
+    // the exact asymmetry the finding's own audit used to prove 'partial'
+    // was completely unchecked pre-fix.
+    const bad = structuredClone(pilot0);
+    for (const step of bad.scenario_results[0].step_results) step.status = 'fail';
+    bad.scenario_results[0].verdict = 'pass';
+    bad.overall_verdict = 'pass';
+
+    const record = await verify(bad, baseOptions());
+
+    assert.equal(record.verification.status, 'rejected');
+    assert.ok(
+      record.verification.rejection_reasons.some(r => r.includes('scenario verdict is "pass" but steps')),
+      `got: ${JSON.stringify(record.verification.rejection_reasons)}`
+    );
   });
 });

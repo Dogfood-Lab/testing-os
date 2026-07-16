@@ -20,7 +20,37 @@
  * findings digest must route through `renderDigest()` — there is no other
  * path. `renderMarkdown()` is preserved so CI scrapers and `>` redirects keep
  * working unchanged.
+ *
+ * F-c3d8fd7e (wave 22): the shared `truncate()` helper below only did
+ * `.replace(/\s+/g, ' ').trim()` — which incidentally neutralizes a raw
+ * embedded newline (fake-line-injection) but leaves ESC (0x1B, the ANSI
+ * cursor-erase primitive), the C1 control range, and the Trojan Source class
+ * (bidi override/isolate controls, zero-width block, combining marks)
+ * completely untouched, because none of those are `\s`. A finding's
+ * `description`/`recommendation`/summary text is written by an AUDIT AGENT
+ * auditing an arbitrary (sometimes adversarial) target repo and can echo
+ * attacker-chosen substrings from it (a crafted filename, commit message, or
+ * quoted string) — the same class of hazard commands/lib/escape-reason.js
+ * was built across waves 16-20 to close for the `--reason` CLI-flag family.
+ * Routed through that ONE canonical escaper (`escapeReasonForDisplay`)
+ * rather than forking a second copy of the same codepoint-class regex —
+ * mirrors commands/history.js's own "escape BEFORE truncate" ordering (see
+ * that file's formatHistory): escaping first means the length budget `n` is
+ * spent on the operator-VISIBLE (escaped) text, and truncation can never cut
+ * a dangerous sequence at a point that leaves it half-neutralized.
+ *
+ * LAYERING NOTE, DISCLOSED: this import inverts the package's usual
+ * commands/ → lib/ direction (no other lib/ file imports from commands/
+ * today). Deliberate, one-file exception for this wave: escape-reason.js is
+ * being actively redesigned in place by a different domain this same wave,
+ * so importing its stable export beats copy-paste-forking the control-byte/
+ * bidi class into a second implementation mid-redesign. escape-reason.js's
+ * own placement note already anticipates a future `git mv` into package-level
+ * lib/ once ownership consolidates — this import is the second cited
+ * consumer that note names as the trigger for that move.
  */
+
+import { escapeReasonForDisplay } from '../commands/lib/escape-reason.js';
 
 const SEV_SHORT = { CRITICAL: 'CRIT', HIGH: 'HIGH', MEDIUM: 'MED', LOW: 'LOW' };
 
@@ -292,7 +322,17 @@ function buildJsonHeadline(model) {
 
 function truncate(s, n) {
   if (!s) return '';
-  const flat = String(s).replace(/\s+/g, ' ').trim();
+  // F-c3d8fd7e: escape BEFORE flattening/truncating — escapeReasonForDisplay
+  // neutralizes the control-byte/bidi/zero-width class \s does not touch
+  // (ESC, C1, bidi overrides, zero-width, combining marks) by turning each
+  // into a safe multi-character literal (\n, \xHH, \uHHHH); only AFTER that
+  // is it safe to run a dumb `\s+` collapse and a dumb character-count slice
+  // on the result. Escaping raw control chars first also means a literal
+  // embedded newline/tab now shows as its visible \n/\t marker instead of
+  // silently vanishing into a collapsed space — consistent with every other
+  // escaped free-text render site in this package.
+  const escaped = escapeReasonForDisplay(String(s));
+  const flat = escaped.replace(/\s+/g, ' ').trim();
   return flat.length > n ? flat.slice(0, n - 1) + '…' : flat;
 }
 
