@@ -40,7 +40,9 @@ import assert from 'node:assert/strict';
 import { runStep } from './verify/runner.js';
 
 const ENV_VAR = 'SWARM_VERIFY_MAX_BUFFER_BYTES';
-const TRIVIAL_STEP = { name: 'test', cmd: 'node', args: ['-e', 'console.log(1)'] };
+// Inner quotes required: shell:true joins cmd+args into one string, so an
+// unquoted `(` is a /bin/sh subshell metachar (POSIX-fatal, cmd.exe-tolerant).
+const TRIVIAL_STEP = { name: 'test', cmd: 'node', args: ['-e', '"console.log(1)"'] };
 
 afterEach(() => {
   delete process.env[ENV_VAR];

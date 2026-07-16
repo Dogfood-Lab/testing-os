@@ -68,7 +68,12 @@ import assert from 'node:assert/strict';
 import { runSteps, runStep } from './verify/runner.js';
 
 const ENV_VAR = 'SWARM_VERIFY_MAX_BUFFER_BYTES';
-const trivialStep = (name) => ({ name, cmd: 'node', args: ['-e', 'console.log(1)'] });
+// The inner quotes are load-bearing: runStep spawns with `shell: true`, which
+// joins cmd+args into ONE string for the shell, so `(` reaches /bin/sh bare and
+// dies as a subshell metachar (cmd.exe tolerates it — this passed on Windows and
+// failed on Linux CI). See runStep's own contract: "every arg IS subject to shell
+// interpretation... not a sanitizer".
+const trivialStep = (name) => ({ name, cmd: 'node', args: ['-e', '"console.log(1)"'] });
 const THREE_STEP_PIPELINE = [trivialStep('lint'), trivialStep('build'), trivialStep('test')];
 
 afterEach(() => {

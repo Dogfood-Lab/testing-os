@@ -48,10 +48,18 @@ const CLI_PATH = join(__dirname, 'cli.js');
 // LEFT at its default `npm test --if-present` so the node adapter's no_tests
 // downgrade still fires for a fixture with no `test` script — overriding the
 // test step would suppress exactly the path under test.
+// Both the bare `node` and the inner quotes are load-bearing under runStep's
+// `shell: true`, which joins cmd+args into ONE string for the shell:
+//   - process.execPath is "C:\Program Files\nodejs\node.exe" on Windows — the
+//     shell splits it at the space and runs `C:\Program` (tool_missing).
+//   - an unquoted `(` is a /bin/sh subshell metachar (POSIX syntax error).
+// These steps are `optional: true`, so BOTH failures were silent: the pipeline
+// tolerates them and the test stayed green while every "no-op" was really a
+// failing shell-out — the exact opposite of this fixture's stated purpose.
 const SAFE_OPTIONAL_OVERRIDES = {
-  lint: { name: 'lint', cmd: process.execPath, args: ['-e', 'process.exit(0)'], optional: true },
-  typecheck: { name: 'typecheck', cmd: process.execPath, args: ['-e', 'process.exit(0)'], optional: true },
-  build: { name: 'build', cmd: process.execPath, args: ['-e', 'process.exit(0)'], optional: true },
+  lint: { name: 'lint', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
+  typecheck: { name: 'typecheck', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
+  build: { name: 'build', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
 };
 
 function makeNoTestRepo(parent) {

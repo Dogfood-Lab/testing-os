@@ -589,9 +589,13 @@ describe('F-59f22202: verify() persists a coherent exit_code for a no-failing-st
     // gets split by the shell at the space and misreports tool_missing;
     // bare 'node' matches the proven-working pattern already used by
     // verify.test.js's runStep tests and lib/verify-runner-output-exceeded.test.js.
-    lint: { name: 'lint', cmd: 'node', args: ['-e', 'process.exit(0)'], optional: true },
-    typecheck: { name: 'typecheck', cmd: 'node', args: ['-e', 'process.exit(0)'], optional: true },
-    build: { name: 'build', cmd: 'node', args: ['-e', 'process.exit(0)'], optional: true },
+    // The inner quotes are that same rule carried to `args`, which this NOTE
+    // originally stopped short of: an unquoted `(` reaches /bin/sh as a subshell
+    // metachar and the step dies POSIX-only (cmd.exe tolerates it). Optional
+    // steps swallow the failure, so it was silent on both platforms.
+    lint: { name: 'lint', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
+    typecheck: { name: 'typecheck', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
+    build: { name: 'build', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
   };
 
   let fixtureRoot, repoPath, dbPath;
@@ -643,7 +647,10 @@ describe('F-59f22202: verify() persists a coherent exit_code for a no-failing-st
       dbPath,
       commandOverrides: {
         ...SAFE_OPTIONAL_OVERRIDES,
-        test: { name: 'test', cmd: 'node', args: ['-e', 'process.exit(1)'] },
+        // Quoted: unquoted, /bin/sh rejects `(` as a syntax error and returns
+        // exit 2 — so this test asserted exit 1 against the SHELL's failure, not
+        // the authored process.exit(1). It measured nothing it claimed to.
+        test: { name: 'test', cmd: 'node', args: ['-e', '"process.exit(1)"'] },
       },
     });
     assert.equal(result.verdict, 'fail');
@@ -762,9 +769,13 @@ describe('F-1997e7c8: verify() forwards output_exceeded/timed_out (top level AND
     // gets split by the shell at the space and misreports tool_missing;
     // bare 'node' matches the proven-working pattern already used by
     // verify.test.js's runStep tests and lib/verify-runner-output-exceeded.test.js.
-    lint: { name: 'lint', cmd: 'node', args: ['-e', 'process.exit(0)'], optional: true },
-    typecheck: { name: 'typecheck', cmd: 'node', args: ['-e', 'process.exit(0)'], optional: true },
-    build: { name: 'build', cmd: 'node', args: ['-e', 'process.exit(0)'], optional: true },
+    // The inner quotes are that same rule carried to `args`, which this NOTE
+    // originally stopped short of: an unquoted `(` reaches /bin/sh as a subshell
+    // metachar and the step dies POSIX-only (cmd.exe tolerates it). Optional
+    // steps swallow the failure, so it was silent on both platforms.
+    lint: { name: 'lint', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
+    typecheck: { name: 'typecheck', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
+    build: { name: 'build', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
   };
 
   let fixtureRoot, repoPath, dbPath;
