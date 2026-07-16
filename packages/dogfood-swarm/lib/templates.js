@@ -497,7 +497,14 @@ Prioritize by impact. Estimate effort (small/medium/large).`,
  * @param {number} opts.waveNumber — current wave number
  * @param {string} [opts.ownershipClass] — domain ownership class (owned/shared/bridge)
  * @param {string} [opts.domainSnapshotId] — frozen domain snapshot id
- * @param {string} [opts.priorContext] — findings from prior waves to avoid re-reporting
+ * @param {string} [opts.priorContext] — CLOSED prior findings (fixed/deferred/
+ *   rejected). Do-not-re-report material: their absence is already terminal in
+ *   classifyFindings, so nothing is inferred from an agent's silence about them.
+ * @param {string} [opts.openPriorContext] — OPEN prior findings. The agent's
+ *   confirmation queue, NOT a do-not-report list — classifyFindings infers
+ *   `fixed` from a full-coverage wave's silence about these, so the brief must
+ *   ask for the re-report that makes that silence meaningful. Keep the two
+ *   lists separate; merging them re-creates the false-fixed defect.
  * @returns {string}
  */
 export function buildAuditPrompt(opts) {
@@ -511,7 +518,32 @@ export function buildAuditPrompt(opts) {
   // to the untrusted source mirrors this package's established
   // escape-then-format discipline (findings-render.js's truncate()).
   const priorSection = opts.priorContext
-    ? `\n## Prior Findings (do NOT re-report these)\n\n${fenceSafeBlock(neutralizeForPrompt(opts.priorContext))}\n`
+    ? `\n## Prior Findings — already CLOSED (do NOT re-report these)\n\n${fenceSafeBlock(neutralizeForPrompt(opts.priorContext))}\n`
+    : '';
+
+  // Open priors carry the OPPOSITE instruction from closed ones, and the
+  // difference is load-bearing rather than cosmetic. classifyFindings reads a
+  // prior's ABSENCE from a full-coverage wave as positive evidence it was
+  // fixed. That inference is sound ONLY if this agent would have re-reported
+  // the defect had it still been there. This brief used to emit one flat
+  // "do NOT re-report these" list covering every prior — open ones included —
+  // which made their absence guaranteed by instruction: the evidence was
+  // manufactured by the order forbidding the evidence. On run
+  // swarm-1784091637-5127 wave 28, an audit-only wave with no amend before it,
+  // 9 untouched findings closed themselves that way. F-bd8b4353 caught the
+  // same lie once as a one-off ("a false entry in the swarm's own fix ledger")
+  // and it was closed by correcting the affected files, never the mechanism.
+  const openPriorSection = opts.openPriorContext
+    ? `\n## Known OPEN findings in your scope — CONFIRM each one\n\n`
+      + `These are already filed and still open. This is **not** a do-not-report list —\n`
+      + `it is your confirmation queue, and your report is what decides their fate:\n\n`
+      + `- **Still present?** Report it again, reusing its id from below. That records\n`
+      + `  it as recurring, not as a duplicate. This is wanted, not noise.\n`
+      + `- **Verified gone?** Omit it. Your silence is the ONLY thing that closes it,\n`
+      + `  and it will be recorded as fixed on your authority.\n`
+      + `- **Did not check it?** Say so explicitly in your \`summary\`. Omitting a\n`
+      + `  finding you never looked at closes a live defect — the one outcome to avoid.\n\n`
+      + `${fenceSafeBlock(neutralizeForPrompt(opts.openPriorContext))}\n`
     : '';
 
   const domainContract = renderDomainContract(
@@ -543,7 +575,7 @@ ${opts.globs.join('\n')}
 ## Audit Lens
 
 ${lens.instruction}
-${priorSection}
+${priorSection}${openPriorSection}
 ${outputContract}
 
 ## Output Format

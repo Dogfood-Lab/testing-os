@@ -20,6 +20,7 @@ import { openDb } from '../db/connection.js';
 import { getDomains, aredomainsFrozen, freezeDomains, takeDomainSnapshot } from '../lib/domains.js';
 import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../lib/templates.js';
 import { buildPriorMap } from '../lib/fingerprint.js';
+import { isOpenFinding } from '../lib/finding-status.js';
 import { createWorktree, runShortOf } from '../lib/worktree.js';
 import { findingsForDomain } from '../lib/findings-filter.js';
 import { transitionAgent } from '../lib/state-machine.js';
@@ -485,15 +486,29 @@ export function dispatch(opts) {
   const promptDir = promptDirPath;
   if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
 
+  // CLOSED and OPEN priors go to the agent as SEPARATE lists carrying opposite
+  // instructions. classifyFindings closes an absent prior as `fixed` when the
+  // wave had full coverage — an inference that holds only if the agent would
+  // have re-reported a defect that was still there. Emitting one flat
+  // "do NOT re-report these" list (what this did before) made that impossible
+  // for OPEN priors and turned their absence into self-fulfilling evidence:
+  // wave 28 of run swarm-1784091637-5127 closed 9 untouched findings that way,
+  // with no amend wave anywhere between them and the prior audit. Closed priors
+  // are unaffected — classifyFindings already treats them as terminal-when-
+  // absent, so nothing is ever inferred from silence about them.
   let priorContext = '';
+  let openPriorContext = '';
   if (isAudit) {
     const priorMap = buildPriorMap(db, opts.runId);
     if (priorMap.size > 0) {
-      const lines = [];
-      for (const [fp, f] of priorMap) {
-        lines.push(`- [${f.status}] ${f.finding_id}: ${f.description} (${f.file_path || '?'})`);
+      const closedLines = [];
+      const openLines = [];
+      for (const [, f] of priorMap) {
+        const line = `- [${f.status}] ${f.finding_id}: ${f.description} (${f.file_path || '?'})`;
+        (isOpenFinding(f.status) ? openLines : closedLines).push(line);
       }
-      priorContext = lines.join('\n');
+      priorContext = closedLines.join('\n');
+      openPriorContext = openLines.join('\n');
     }
   }
 
@@ -638,7 +653,7 @@ export function dispatch(opts) {
       if (opts.phase === 'feature-audit') {
         prompt = buildFeatureAuditPrompt(promptOpts);
       } else {
-        prompt = buildAuditPrompt({ ...promptOpts, priorContext });
+        prompt = buildAuditPrompt({ ...promptOpts, priorContext, openPriorContext });
       }
     } else if (isAmend) {
       // Filter approved findings by the agent's owned globs. An empty result is
