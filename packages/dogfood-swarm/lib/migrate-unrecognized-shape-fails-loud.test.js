@@ -52,6 +52,19 @@
  * unrecognized-keyword case above, closed the same way (fail loud at
  * module-load import time, see the describe block near the bottom of this
  * file).
+ *
+ * F-feea1982 (LOW, wave 24, added to this same file): F-318bdd79's fix fails
+ * loud correctly, but the message it throws for a MULTI-statement entry was
+ * identical to the message for a genuinely UNRECOGNIZED DDL keyword — it
+ * never named the real mechanism (naive `;`-splitting, no string-literal
+ * awareness) or the false-rejection case F-318bdd79's own disclosure named
+ * but never pinned: a genuinely single, RECOGNIZED-shape statement with a
+ * `;` embedded inside a string literal (e.g. a `DEFAULT` value). db/migrate.js
+ * now throws a DISTINCT, more actionable message whenever the first
+ * `;`-delimited segment alone already matches a recognized shape — see the
+ * "F-feea1982" describe block below for both the multi-statement message
+ * update (this file's existing GATE test, updated in place) and the new
+ * semicolon-in-string-literal proof.
  */
 
 import { describe, it } from 'node:test';
@@ -174,11 +187,19 @@ describe('parseArtifact / assertManifestShapesRecognized — multi-statement SQL
       target_version: 999,
       sql: 'CREATE TABLE foo (id INTEGER); CREATE INDEX idx_foo ON foo(id);',
     }];
+    // F-feea1982 (wave 24): this SQL's first segment ("CREATE TABLE foo
+    // (id INTEGER)") already matches a recognized shape, so db/migrate.js
+    // now throws the MORE SPECIFIC multi-statement/semicolon-in-string
+    // message (naming the real cause) rather than the generic "unrecognized
+    // shape" text the CREATE-TRIGGER case below still gets (its first
+    // segment matches none of the three shapes at all).
     assert.throws(
       () => assertManifestShapesRecognized(syntheticManifest),
-      (err) => /synthetic-multi-stmt-mig/.test(err.message) && /cannot\s+recognize/i.test(err.message),
-      'a multi-statement entry must fail loud at author time — pre-fix, parseArtifact matched only ' +
-      'the first statement (CREATE TABLE foo) and returned non-null, so this gate never saw it',
+      (err) => /synthetic-multi-stmt-mig/.test(err.message)
+        && /splits into 2 statements/.test(err.message)
+        && /string literal/i.test(err.message),
+      'a multi-statement entry must fail loud at author time, naming the real cause — pre-fix, parseArtifact ' +
+      'matched only the first statement (CREATE TABLE foo) and returned non-null, so this gate never saw it',
     );
   });
 
@@ -225,5 +246,73 @@ describe('parseArtifact / assertManifestShapesRecognized — multi-statement SQL
     assert.doesNotThrow(() => assertManifestShapesRecognized([
       { id: 'whitespace-tail', target_version: 1, sql: 'CREATE TABLE IF NOT EXISTS synthetic_ws (id INTEGER);   \n  \n' },
     ]));
+  });
+});
+
+/**
+ * F-feea1982 (LOW, wave 24): F-318bdd79's fix throws loud for a
+ * multi-statement entry, but the message read identically to "your statement
+ * TYPE is unsupported" (it names the three recognized shapes and nothing
+ * else) whether the real cause was a genuine two-statement entry OR a
+ * genuinely single, RECOGNIZED-shape statement whose SQL happens to contain
+ * a `;` inside a string/DEFAULT literal — the exact false-rejection
+ * F-318bdd79's own disclosure named ("a hypothetical embedded `;` inside a
+ * quoted DEFAULT value would also trip this check") but never pinned with a
+ * test. db/migrate.js now throws a DISTINCT message whenever the first
+ * `;`-delimited segment alone already matches a recognized shape, naming
+ * both candidate causes and the remediation for each.
+ */
+/** @pins F-feea1982 */
+describe('assertManifestShapesRecognized — the thrown message names the semicolon-in-string-literal cause, not just "unsupported shape" (F-feea1982)', () => {
+  it('a genuinely single ALTER TABLE statement with a `;` inside a DEFAULT string literal gets the ACTIONABLE message, not the generic "unrecognized shape" one', () => {
+    // One real statement, entirely valid SQL, whose DEFAULT value happens to
+    // contain a semicolon. isSingleStatement's naive splitter (no
+    // string-literal awareness, by documented design) sees this as two
+    // segments; the first segment alone ("ALTER TABLE foo ADD COLUMN note
+    // TEXT DEFAULT 'a") already matches the ALTER TABLE shape — exactly the
+    // condition the new, more specific message targets.
+    const syntheticManifest = [{
+      id: 'synthetic-semicolon-in-string',
+      target_version: 999,
+      sql: `ALTER TABLE foo ADD COLUMN note TEXT DEFAULT 'a;b'`,
+    }];
+    assert.throws(
+      () => assertManifestShapesRecognized(syntheticManifest),
+      (err) => {
+        assert.match(err.message, /synthetic-semicolon-in-string/);
+        assert.match(err.message, /splits into 2 statements/);
+        assert.match(err.message, /string literal/i);
+        assert.match(err.message, /multi-statement entry/i);
+        // Must NOT read like the generic "your statement type is
+        // unsupported" text — the statement type IS one of the three
+        // recognized shapes; punctuation inside a string tripped the naive
+        // splitter, which is a materially different diagnosis for an author
+        // to act on.
+        assert.doesNotMatch(err.message, /uses an SQL shape parseArtifact\(\)\/artifactExists\(\) cannot/);
+        return true;
+      },
+      'a false-rejected single statement (semicolon inside a string literal) must get a message naming ' +
+      'the real cause, not the generic unrecognized-DDL-keyword text',
+    );
+  });
+
+  it('non-regression: a genuinely unrecognized shape (no segment matches any recognized DDL) still gets the generic message', () => {
+    const syntheticManifest = [{
+      id: 'synthetic-trigger-still-generic',
+      target_version: 999,
+      sql: `CREATE TRIGGER stamp_updated_at AFTER UPDATE ON runs BEGIN SELECT 1; END`,
+    }];
+    assert.throws(
+      () => assertManifestShapesRecognized(syntheticManifest),
+      (err) => /synthetic-trigger-still-generic/.test(err.message)
+        && /cannot\s+recognize/i.test(err.message)
+        && !/splits into \d+ statements/.test(err.message),
+      'a shape matching none of the three regexes must keep the generic message — CREATE TRIGGER is not, ' +
+      'itself, a recognized shape, regardless of the embedded semicolon before END',
+    );
+  });
+
+  it('non-regression: the real MIGRATIONS_MANIFEST is unaffected (sanity, mirrors the describe block above)', () => {
+    assert.doesNotThrow(() => assertManifestShapesRecognized(MIGRATIONS_MANIFEST));
   });
 });

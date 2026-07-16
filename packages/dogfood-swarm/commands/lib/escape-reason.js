@@ -150,6 +150,36 @@
  *     more indirect ones. See escapePathForDisplay's own doc comment below
  *     for the full site list and the zero-privilege argument.
  *
+ *   F-6820e578 (wave 24): F-37ba8d85's run-length gate (`{3,}` contiguous
+ *     marks) had an unbounded bypass its own docstring understated as "a
+ *     narrower residual... requires deliberate construction": ZWJ never
+ *     breaks a Unicode extended grapheme cluster (UAX #29 rule GB9), so
+ *     interleaving a single ZWJ every 1-2 marks ("mark mark ZWJ mark mark
+ *     ZWJ ...") splits an arbitrarily long stack into 2-mark sub-runs that
+ *     each stay under the 3-mark threshold forever -- proven live against
+ *     the real exported function with a 20-group chain (40 marks, 19 ZWJ)
+ *     returning completely byte-identical/unescaped. Fixed by widening
+ *     ZALGO_RUN to match a mark, then zero or more (an optional single ZWJ,
+ *     then another mark) -- so a ZWJ between two marks no longer ENDS the
+ *     match, only a non-mark/non-ZWJ character (or two ZWJ in a row with no
+ *     mark between them) does -- and moving the escape/no-escape decision
+ *     from the regex itself (which can only gate on CONTIGUOUS length) into
+ *     escapeZalgoRun, which counts the actual marks in the whole matched
+ *     span (ZWJ contributes zero) against the same >=3 threshold. A trailing
+ *     ZWJ with no following mark is never captured by the pattern (the
+ *     optional-ZWJ branch requires a mark after it to consume), so this
+ *     stays scoped to mark-interleaved-with-ZWJ chains and does not reach
+ *     into unrelated ZWJ usage (e.g. a mark run trailed by an emoji-joining
+ *     ZWJ). Every other codepoint Default_Ignorable_Code_Point classifies as
+ *     an interleaving candidate is moot here: CONTROL_CLASS already escapes
+ *     everything in that property except ZWJ (the one deliberate carve-out,
+ *     F-37ba8d85), and its pass runs BEFORE ZALGO_RUN in the pipeline below,
+ *     so any other Default_Ignorable interleaving character has already
+ *     been turned into literal `\xHH`/`\uHHHH` text -- no longer a mark or a
+ *     ZWJ -- by the time ZALGO_RUN ever sees the string. ZWJ is the only
+ *     codepoint that survives CONTROL_CLASS unescaped, which is exactly why
+ *     it was the only viable interleaving character for this bypass.
+ *
  * `--format=json` output for every verb bypasses this helper entirely and
  * stays the lossless, unescaped canonical form -- JSON's own string escaping
  * already makes control bytes safe and machine-parseable losslessly.
@@ -229,14 +259,30 @@ const CONTROL_CLASS = /[\x00-\x1f\x7f-\x9f\u{2028}\u{2029}[\p{Default_Ignorable_
 
 // Pathological combining-mark runs ("zalgo text"): F-37ba8d85 (wave 22) moved
 // the Combining Diacritical Marks block OUT of CONTROL_CLASS above and into
-// this separate, run-length-gated pass -- see that finding's history entry
-// above for why a single mark must NOT be escaped the way wave 20 escaped it.
-// Three or more marks stacked consecutively can only ever be stacked on the
-// ONE base character immediately preceding them (a run breaks the instant any
-// non-mark character -- including a new base letter -- appears), so matching a
-// contiguous run of length >= 3 correctly captures "many marks piled onto one
-// base" without needing to separately capture that base character.
-const ZALGO_RUN = /[\u0300-\u036f]{3,}/gu;
+// this separate pass -- see that finding's history entry above for why a
+// single (or double) mark must NOT be escaped the way wave 20 escaped it.
+// F-6820e578 (wave 24): matching only a STRICTLY CONTIGUOUS run of length >=3
+// (wave 22's original `{3,}`) is defeated by interleaving a single ZWJ every
+// 1-2 marks -- ZWJ never breaks a Unicode extended grapheme cluster (UAX #29
+// rule GB9), so "mark mark ZWJ mark mark ZWJ ..." repeats without limit while
+// every contiguous sub-run stays under the threshold. This pattern instead
+// matches a mark, then zero or more (an optional single ZWJ, then another
+// mark) -- a ZWJ between two marks no longer ends the match, only a
+// character that is neither a mark nor a ZWJ does (or two ZWJ in a row with
+// no mark between them, since each ZWJ branch must be immediately followed
+// by a mark to be consumed). The escape decision itself moved out of the
+// regex (which can only gate on contiguous length) and into escapeZalgoRun,
+// below, which counts the ACTUAL marks in the whole matched span --
+// interleaved ZWJ contributes zero -- against ZALGO_MARK_THRESHOLD, so an
+// isolated 1-2 mark sequence still passes through untouched (interleaved
+// with ZWJ or not), and a trailing ZWJ with nothing following it is never
+// captured at all (the optional-ZWJ branch requires a mark after it).
+const ZALGO_RUN = /[\u0300-\u036f](?:\u200d?[\u0300-\u036f])*/gu;
+
+// Same threshold wave 22 established for a contiguous run -- now enforced by
+// escapeZalgoRun's count rather than the regex's own match length, since a
+// single ZALGO_RUN match can legitimately be as short as one mark.
+const ZALGO_MARK_THRESHOLD = 3;
 
 // F-6540ba3d (wave 22): the Unicode TAG block (U+E0000-U+E007F) and the
 // Variation Selectors Supplement (U+E0100-U+E01EF) sit ABOVE the BMP
@@ -264,9 +310,20 @@ function escapeControlChar(ch) {
 
 // Escapes every codepoint in a matched zalgo run individually (rather than
 // collapsing the run to one placeholder) so the escaped output still shows
-// the reader exactly how many marks were stacked and what they were.
+// the reader exactly how many marks (and any interleaved ZWJ) were stacked
+// and where. F-6820e578 (wave 24): ZALGO_RUN can now match as few as one
+// mark (so a ZWJ-interleaved chain is captured as ONE span instead of
+// several sub-threshold ones), so the escape/no-escape decision lives HERE,
+// counting the real marks in the span (a ZWJ contributes zero) rather than
+// relying on the regex's match length. Below threshold, the run is returned
+// UNCHANGED (a no-op replacement) so ordinary 1-2 mark NFD text --
+// Vietnamese, polytonic Greek, IAST Sanskrit -- keeps rendering
+// byte-identical, exactly as F-37ba8d85 established.
 function escapeZalgoRun(run) {
-  return Array.from(run, (ch) => formatEscape(ch.codePointAt(0))).join('');
+  const chars = Array.from(run);
+  const markCount = chars.filter((ch) => ch !== '\u200d').length;
+  if (markCount < ZALGO_MARK_THRESHOLD) return run;
+  return chars.map((ch) => formatEscape(ch.codePointAt(0))).join('');
 }
 
 /**
@@ -299,6 +356,52 @@ export function escapeReasonForDisplay(reason) {
     .replace(/\\/g, '\\\\')
     .replace(/"/g, '\\"')
     .replace(CONTROL_CLASS, escapeControlChar)
+    .replace(ZALGO_RUN, escapeZalgoRun);
+}
+
+/**
+ * The invisible/deception subset of CONTROL_CLASS that a PROMPT surface must
+ * still strip — everything CONTROL_CLASS covers EXCEPT tab (U+0009), LF
+ * (U+000A) and CR (U+000D). Those three are legitimate whitespace in
+ * multi-line agent-read prompt text (a prompt is multi-line by design, and
+ * lib/templates.js's fenceSafeBlock relies on real newlines), so escaping them
+ * to visible `\x0a` markers would corrupt every multi-line description /
+ * fenced code example the next agent must read verbatim (the F-d2d06af3
+ * regression the wave-24 serial verify caught). U+2028/U+2029 (the Unicode
+ * line/paragraph separators) STAY escaped — they are invisible-newline forgery,
+ * not the ordinary whitespace legitimate prompt content uses.
+ */
+const PROMPT_INVISIBLE_CLASS =
+  /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u{2028}\u{2029}[\p{Default_Ignorable_Code_Point}--\u{200D}]]/gv;
+
+/**
+ * Neutralize only the invisible/deception codepoint class for an AGENT-READ
+ * PROMPT surface (lib/templates.js's buildAmendPrompt/buildAuditPrompt,
+ * F-d2d06af3). Applies PROMPT_INVISIBLE_CLASS (the Default_Ignorable/Tag-block/
+ * bidi/C1 class MINUS tab/LF/CR — see that constant) plus the same
+ * ZALGO_RUN pass escapeReasonForDisplay uses (so F-6820e578's zalgo-ZWJ-chain
+ * fix protects this wrapper by construction), and DELIBERATELY OMITS the
+ * backslash-, quote-, and whitespace-escaping passes.
+ *
+ * Why this differs from escapeReasonForDisplay: on a prompt, doubling
+ * backslashes, escaping double-quotes, and flattening newlines to visible
+ * markers would corrupt legitimate quoted paths, code, and multi-line prose
+ * the audit agent reads verbatim, and fights fenceSafeBlock — while the
+ * invisible classes (Tag-block ASCII-smuggling, bidi override, zalgo) are the
+ * actual injection vector and MUST still be stripped. Terminal surfaces keep
+ * using escapeReasonForDisplay (the full treatment); prompt surfaces use this.
+ *
+ * Coordinator-added at wave-24 merge to close the core↔verbs seam:
+ * swarm-cp-core (templates.js) imports this, swarm-cp-verbs owns this file and
+ * hardened the shared primitives; the export itself is the one-line
+ * integration the amend split left for serial-verify reconciliation.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function neutralizeInvisibleControls(text) {
+  return String(text)
+    .replace(PROMPT_INVISIBLE_CLASS, escapeControlChar)
     .replace(ZALGO_RUN, escapeZalgoRun);
 }
 

@@ -59,6 +59,28 @@
  * SCOPE NOTE. Lives under lib/ (not the package root) for the same reason
  * as the sibling F-1f8fd647/F-b721038e files in this directory — the
  * swarm-cp-core wave-16 domain owns `packages/dogfood-swarm/lib/**` only.
+ *
+ * F-33941cd2 (LOW, wave 24): assertConsistent()'s three local invariants
+ * (mirroring steps.js/policy.js) plus this file's own
+ * blockedVerdictHasBlockedStep only ever check the 'pass' and 'blocked'
+ * verdicts — 'partial' is never checked in either direction, even though the
+ * "agents present but incomplete" case below already constructs a
+ * 'partial'-verdict submission and passes it to assertConsistent(). This is
+ * F-cc198701's class (verdict-enumeration coverage gaps in a hand-rolled
+ * mirror of steps.js) reproduced independently in THIS file's own copy of
+ * that check, filed by a sibling domain sweeping for stale F-88fb37ff/
+ * F-cc198701 pins during an unrelated task and routed here because this file
+ * lives inside packages/dogfood-swarm/lib/** — this wave's frozen domain map
+ * (not the filing domain's own, narrower test-glob) assigns it to
+ * swarm-cp-core; see this domain's output.json for the note on that
+ * discrepancy. Verified NOT currently reachable (dogfood-bridge.js's
+ * waveVerdict derivation: a 'partial' result requires either an incomplete
+ * agent or a failed verification, and either condition guarantees at least
+ * one non-'pass' step_result via the SAME status mapping that drives
+ * allAgentsPass) — a coverage hole today, not a live defect, but one that
+ * would go unnoticed if a future refactor of dogfood-bridge.js decoupled
+ * that structural coincidence. `partialVerdictHasNonPassEvidence` below
+ * closes it, mirroring `blockedVerdictHasBlockedStep`'s own shape.
  */
 
 import { describe, it } from 'node:test';
@@ -121,9 +143,26 @@ function blockedVerdictHasBlockedStep(scenario) {
 }
 
 /**
+ * F-33941cd2's OWN invariant, mirroring blockedVerdictHasBlockedStep's shape
+ * one verdict over: a 'partial' verdict must be backed by at least one
+ * step_result that is NOT 'pass'. Derived directly from dogfood-bridge.js's
+ * own waveVerdict computation (lines 97-101): 'partial' is only reachable
+ * when `!allAgentsPass` (at least one agent's step maps to 'fail'/'blocked',
+ * never 'pass') OR `!verifyPass` (the verification step maps to 'fail') —
+ * so today this can never actually fire false, but nothing in this file
+ * pinned that coupling explicitly before this fix; a future refactor that
+ * decoupled step-status derivation from the verdict computation would slip
+ * through unnoticed otherwise.
+ */
+function partialVerdictHasNonPassEvidence(scenario) {
+  if (scenario.verdict !== 'partial') return true;
+  return scenario.step_results.some(s => s.status !== 'pass');
+}
+
+/**
  * Validates the REAL submission object buildDogfoodSubmission returned
  * (not a hand-rolled stand-in) against the actual schema, then runs the
- * three mirrored packages/verify invariants against its first scenario_result.
+ * four mirrored packages/verify invariants against its first scenario_result.
  */
 function assertConsistent(submission, label) {
   const schemaResult = validatePayload('recordSubmission', submission);
@@ -138,6 +177,8 @@ function assertConsistent(submission, label) {
     `[${label}] policy.js parity: verdict 'blocked' must carry a non-empty blocking_reason`);
   assert.ok(blockedVerdictHasBlockedStep(scenario),
     `[${label}] F-8451abe4: verdict 'blocked' must carry at least one blocked/fail step — a 'blocked' record whose only steps are 'pass' is self-contradictory`);
+  assert.ok(partialVerdictHasNonPassEvidence(scenario),
+    `[${label}] F-33941cd2: verdict 'partial' must carry at least one non-'pass' step — a 'partial' record whose steps are ALL 'pass' is self-contradictory in the same way an all-pass 'blocked' record is`);
 }
 
 describe('F-8451abe4 — the synthesized dispatch step and the wave verdict are driven by the same condition', () => {
@@ -220,5 +261,100 @@ describe('F-8451abe4 — the synthesized dispatch step and the wave verdict are 
     assert.deepEqual(scenario.step_results.map(s => s.step_id), ['agent-core']);
 
     assertConsistent(submission, 'agents+incomplete');
+  });
+
+  it('all agents complete but verification FAILED: partial verdict via the OTHER reachability branch (allAgentsPass true, verifyPass false)', () => {
+    // F-33941cd2: the prior test reaches 'partial' via an incomplete agent
+    // (allAgentsPass false). This reaches it via the DIFFERENT branch —
+    // every agent 'complete' (allAgentsPass true) but the verification
+    // receipt itself failed (verifyPass false) — varying the axis rather
+    // than repeating the same one (PROTOCOL.md: "exercise the shape, not
+    // the corpus — state which axes you varied").
+    const exp = makeExport({
+      number: 5, phase: 'health-audit-a',
+      agents: [{ domain: 'core', status: 'complete' }],
+      verification: { passed: false, adapter: 'node', test_count: 3 },
+      violations: [],
+    });
+    const submission = buildDogfoodSubmission(exp, 'partial');
+    const scenario = submission.scenario_results[0];
+
+    assert.equal(scenario.verdict, 'partial');
+    const stepIds = scenario.step_results.map(s => s.step_id).sort();
+    assert.deepEqual(stepIds, ['agent-core', 'verification']);
+    const verificationStep = scenario.step_results.find(s => s.step_id === 'verification');
+    assert.equal(verificationStep.status, 'fail');
+
+    assertConsistent(submission, 'all-agents-complete+verification-failed');
+  });
+});
+
+/**
+ * F-33941cd2 (LOW, wave 24): assertConsistent()'s pass/blocked invariants
+ * above never checked 'partial' in either direction, even though this same
+ * file already constructs 'partial'-verdict submissions in three of its own
+ * test cases. This describe block makes the coupling explicit — a companion
+ * regression test, distinct from the mutation-control proof that
+ * partialVerdictHasNonPassEvidence can actually fire on a synthetic
+ * self-contradictory scenario (the exact "partial + all-pass" shape
+ * F-88fb37ff/F-cc198701 named for the sibling steps.js check).
+ *
+ * No @pins tag: like the F-7d4ac5ce/F-8f735719 precedent elsewhere in this
+ * package, this fix is entirely inside a test file's own local mirror of a
+ * packages/verify invariant, not a change to dogfood-bridge.js itself — no
+ * source-side pin exists for a declared tag to resolve against.
+ */
+describe('assertConsistent — the partial-verdict invariant is checked, not just the pass/blocked pair (F-33941cd2)', () => {
+  it('GATE (mutation control): a synthetic partial-verdict scenario whose steps are ALL pass is caught', () => {
+    // Structurally unreachable through the real buildDogfoodSubmission today
+    // (see this file's module docstring), but directly constructing the
+    // self-contradictory shape proves partialVerdictHasNonPassEvidence — and
+    // therefore assertConsistent() — can actually go RED, not just that
+    // today's real code happens to never produce it (PROTOCOL.md "Proving a
+    // gate": a gate is verified when a meta-test mutates the thing it
+    // protects and asserts the gate goes red).
+    const selfContradictoryScenario = {
+      scenario_id: 'synthetic', scenario_name: 'synthetic', product_surface: 'cli',
+      execution_mode: 'bot', verdict: 'partial',
+      step_results: [{ step_id: 'agent-core', status: 'pass' }],
+    };
+    assert.equal(partialVerdictHasNonPassEvidence(selfContradictoryScenario), false,
+      'a partial verdict whose only step is pass must be reported as inconsistent');
+
+    // Build a REAL, schema-valid submission via buildDogfoodSubmission (verdict
+    // 'pass', one all-pass agent step, no verification receipt) then corrupt
+    // ONLY its verdict string to 'partial' — a minimal, targeted mutation of
+    // an otherwise-valid object, rather than hand-assembling a submission
+    // shape (which would fail schema validation for unrelated reasons and
+    // never reach the invariant this test means to exercise).
+    const submission = buildDogfoodSubmission(
+      makeExport({
+        number: 6, phase: 'health-audit-a',
+        agents: [{ domain: 'core', status: 'complete' }],
+        verification: null, violations: [],
+      }),
+      'pass',
+    );
+    const preCorruptionSteps = submission.scenario_results[0].step_results;
+    assert.equal(preCorruptionSteps.length, 1, 'sanity: the real submission before corruption has exactly one step');
+    assert.equal(preCorruptionSteps[0].step_id, 'agent-core');
+    assert.equal(preCorruptionSteps[0].status, 'pass', 'sanity: the one step is pass — no non-pass evidence exists');
+    submission.scenario_results[0].verdict = 'partial';
+
+    assert.throws(
+      () => assertConsistent(submission, 'synthetic-partial-all-pass'),
+      /F-33941cd2/,
+      'assertConsistent must reject a partial verdict backed by zero non-pass evidence',
+    );
+  });
+
+  it('non-regression: a genuinely all-pass scenario with verdict \'pass\' (not \'partial\') is untouched by the new check', () => {
+    const passScenario = {
+      scenario_id: 'synthetic', scenario_name: 'synthetic', product_surface: 'cli',
+      execution_mode: 'bot', verdict: 'pass',
+      step_results: [{ step_id: 'agent-core', status: 'pass' }],
+    };
+    assert.equal(partialVerdictHasNonPassEvidence(passScenario), true,
+      'the new check is scoped to verdict === "partial" only — a "pass" verdict is out of its jurisdiction, same as blockedVerdictHasBlockedStep is for "blocked" only');
   });
 });

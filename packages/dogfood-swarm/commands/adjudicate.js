@@ -57,6 +57,7 @@ import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { adjudicate, buildJurySpec } from '../lib/case-file/adjudicate.js';
 import { toJuryRequest } from '../lib/case-file/handoff.js';
 import { persistAdjudication, deleteAdjudication, getLatestAdjudication } from '../lib/adjudication-store.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 /** Default receipt writer — atomic (helper-adoption discipline), parent-dir safe. */
 function defaultWriteReceipt(path, content) {
@@ -287,7 +288,18 @@ export function formatAdjudication({ result, adjudicationId, receiptPath }) {
   if (result.out_of_brief.length) {
     lines.push('');
     lines.push('Out-of-brief (rubric is a floor, not a ceiling):');
-    for (const o of result.out_of_brief) lines.push(`  (${o.jurors}) ${o.finding}`);
+    // F-0b7ba713 (wave 24): o.finding is free-form natural-language text
+    // parsed directly from a local Ollama juror's own JSON response
+    // (lib/case-file/ollama-jury.js's parseJurorResponse), with zero
+    // character constraint. Jurors judge a case-file built from this run's
+    // own audit findings -- descriptions/paths this package already treats
+    // as attacker-adjacent (commands/collect.js) -- so a juror's free-text
+    // commentary could echo a hostile substring one hop further removed.
+    // This file previously imported neither escape helper at all. o.jurors
+    // is a plain aggregation COUNT (lib/case-file/adjudicate.js's
+    // normalizeAdjudication increments a numeric `jurors` tally), not free
+    // text, so it does not need escaping.
+    for (const o of result.out_of_brief) lines.push(`  (${o.jurors}) ${escapeReasonForDisplay(o.finding)}`);
   }
   lines.push('');
   lines.push(`Recorded adjudication #${adjudicationId}${receiptPath ? ` — receipt ${receiptPath}` : ''}`);

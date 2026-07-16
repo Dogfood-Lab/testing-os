@@ -13,10 +13,55 @@
  * group as Item 4: brief-vs-frozen-state parallel authority. Pact-style
  * contract test in dispatch-prompt-schema.test.js asserts the schema
  * fragment is present in every generated prompt.
+ *
+ * F-d2d06af3 (HIGH, wave 24): buildAmendPrompt (line ~524) interpolates
+ * `f.file_path`/`f.description`/`f.recommendation` — audit-agent-authored
+ * text describing a (sometimes-adversarial) target repo, the same
+ * zero-privilege origin F-f1dae277 and F-c3d8fd7e already established for
+ * this field family elsewhere in this package — with ZERO escaping for
+ * `file_path` and only `fenceSafe`'s backtick-fence-parity guard for
+ * `description`/`recommendation`. buildAuditPrompt's `opts.priorContext`
+ * (the joined prior-findings block commands/dispatch.js hands it) has the
+ * identical gap through `fenceSafeBlock`. Neither `fenceSafe` nor
+ * `fenceSafeBlock` touch the control-byte/bidi/Tag-block class at all — they
+ * exist solely to keep a stray backtick run from breaking THIS document's
+ * own Markdown fence structure. The generated prompt is written to
+ * `swarms/<run>/wave-N/<domain>.md` and read VERBATIM as the next wave's
+ * Sonnet agent's own operating instructions, with no human review step in
+ * between — a more direct injection surface than any terminal transcript
+ * this package has already hardened, and the exact paradigm case
+ * commands/lib/escape-reason.js's own F-6540ba3d docblock names as the
+ * highest-risk audience (Graves 2026, arXiv:2603.00164: the Tag-block
+ * ASCII-Smuggling primitive is decoded PREFERENTIALLY BY ANTHROPIC MODELS).
+ *
+ * THE FIX IS DELIBERATELY NOT `escapeReasonForDisplay`: that escaper is
+ * built for a QUOTED TERMINAL surface — it doubles backslashes, escapes
+ * double-quotes, and renders `\n`/`\t` as visible two-character markers.
+ * Applied to a PROMPT an agent reads as prose/instructions, that would
+ * mangle ordinary quoted text and paths (a Windows path's backslashes would
+ * double) and fight fenceSafeBlock's own deliberate multi-line-chunk
+ * handling (F-f2dc3caf). Instead, `neutralizeInvisibleControls` (imported
+ * from commands/lib/escape-reason.js, the SAME disclosed lib→commands
+ * import seam findings-render.js's F-c3d8fd7e fix established this package,
+ * one file over) neutralizes ONLY the invisible/deception codepoint class
+ * (Default_Ignorable incl. the Tag block, bidi controls, C0/C1 non-
+ * whitespace, pathological combining-mark runs) — composed with, not
+ * replacing, fenceSafe/fenceSafeBlock, which stay scoped to their own
+ * backtick-fence job. Backslash, quote, tab, and newline all survive
+ * untouched, so ordinary prose and paths stay exactly as legible to the
+ * reading agent as before.
+ *
+ * CROSS-DOMAIN NOTE: `neutralizeInvisibleControls` is exported by
+ * commands/lib/escape-reason.js, owned this wave by swarm-cp-verbs (which is
+ * hardening that same module in parallel). This file only IMPORTS the
+ * export; it does not define or duplicate the primitive. If the export is
+ * not yet present when this file's own tests run, the import itself fails
+ * loud — see this domain's wave-24 output for the coordination note.
  */
 
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { neutralizeInvisibleControls } from '../commands/lib/escape-reason.js';
 
 // Resolve the agent-output schema the SAME way validate-agent-output.js does:
 // createRequire on @dogfood-lab/schemas's `./json/*` subpath export (fp-p-006
@@ -184,6 +229,23 @@ function fenceSafe(text) {
   if (!runs || runs.length % 2 === 0) return text;
   const zeroWidthSpace = String.fromCharCode(8203);
   return text.replace(/`{3,}/g, (run) => run.split('').join(zeroWidthSpace));
+}
+
+/**
+ * F-d2d06af3: neutralize the invisible/deception codepoint class in
+ * untrusted finding text before it is interpolated into an agent-read
+ * PROMPT — see this file's module docstring for the full rationale on why
+ * this is `neutralizeInvisibleControls`, not `escapeReasonForDisplay`.
+ * Guards falsy input the same way `fenceSafe` does immediately above, so a
+ * missing/undefined field passes through unchanged (never crashing on
+ * `String(undefined)`, never turning an absent value into the literal
+ * 4-character string "undefined").
+ *
+ * @param {string|undefined|null} text
+ * @returns {string|undefined|null}
+ */
+function neutralizeForPrompt(text) {
+  return text ? neutralizeInvisibleControls(text) : text;
 }
 
 /**
@@ -442,8 +504,14 @@ export function buildAuditPrompt(opts) {
   const lens = STAGE_LENS[opts.phase];
   if (!lens) throw new Error(`Unknown audit phase: ${opts.phase}`);
 
+  // F-d2d06af3: neutralize the invisible/deception codepoint class BEFORE
+  // fenceSafeBlock's backtick-fence-parity pass — the two passes operate on
+  // disjoint codepoint sets (control/bidi/Tag-block vs. backtick runs), so
+  // order does not change either pass's own result, but neutralizing closer
+  // to the untrusted source mirrors this package's established
+  // escape-then-format discipline (findings-render.js's truncate()).
   const priorSection = opts.priorContext
-    ? `\n## Prior Findings (do NOT re-report these)\n\n${fenceSafeBlock(opts.priorContext)}\n`
+    ? `\n## Prior Findings (do NOT re-report these)\n\n${fenceSafeBlock(neutralizeForPrompt(opts.priorContext))}\n`
     : '';
 
   const domainContract = renderDomainContract(
@@ -522,8 +590,14 @@ Be thorough. Every finding must have a severity and a concrete recommendation.`;
  * @returns {string}
  */
 export function buildAmendPrompt(opts) {
+  // F-d2d06af3: `file_path`/`description`/`recommendation` are audit-agent-
+  // authored text describing a (sometimes-adversarial) target repo. Route
+  // each through neutralizeForPrompt BEFORE fenceSafe — closing the
+  // control-byte/bidi/Tag-block gap fenceSafe was never built to cover,
+  // without disturbing its own backtick-fence-parity job. `file_path` had
+  // no escaping at all pre-fix; it gets the same treatment here.
   const findingsList = opts.findings
-    .map(f => `- [${f.severity}] ${f.finding_id}: ${fenceSafe(f.description)} (${f.file_path || 'no file'}:${f.line_number || '?'})${f.recommendation ? '\n  Fix: ' + fenceSafe(f.recommendation) : ''}`)
+    .map(f => `- [${f.severity}] ${f.finding_id}: ${fenceSafe(neutralizeForPrompt(f.description))} (${neutralizeForPrompt(f.file_path) || 'no file'}:${f.line_number || '?'})${f.recommendation ? '\n  Fix: ' + fenceSafe(neutralizeForPrompt(f.recommendation)) : ''}`)
     .join('\n');
 
   const domainContract = renderDomainContract(

@@ -141,10 +141,13 @@ describe('classifyFile', () => {
     assert.equal(classifyFile('/repo/lib/foo.spec.ts'), 'test');
   });
 
-  it('classifies anything in a /test/ or /tests/ dir as test', () => {
+  // F-92a8d0bb narrowed this: a plain-named file under /test/ (singular) is
+  // still 'test' (real node --test discovery), but /tests/ (plural) and
+  // /__tests__/ no longer get the same blanket credit — see the
+  // "F-92a8d0bb" describe block below for why, and for the reclassified
+  // /tests/ and /__tests__/ cases this test used to (incorrectly) assert.
+  it('classifies a plain-named file under /test/ (singular) as test', () => {
     assert.equal(classifyFile('/repo/packages/schemas/test/helpers.ts'), 'test');
-    assert.equal(classifyFile('/repo/tests/integration/runner.js'), 'test');
-    assert.equal(classifyFile('/repo/__tests__/snapshot.js'), 'test');
   });
 
   it('classifies plain source files as source', () => {
@@ -244,6 +247,39 @@ describe('classifyFile', () => {
       it('uses POSIX-normalised match logic so Windows backslashes still classify the prefix form', () => {
         assert.equal(classifyFile('C:\\repo\\packages\\report\\test-foo.js'), 'test');
       });
+    });
+  });
+
+  /** @pins F-92a8d0bb */
+  describe('F-92a8d0bb: /tests/ and /__tests__/ do NOT get the /test/-singular blanket credit', () => {
+    it('does NOT classify a plain-named file under /tests/ (plural) as test — node --test does not auto-collect it', () => {
+      assert.equal(classifyFile('/repo/tests/integration/runner.js'), 'source');
+    });
+
+    it('does NOT classify a plain-named file under /__tests__/ as test — node --test does not auto-collect it', () => {
+      assert.equal(classifyFile('/repo/__tests__/snapshot.js'), 'source');
+    });
+
+    it('still classifies a plain-named file under /test/ (singular) as test, at any nesting depth — this IS real node --test discovery, unchanged by this fix', () => {
+      assert.equal(classifyFile('/repo/packages/schemas/test/helpers.ts'), 'test');
+      assert.equal(classifyFile('/repo/lib/deep/nested/test/helpers.ts'), 'test');
+      assert.equal(classifyFile('/repo/test/deeper/helpers.ts'), 'test');
+    });
+
+    it('does NOT reclassify /tests/ or /__tests__/ at deeper nesting either — the blanket credit is fully removed, not just at the top level', () => {
+      assert.equal(classifyFile('/repo/nested/tests/helpers.ts'), 'source');
+      assert.equal(classifyFile('/repo/nested/__tests__/helpers.ts'), 'source');
+    });
+
+    it('a suffix/prefix-matching basename under /tests/ or /__tests__/ still classifies test — caught by the upstream checks, untouched by this fix', () => {
+      assert.equal(classifyFile('/repo/tests/foo.test.js'), 'test');
+      assert.equal(classifyFile('/repo/__tests__/foo.spec.js'), 'test');
+      assert.equal(classifyFile('/repo/tests/foo-test.js'), 'test');
+    });
+
+    it('uses POSIX-normalised match logic so Windows backslashes still classify /tests/ and /__tests__/ as source', () => {
+      assert.equal(classifyFile('C:\\repo\\tests\\integration\\runner.js'), 'source');
+      assert.equal(classifyFile('C:\\repo\\__tests__\\snapshot.js'), 'source');
     });
   });
 });

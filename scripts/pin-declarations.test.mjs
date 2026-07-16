@@ -164,6 +164,70 @@ describe('extractDeclaredIds', () => {
     assert.equal(issues[0].kind, 'bad-shape');
     assert.equal(issues[0].token, 'F-2222222');
   });
+
+  // F-d36cd380: F-a5f07b2b's own fix was itself instance-shaped — a literal
+  // `token.startsWith('F-')` both UNDER-catches (three real near-miss typos of
+  // the exact hash-id shape above, differing only in prefix spelling, all
+  // still silently vanished as prose) and OVER-catches (ordinary hyphenated
+  // prose starting with capital "F-" was wrongly flagged bad-shape). All six
+  // cases below are the shapes demonstrated directly against this function.
+  test('F-d36cd380: a lowercase-f case typo of a second id is flagged bad-shape, not silently dropped', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 f-2222222'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'f-2222222', ok: false },
+    ]);
+  });
+
+  test('F-d36cd380: a missing-internal-hyphen second id (F2222222) is flagged bad-shape, not silently dropped', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F2222222'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F2222222', ok: false },
+    ]);
+  });
+
+  test('F-d36cd380: a hyphen glued to the front of a second id (-F-2222222, one token because the tokenizer only splits on comma/whitespace) is flagged bad-shape, not silently dropped', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 -F-2222222'), [
+      { token: 'F-11111111', ok: true },
+      { token: '-F-2222222', ok: false },
+    ]);
+  });
+
+  test('F-d36cd380: ordinary hyphenated prose starting with capital "F-" (F-strings) is NOT flagged bad-shape — it ends the scan as free text, per F-d77ffe1a', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-strings are unrelated to this pattern'), [
+      { token: 'F-11111111', ok: true },
+    ]);
+  });
+
+  test('F-d36cd380: "F-16" (e.g. a fighter-jet reference in a rationale) is NOT flagged bad-shape', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-16 is unrelated to this pattern'), [
+      { token: 'F-11111111', ok: true },
+    ]);
+  });
+
+  test('F-d36cd380: "F-test" (a plausible testing-vocabulary compound) is NOT flagged bad-shape', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-test is unrelated to this pattern'), [
+      { token: 'F-11111111', ok: true },
+    ]);
+  });
+
+  /** @pins F-d36cd380 */
+  test('F-d36cd380 end-to-end: a case-typo second id surfaces as a real bad-shape tagIssue, while ordinary F-prefixed prose after a valid id raises none', () => {
+    const typo = scanFileForDeclaredPins(
+      'x.test.js',
+      "/** @pins F-11111111 f-2222222 */\ntest('t', () => { assert.ok(true); });\n",
+    );
+    assert.deepEqual(typo.pins.map((p) => p.id), ['F-11111111'], 'the well-formed first id is still credited');
+    assert.equal(typo.issues.length, 1, 'the case-typo second id must surface as exactly one issue, not zero');
+    assert.equal(typo.issues[0].kind, 'bad-shape');
+    assert.equal(typo.issues[0].token, 'f-2222222');
+
+    const prose = scanFileForDeclaredPins(
+      'x.test.js',
+      "/** @pins F-11111111 F-strings are unrelated to this pattern */\ntest('t', () => { assert.ok(true); });\n",
+    );
+    assert.deepEqual(prose.pins.map((p) => p.id), ['F-11111111']);
+    assert.equal(prose.issues.length, 0, 'ordinary F-prefixed prose after a valid id must raise zero issues, not one per prose word');
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -408,6 +472,33 @@ test('typed case', (): void => {
     const { pins, parseError } = scanFileForDeclaredPins('x.test.ts', code);
     assert.equal(parseError, null);
     assert.deepEqual(pins.map((p) => p.id), ['F-11112222']);
+  });
+
+  /**
+   * F-32441f8c: every documented/exemplified `@pins` convention in this file
+   * uses the `/** @pins F-id *\/` JSDoc block-comment form, but the mechanism
+   * (this function's uniform iteration over `ast.comments`) never
+   * distinguishes Babel's CommentBlock from CommentLine — see this module's
+   * SCOPE paragraph for the disclosed decision this test makes permanent: a
+   * bare `//` leading-comment line is credited IDENTICALLY to the block
+   * form, on purpose, not as an accidental side effect of a generic walk.
+   */
+  /** @pins F-32441f8c */
+  test('F-32441f8c: a bare "//" leading-comment line credits a pin identically to the documented "/** */" block form', () => {
+    const blockForm = scanFileForDeclaredPins('x.test.js', "/** @pins F-32441f8c */\ntest('block form', () => { assert.ok(true); });\n");
+    const lineForm = scanFileForDeclaredPins('x.test.js', "// @pins F-32441f8c\ntest('line form', () => { assert.ok(true); });\n");
+
+    assert.deepEqual(blockForm.pins.map((p) => p.id), ['F-32441f8c']);
+    assert.equal(blockForm.issues.length, 0);
+    assert.deepEqual(lineForm.pins.map((p) => p.id), ['F-32441f8c'], 'a bare // tag must credit the pin exactly like the block form, per the SCOPE paragraph\'s disclosed decision');
+    assert.equal(lineForm.issues.length, 0);
+  });
+
+  test('F-32441f8c: the "//" line form still requires real attachment — a trailing (not leading) "//" comment is not-attached, same as the block form', () => {
+    const { pins, issues } = scanFileForDeclaredPins('x.test.js', "test('a', () => {});\n// @pins F-99990000\n");
+    assert.equal(pins.length, 0, 'a // tag has no special-cased laundering path — it still requires correct AST leading-comment attachment');
+    assert.equal(issues.length, 1);
+    assert.equal(issues[0].kind, 'not-attached');
   });
 });
 

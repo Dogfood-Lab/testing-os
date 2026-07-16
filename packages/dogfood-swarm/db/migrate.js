@@ -116,6 +116,31 @@ function isSingleStatement(sql) {
 }
 
 /**
+ * Test `s` (already trimmed) against the three recognized DDL shapes ONLY —
+ * no isSingleStatement gate. Factored out of parseArtifact() (F-feea1982,
+ * wave 24) so assertManifestShapesRecognized()'s diagnostic below can ask
+ * "would the FIRST segment alone have matched?" independent of the
+ * single-statement check, to distinguish a genuinely unrecognized shape from
+ * a recognized one that isSingleStatement merely split on an embedded `;`.
+ *
+ * @param {string} s
+ * @returns {{kind:'column'|'index'|'table', table?:string, name:string}|null}
+ */
+function matchArtifactShape(s) {
+  let m;
+  if ((m = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/i.exec(s))) {
+    return { kind: 'column', table: m[1], name: m[2] };
+  }
+  if ((m = /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i.exec(s))) {
+    return { kind: 'index', name: m[1] };
+  }
+  if ((m = /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i.exec(s))) {
+    return { kind: 'table', name: m[1] };
+  }
+  return null;
+}
+
+/**
  * Parse the artifact a migration SQL statement creates, so we can detect
  * whether a pre-existing DB already has it (the retroactive-bootstrap signal).
  *
@@ -143,17 +168,7 @@ function isSingleStatement(sql) {
 function parseArtifact(sql) {
   const s = sql.trim();
   if (!isSingleStatement(s)) return null;
-  let m;
-  if ((m = /^ALTER\s+TABLE\s+(\w+)\s+ADD\s+COLUMN\s+(\w+)/i.exec(s))) {
-    return { kind: 'column', table: m[1], name: m[2] };
-  }
-  if ((m = /^CREATE\s+(?:UNIQUE\s+)?INDEX\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i.exec(s))) {
-    return { kind: 'index', name: m[1] };
-  }
-  if ((m = /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(\w+)/i.exec(s))) {
-    return { kind: 'table', name: m[1] };
-  }
-  return null;
+  return matchArtifactShape(s);
 }
 
 /**
@@ -187,11 +202,51 @@ function parseArtifact(sql) {
  * Exported so the regression test can pin this branch with injected values,
  * the same reason assertManifestVersionInvariant is exported.
  *
+ * F-feea1982 (LOW, wave 24): the thrown message below reads exactly like
+ * "your statement TYPE is unsupported" (it names the three recognized DDL
+ * shapes and nothing else), which is the wrong diagnosis for one specific
+ * false-rejection: a genuinely single, RECOGNIZED-shape statement whose SQL
+ * happens to contain a `;` inside a string literal (e.g.
+ * `ALTER TABLE foo ADD COLUMN note TEXT DEFAULT 'a;b'`) — isSingleStatement's
+ * naive `.split(';')` (this file has no string-literal-aware tokenizer, by
+ * documented design) splits that into two segments and parseArtifact()
+ * refuses it the identical way it refuses a genuinely unrecognized shape or a
+ * genuine two-statement entry, but the generic message never mentions
+ * semicolons, string literals, or the single-statement precondition at all —
+ * a future author hitting this at import time has no pointer from the thrown
+ * message itself to the real mechanism (only this doc comment states it).
+ * Distinguish the two causes: when the FIRST `;`-delimited segment alone
+ * already matches one of the three shapes, the entry is either a genuine
+ * multi-statement manifest entry OR a single statement with an embedded `;`
+ * inside a string/comment/DEFAULT value — this naive splitter cannot tell
+ * which, so the message below names BOTH possibilities and the remediation
+ * for each, rather than the generic "unsupported shape" text (still used,
+ * unchanged, for a SQL shape that genuinely matches none of the three
+ * regexes at all — see the two GATE tests in
+ * lib/migrate-unrecognized-shape-fails-loud.test.js for the case split).
+ *
  * @param {Array<{id:string, sql:string}>} manifest
  */
 export function assertManifestShapesRecognized(manifest) {
   for (const m of manifest) {
     if (parseArtifact(m.sql) === null) {
+      const segments = m.sql.split(';').map((s) => s.trim()).filter((s) => s.length > 0);
+      const firstSegmentRecognized = segments.length > 1 && matchArtifactShape(segments[0]) !== null;
+
+      if (firstSegmentRecognized) {
+        throw new Error(
+          `db/migrate: migration '${m.id}' splits into ${segments.length} statements after naively ` +
+          `splitting its SQL on ';', and the FIRST segment alone already matches a recognized shape ` +
+          `(ALTER TABLE ... ADD COLUMN, CREATE [UNIQUE] INDEX, CREATE TABLE) — this naive splitter has no ` +
+          `string-literal-aware tokenizer, so it cannot tell apart two different causes: (a) a genuine ` +
+          `multi-statement entry (e.g. a table plus its own index joined by ';' instead of two separate ` +
+          `manifest entries, as every other table/index pair in this manifest is authored) — split it into ` +
+          `${segments.length} manifest entries; or (b) one real, single statement with a ';' inside a ` +
+          `string literal, comment, or DEFAULT value. If (b), rephrase the statement to avoid the embedded ` +
+          `';' (e.g. move the value out of the DEFAULT clause) so isSingleStatement() sees exactly one segment.`
+        );
+      }
+
       throw new Error(
         `db/migrate: migration '${m.id}' uses an SQL shape parseArtifact()/artifactExists() cannot ` +
         `recognize (recognized shapes: ALTER TABLE ... ADD COLUMN, CREATE [UNIQUE] INDEX, CREATE TABLE). ` +

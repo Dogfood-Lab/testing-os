@@ -622,7 +622,15 @@ function cmdDispatch(args) {
   if (unrouted.length > 0) {
     console.log(`\n===== [!] ${unrouted.length} APPROVED FINDING(S) ROUTED TO NO AGENT [!] =====`);
     for (const f of unrouted) {
-      console.log(`  ${f.finding_id} [${f.severity}] ${f.file_path || '(no file_path — cannot match any domain glob)'}`);
+      // F-c6f7d8fc (wave 24): f.file_path is findings.file_path -- an
+      // agent-self-reported, schema-unconstrained string (agent-output.
+      // schema.json's `findings[].file` has no format/pattern/length cap;
+      // upserted verbatim by lib/fingerprint.js). The SAME zero-privilege
+      // field family F-f1dae277 (wave 22) routed through escapePathForDisplay
+      // at eight sites, missed here: an unescaped RLO/PDF wrap visually
+      // reverses this line, and an embedded newline forges a fake second row
+      // inside this block's own urgent "[!] ... [!]" banner.
+      console.log(`  ${f.finding_id} [${f.severity}] ${f.file_path ? escapePathForDisplay(f.file_path) : '(no file_path — cannot match any domain glob)'}`);
     }
     console.log('  These findings stay OPEN and block the severity gate, but no amend agent will receive them.');
     console.log('  Close them via the coordinator_resolved path: land the fix yourself, and for anchorless (architectural/doc-level) ones attach `coordinator_resolved: true` + a one-line `verified_via_evidence` so `swarm verify-fixed <run-id>` classifies the closure as allowlist instead of unverifiable.');
@@ -2619,7 +2627,13 @@ function formatTrends(query, payload) {
     } else {
       for (const r of payload) {
         lines.push(`  [${r.severity}] ${r.fingerprint} — ${r.run_count} runs`);
-        lines.push(`    ${r.description}`);
+        // F-c6f7d8fc (wave 24) sweep: r.description is MAX(findings.description)
+        // (lib/queries/cross-run-analytics.js's queryRecurringFindings) -- the
+        // same agent-self-reported, schema-unconstrained field family as
+        // findings.file_path above, undisclosed by the original finding and
+        // found by sweeping commands/**+cli.js for every findings.file_path /
+        // findings.description render, not just the one named site.
+        lines.push(`    ${escapeReasonForDisplay(r.description)}`);
         lines.push(`    first seen ${r.first_seen} · last seen ${r.last_seen}`);
         lines.push('');
       }

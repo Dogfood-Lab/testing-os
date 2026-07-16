@@ -48,9 +48,40 @@
  * own placement note already anticipates a future `git mv` into package-level
  * lib/ once ownership consolidates — this import is the second cited
  * consumer that note names as the trigger for that move.
+ *
+ * F-8e414a2b (wave 24): F-c3d8fd7e above closed the description/evidence/
+ * summary columns but left the FILE:LINE column (`loc`, built directly from
+ * `finding.file`/`finding.line`) and the `symbol` column raw in all four
+ * render functions below (renderMarkdown, renderText,
+ * renderVerifyFixedMarkdown, renderVerifyFixedText) — the identical
+ * zero-privilege origin (an audit agent quoting a possibly-adversarial
+ * target repo's own filename/symbol verbatim) F-f1dae277 already established
+ * for `file_claims.file_path` across commands/*.js. A raw ANSI cursor-erase
+ * sequence or a Unicode TAG-block payload embedded in `f.file`/`f.symbol`
+ * survived byte-for-byte into `swarm findings` / `swarm verify-fixed`
+ * output. `formatLoc()`/`formatSymbol()` below route both through the same
+ * canonical escaper truncate() already uses, so the four call sites share
+ * one implementation instead of re-deriving the same string four times (the
+ * exact duplication class this package's own history warns against — see
+ * escapePathForDisplay's own doc comment: "a count is not integrity" applies
+ * just as much to "four call sites that happen to agree today"). JSON
+ * renderers are untouched by design — `f.file`/`f.line`/`f.symbol` stay
+ * lossless on the `--format=json` path, the same invariant truncate() already
+ * holds for description/evidence.
+ *
+ * F-391f3e5d (wave 24): truncate()'s character-count slice had no awareness
+ * of escape-TOKEN boundaries and could cut a multi-character escape sequence
+ * (`\xHH`, `\uHHHH`, `\u{H+}`) in half, leaving a dangling, malformed-looking
+ * fragment (e.g. `...aaa\x…`) rather than either the complete token or a
+ * clean omission. Purely cosmetic — the security property already held
+ * (escaping runs BEFORE the slice, so a raw dangerous byte can never
+ * resurface no matter where the cut lands) — but a truncated escape TOKEN is
+ * itself confusing output. `backUpIncompleteEscape()` below detects a
+ * dangling prefix at the tail of the sliced string and backs the cut up to
+ * the last complete token boundary before the ellipsis is appended.
  */
 
-import { escapeReasonForDisplay } from '../commands/lib/escape-reason.js';
+import { escapeReasonForDisplay, escapePathForDisplay } from '../commands/lib/escape-reason.js';
 
 const SEV_SHORT = { CRITICAL: 'CRIT', HIGH: 'HIGH', MEDIUM: 'MED', LOW: 'LOW' };
 
@@ -136,7 +167,7 @@ export function renderMarkdown(model) {
   lines.push('|-----|-----|--------|-----------|-------------|');
   for (const f of model.findings) {
     const sev = SEV_SHORT[f.severity] || f.severity || '?';
-    const loc = f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '—';
+    const loc = formatLoc(f.file, f.line);
     lines.push(
       `| ${sev} | ${f.id || '—'} | ${f.domain} | ${loc} | ${truncate(f.description, 140)} |`
     );
@@ -216,7 +247,7 @@ export function renderText(model) {
       sev: SEV_SHORT[f.severity] || f.severity || '?',
       id: f.id || '—',
       domain: f.domain,
-      loc: f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '—',
+      loc: formatLoc(f.file, f.line),
       desc: truncate(f.description, 140),
     }));
     const widths = {
@@ -320,6 +351,62 @@ function buildJsonHeadline(model) {
 
 // ── helpers ──
 
+/**
+ * F-8e414a2b: shared File:Line column formatter for all four table
+ * renderers below — a single implementation instead of the same
+ * `f.file ? ... : '—'` ternary re-derived four times (and, pre-fix, escaped
+ * in none of them). `file` is routed through escapePathForDisplay (a
+ * bare-path-shaped value); `line` is routed through the same escaper for
+ * defense in depth even though the schema types it as a number and it is
+ * therefore ordinarily inert — escaping a plain integer is a no-op, so this
+ * costs nothing on the common path and closes the gap if a malformed agent
+ * output ever put non-numeric text there.
+ */
+function formatLoc(file, line) {
+  if (!file) return '—';
+  const escapedFile = escapePathForDisplay(String(file));
+  return line ? `${escapedFile}:${escapeReasonForDisplay(String(line))}` : escapedFile;
+}
+
+/** F-8e414a2b: shared Symbol column formatter — see formatLoc's doc comment. */
+function formatSymbol(symbol) {
+  return symbol ? escapeReasonForDisplay(String(symbol)) : '—';
+}
+
+// F-391f3e5d: matches a DANGLING escape-token prefix sitting at the very end
+// of an already-escaped string — i.e. the point where a character-count
+// slice cut through the middle of one of escapeReasonForDisplay's
+// multi-character tokens instead of landing cleanly before or after it.
+// escapeReasonForDisplay only ever emits a backslash as the FIRST character
+// of a fixed-shape token (\\, \", \n, \r, \t, \v, \f, \xHH, \uHHHH, \u{H+});
+// a literal backslash in the SOURCE text is always doubled to `\\` by that
+// same function's first pass, so any backslash reaching here that does not
+// resolve to one of the closed shapes below by end-of-string is provably a
+// token the slice cut through, never a coincidental lone literal backslash.
+// Each alternative is capped one short of its complete form (`x` + 0-1 hex
+// of the required 2, `u` + 0-3 hex of the required 4, `u{` + hex with no
+// closing `}`) so a COMPLETE token immediately followed by more literal text
+// is correctly left alone — see backUpIncompleteEscape's own tests for the
+// boundary proof.
+const DANGLING_ESCAPE_TAIL = /\\(?:x[0-9a-fA-F]?|u(?:[0-9a-fA-F]{0,3}|\{[0-9a-fA-F]*)?)?$/;
+
+/**
+ * Back a truncated, already-escaped string up to the last complete
+ * escape-token boundary when the character-count slice happened to land
+ * mid-token (F-391f3e5d). Purely a display-quality fix — the security
+ * property truncate() documents below (a raw dangerous byte can never
+ * resurface) already holds regardless of where the cut lands, because
+ * escaping runs BEFORE the slice; this only prevents the ESCAPED
+ * representation itself from being sliced into a confusing half-token.
+ *
+ * @param {string} str
+ * @returns {string}
+ */
+function backUpIncompleteEscape(str) {
+  const m = DANGLING_ESCAPE_TAIL.exec(str);
+  return m ? str.slice(0, m.index) : str;
+}
+
 function truncate(s, n) {
   if (!s) return '';
   // F-c3d8fd7e: escape BEFORE flattening/truncating — escapeReasonForDisplay
@@ -333,7 +420,12 @@ function truncate(s, n) {
   // escaped free-text render site in this package.
   const escaped = escapeReasonForDisplay(String(s));
   const flat = escaped.replace(/\s+/g, ' ').trim();
-  return flat.length > n ? flat.slice(0, n - 1) + '…' : flat;
+  if (flat.length <= n) return flat;
+  // F-391f3e5d: the naive `flat.slice(0, n - 1)` can land inside one of the
+  // multi-character tokens escapeReasonForDisplay just produced. Back up to
+  // the last complete boundary before appending the ellipsis so the output
+  // never ends in a dangling, malformed-looking fragment like `...aaa\x…`.
+  return backUpIncompleteEscape(flat.slice(0, n - 1)) + '…';
 }
 
 function pad(s, width) {
@@ -450,9 +542,9 @@ export function renderVerifyFixedMarkdown(model) {
   for (const f of sorted) {
     const cls = VF_CLASS_LABEL[f.classification] || f.classification;
     const sev = SEV_SHORT[f.severity] || f.severity || '?';
-    const loc = f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '—';
+    const loc = formatLoc(f.file, f.line);
     lines.push(
-      `| ${cls} | ${f.finding_id || '—'} | ${sev} | ${loc} | ${f.symbol || '—'} | ${truncate(f.evidence, 140)} |`
+      `| ${cls} | ${f.finding_id || '—'} | ${sev} | ${loc} | ${formatSymbol(f.symbol)} | ${truncate(f.evidence, 140)} |`
     );
   }
 
@@ -494,8 +586,8 @@ export function renderVerifyFixedText(model) {
     cls: VF_CLASS_LABEL[f.classification] || f.classification,
     id: f.finding_id || '—',
     sev: SEV_SHORT[f.severity] || f.severity || '?',
-    loc: f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '—',
-    symbol: f.symbol || '—',
+    loc: formatLoc(f.file, f.line),
+    symbol: formatSymbol(f.symbol),
     evidence: truncate(f.evidence, 140),
   }));
   const widths = {

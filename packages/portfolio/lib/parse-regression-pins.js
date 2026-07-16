@@ -206,6 +206,31 @@ export function posixifyPath(filePath) {
  * widening — a pure widening with zero observable reclassification, exactly
  * like its three siblings (see the "F-d01977e5" cases in the "F-a27680f9"
  * describe block in parse-regression-pins.test.js).
+ *
+ * F-92a8d0bb (MED, wave 24, confirming audit of this file's classifyFile()):
+ * revisits the "Deliberately NOT done here" call above and splits it in two.
+ * `/test/` (singular) was never an "err toward crediting too much" trade-off
+ * — empirically reconfirmed (candidate fixtures written to a clean scratch
+ * dir, bare `node --test` run twice for certainty, v22.22.3) that node's own
+ * default recursion collects ANY basename under a directory literally named
+ * `test`, at any nesting depth. The blanket credit for `/test/` is an exact
+ * match to real discovery, not a generous margin, and stays as-is.
+ * `/tests/` (plural) and `/__tests__/` are a DIFFERENT case: the same
+ * empirical probe found node's bare `--test` recursion collects NOTHING
+ * under either directory name unless the basename independently matches one
+ * of the suffix/prefix rules already checked above — so the blanket credit
+ * this file used to give both was a genuine false-grant-shaped gap (a
+ * `@pins` tag placed in, say, `tests/helpers.js` earned Tier-1
+ * "declared/verified" credit for a test `npm test` would never run), not a
+ * deliberate safety margin. The migration-safety concern the paragraph above
+ * raised — auditing every currently-tracked file under `tests/` or
+ * `__tests__/` for a real pin that would newly orphan — is satisfied here,
+ * not deferred: `git ls-files | grep -E '(^|/)(tests|__tests__)/'` returns
+ * nothing repo-wide, so removing the blanket credit for those two directory
+ * names reclassifies zero currently-tracked files. See classifyFile()'s
+ * directory-check block below for the resulting code, and the
+ * "F-92a8d0bb" describe block in parse-regression-pins.test.js for the
+ * regression proof.
  */
 const NODE_TEST_SUFFIX_PATTERN = /(?:^|[/_-])test\.[mc]?[jt]sx?$|(?:^|\/)test-[^/]*\.[mc]?[jt]sx?$/;
 
@@ -222,8 +247,15 @@ export function classifyFile(filePath) {
   if (/\.test\.[mc]?[jt]sx?$/.test(normalised)) return 'test';
   if (/\.spec\.[mc]?[jt]sx?$/.test(normalised)) return 'test';
   if (NODE_TEST_SUFFIX_PATTERN.test(normalised)) return 'test';
-  if (normalised.includes('/test/') || normalised.includes('/tests/')) return 'test';
-  if (normalised.includes('/__tests__/')) return 'test';
+  // F-92a8d0bb: `/test/` (singular) keeps its blanket, name-agnostic credit
+  // because that IS real `node --test` discovery (any basename, any depth,
+  // under a directory literally named `test` — see the F-92a8d0bb doc above
+  // NODE_TEST_SUFFIX_PATTERN). `/tests/` and `/__tests__/` do NOT get the
+  // same blanket credit: node's bare discovery does not auto-collect either
+  // directory name regardless of basename, so a file reaching this line
+  // whose name didn't already match one of the suffix/prefix checks above is
+  // 'source' by both of this repo's own test runners' actual rules.
+  if (normalised.includes('/test/')) return 'test';
   return 'source';
 }
 

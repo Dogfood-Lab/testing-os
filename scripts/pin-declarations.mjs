@@ -98,6 +98,23 @@
  * (grepped for `.each(` in every *.test.* file: zero live uses today, so
  * this is "supported, not currently exercised," the same evidentiary posture
  * this domain has used before for a mechanism proven-but-not-live).
+ *
+ * F-32441f8c, DISCLOSED (documentation-accuracy, not a laundering path):
+ * every illustrative example in this file (and in docs/pin-matcher-rewrite.
+ * dispatch.md / HANDOFF.md) writes the tag as a `/** @pins F-id *\/` JSDoc
+ * block comment, but the mechanism itself never distinguishes Babel's
+ * CommentBlock from CommentLine — `ast.comments` carries both uniformly and
+ * neither this function nor scanFileForDeclaredPins filters by comment kind.
+ * A bare `// @pins F-id` leading-comment line is credited IDENTICALLY to the
+ * block form, and always has been (verified: scanFileForDeclaredPins on a
+ * `// @pins F-id\ntest(...)` fixture credits the pin with zero issues — see
+ * pin-declarations.test.mjs's dedicated F-32441f8c coverage). This is now a
+ * STATED decision, not an accidental side effect of iterating ast.comments
+ * generically: a `//` tag still requires the exact same correct AST
+ * leading-comment attachment to a real qualifying call as the block form, so
+ * no laundering path opens by accepting it — permissiveness here is
+ * deliberate, chosen over narrowing the accepted grammar to match only the
+ * documented illustrative form.
  */
 
 import { parse } from '@babel/parser';
@@ -148,6 +165,61 @@ function parseOptsFor(filePath) {
 }
 
 /**
+ * F-d36cd380: does `token` plausibly READ AS a botched attempt at one of
+ * F_ID_PATTERN's three id grammars, as opposed to an ordinary word that
+ * happens to start with a capital "F-"? The sole caller is the post-valid-id
+ * branch inside {@link extractDeclaredIds} (below) — see that function's own
+ * docstring for the F-d77ffe1a / F-a5f07b2b / F-d36cd380 history this
+ * replaces.
+ *
+ * Normalizes THEN compares to grammar, rather than a literal prefix string
+ * match: `^-*[fF]-?` strips a hyphen run glued directly to the token's front
+ * (the tokenizer only splits on comma/whitespace, so "-F-2222222" arrives as
+ * one token), case-folds the leading f/F, and tolerates a missing separator
+ * hyphen right after it — so `f-2222222`, `F2222222`, and `-F-2222222` all
+ * normalize to the SAME "2222222" body. What follows must then fall within
+ * one character of an ACTUAL F_ID_PATTERN body (hex-dense ~8 chars,
+ * digit-dense ~9 chars split by one optional hyphen, or an uppercase-alnum
+ * run ending in a ~3-digit suffix) — not merely start with the right two
+ * characters. The one-character tolerance is deliberately narrow (a single
+ * fat-finger typo), not "contains some digits/hex," so a body that is merely
+ * short (`16`) or merely alphabetic-but-not-hex (`strings`, `test`) fails
+ * every branch and is correctly read as ordinary prose, not an id attempt.
+ *
+ * @param {string} token
+ * @returns {boolean}
+ */
+function looksLikeIdAttempt(token) {
+  const m = /^-*[fF]-?(.+)$/.exec(token);
+  if (!m) return false;
+  const body = m[1];
+
+  // HASH near-miss (F_ID_PATTERN branch 2: exactly 8 lowercase hex chars).
+  // Case-insensitive: a hex-typo'd hash id is the same class of near-miss as
+  // a case-typo'd prefix, not a different one.
+  if (/^[0-9a-f]+$/i.test(body) && Math.abs(body.length - 8) <= 1) return true;
+
+  // LEGACY near-miss (F_ID_PATTERN branch 1: 6 digits, hyphen, 3 digits).
+  // Only the TOTAL digit count is compared against the required 9 — the
+  // hyphen may be absent or shifted by a fat-finger without changing which
+  // real id was intended.
+  if (/^\d+-?\d+$/.test(body)) {
+    const digitCount = body.replace('-', '').length;
+    if (Math.abs(digitCount - 9) <= 1) return true;
+  }
+
+  // PREFIXED near-miss (F_ID_PATTERN branch 3: uppercase-alnum segment(s)
+  // ending in a 3-digit suffix) — tolerate the suffix run being one digit
+  // short or long.
+  if (/^[A-Z][A-Z0-9-]*$/.test(body)) {
+    const suffix = /-?(\d+)$/.exec(body);
+    if (suffix && Math.abs(suffix[1].length - 3) <= 1) return true;
+  }
+
+  return false;
+}
+
+/**
  * Split one `@pins` comment's raw value into declared tokens, one entry per
  * token, each already shape-checked against F_ID_PATTERN_ANCHORED. A line
  * with `@pins` but nothing after it produces one `{ token: null }` entry
@@ -182,6 +254,35 @@ function parseOptsFor(filePath) {
  * for the case it actually targeted (`@pins F-id - explanation`) while
  * restoring the bad-shape signal for a mistyped second id.
  *
+ * F-d36cd380: F-a5f07b2b's own fix was ITSELF instance-shaped, not
+ * class-shaped — SUPERSEDES that paragraph's literal-prefix mechanism (the
+ * paragraph above is kept as historical record, per this repo's "don't
+ * normalize history for aesthetics" norm; it no longer describes the code
+ * below). A literal, case-sensitive, no-separator-tolerant
+ * `token.startsWith('F-')` check both UNDER-catches — three real near-miss
+ * typos of the exact hash-id shape F-a5f07b2b was filed to restore coverage
+ * for still silently vanished as free text: a lowercase-f case typo
+ * (`f-2222222`), a missing internal hyphen (`F2222222`), and a hyphen glued
+ * to the token's front instead of separated by whitespace (`-F-2222222`,
+ * which arrives as ONE token because the tokenizer only splits on comma/
+ * whitespace) — and OVER-catches: ordinary hyphenated prose that happens to
+ * start with a capital "F-" (`F-strings`, `F-16`, `F-test`) was wrongly
+ * flagged as a blocking bad-shape tagIssue instead of the free text
+ * F-d77ffe1a's fix exists to permit. `looksLikeIdAttempt` (below) replaces
+ * the literal prefix string-match with a normalize-then-compare-to-grammar
+ * heuristic: fold prefix case and tolerate a glued/missing separator, THEN
+ * require what remains to fall within one character of one of
+ * F_ID_PATTERN's three actual id-body shapes (hex-dense ~8 chars,
+ * digit-dense ~9 chars, or an uppercase-alnum run ending in a ~3-digit
+ * suffix) — not merely start with two particular characters. That is what
+ * lets the three demonstrated near-misses above (all the SAME botched hash
+ * id, differing only in prefix spelling) report bad-shape, while
+ * `F-strings` / `F-16` / `F-test` (none of them digit- or hex-dense at a
+ * plausible id-body length) fall through to free text, unchanged from
+ * F-d77ffe1a's original intent. See looksLikeIdAttempt's own docstring for
+ * the exact tolerance windows, and this file's test suite for the four
+ * demonstrated shapes verified directly.
+ *
  * @param {string} commentValue - Babel Comment.value (delimiters stripped).
  * @returns {{ token: string | null, ok: boolean }[]}
  */
@@ -204,11 +305,14 @@ export function extractDeclaredIds(commentValue) {
         continue;
       }
       if (foundValid) {
-        // F-a5f07b2b: a failing token that still starts with "F-" reads as
-        // a botched id attempt, not prose — report it and keep scanning.
-        // Anything else is the free-text description F-d77ffe1a's fix
-        // exists to stop validating against F_ID_PATTERN.
-        if (token.startsWith('F-')) {
+        // F-d36cd380: a failing token that still LOOKS LIKE a botched id
+        // attempt (see looksLikeIdAttempt's own docstring) reads as one, not
+        // prose — report it and keep scanning. Anything else is the
+        // free-text description F-d77ffe1a's fix exists to stop validating
+        // against F_ID_PATTERN. (Supersedes F-a5f07b2b's literal
+        // `token.startsWith('F-')` check — see extractDeclaredIds' own
+        // docstring for why that check was itself instance-shaped.)
+        if (looksLikeIdAttempt(token)) {
           out.push({ token, ok: false });
           continue;
         }
