@@ -33,6 +33,27 @@
  *     including a reason that tries to forge a fake second clause with a raw
  *     `"`. `--format=json` (buildPromotionsJSON) is untouched: it stays the
  *     lossless, unescaped canonical form this file's Case E pins.
+ *
+ *   F-11f0e453 (MEDIUM, wave 16) — F-fa23cc37's quote/backslash fence stops a
+ *     reason from forging fake STRUCTURE inside one printed line, but never
+ *     neutralized a literal newline, which forges an entire fake LINE:
+ *     `console.log` prints whatever bytes a reason contains, so an embedded
+ *     '\n' ends the current terminal line and starts a new one that can be
+ *     shaped, byte-for-byte, to look like a genuine second `--history` row
+ *     (fake timestamp, fake phase transition, fake gate count, fake
+ *     authorizer) — proven live by direct CLI-subprocess execution against
+ *     the real, unmutated shipped code. escapeReasonForDisplay now also
+ *     escapes '\n', '\r', and '\t' to their visible two-character form,
+ *     confining the entire rendered row to the one line `console.log` was
+ *     asked to print; `--format=json` remains untouched and lossless. This
+ *     wave also closes a mutation-coverage gap wave-15's F-1518efd6 found in
+ *     the F-fa23cc37 pins above: none of the 5 exercise the TEXT view with a
+ *     raw backslash (only the --format=json pin at line 203 does, and JSON
+ *     bypasses escapeReasonForDisplay entirely), so a mutant dropping ONLY
+ *     the backslash-doubling half passed all 5. The new pins below combine a
+ *     trailing raw backslash with the newly-escaped newline in one
+ *     adversarial reason so both escape passes — and their ordering — are
+ *     exercised together, not in isolation.
  */
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -210,6 +231,126 @@ test('F-fa23cc37: --format=json stays lossless and UNESCAPED (the canonical form
     assert.equal(parsed[0].overrides[0].reason, rawReason,
       'the text view\'s escaping (escapeReasonForDisplay) must never leak into the JSON path');
     assert.equal(parsed[0].overrides[0].gate, 'adjudication');
+  } finally {
+    teardown(fx.tmp);
+  }
+});
+
+// A line in the `--history` text view is only trustworthy if it is
+// guaranteed to correspond to one real promotion row. All four tests below
+// check that invariant with the SAME shape of assertion: split stdout into
+// lines and count how many match the row's own leading shape (2-space
+// indent, YYYY-MM-DD HH:MM:SS, ' | ') — exactly one is correct; more than
+// one means a reason's own content forged an extra row.
+const REAL_ROW_LINE = /^ {2}\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \| /;
+
+test('F-11f0e453: an embedded newline cannot forge a fake promotion-history row in the text view', () => {
+  // Shaped like the finding's own PoC: a short, legitimate-looking prefix,
+  // then a newline, then text mimicking a REAL row (2-space indent,
+  // YYYY-MM-DD HH:MM:SS timestamp, phase arrow, gate count, actor).
+  const forgedRowText = '  2026-01-01 00:00:00 | health-audit-a -> stage-d-audit | 6/6 gates | director';
+  const rawReason = `legitimate-looking short reason\n${forgedRowText}`;
+  const fx = seedPromotion([{ gate: 'adjudication', reason: rawReason }]);
+  try {
+    const r = runCli(['advance', fx.RUN_ID, '--history'], fx.dbPath);
+    assert.equal(r.status, 0, `--history should render: ${r.stderr}`);
+
+    const rowLines = r.stdout.split('\n').filter(l => REAL_ROW_LINE.test(l));
+    assert.equal(rowLines.length, 1, `expected exactly 1 promotion row line, got ${rowLines.length}:\n${r.stdout}`);
+
+    // The newline renders as the visible two-character escape, so the whole
+    // forged payload stays inline as part of adjudication's own quoted reason.
+    const tag = extractOverrideTag(r.stdout);
+    assert.equal(tag, `adjudication: "legitimate-looking short reason\\n${forgedRowText}"`);
+
+    const parsed = parseOverrideGroups(tag);
+    assert.equal(parsed.length, 1, `expected exactly 1 group (no forged clause), got ${JSON.stringify(parsed)}`);
+    assert.deepEqual(parsed[0].gates, ['adjudication']);
+  } finally {
+    teardown(fx.tmp);
+  }
+});
+
+test('F-11f0e453: \\r\\n (CRLF) and a bare \\t are neutralized the same way as a bare \\n', () => {
+  const forgedRowText = '  2026-01-01 00:00:00 | health-audit-a -> stage-d-audit | 6/6 gates | director';
+  const rawReason = `crlf-forged attempt\r\n${forgedRowText}\twith a trailing tab`;
+  const fx = seedPromotion([{ gate: 'adjudication', reason: rawReason }]);
+  try {
+    const r = runCli(['advance', fx.RUN_ID, '--history'], fx.dbPath);
+    assert.equal(r.status, 0, `--history should render: ${r.stderr}`);
+
+    const rowLines = r.stdout.split('\n').filter(l => REAL_ROW_LINE.test(l));
+    assert.equal(rowLines.length, 1, `expected exactly 1 promotion row line, got ${rowLines.length}:\n${r.stdout}`);
+
+    const tag = extractOverrideTag(r.stdout);
+    assert.equal(tag, `adjudication: "crlf-forged attempt\\r\\n${forgedRowText}\\twith a trailing tab"`);
+  } finally {
+    teardown(fx.tmp);
+  }
+});
+
+test('F-11f0e453: --format=json round-trips a reason containing a literal newline/CR/tab exactly, unescaped', () => {
+  const rawReason = 'line one\nline two\r\nline three\twith a tab';
+  const fx = seedPromotion([{ gate: 'adjudication', reason: rawReason }]);
+  try {
+    const r = runCli(['advance', fx.RUN_ID, '--history', '--format=json'], fx.dbPath);
+    assert.equal(r.status, 0, `--history --format=json should render: ${r.stderr}`);
+    const parsed = JSON.parse(r.stdout);
+    assert.equal(parsed[0].overrides[0].reason, rawReason,
+      'the text view\'s newline/CR/tab escaping (escapeReasonForDisplay) must never leak into the JSON path');
+  } finally {
+    teardown(fx.tmp);
+  }
+});
+
+test('F-11f0e453 mutation coverage: a trailing backslash adjacent to an embedded newline exercises backslash-first ordering AND newline-escaping together (closes wave-15 F-1518efd6)', () => {
+  // F-1518efd6 mutation-probed this file's 5 F-fa23cc37 pins above and found
+  // that dropping ONLY the backslash-doubling half of escapeReasonForDisplay
+  // passes all 5 unchanged — none of them render a raw backslash through the
+  // TEXT view (the one pin with a raw backslash only checks --format=json,
+  // which bypasses escapeReasonForDisplay entirely). This pin closes that
+  // gap and proves newline-escaping at the same time: one reason that embeds
+  // a forged-row newline mid-content AND ends in a single raw trailing
+  // backslash, immediately adjacent to a second, genuinely distinct
+  // override — so both escape passes are exercised where their outputs
+  // interact, not in isolation.
+  const BACKSLASH = '\\';
+  const forgedRowText = '  2026-01-01 00:00:00 | forged -> row | 6/6 gates | evil';
+  const reason1 = `fake row test\n${forgedRowText}` + BACKSLASH;
+  const reason2 = 'second, distinct justification';
+  const fx = seedPromotion([
+    { gate: 'adjudication', reason: reason1 },
+    { gate: 'ownership', reason: reason2 },
+  ]);
+  try {
+    const r = runCli(['advance', fx.RUN_ID, '--history'], fx.dbPath);
+    assert.equal(r.status, 0, `--history should render: ${r.stderr}`);
+
+    // Axis 1 (newline-escaping): the forged row text never becomes its own
+    // line — dropping \n-escaping alone makes this fail (2 row lines, not 1).
+    const rowLines = r.stdout.split('\n').filter(l => REAL_ROW_LINE.test(l));
+    assert.equal(rowLines.length, 1, `expected exactly 1 promotion row line, got ${rowLines.length}:\n${r.stdout}`);
+
+    // Axis 2 (backslash-first ordering, byte-exact): the trailing backslash
+    // must double BEFORE the closing quote is appended, and the newline
+    // escape's OWN produced backslash must never be re-escaped by a later
+    // pass. Built from primitives (not by calling escapeReasonForDisplay),
+    // so this cannot be trivially satisfied by the code under test.
+    const expectedEscapedReason1 = `fake row test${BACKSLASH}n${forgedRowText}${BACKSLASH}${BACKSLASH}`;
+    const tag = extractOverrideTag(r.stdout);
+    assert.equal(tag, `adjudication: "${expectedEscapedReason1}"; ownership: "${reason2}"`);
+
+    // Axis 3 (structural, mirrors F-1518efd6's own proof technique): the
+    // escape-aware parser recovers exactly 2 groups, correctly attributed.
+    // Dropping backslash-doubling alone corrupts this into 1 mega-group (the
+    // un-doubled trailing backslash eats the true closing quote and
+    // everything after it, exactly as F-1518efd6 demonstrated) or a thrown
+    // parse error — either way this assertion (or the call itself) fails.
+    const parsed = parseOverrideGroups(tag);
+    assert.equal(parsed.length, 2, `expected exactly 2 groups (no cross-clause corruption), got ${JSON.stringify(parsed)}`);
+    assert.deepEqual(parsed[0].gates, ['adjudication']);
+    assert.deepEqual(parsed[1], { gates: ['ownership'], reason: reason2 },
+      'the second, unrelated override must stay attributed to its own gate, uncorrupted by the first');
   } finally {
     teardown(fx.tmp);
   }

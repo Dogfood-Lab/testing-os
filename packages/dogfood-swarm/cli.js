@@ -1735,11 +1735,35 @@ async function cmdAdjudicate(args) {
  * backslash then an escaped quote) instead of being misread as an escaped
  * quote it never was — standard escape-pair ordering (JSON/CSV-style).
  *
+ * F-11f0e453: quote/backslash-fencing assumed the reason's hazard surface
+ * was purely lexical — characters that could be misread WITHIN the one
+ * line `console.log` prints. A literal newline breaks that assumption one
+ * layer down: `console.log` prints whatever bytes it is given, so an
+ * embedded '\n' does not stay inside the quoted clause from the terminal's
+ * point of view — it ends the current line and starts a new one, and that
+ * new line can be shaped, byte-for-byte, to look like a genuine second
+ * `--history` row (its own fake timestamp, phase transition, gate count,
+ * and authorizer). No amount of quote- or backslash-escaping stops this,
+ * because the forged text is never part of the QUOTED STRING as far as the
+ * terminal is concerned — it is a wholly separate physical line. '\n',
+ * '\r', and '\t' are now escaped to their visible two-character form for
+ * the same reason '"' already is, so the entire rendered row — whatever an
+ * operator's --reason contains — is mechanically confined to the one line
+ * `console.log` was asked to print. These three still run AFTER the
+ * backslash pass for the same invariant the '"' ordering already depends
+ * on: each escape introduces a NEW backslash ('\\n', '\\r', '\\t') that
+ * must never itself be re-escaped by a later pass.
+ *
  * @param {string} reason
  * @returns {string}
  */
 function escapeReasonForDisplay(reason) {
-  return reason.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+  return reason
+    .replace(/\\/g, '\\\\')
+    .replace(/"/g, '\\"')
+    .replace(/\n/g, '\\n')
+    .replace(/\r/g, '\\r')
+    .replace(/\t/g, '\\t');
 }
 
 /**
@@ -1763,6 +1787,15 @@ function escapeReasonForDisplay(reason) {
  * UNESCAPED quote in a clause is its true closing one. `--format=json`
  * (buildPromotionsJSON) is untouched by this — it stays the lossless,
  * unescaped canonical form; this escaping exists only in the text view.
+ *
+ * F-11f0e453: the clause-boundary escaping above stops a reason from
+ * forging fake STRUCTURE within the one line this function's output gets
+ * printed on. It does nothing about a reason forging an entire fake LINE —
+ * that hazard lives one level below clause grammar, in whether the string
+ * this function returns can itself contain a raw newline. escapeReasonForDisplay
+ * now closes that gap too (see its own docstring); this function needed no
+ * changes because it was already correctly delegating ALL reason-rendering
+ * through that one escape seam.
  *
  * @param {Array<{gate: string, reason: string}>} overrides
  * @returns {string}

@@ -21,6 +21,18 @@
  * SCOPE NOTE. Lives under lib/ (not the package root) for the same reason as
  * export-verdict-complete-open-findings.test.js in this same directory — the
  * swarm-cp-core wave-14 domain owns `packages/dogfood-swarm/lib/**` only.
+ *
+ * WAVE-16 UPDATE (F-8451abe4). The second `it` below ("zero agents but a
+ * REAL verification receipt...") originally asserted `step_results.length
+ * === 1` — that pinned a shape that was itself a defect: a 'blocked'
+ * verdict backed by exactly one 'pass' step, with no blocked/fail step
+ * anywhere in the record. dogfood-bridge.js's step-synthesis guard now
+ * fires whenever `noAgentsDispatched` is true (previously it guarded on the
+ * narrower `agentSteps.length === 0`, which the verification push had
+ * already made false), so this case now emits BOTH the verification step
+ * and the synthesized blocked dispatch step. See
+ * dogfood-bridge-blocked-verdict-step-parity.test.js in this same directory
+ * for the full state-matrix pin this fix added.
  */
 
 import { describe, it } from 'node:test';
@@ -80,7 +92,18 @@ describe('F-1f8fd647 — a zero-agent wave is never a vacuous pass', () => {
     const scenario = submission.scenario_results[0];
 
     assert.equal(scenario.verdict, 'blocked');
-    assert.equal(scenario.step_results.length, 1, 'the verification step still gets recorded even though no agents ran');
+
+    // F-8451abe4: the verification step is recorded (real evidence, kept),
+    // AND the synthesized dispatch/blocked step is now ALSO present — a
+    // 'blocked' verdict must carry at least one blocked/fail step, and
+    // before this fix it carried only the passing verification step. See
+    // dogfood-bridge-blocked-verdict-step-parity.test.js for the full pin.
+    assert.equal(scenario.step_results.length, 2,
+      'both the verification step and the synthesized dispatch/blocked step must be present');
+    assert.ok(scenario.step_results.some(s => s.step_id === 'verification' && s.status === 'pass'),
+      'the real verification evidence must still be recorded');
+    assert.ok(scenario.step_results.some(s => s.status === 'blocked'),
+      "pre-fix: the 'blocked' verdict carried zero blocked-status steps — only a passing verification step");
 
     // This shape (non-empty step_results) is schema-clean; assert it stays
     // that way so the vacuous-pass fix does not trade one defect for a

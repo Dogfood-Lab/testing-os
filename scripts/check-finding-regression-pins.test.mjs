@@ -398,16 +398,16 @@ test('F-f37bb9ae counter-proof (GREEN direction, close bracket — this sub-case
   );
 });
 
-test('F-f37bb9ae (audit sweep) DISCLOSED, NOT FIXED THIS WAVE: a regex literal whose PATTERN TEXT (not a bracket) literally spells "assert" or "expect(" still manufactures false assert-body credit — a distinct mechanism from the bracket-depth miscounting above, needing the same tokenizer this file has repeatedly declined to add', () => {
-  // This is NOT closed by the inClass fix above — inClass only changes how
-  // BRACKET CHARACTERS affect depth; STRUCTURAL_ASSERT_LINE.test() still
-  // runs against the same regex-literal-inclusive text regardless, and a
-  // regex whose SOURCE spells "assert" (not its match target) satisfies the
-  // check with zero real assertion anywhere. Confirmed not currently live
-  // in the corpus (see the module docstring's WHAT STILL SLIPS THROUGH).
-  // Pinned here, GREEN (documenting the actual current behavior, not
-  // asserting a not-yet-true fix), so a future wave inherits a
-  // reproduction instead of rediscovering this from scratch.
+test('F-234da564 TREATMENT (wave 16 — was a DISCLOSED, NOT FIXED gap under F-f37bb9ae, now CLOSED): a regex literal whose PATTERN TEXT (not a bracket) literally spells "assert" or "expect(" no longer manufactures false assert-body credit', () => {
+  // Pre-wave-16 this was a documented open gap: the inClass fix only
+  // changed how BRACKET CHARACTERS affect depth; STRUCTURAL_ASSERT_LINE.test()
+  // still ran against the same regex-literal-inclusive text regardless, so a
+  // regex whose SOURCE spells "assert" (not its match target) satisfied the
+  // check with zero real assertion anywhere. Closed by the unified masking
+  // pass (maskToCodeOnly blanks entire regex literals — delimiters, flags,
+  // and pattern text alike — before enclosingCallHasAssertBody's bracket
+  // scan or its STRUCTURAL_ASSERT_LINE check ever run): see the module
+  // docstring's "F-e003b1fb / F-234da564 (wave 16)" section.
   const text =
     "test('F-100000-059: unrelated smoke test', () => {\n" +
     '  const re = /assert/;\n' +
@@ -416,8 +416,22 @@ test('F-f37bb9ae (audit sweep) DISCLOSED, NOT FIXED THIS WAVE: a regex literal w
   const hits = findStructuralPinHits(text, 'F-100000-059', 'irrelevant.test.js');
   assert.deepEqual(
     hits.map((h) => h.kind),
+    ['none'],
+    'a regex literal\'s pattern TEXT spelling the word "assert" must not grant credit — masking the entire regex literal in the code-only view closes this class',
+  );
+});
+
+test('F-234da564 counter-proof (GREEN direction): the identical shape but with a REAL assert call elsewhere in the body still earns credit — masking the regex body denies the FAKE call, not the call body as a whole', () => {
+  const text =
+    "test('F-100000-060: validates the assert-shaped regex is inert', () => {\n" +
+    '  const re = /assert/;\n' +
+    '  assert.ok(re.test("assert"));\n' +
+    '});\n';
+  const hits = findStructuralPinHits(text, 'F-100000-060', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
     ['title'],
-    'KNOWN OPEN GAP (documented in the module docstring, not fixed this wave): a regex literal\'s pattern TEXT spelling the word "assert" grants false credit through the text-match, independent of bracket-depth counting',
+    'a genuine assert.ok(...) call elsewhere in the same body must still earn credit — only the regex-literal-as-fake-call vector is closed',
   );
 });
 
@@ -500,6 +514,182 @@ test('F-c7927c58 precision proof: maskTestTitleSpan excludes only the quoted tit
     ['assert-line'],
     'the empty test() call correctly earns no title credit, but the genuine assert.ok(...) call later on the same line, naming the id in its own message, must still earn rule-4 credit — proves the fix is surgical, not a blanket same-line denial',
   );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-e003b1fb / F-234da564 (wave 16) — the unified masking pass. Both are
+// PROVEN-BY-DIRECT-CONSTRUCTION HIGH findings that closed the pin-matcher's
+// false-grant class at its root (see the module docstring's "F-e003b1fb /
+// F-234da564 (wave 16)" section) after five prior waves (w8/10/12/13/14) of
+// per-rule ad hoc masking each closed one non-code position and missed
+// another. Every test below mutation-proves one evasion class BOTH
+// directions: the evasion now DENIES credit, and a genuinely-covered id
+// (or the canonical legitimate use case the fix must not break) still gets
+// it. F-f37bb9ae's own "regex spells assert" disclosure is proven closed
+// just above this block, not repeated here.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-e003b1fb TREATMENT: an escaped quote inside a single-quoted test title truncates the pre-wave-16 escape-blind regex, exposing the title\'s "assert" prose and the id to rule 4 — now correctly denied end-to-end', async (t) => {
+  // Verbatim repro from the finding: an apostrophe inside a contraction
+  // ("it's") is a routine way to write a single-quoted title, exactly the
+  // prose style this domain's OWN F-c7927c58 fix used for its own examples
+  // ("should not assert when input is valid", "does not call expect()
+  // directly"). Pre-fix, matchTestCallStart's STRUCTURAL_TEST_TITLE regex
+  // captured only up to the ESCAPED quote, so maskTestTitleSpan blanked the
+  // truncated span and left the real remainder of the title — including
+  // "does not assert anything" — exposed to rule 4's raw pattern test.
+  const fx = makeFixture(t);
+  fx.write('src/widget.js', '// F-deadb33f - fixed a totally fake bug for this fixture\n');
+  fx.write(
+    'test/widget.test.js',
+    "test('it\\'s got F-deadb33f inside, and does not assert anything', () => { widget(); });\n",
+  );
+
+  const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
+
+  assert.equal(
+    result.ok,
+    false,
+    'an escaped quote inside a test title must not truncate title detection and leak "assert" prose (plus the id) to rule 4 for a body with zero real assertions',
+  );
+  assert.deepEqual(result.orphans, ['F-deadb33f']);
+});
+
+test('F-e003b1fb unit: findStructuralPinHits denies both title AND assert-line credit for the escaped-quote-title shape, isolating the mechanism from the fixture/CLI plumbing above', () => {
+  const text = "test('it\\'s got F-100000-061 inside, and does not assert anything', () => { widget(); });\n";
+  const hits = findStructuralPinHits(text, 'F-100000-061', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['none'],
+    'rule 2 must deny (empty body) and rule 4 must not override that denial via the un-truncated title\'s "assert" prose',
+  );
+});
+
+test('F-e003b1fb counter-proof (GREEN direction): an escaped quote inside a title that ALSO has a real assert in its body still earns title credit — the fix corrects the title boundary, it does not blanket-deny escaped titles', () => {
+  const text = "test('it\\'s got F-100000-062 covered for real', () => { assert.ok(doTheThing()); });\n";
+  const hits = findStructuralPinHits(text, 'F-100000-062', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['title'],
+    'a correctly-detected escaped-quote title whose call body has a genuine assert must still earn credit',
+  );
+});
+
+test('F-e003b1fb: the same escape-truncation shape is closed for all three title delimiters (\', ", `), matching STRUCTURAL_TEST_TITLE\'s original delimiter-generic capture group', () => {
+  const cases = [
+    ['single-quoted', "test('it\\'s F-100000-063 and does not assert', () => { doNothing(); });\n"],
+    ['double-quoted', 'test("she said \\"F-100000-064 doesn\'t assert\\" to me", () => { doNothing(); });\n'],
+    ['template-literal', 'test(`it\\`s F-100000-065 and does not assert`, () => { doNothing(); });\n'],
+  ];
+  for (const [label, text] of cases) {
+    const id = text.match(/F-100000-0\d\d/)[0];
+    const hits = findStructuralPinHits(text, id, 'irrelevant.test.js');
+    assert.deepEqual(hits.map((h) => h.kind), ['none'], `${label} escaped-delimiter title must not leak credit for a genuinely empty body`);
+  }
+});
+
+test('F-234da564 TREATMENT: an ordinary comment mentioning both an id and the bare word "assert", nowhere near a test/describe block, must not grant assert-line credit', () => {
+  const text =
+    'function unrelatedHelperOne() { return 1; }\n' +
+    '// Note: F-100000-066 does not assert anything here, the check happens in the helper below.\n' +
+    'function unrelatedHelperTwo() { return 2; }\n';
+  const hits = findStructuralPinHits(text, 'F-100000-066', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['none'],
+    'a plain comment mentioning "assert" as English prose must not manufacture a Class #14 pin with zero real assertion anywhere in the file',
+  );
+});
+
+test('F-234da564 TREATMENT: the same shape triggered by literal "expect(" text in a comment, instead of "assert", is denied identically', () => {
+  // The id is deliberately NOT the leading token (unlike rule 1's own
+  // canonical shape) — "See:" precedes it — so this exercises rule 4 in
+  // isolation instead of rule 1 legitimately granting leading-comment
+  // credit first.
+  const text = '// See: F-100000-067 does not call expect() directly, handled in the helper below.\n';
+  const hits = findStructuralPinHits(text, 'F-100000-067', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['none'], 'literal "expect(" text inside a comment must not satisfy the assert/expect check either');
+});
+
+test('F-234da564 TREATMENT: a plain console.log() string literal mentioning an id and "assert", with no real assertion on the line, must not grant credit (rule 4 previously never masked strings either)', () => {
+  const text = "console.log('F-100000-068 does not assert anything here, the check happens elsewhere');\n";
+  const hits = findStructuralPinHits(text, 'F-100000-068', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['none'],
+    'the word "assert" spelled inside a console.log() string argument is not a real assert/expect( call and must not satisfy rule 4',
+  );
+});
+
+test('F-234da564 counter-proof (GREEN direction): the canonical rule-4 pin — an id inside a real assertion-message STRING on a line with a genuine assert call — still earns credit', () => {
+  const hits = findStructuralPinHits("assert.doesNotMatch(a, /F-unrelated/, 'domain-a leaked F-100000-069');\n", 'F-100000-069', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['assert-line'], 'an id living inside a real assertion-message string must keep earning rule-4 credit');
+});
+
+test('F-234da564 / F-9c41a2b7 counter-proof (GREEN direction, live-corpus shape): an id living ONLY inside a regex-literal argument to a real assert call — no redundant string copy — still earns credit', () => {
+  // This is the shape an earlier draft of this wave's fix broke (see
+  // PROSE_MASK_KINDS in the production file): packages/dogfood-swarm/
+  // wave8-4091637-5127-swarm-cp-pins.test.js pins F-9c41a2b7 exactly this
+  // way (assert.match(text, /F-9c41a2b7/, 'message with no id in it')).
+  // Regex-literal pattern text must stay visible for id-membership even
+  // though it is blanked for the separate "is this a real call" check.
+  const text = "assert.match(preceding, /F-100000-070/, 'must cross-reference the finding');\n";
+  const hits = findStructuralPinHits(text, 'F-100000-070', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['assert-line'],
+    'a bare regex-literal matcher argument to a real assert call is exactly as legitimate an id site as a string argument',
+  );
+});
+
+test('F-e003b1fb / F-234da564: a template-literal (backtick) title with assert-shaped prose and a genuinely empty body is denied, exactly like the single/double-quoted cases', () => {
+  const text = 'test(`F-100000-071: does not assert anything`, () => { doNothing(); });\n';
+  const hits = findStructuralPinHits(text, 'F-100000-071', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['none'], 'template-literal titles get the same title-masking treatment as quoted-string titles');
+});
+
+test('F-e003b1fb / F-234da564 counter-proof (GREEN direction): a template-literal title containing the id, whose call body has a real assert, still earns title credit — including a nested ${...} interpolation in the title', () => {
+  const text = 'test(`F-100000-072: computed ${1 + 1} case`, () => { assert.ok(true); });\n';
+  const hits = findStructuralPinHits(text, 'F-100000-072', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['title'], 'a template-literal title with a nested ${} expression must still be recognized as a real title, not corrupt the scan');
+});
+
+test('F-e003b1fb / F-234da564: multiple regex literals on one line (including one containing an escaped slash) do not desync the scanner or corrupt detection of a real assert call later on the same line', () => {
+  const text = "test('F-100000-073: two regexes', () => { const a = /x\\/y/, b = /z/; assert.ok(a.test('x/y') && b.test('z')); });\n";
+  const hits = findStructuralPinHits(text, 'F-100000-073', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['title'], 'lexing back-to-back regex literals (one with an internal escaped slash) must not corrupt detection of the real assert.ok(...) call that follows');
+});
+
+test('F-234da564 (new gap closed beyond the two named findings): a multi-line block comment containing what LOOKS like a titled test with its own assert, entirely inside the comment, must not grant credit on an interior line', async (t) => {
+  // The pre-wave-16 per-line maskCommentsAndStrings regex required BOTH
+  // block-comment delimiters to appear within the SAME line it was applied
+  // to — an interior line of a multi-line block comment (no delimiter on
+  // that line) was treated as ordinary, unmasked code. scanNonCodeSpans is
+  // inherently multi-line-aware (ported from strip-comments.js, which
+  // already tracks block comments across line boundaries), and
+  // findStructuralPinHits now runs it once over the whole file text before
+  // splitting into lines, so this is closed for every rule that consumes
+  // the masked views, not just the two named findings.
+  const fx = makeFixture(t);
+  fx.write('src/gizmo.js', '// F-9ab3d0e2 - fixed a totally fake bug for this fixture\n');
+  fx.write(
+    'test/gizmo.test.js',
+    '/**\n' +
+    " * test('F-9ab3d0e2: unrelated smoke test', () => {\n" +
+    ' *   assert.ok(true);\n' +
+    ' * });\n' +
+    ' */\n' +
+    "test('a real, unrelated test', () => { assert.ok(1); });\n",
+  );
+
+  const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
+
+  assert.equal(
+    result.ok,
+    false,
+    'a fake test+assert shape living entirely inside a multi-line block comment must not clear Class #14 for the id it merely narrates in prose',
+  );
+  assert.deepEqual(result.orphans, ['F-9ab3d0e2']);
 });
 
 test('F-f0339e12 unit: findStructuralPinHits recognizes a same-line assert argument pin', () => {

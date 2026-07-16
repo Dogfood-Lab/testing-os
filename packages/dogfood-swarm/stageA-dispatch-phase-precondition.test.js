@@ -75,9 +75,17 @@ describe('d5-swarm-cli-001 — dispatch validates phase BEFORE mutating the cont
 
   afterEach(() => {
     // WAL-mode handles are pooled by path; close before rmSync or Windows
-    // EBUSY's the still-open control-plane.db file.
+    // EBUSY's the still-open control-plane.db file. F-60942f46: closeDb only
+    // ever releases THIS process's own pooled connection — it cannot release
+    // the just-exited CLI-seam subprocess's (below) OS-level lock on the
+    // -wal/-shm sidecar files, so rmSync itself must also be Windows-tolerant
+    // (matches the sibling idiom F-8ad2d58d established package-wide this
+    // wave: redrive.test.js, rewind.test.js, verify-json-purity.test.js,
+    // w3-trends-and-json-output.test.js, gate-verbs-json.test.js,
+    // amend2-d3b-004-cli-globs.test.js, meta-amendB-operator-output.test.js,
+    // cli-smoke.test.js).
     closeDb(dbPath);
-    rmSync(tmpDir, { recursive: true, force: true });
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
   });
 
   it('an invalid phase throws DISPATCH_INVALID_PHASE before any DB write', () => {
@@ -201,8 +209,13 @@ describe('F-3c8a62f1 — dispatch refuses when there are zero AGENT domains (no 
   });
 
   afterEach(() => {
+    // F-60942f46: neither it() in this block spawns the CLI today (both (a)
+    // and (b) exercise dispatch() in-process), so this describe block is not
+    // currently exposed to the WAL-sidecar teardown race guarded above —
+    // but guarding it too removes the stylistic inconsistency and protects
+    // against a future test being added here that spawns the CLI.
     closeDb(dbPath);
-    rmSync(tmpDir, { recursive: true, force: true });
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
   });
 
   it('(a) all-`shared` domain map refuses with DISPATCH_NO_AGENT_DOMAINS and commits no wave', () => {

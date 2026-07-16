@@ -222,8 +222,26 @@ export function computeRunVerdict(exportData) {
   // The fix: 'complete' no longer skips the check. It now falls through to
   // the same open-findings count every other non-aborted status already
   // used, so 'complete' means 'pass' only when it is actually earned.
-  // 'aborted' keeps its unconditional 'fail' below — the safe/conservative
-  // direction, unlike 'complete', so it is not subject to the same fix.
+  // 'aborted' keeps its unconditional 'fail' below.
+  //
+  // F-6859e492: this paragraph used to end "...the safe/conservative
+  // direction, unlike 'complete', so it is not subject to the same fix" —
+  // true of THIS function in isolation, but that framing missed that the
+  // cross-artifact-agreement test above ("two artifacts, one call, opposite
+  // verdicts") applies to every run.status value, not only 'complete'.
+  // buildAuditPayload never special-cased run.status either way, so for
+  // 'aborted' it fell straight through to the SAME open-findings computation
+  // 'complete' used pre-fix — reporting overall_status:'pass'/
+  // blocking_release:false whenever an aborted run happened to have zero
+  // open findings (or all findings closed), while this function kept
+  // returning 'fail' unconditionally. The fix mirrors THIS branch's
+  // conservative semantics into buildAuditPayload
+  // (lib/persist/repoknowledge-bridge.js) rather than loosening it here: an
+  // aborted run is never a safe 'pass' in either artifact, because the run
+  // itself never reached a point where "no open findings" means "nothing
+  // left to find." See export-verdict-aborted-sibling-agreement.test.js for
+  // the 4-state × both-artifacts pin (this file's own agreement test above
+  // only covers 'complete').
   if (exportData.run.status === 'aborted') return 'fail';
 
   // F-5c562913: the verdict counts OPEN findings only. Pre-fix, hasCritical

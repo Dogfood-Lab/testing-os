@@ -263,6 +263,22 @@ export const CHAIN_ADOPTION_DATE = new Date('2026-06-21T00:00:00Z');
  * asserting "predates the chain" when the record's own data already
  * contradicts that claim, or supports no claim at all.
  *
+ * F-a85b7e84 (wave 16, LOW): a candidate must be a `string` before it is
+ * handed to `new Date()`. JSON has no Date type — every field a real
+ * writeRecord() call ever produces here is a string (Date.prototype.toJSON
+ * always serializes to one) or absent — so `typeof value === 'string'` costs
+ * nothing against genuine records. Without it, `new Date()`'s permissive
+ * ToPrimitive coercion accepts non-date JSON values that a bare falsy check
+ * (`if (!value) continue`) does not filter out: `new Date(true)` coerces the
+ * boolean to the number 1 (1970-01-01T00:00:00.001Z), a bare integer is read
+ * as an epoch-millisecond offset, and an array's comma-joined
+ * `toString()` (e.g. `[2026, 3, 1]` -> `'2026,3,1'`) fallback-parses as a
+ * real date — all landing well before CHAIN_ADOPTION_DATE with none of the
+ * "type a plausible fake ISO string" effort the surviving forgery residual
+ * (this function's own doc paragraph above) assumes. A non-string value now
+ * falls through to the same "no readable timestamp" orphan branch as an
+ * absent field, exactly like an unparseable string already did.
+ *
  * @param {object} record
  * @returns {Date|null}
  */
@@ -270,7 +286,7 @@ function latestClaimedTimestamp(record) {
   const candidates = [record.timing?.finished_at, record.verification?.verified_at];
   let latest = null;
   for (const value of candidates) {
-    if (!value) continue;
+    if (typeof value !== 'string') continue;
     const parsed = new Date(value);
     if (isNaN(parsed.getTime())) continue;
     if (latest === null || parsed.getTime() > latest.getTime()) latest = parsed;

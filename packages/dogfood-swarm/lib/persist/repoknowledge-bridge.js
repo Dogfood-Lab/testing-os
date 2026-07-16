@@ -85,8 +85,28 @@ export function buildAuditPayload(exportData) {
   const highCount = openBySeverity.HIGH || 0;
   const openFindings = openItems.length;
 
+  // F-6859e492: this function has never special-cased run.status (see the
+  // F-5c562913 comment above) — it fell straight through to the open-findings
+  // computation regardless of whether the run actually completed. For
+  // run.status:'aborted' that meant reporting overall_status:'pass' /
+  // blocking_release:false whenever zero findings happened to be open (or all
+  // were closed), while the sibling computeRunVerdict (export.js) has always
+  // returned an unconditional 'fail' for 'aborted' — the exact "two
+  // artifacts, one call, opposite verdicts" shape F-b721038e fixed for
+  // 'complete', just relocated to the status value that fix's own comment
+  // carved out as already safe. Mirror computeRunVerdict's conservative
+  // reading here instead of loosening it there: a run that never completed
+  // is not a safe 'pass' in either artifact, no matter what findings happen
+  // to be open — "no open findings" on an aborted run means "we stopped
+  // looking," not "nothing left to find." Keep this branch ahead of the
+  // open-findings computation so no aborted run can fall through to 'pass'
+  // or 'pass_with_findings'. See export-verdict-aborted-sibling-agreement
+  // .test.js for the 4-state × both-artifacts pin.
   let overallStatus, overallPosture;
-  if (criticalCount > 0) {
+  if (run.status === 'aborted') {
+    overallStatus = 'fail';
+    overallPosture = 'critical';
+  } else if (criticalCount > 0) {
     overallStatus = 'fail';
     overallPosture = 'critical';
   } else if (openFindings > 0) {
@@ -110,7 +130,9 @@ export function buildAuditPayload(exportData) {
     overall_posture: overallPosture,
     domains_checked: [...domainsChecked].sort(),
     summary: `Swarm audit: ${findingSummary.total} findings (${criticalCount} open critical, ${highCount} open high). ${exportData.waves.length} waves, ${exportData.promotions.length} promotions.`,
-    blocking_release: criticalCount > 0,
+    // F-6859e492: blocking_release must agree with overallStatus above — an
+    // aborted run blocks release the same way an open CRITICAL does.
+    blocking_release: run.status === 'aborted' || criticalCount > 0,
     started_at: run.created,
     completed_at: run.completed,
   };
