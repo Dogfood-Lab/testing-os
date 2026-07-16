@@ -7,6 +7,8 @@
 
 import { execFileSync } from 'node:child_process';
 
+import { logStage } from '../log-stage.js';
+
 /**
  * Per-step wall-clock budget. A step that exceeds this is killed and tagged
  * `timed_out` (ve-p-005) rather than reported as an ordinary fast failure.
@@ -73,13 +75,36 @@ const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
  * caller's `?? MAX_BUFFER_BYTES` fallback takes over rather than handing
  * execFileSync a value it would reject or misinterpret.
  *
+ * F-80beae0e: "missing" and "set but malformed" both return `null` above —
+ * that part is deliberately unchanged, since falling back to the module
+ * default is the right behavior for BOTH. But they used to be
+ * INDISTINGUISHABLE to the operator too: the output_exceeded message always
+ * reads "set SWARM_VERIFY_MAX_BUFFER_BYTES above N" regardless of which case
+ * produced the fallback, so an operator who DID set the var — with a typo,
+ * or with JS-source-level numeric-separator syntax like '100_000_000' that
+ * Number() does not parse — saw the identical advice as one who never set it
+ * at all, with no signal their existing setting was silently discarded. The
+ * two cases now diverge in observability, not in the returned value: unset
+ * (the ordinary, overwhelmingly common case) stays completely silent, while
+ * SET-but-unparseable logs a structured one-line warning on the same stderr
+ * channel every other diagnostic in this package uses (grep
+ * `verify_max_buffer_env_malformed`), naming the raw value so the typo is
+ * visible without reproducing it.
+ *
  * @returns {number|null}
  */
 function readEnvMaxBufferBytes() {
   const raw = process.env.SWARM_VERIFY_MAX_BUFFER_BYTES;
   if (!raw) return null;
   const n = Number(raw);
-  return Number.isFinite(n) && n > 0 ? n : null;
+  if (Number.isFinite(n) && n > 0) return n;
+  logStage('verify_max_buffer_env_malformed', {
+    component: 'dogfood-swarm',
+    env_var: 'SWARM_VERIFY_MAX_BUFFER_BYTES',
+    raw_value: raw,
+    reason: 'not a finite positive number — falling back to the module default',
+  });
+  return null;
 }
 
 /**

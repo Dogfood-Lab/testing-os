@@ -1798,6 +1798,27 @@ function cmdAdvance(args) {
     console.log(`Verdict: ${result.verdict}`);
     console.log(`Promotion ID: ${result.promotionId}`);
     console.log('');
+    // F-0a888394: an operator who just typed `--override --reason '...'` must
+    // see, in this SAME terminal output, exactly which named gates their
+    // reason consented to overriding — not just that promotion happened.
+    // Pre-fix this Gates breakdown only rendered in the BLOCKED/AMEND branch
+    // below; the override-ADVANCE path's gatesChecked (with `overridden: true`
+    // on the masked gates, set by the F-f33081a2 fix) was computed and
+    // durably recorded in promotions.gates_checked/overrides but never echoed
+    // here — recoverable only via a second `swarm advance <run> --history`
+    // call the operator has no prompt to run. Mirrors the BLOCKED branch's
+    // per-gate PASS/FAIL line below and adds the `overridden` tag the
+    // override path uniquely produces, so finding_severity's deliberate
+    // exclusion from an amend-reroute override (F-f33081a2) is visible at
+    // the moment of action, not just on a follow-up --history query.
+    if (result.gates && result.gates.length > 0) {
+      console.log('Gates:');
+      for (const g of result.gates) {
+        const overrideTag = g.overridden ? ' [OVERRIDDEN]' : '';
+        console.log(`  [${g.passed ? 'PASS' : 'FAIL'}] ${g.name} — ${g.reason}${overrideTag}`);
+      }
+      console.log('');
+    }
     console.log(`Next: swarm dispatch ${runId} ${result.toPhase}`);
   } else {
     console.log(`BLOCKED: ${result.verdict}`);
@@ -1996,7 +2017,18 @@ function refuseIfNoIdsExist(db, runId, ids, idsUpper) {
   console.error(
     '  Next: findings.finding_id is the canonical id (e.g. F-c63c7498) minted by `swarm collect` — not the ' +
     'agent-local `id` a not-yet-collected `swarm findings` digest may still be showing from raw output.json. ' +
-    `Run \`swarm findings ${runId}\` (after collect) or \`swarm status ${runId} --format=json\` for canonical ids.`
+    // F-1d972160: this used to also suggest `swarm status --format=json` —
+    // proven live to be a dead end: status()'s findings block (commands/
+    // status.js) is aggregate COUNTS only (total/bySeverity/byStatus/open/
+    // thisWave) and never emits an individual finding_id, in text or JSON,
+    // under any run state. `swarm findings --format=json` is the real
+    // remedy: its `id` field is annotateCanonicalFindingIds' best-effort
+    // resolution to the DB-canonical finding_id (see that function's doc
+    // comment), which now also tolerates a drifted line for a recurring
+    // finding (widened by this same fix) — so the common case this hint
+    // exists for actually resolves, not just the first-seen-this-wave case.
+    `Run \`swarm findings ${runId} --format=json\` (after collect) — its \`id\` field resolves to the real ` +
+    'finding_id whenever the match is unambiguous.'
   );
   process.exit(1);
 }
@@ -2127,13 +2159,26 @@ function cmdReject(args) {
  * match against (findings keep their plain agent-local id — today's
  * behavior, unchanged) and a field tuple shared by more than one DB row (a
  * true duplicate — the rare case disambiguateFingerprints exists for)
- * resolves to nothing rather than guessing. Known, accepted gap: a
- * RECURRING finding whose file/line/symbol drifted since its first-seen
- * wave (plausible — intervening waves edit the same files) will not match
- * this exact-equality tuple and keeps showing its agent-local id, same as
- * pre-fix. A `new` finding (first reported THIS wave) always matches
- * exactly, because the DB row was inserted THIS SAME collect() from THIS
- * SAME output.json — zero drift is possible for that case.
+ * resolves to nothing rather than guessing. A `new` finding (first reported
+ * THIS wave) always matches the full 5-field tuple exactly, because the DB
+ * row was inserted THIS SAME collect() from THIS SAME output.json — zero
+ * drift is possible for that case.
+ *
+ * F-1d972160: a RECURRING finding's file/line/symbol CAN drift off its
+ * collect-time row — plausible whenever a nearby edit shifts a line number
+ * — and updateRecurring (lib/fingerprint.js) only ever bumps status/
+ * last_seen_wave, never the location columns, so the drift is permanent,
+ * not transient. Pre-fix the 5-field tuple then missed FOREVER and the
+ * operator was permanently stranded on the agent-local id with no CLI verb
+ * anywhere able to supply the real one (the zero-match refusal's own hint,
+ * just above this function's call site, names the dead end this caused).
+ * A second, line-DROPPED index (file/symbol/category/severity) is now
+ * tried as a fallback — ONLY when the full tuple found zero rows (an
+ * ambiguous full-tuple match is not widened further; widening can only
+ * ever grow the candidate set) — and ONLY resolves when that narrower
+ * tuple is still unambiguous. Same fails-CLOSED contract as the primary
+ * match: a ghost id is worse than none, so two-or-more rows sharing
+ * (file, symbol, category, severity) resolve to nothing, same as today.
  */
 function annotateCanonicalFindingIds(model, { runId, waveNumber, dbPath }) {
   if (!model.findings || model.findings.length === 0) return;
@@ -2155,25 +2200,39 @@ function annotateCanonicalFindingIds(model, { runId, waveNumber, dbPath }) {
 
   const tupleKey = (file, line, symbol, category, severity) =>
     JSON.stringify([file ?? null, line ?? null, symbol ?? null, category ?? null, severity ?? null]);
+  const driftedLineKey = (file, symbol, category, severity) =>
+    JSON.stringify([file ?? null, symbol ?? null, category ?? null, severity ?? null]);
 
   const byTuple = new Map();
+  const byTupleDriftedLine = new Map();
   for (const r of rows) {
     const key = tupleKey(r.file_path, r.line_number, r.symbol, r.category, r.severity);
     const bucket = byTuple.get(key);
     if (bucket) bucket.push(r); else byTuple.set(key, [r]);
+
+    const looseKey = driftedLineKey(r.file_path, r.symbol, r.category, r.severity);
+    const looseBucket = byTupleDriftedLine.get(looseKey);
+    if (looseBucket) looseBucket.push(r); else byTupleDriftedLine.set(looseKey, [r]);
   }
 
   for (const f of model.findings) {
-    const key = tupleKey(
-      f.file || null,
-      f.line || null,
-      f.symbol || null,
-      f.category || null,
-      String(f.severity || '').toUpperCase() || null
-    );
+    const file = f.file || null;
+    const symbol = f.symbol || null;
+    const category = f.category || null;
+    const severity = String(f.severity || '').toUpperCase() || null;
+
+    const key = tupleKey(file, f.line || null, symbol, category, severity);
     const bucket = byTuple.get(key);
     if (bucket && bucket.length === 1) {
       f.id = bucket[0].finding_id;
+      continue;
+    }
+    if (bucket) continue; // ambiguous even with line included — do not widen.
+
+    const looseKey = driftedLineKey(file, symbol, category, severity);
+    const looseBucket = byTupleDriftedLine.get(looseKey);
+    if (looseBucket && looseBucket.length === 1) {
+      f.id = looseBucket[0].finding_id;
     }
   }
 }

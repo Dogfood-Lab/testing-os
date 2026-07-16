@@ -187,6 +187,76 @@ function fenceSafe(text) {
 }
 
 /**
+ * Apply fenceSafe PER FINDING to an already-joined multi-finding blob, rather
+ * than once to the whole blob.
+ *
+ * F-62e467be: fenceSafe's odd/even parity check is trustworthy for ONE
+ * contiguous piece of authored prose — a single finding's own description or
+ * recommendation, F-01458fdb's contract — because within one author's text a
+ * paired (even) backtick-run count really is overwhelmingly likely to be one
+ * legitimate opening + closing fence. buildAuditPrompt's only caller
+ * (commands/dispatch.js) never hands fenceSafe one finding's text, though: it
+ * hands opts.priorContext, ALREADY joined from every prior finding's raw
+ * description into one multi-line blob (one bullet line per finding,
+ * `- [status] finding_id: description (file)`) before this module ever sees
+ * it. Two INDEPENDENT findings can each carry their own odd (hazardous)
+ * backtick-run count that happens to SUM to an even total, and a single
+ * fenceSafe(wholeBlob) call would then trust the region between them as
+ * "closed" — even though a real top-to-bottom CommonMark reader renders
+ * every OTHER finding sandwiched between the two stray runs as if it were
+ * inside an open code fence. Proven live: two findings with one stray
+ * backtick run each (2 runs total, even) left a third, unrelated finding
+ * between them rendered inside a fake open fence, while the aggregate parity
+ * check saw nothing wrong.
+ *
+ * This recovers the SAME per-finding unit buildAmendPrompt already uses
+ * without this problem — that call site never concatenates findings before
+ * calling fenceSafe; each finding's own description/recommendation gets its
+ * own separate call (see the findingsList map below). dispatch.js's bullet
+ * format is a documented, load-bearing contract (its own comment describes
+ * it as "one bullet line per finding"), so a chunk boundary is recovered by
+ * splitting on `- [` at the START of a line — the same anchor discipline
+ * runner.js#extractTestCount uses to tell a real summary line from indented
+ * continuation content. A chunk with its own legitimate, evenly-paired
+ * fenced example — which may itself embed newlines, e.g. a multi-line code
+ * block inside one finding's description — survives byte-identical, because
+ * the chunk boundary keeps that example's own opener+closer pair together in
+ * one fenceSafe call, exactly as a lone finding's text always has.
+ *
+ * Residual (honest, bounded): the boundary is a heuristic anchored on
+ * dispatch.js's actual bullet format, not a structural parse — this module
+ * has no finding-boundary metadata to parse against once the caller has
+ * already joined everything into one string. If a finding's own description
+ * happens to contain a line starting with the literal `- [` (not Markdown
+ * syntax anyone authors mid-sentence — vanishingly unlikely), that ONE
+ * finding's text is over-segmented into two chunks. The failure mode is
+ * strictly conservative: a legitimate paired fence split across the
+ * accidental boundary becomes two odd chunks and BOTH get neutralized (a
+ * fenced-code rendering the reader would otherwise have kept is lost),
+ * never the reverse (an actual hazard slipping through because a neighbor
+ * chunk happened to complete its parity). That asymmetry — safe to
+ * over-transform, never safe to under-transform — is the same "bounded,
+ * never data loss" shape fingerprint.js's disambiguateFingerprints documents
+ * for its own safety-net residual.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function fenceSafeBlock(text) {
+  if (!text) return text;
+  const starts = [...text.matchAll(/^- \[/gm)].map((m) => m.index);
+  if (starts.length === 0) return fenceSafe(text);
+
+  const chunks = [];
+  if (starts[0] > 0) chunks.push(text.slice(0, starts[0]));
+  for (let i = 0; i < starts.length; i++) {
+    const end = i + 1 < starts.length ? starts[i + 1] : text.length;
+    chunks.push(text.slice(starts[i], end));
+  }
+  return chunks.map(fenceSafe).join('');
+}
+
+/**
  * Render the per-domain ownership block — globs + ownership class + (optional)
  * frozen-snapshot ID. Agents read the SAME ownership facts the collect-time
  * checkOwnership() will enforce against, not a paraphrased coordinator brief.
@@ -330,7 +400,7 @@ export function buildAuditPrompt(opts) {
   if (!lens) throw new Error(`Unknown audit phase: ${opts.phase}`);
 
   const priorSection = opts.priorContext
-    ? `\n## Prior Findings (do NOT re-report these)\n\n${fenceSafe(opts.priorContext)}\n`
+    ? `\n## Prior Findings (do NOT re-report these)\n\n${fenceSafeBlock(opts.priorContext)}\n`
     : '';
 
   const domainContract = renderDomainContract(

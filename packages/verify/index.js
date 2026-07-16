@@ -385,7 +385,7 @@ export async function verify(submission, options) {
   // V2-CROSS-BO-001 / F-82429f90 run_id-poisoning pathology for the
   // newly-persisted category — a corrected resubmission silently dropped as a
   // duplicate (exit 0). packages/ingest/persist.js's isDuplicate() closes that
-  // gap: a prior `_rejected` record whose reasons are ALL `schema:`-class is
+  // gap: a prior `_rejected` record whose reasons are ALL retryable-class is
   // treated as non-blocking for a same-run_id retry that goes on to be
   // ACCEPTED, so the audit trail and the resubmission path both hold. (A
   // schema-invalid submission that reaches writeRecord() may still fail
@@ -395,15 +395,32 @@ export async function verify(submission, options) {
   // same run_id and date — computes to the exact SAME `_rejected` path
   // attempt 1 already occupies regardless of which violation it reports, so
   // it stays an ordinary duplicate rather than reaching writeRecord()'s
-  // exclusive-create at all (F-0f9e4077: the schema-class carve-out only
-  // ever waives the collision for a record now headed to a DIFFERENT,
-  // accepted path).
+  // exclusive-create at all (F-0f9e4077: the retry carve-out only ever
+  // waives the collision for a record now headed to a DIFFERENT, accepted
+  // path).
   //
-  // The line: the duplicate guard otherwise consumes a run_id when we rendered
-  // a VERDICT on a run. A policy or provenance rejection is a verdict — it
-  // persists, and consuming the run_id is the intended anti-retry behavior.
-  // "We could not read your submission" is not a verdict, whether or not it
-  // happens to be filable.
+  // The line: the duplicate guard otherwise consumes a run_id when we
+  // rendered a VERDICT on a run's own reported content. A policy or
+  // provenance rejection is such a verdict — it persists, and PERMANENTLY
+  // consuming the run_id is the intended anti-gaming behavior (a submitter
+  // must not be able to launder a genuinely-bad run into an accepted one by
+  // resubmitting different self-reported content under the same run_id).
+  // "We could not read/place/shape your submission" (schema, repo,
+  // unsafe-record-path, ...) is not a content verdict — it persists too when
+  // filable, but stays reusable for a genuinely corrected resubmission.
+  //
+  // F-f8952a50 (wave 10): this split is now a PER-PREFIX flag —
+  // parse-rejection.js's `retryable` field, consulted by persist.js's
+  // isRetryableRejection() — not a blanket "schema: only" allowlist. The
+  // shape/addressing subset of `submission-bad` (schema:, repo:,
+  // unsafe-record-path:, steps[<id>]:, policy-config:,
+  // submission-contains-verifier-field:, CONTRACT_SCHEMA_TOO_NEW/OLD:) is
+  // `retryable: true`; the content-verdict subset (policy:, provenance:)
+  // stays `retryable: false`, exactly as this paragraph describes. See
+  // parse-rejection.js's file header for the full rationale and
+  // schema-invalid-skip-persist.test.js's "REGRESSION GUARD" /
+  // "persist-a-verdict doctrine is preserved" tests for the pinned proof that
+  // policy:/provenance: remain terminal.
   const canFilePath = schemaResult.valid || hasFilablePathIdentity(submission);
   const persisted = {
     schema_version: RECORD_SCHEMA_VERSION,

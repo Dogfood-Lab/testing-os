@@ -50,6 +50,50 @@
  *     describe block, untouched by this fix (the change here only reads
  *     `record.verification.status`; the accepted-path branch of
  *     isDuplicate() is not modified at all).
+ *
+ * ---
+ *
+ * F-f8952a50 (wave 10, HIGH) extends this file's lineage.
+ * isRetryableSchemaRejection (persist.js) checked ONLY `parseRejectionReason
+ * (r).prefix === 'schema:'` — ONE of the ten prefixes parse-rejection.js's
+ * own "Prefix taxonomy" documents under `class: 'submission-bad'` ("the
+ * submitter fixes the payload and resubmits"). Several of the other nine —
+ * including `repo:` — were silently held to the PRE-F-0f9e4077 "permanently
+ * consumes the run_id" behavior even though they are pure identity/addressing
+ * mistakes, proven live with a `repo:mismatch` rejection: a corrected,
+ * matching resubmission never even reached verify() a second time; the CLI
+ * printed a bare `{"status":"duplicate"}` indistinguishable from a routine
+ * re-delivery.
+ *
+ * Fixed by renaming the helper to isRetryableRejection and reading
+ * `parseRejectionReason(r).retryable` — a NEW per-prefix flag on the
+ * classifier's own taxonomy (parse-rejection.js), not `class` directly. This
+ * is deliberately narrower than "every submission-bad prefix": `policy:` and
+ * `provenance:` stay class `submission-bad` but `retryable: false` — they are
+ * a rendered VERDICT on the run's own reported content (see
+ * parse-rejection.js's file header), and the existing "REGRESSION GUARD" /
+ * "persist-a-verdict doctrine is preserved" tests in
+ * schema-invalid-skip-persist.test.js already pin that boundary as
+ * intentional. The shape/addressing subset (schema:, repo:,
+ * unsafe-record-path:, steps[<id>]:, policy-config:,
+ * submission-contains-verifier-field:, CONTRACT_SCHEMA_TOO_NEW/OLD:) is what
+ * becomes retryable. See the 'F-f8952a50' describe block below.
+ * The wave-8 invariants above (an uncorrected retry stays a clean duplicate;
+ * a corrected schema-class retry is unblocked) are UNCHANGED by this — the
+ * retryable check is only ever consulted when the NEW record is headed to
+ * the accepted path (the `!== 'accepted'` gate above it), which this fix
+ * does not touch.
+ *
+ * F-7b97fbd4 (wave 10, MEDIUM) touches probe 1 / probe 3 and the
+ * CLI-subprocess test below: ingest()'s final return (run.js) hardcoded
+ * `duplicate: false` even when `written === false` because writeRecord()
+ * blocked the write as a duplicate — disagreeing with persist_complete's
+ * OWN log event a few lines earlier, which correctly computed `duplicate:
+ * !written`. Fixed at the same site. The CLI-subprocess test's exit code
+ * for an uncorrected retry changes from 1 (misclassified as a fresh
+ * rejection, full payload) to 0 (correctly classified as a harmless no-op
+ * duplicate, terse `{status:'duplicate'}`) as a DIRECT, INTENDED
+ * consequence — updated below, not a regression.
  */
 
 import { describe, it, before, afterEach } from 'node:test';
@@ -148,6 +192,11 @@ describe('F-0f9e4077: an uncorrected retry of a schema-class rejection does not 
 
     assert.equal(second.record.verification.status, 'rejected');
     assert.equal(second.written, false, 'nothing new was written — attempt 1 already occupies this path');
+    // F-7b97fbd4: written:false here is SPECIFICALLY because writeRecord()
+    // blocked the write as a duplicate collision — the return value must
+    // agree with persist_complete's own `duplicate: !written` log event.
+    assert.equal(second.duplicate, true,
+      'a written:false blocked resubmission must be reported as duplicate:true');
     // Attempt 1's evidence survives untouched (fail-closed: no overwrite).
     assert.ok(existsSync(first.path));
   });
@@ -172,11 +221,14 @@ describe('F-0f9e4077: an uncorrected retry of a schema-class rejection does not 
 
     assert.equal(secondResult.record.verification.status, 'rejected');
     assert.equal(secondResult.written, false);
+    // F-7b97fbd4: same agreement check as probe 1, on the boundary shape.
+    assert.equal(secondResult.duplicate, true,
+      'a written:false blocked resubmission must be reported as duplicate:true');
   });
 });
 
 describe('F-0f9e4077: two separate CLI subprocesses (the real ingest.yml shape)', () => {
-  it('process 1 exits 1 cleanly; process 2 (uncorrected retry) ALSO exits 1 — never 2', () => {
+  it('process 1 exits 1 cleanly; process 2 (uncorrected retry) exits 0 as a clean duplicate — never 2 (F-7b97fbd4)', () => {
     const sandbox = makeSandboxRoot();
     const RUN_ID = 'f-0f9e4077-cli-retry';
 
@@ -191,19 +243,22 @@ describe('F-0f9e4077: two separate CLI subprocesses (the real ingest.yml shape)'
     assert.equal(firstOut.status, 'rejected');
 
     // SAME payload again, as a fresh subprocess — the uncorrected retry.
+    // F-7b97fbd4: pre-fix, ingest()'s hardcoded `duplicate: false` return hid
+    // this from the CLI wrapper's `if (result.duplicate)` branch, so it fell
+    // through to the full rejected-record shape and exited 1 — "never 2" held,
+    // but the shape was a fresh-looking rejection, not the harmless no-op
+    // duplicate it actually was. Fixed: the CLI now takes the SAME terse
+    // exit-0 branch an early-detected duplicate (the pre-verify probe) takes.
     const second = runCli(bad, { INGEST_REPO_ROOT: sandbox });
-    assert.equal(second.status, 1,
-      `attempt 2 (uncorrected retry) must ALSO exit 1, not 2 ("operator error"); ` +
+    assert.equal(second.status, 0,
+      `attempt 2 (uncorrected retry) must exit 0 as a harmless no-op duplicate, never 2; ` +
       `stdout=${second.stdout} stderr=${second.stderr}`);
 
     const secondOut = JSON.parse(second.stdout.trim().split('\n').pop());
-    assert.equal(secondOut.status, 'rejected');
-    assert.ok(
-      secondOut.rejection_reasons.some(r => r.startsWith('schema: ')),
-      `expected the actual schema rejection reasons on the retry, got: ${JSON.stringify(secondOut.rejection_reasons)}`
-    );
+    assert.deepEqual(secondOut, { status: 'duplicate', run_id: RUN_ID },
+      `expected the terse duplicate shape, got: ${second.stdout}`);
 
-    // No stage:error event — this is a routine rejection, not an operator incident.
+    // No stage:error event — this is a routine duplicate, not an operator incident.
     const events = second.stderr
       .split('\n')
       .map(l => { try { return JSON.parse(l); } catch { return null; } })
@@ -253,7 +308,13 @@ describe('F-0f9e4077: isDuplicate() rejected-path branch, unit level', () => {
       'a record now headed to the ACCEPTED path must not be blocked by a stale schema-class rejection sitting elsewhere');
   });
 
-  it('an accepted new record with a NON-schema rejection sitting at the rejected path IS still a duplicate (unchanged)', () => {
+  it('an accepted new record with a NON-schema, non-retryable submission-bad rejection (provenance:) IS still a duplicate (unchanged)', () => {
+    // This is the original wave-9 pin, unaffected by F-f8952a50: `provenance:`
+    // is class 'submission-bad' (the submitter's payload pointed at a run
+    // that could not be confirmed) but it is a rendered VERDICT on the run's
+    // own content, so parse-rejection.js flags it `retryable: false` — see
+    // the file header and schema-invalid-skip-persist.test.js's "REGRESSION
+    // GUARD" test for the end-to-end proof of the same boundary.
     setupTestRoot();
     const record = {
       run_id: 'f-0f9e4077-unit-non-schema-block',
@@ -270,5 +331,121 @@ describe('F-0f9e4077: isDuplicate() rejected-path branch, unit level', () => {
     const result = isDuplicate(record.run_id, record, TEST_ROOT);
     assert.equal(result, true,
       'a rendered (non-schema) verdict must keep consuming its run_id regardless of the new record\'s status');
+  });
+
+  it('an accepted new record with a policy: (verdict) rejection sitting at the rejected path IS still a duplicate', () => {
+    // Second verdict-class prefix, same doctrine as provenance: above —
+    // `policy:` evaluates the run's OWN reported scenario_results/tags
+    // against declared rules, so a resubmission "correcting" it under the
+    // same run_id would be laundering different self-reported content into
+    // an acceptance rather than fixing an addressing mistake.
+    setupTestRoot();
+    const record = {
+      run_id: 'f-f8952a50-unit-policy-block',
+      repo: 'mcp-tool-shop-org/dogfood-labs',
+      timing: { finished_at: '2026-03-19T15:45:12Z' },
+      verification: { status: 'accepted' }
+    };
+    const rejectedPath = computeRecordPath({ ...record, verification: { status: 'rejected' } }, TEST_ROOT);
+    mkdirSync(dirname(rejectedPath), { recursive: true });
+    writeFileSync(rejectedPath, JSON.stringify({
+      verification: { status: 'rejected', rejection_reasons: ['policy: forbidden tag "internal-only" present'] }
+    }));
+
+    const result = isDuplicate(record.run_id, record, TEST_ROOT);
+    assert.equal(result, true,
+      'policy: is a rendered verdict (retryable: false) and must keep consuming its run_id');
+  });
+
+  it('an accepted new record with an OPERATIONAL-class rejection sitting at the rejected path IS still a duplicate', () => {
+    // Operational reasons are never retryable regardless of how far the
+    // shape/addressing carve-out grows — an ops fault is not the submitter's
+    // to fix. Defensive coverage: F-82429f90's siblings throw instead of
+    // persisting a `_rejected` record in production (see persist.js's doc
+    // comment), so this path is not reachable live today, but the read/parse
+    // path here still fails closed on it.
+    setupTestRoot();
+    const record = {
+      run_id: 'f-0f9e4077-unit-operational-block',
+      repo: 'mcp-tool-shop-org/dogfood-labs',
+      timing: { finished_at: '2026-03-19T15:45:12Z' },
+      verification: { status: 'accepted' }
+    };
+    const rejectedPath = computeRecordPath({ ...record, verification: { status: 'rejected' } }, TEST_ROOT);
+    mkdirSync(dirname(rejectedPath), { recursive: true });
+    writeFileSync(rejectedPath, JSON.stringify({
+      verification: { status: 'rejected', rejection_reasons: ['provenance-fault: verification failed: GitHub API returned 503'] }
+    }));
+
+    const result = isDuplicate(record.run_id, record, TEST_ROOT);
+    assert.equal(result, true,
+      'an operational-class reason must keep consuming its run_id regardless of the new record\'s status');
+  });
+});
+
+describe('F-f8952a50: the retryable carve-out covers the shape/addressing subset of submission-bad, not just schema:', () => {
+  it('unit level: a non-schema, shape/addressing submission-bad rejection (repo:) no longer blocks an accepted-bound retry', () => {
+    setupTestRoot();
+    const record = {
+      run_id: 'f-f8952a50-unit-repo-mismatch',
+      repo: 'mcp-tool-shop-org/dogfood-labs',
+      timing: { finished_at: '2026-03-19T15:45:12Z' },
+      verification: { status: 'accepted' }
+    };
+    const rejectedPath = computeRecordPath({ ...record, verification: { status: 'rejected' } }, TEST_ROOT);
+    mkdirSync(dirname(rejectedPath), { recursive: true });
+    writeFileSync(rejectedPath, JSON.stringify({
+      verification: {
+        status: 'rejected',
+        rejection_reasons: [
+          'repo:mismatch: submission.repo (mcp-tool-shop-org/dogfood-labs) does not match source.run_url repo (other-org/other-repo)'
+        ]
+      }
+    }));
+
+    const result = isDuplicate(record.run_id, record, TEST_ROOT);
+    assert.equal(result, false,
+      'repo: is parseRejectionReason retryable:true (pure addressing, not a content verdict) — a record now headed to the ACCEPTED path must not be blocked by it');
+  });
+
+  it('PROVEN SWALLOW, now fixed: a repo:mismatch rejection persists, then a corrected (matching run_url) resubmission reaches verify() again and is accepted', async () => {
+    // Mirrors the finding's own live-probe proof exactly: attempt 1 claims a
+    // repo whose source.run_url points somewhere else (repo:mismatch,
+    // submission-bad and retryable, non-schema); attempt 2, same run_id,
+    // run_url corrected to match repo — a submission that verify() would
+    // accept cleanly. Pre-fix
+    // the NDJSON log showed `dispatch_received` immediately followed by
+    // `rejected_pre_persist reason:'duplicate'` — no `context_loaded`, no
+    // `verify_complete` — proving verify() was never called on the corrected
+    // payload. Post-fix it re-verifies and is accepted.
+    setupTestRoot();
+    const RUN_ID = 'f-f8952a50-repo-mismatch-retry';
+
+    const mismatched = clone();
+    mismatched.run_id = RUN_ID;
+    mismatched.source.run_url = 'https://github.com/other-org/other-repo/actions/runs/9123456789';
+
+    const first = await ingest(mismatched, { repoRoot: TEST_ROOT, provenance: stubProvenance });
+    assert.equal(first.record.verification.status, 'rejected');
+    assert.equal(first.written, true,
+      'precondition: the repo:mismatch rejection must persist (schema-valid, so it is filable)');
+    assert.ok(
+      first.record.verification.rejection_reasons.some(r => r.startsWith('repo:mismatch:')),
+      `expected a 'repo:mismatch:' rejection reason, got: ${JSON.stringify(first.record.verification.rejection_reasons)}`
+    );
+
+    // Submitter fixes run_url to match `repo` and resubmits the SAME run_id.
+    const corrected = clone();
+    corrected.run_id = RUN_ID;
+
+    const second = await ingest(corrected, { repoRoot: TEST_ROOT, provenance: stubProvenance });
+    assert.equal(second.duplicate, false,
+      'a repo:mismatch rejection (submission-bad, retryable, non-schema) must not permanently poison the run_id');
+    assert.equal(second.written, true);
+    assert.equal(second.record.verification.status, 'accepted');
+    assert.ok(existsSync(second.path));
+    // Both records survive, at their own distinct (rejected vs accepted) paths.
+    assert.ok(existsSync(first.path));
+    assert.notEqual(first.path, second.path);
   });
 });

@@ -48,7 +48,7 @@
 
     <text x="36" y="170" class="text-info">[check-doc-drift]</text><text x="190" y="170" class="text-ok"> OK — 17 check(s) passed.</text>
 
-    <text x="36" y="192" class="text-info">[check-regression-pins]</text><text x="266" y="192" class="text-ok"> 40 source pins / 93 test pins (allowlist 3).</text>
+    <text x="36" y="192" class="text-info">[check-regression-pins]</text><text x="266" y="192" class="text-ok"> 244 source pins / 382 test pins (allowlist 15).</text>
 
     <text x="36" y="216" class="text-dim"># tsc --build (composite refs)</text>
     <text x="36" y="236" class="text-ok">  ✓ packages/schemas → built (8 schemas, 0 errors)</text>

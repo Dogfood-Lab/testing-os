@@ -310,34 +310,48 @@ export function disambiguateFingerprints(findings, priorFingerprints = new Map()
   for (const [base, members] of groups) {
     if (members.length === 1) {
       const only = members[0];
-      // F-a8c0cf04: the collision-safety-net below only ever runs for a
-      // same-WAVE group of size > 1 — but the cross-wave collision this
-      // guards against never produces one. A finding that was already
-      // `fixed` in a prior wave is, by definition, absent from `findings`
-      // (it was not re-reported this wave), so it can never sit alongside a
-      // colliding new finding as a same-wave sibling; the group here is a
-      // singleton even though a real collision exists one wave away. This is
-      // the cross-wave analogue of a same-wave collision group — one member
-      // just lives in `priorFingerprints` instead of `findings` — so salt it
-      // exactly like an ordinary non-keeper UNLESS the raw (pre-
-      // normalizePath) file spelling genuinely agrees with the prior's. A
-      // spelling MATCH is either an exact regression (new information — let
-      // it reopen via the ordinary `recurring` path below) or, when the
-      // prior is still OPEN, a same-file rediscovery under different casing
-      // — the case-fold's intended job (F-c63da27b) — which must keep
-      // collapsing. Gating on status === 'fixed' specifically (not any
-      // closed status) leaves deferred/rejected untouched: they already have
-      // their own dedicated recurred-while-closed handling
-      // (F-130dee59/F-833dff6f) that a raw-spelling check has no proven need
-      // to intrude on.
+      // F-a8c0cf04 (widened by F-20bde286): the collision-safety-net below
+      // only ever runs for a same-WAVE group of size > 1 — but the
+      // cross-wave collision this guards against never produces one. A
+      // finding whose prior row is absent from `findings` this wave (it was
+      // not re-reported) can never sit alongside a colliding new finding as
+      // a same-wave sibling; the group here is a singleton even though a
+      // real collision exists one wave away. This is the cross-wave analogue
+      // of a same-wave collision group — one member just lives in
+      // `priorFingerprints` instead of `findings` — so salt it exactly like
+      // an ordinary non-keeper UNLESS the raw (pre-normalizePath) file
+      // spelling genuinely agrees with the prior's. A spelling MATCH is
+      // either an exact regression (new information — let it reopen via the
+      // ordinary `recurring` path below) or a same-file rediscovery under
+      // different casing — the case-fold's intended job (F-c63da27b) —
+      // which must keep collapsing, regardless of the prior's status.
+      //
+      // F-20bde286: a spelling MISMATCH was originally salted ONLY when
+      // priorRow.status === 'fixed'. Every OTHER status (new, recurring,
+      // unverified, deferred) fell straight through to `resolved.set(only,
+      // base)` below with no check at all — so a genuinely different,
+      // higher-severity finding that happened to share the coarse key with
+      // an OPEN or deferred prior silently merged into that prior's row via
+      // classifyFindings' ordinary matching, discarding the new finding's
+      // real severity/description. shouldSaltCrossWaveCollision (below)
+      // makes the same raw-mismatch check fire for every prior status, using
+      // SEVERITY as the discriminator for non-'fixed' priors: a re-audit
+      // that rediscovers the SAME still-open bug under a different spelling
+      // reports it at the same-or-a-lower severity essentially always, so
+      // only a STRICTLY HIGHER incoming severity is treated as proof this is
+      // a different defect. See shouldSaltCrossWaveCollision's own header
+      // for the full case-by-case breakdown of why 'fixed' stays
+      // unconditional while the open/deferred statuses are severity-gated.
       const priorRow = priorFingerprints.get(base);
-      if (priorRow && priorRow.status === 'fixed' && rawFileIdentityDiffers(only, priorRow)) {
+      if (priorRow && shouldSaltCrossWaveCollision(only, priorRow)) {
         const salted = saltByContent(base, only, 0);
         logStage('fingerprint_disambiguated_cross_wave', {
           component: 'dogfood-swarm',
           base_fingerprint: base,
           salted_fingerprint: salted,
           prior_status: priorRow.status,
+          prior_severity: priorRow.severity || null,
+          incoming_severity: only.severity || null,
           file: only.file || only.file_path || null,
           prior_file: priorRow.file_path || priorRow.file || null,
           category: only.category || null,
@@ -417,6 +431,105 @@ function rawFileIdentityDiffers(finding, priorRow) {
   const priorFile = priorRow.file_path || priorRow.file || '';
   if (!findingFile || !priorFile) return false;
   return findingFile !== priorFile;
+}
+
+/**
+ * Severity rank — LOWER number is MORE severe. Mirrors findings-digest.js's
+ * module-private `SEV_ORDER` (also used by findings-render.js's inline sort
+ * map) rather than importing it: that constant is not exported, and a
+ * four-entry rank table is cheap enough to hold to the same convention here
+ * without wiring a new cross-file dependency for it. (lib/queries/cross-
+ * run-analytics.js's SQL CASE statement ranks the OPPOSITE direction —
+ * CRITICAL=4 down to LOW=1 — because SQLite's MAX() aggregate needs "larger
+ * wins"; that inversion is intrinsic to doing the reduction in SQL, not a
+ * second, driftable JS convention.) An unrecognized/missing severity ranks
+ * as the LEAST severe (never wins a "more severe than" comparison) — the
+ * safe default used throughout this module for absent data.
+ */
+const SEVERITY_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+
+function severityRank(severity) {
+  return SEVERITY_RANK[severity] ?? 4;
+}
+
+/**
+ * The MORE severe of two severities (lower SEVERITY_RANK wins). Missing/
+ * unrecognized input never outranks a real value on either side.
+ */
+function maxSeverity(a, b) {
+  return severityRank(b) < severityRank(a) ? b : a;
+}
+
+/**
+ * F-20bde286: decide whether a cross-wave singleton collision — the current
+ * wave's finding is the ONLY member of its base-fingerprint group, and a
+ * PRIOR row already occupies that exact base fingerprint — must be salted
+ * (kept as its own distinct row) rather than left to fall through to
+ * classifyFindings' ordinary prior-match handling.
+ *
+ * Both scenarios this function must tell apart have rawFileIdentityDiffers()
+ * === true (that guard runs first, unconditionally); the discriminator below
+ * is what separates them:
+ *
+ *   (1) TRUE COLLISION — an unrelated, materially different finding happens
+ *       to share the coarse key (category/rule_id/symbol/line-bucket) with a
+ *       prior row, purely because the file paths differ only by the
+ *       normalize-away casing F-c63da27b folds. MUST be salted: merging it
+ *       hides its real severity/description inside the older row and — for
+ *       an OPEN prior — can defeat lib/advance.js#checkFindingSeverity,
+ *       which reads the merged row's stale `severity` column.
+ *   (2) INTENDED CASE-FOLD JOB — the SAME still-live bug, re-audited by a
+ *       pass that happened to re-case the path differently. MUST keep
+ *       collapsing (NOT be salted): this is F-c63da27b's entire reason for
+ *       existing, pinned by this file's own "cross-wave PATH case-fold
+ *       stability is preserved for a still-open prior" tests.
+ *
+ * SEVERITY is the signal used to tell them apart for every status except
+ * 'fixed'. A re-audit re-describing the SAME open bug does not spontaneously
+ * invent a jump to a STRICTLY higher severity tier — LLM severity assessment
+ * has noise, but noise moves a rating by one notch or leaves it level far
+ * more often than it manufactures a new, more alarming defect out of an old
+ * one. A strictly higher incoming severity is therefore treated as positive
+ * evidence of scenario (1); anything else (equal or lower) is treated as
+ * scenario (2) and allowed to collapse via the ordinary status-routing in
+ * classifyFindings below.
+ *
+ *   - status === 'fixed': UNCONDITIONAL salt on raw-mismatch, no severity
+ *     check — F-a8c0cf04's original, already-proven behavior, unchanged. A
+ *     raw-mismatch against CLOSED material has no "just re-cased, still the
+ *     same open bug" reading available in the first place (there is no
+ *     "still open" for a fixed row); treating it with LESS suspicion than an
+ *     open prior would be backwards, not more lenient.
+ *   - status in {new, recurring, unverified, deferred}: salted iff the
+ *     incoming severity is STRICTLY more severe than priorRow.severity.
+ *     'deferred' rides this same rule rather than being excluded: a
+ *     coordinator's decision to defer one specific, understood bug must not
+ *     silently absorb an unrelated, MORE severe defect under that same
+ *     deferred banner (the harm F-20bde286 rates worse in kind than the
+ *     open-status gate defeat, even though deferred findings are already
+ *     excluded from the gate's count) — but an equal-or-lower-severity
+ *     rediscovery while deferred is still exactly scenario (2) and must
+ *     still reach classifyFindings' `recurred_while_closed` handling
+ *     (F-130dee59/F-833dff6f) untouched.
+ *   - 'rejected': buildPriorMap excludes 'rejected' rows from the map this
+ *     function's `priorRow` argument is drawn from (F-6a8a98d6's comment on
+ *     classifyFindings), so this function never observes that status today.
+ *     Left un-special-cased rather than silently folded into the open-status
+ *     branch, so a future change to that exclusion does not inherit an
+ *     untested behavior by accident.
+ *
+ * @param {object} finding — the current-wave singleton (only member of its group)
+ * @param {object} priorRow — the prior-wave row occupying the same base fingerprint
+ * @returns {boolean}
+ */
+function shouldSaltCrossWaveCollision(finding, priorRow) {
+  if (!rawFileIdentityDiffers(finding, priorRow)) return false;
+  if (priorRow.status === 'fixed') return true;
+  if (priorRow.status === 'new' || priorRow.status === 'recurring'
+    || priorRow.status === 'unverified' || priorRow.status === 'deferred') {
+    return severityRank(finding.severity) < severityRank(priorRow.severity);
+  }
+  return false;
 }
 
 /**
@@ -690,7 +803,7 @@ export function upsertFindings(db, runId, waveId, classified) {
   `);
 
   const updateRecurring = db.prepare(`
-    UPDATE findings SET status = 'recurring', last_seen_wave = ? WHERE id = ?
+    UPDATE findings SET status = 'recurring', last_seen_wave = ?, severity = ? WHERE id = ?
   `);
 
   const updateFixed = db.prepare(`
@@ -795,11 +908,28 @@ export function upsertFindings(db, runId, waveId, classified) {
       inserted++;
     }
 
-    // Update recurring findings
+    // Update recurring findings.
+    //
+    // F-20bde286 (part 2, defense-in-depth): bump the stored severity to the
+    // MORE severe of (prior, incoming) — see maxSeverity's header. This
+    // closes the checkFindingSeverity gate-defeat consequence even for a
+    // merge shouldSaltCrossWaveCollision's own identity logic decided IS the
+    // same finding (an equal-or-lower-severity case-variant rediscovery, or
+    // an ordinary same-spelling regression): the stored severity a wave-gate
+    // reads must never stay pinned to a STALE, less-severe value just
+    // because an earlier wave happened to create the row. When a bump
+    // actually happens, the finding_event note names it so the escalation is
+    // visible in the audit trail, not just the resulting column value.
     for (const f of classified.recurring) {
       if (f.prior?.id) {
-        updateRecurring.run(waveId, f.prior.id);
-        insertEvent.run(f.prior.id, 'recurred', waveId, null);
+        const bumpedSeverity = maxSeverity(f.prior.severity, f.severity);
+        updateRecurring.run(waveId, bumpedSeverity, f.prior.id);
+        insertEvent.run(
+          f.prior.id, 'recurred', waveId,
+          bumpedSeverity !== f.prior.severity
+            ? `severity escalated ${f.prior.severity} -> ${bumpedSeverity} on recurrence`
+            : null,
+        );
         updated++;
       }
     }

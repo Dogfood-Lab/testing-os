@@ -351,6 +351,18 @@ export async function ingest(submission, options) {
       timing: submission.timing,
       verification: { status: 'accepted' }
     };
+    // F-f8952a50 (wave 10): this probe's hardcoded `status: 'accepted'` is
+    // ALSO the site the finding proved a corrected repo:mismatch resubmission
+    // was swallowed at — isDuplicate() only asks isRetryableRejection() when
+    // the record it's handed claims 'accepted' (see isDuplicate's own
+    // comment), so this probe is the FIRST place a stale non-schema rejection
+    // could mask a genuine correction, before verify() ever runs. No separate
+    // fix belongs HERE, though: this probe and writeRecord()'s own internal
+    // isDuplicate() call (persist.js) share the exact same isDuplicate() /
+    // isRetryableRejection() code path, so persist.js's per-prefix
+    // `retryable` fix (parse-rejection.js) already reaches both call sites —
+    // widening retryability there is what unblocks this probe too, with
+    // nothing probe-specific to change.
     // F-a37d36f5: isDuplicate -> computeRecordPath runs against RAW untrusted
     // submission.repo/run_id, three steps BEFORE verify()'s schema gate. A
     // malformed repo ('a/b/c', a path-traversal attempt, etc.) makes
@@ -612,7 +624,20 @@ export async function ingest(submission, options) {
     }
   }
 
-  return { record, path, written, duplicate: false };
+  // F-7b97fbd4 (wave 10): mirror persist_complete's OWN `duplicate: !written`
+  // (logged a few lines above, off the same `written`) instead of a bare
+  // `false` that silently disagreed with it. By this point `written` can be
+  // `false` for exactly one reason — writeRecord()'s internal isDuplicate()
+  // blocked the write as a collision (persist.js) — every OTHER
+  // non-persisting outcome in this function (record._skipPersist above; the
+  // UnsafeRecordPathError / RecordValidationError catch above that) already
+  // returns its own honest `duplicate: false` earlier and never reaches this
+  // line. The CLI wrapper's `if (result.duplicate)` branch depends on this
+  // being accurate: a blocked resubmission must take the terse exit-0
+  // `{status:'duplicate'}` path, the same one an early-detected duplicate
+  // (the pre-verify probe above) already takes, not fall through to the
+  // full rejected-record exit-1 shape.
+  return { record, path, written, duplicate: !written };
 }
 
 /**

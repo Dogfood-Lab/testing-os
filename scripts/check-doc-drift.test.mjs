@@ -2675,6 +2675,79 @@ test('F-1ca7b818: value-position call expressions and arrows still count correct
   assert.equal(countCommandMapEntries(src, 'commands', 'fixture.js'), 3);
 });
 
+test('F-6cfe4d01 META: countCommandMapEntries throws on a computed key at depth 1 (no silent vanish)', () => {
+  const src = [
+    'const commands = {',
+    '  a: cmdA,',
+    '  [dynamicName]: cmdDynamic,',
+    '  b: cmdB,',
+    '};',
+  ].join('\n');
+  // Pre-fix this returned 1 — the '[' bumped depth before the key-position
+  // check ever saw it, swallowing the computed key's contents as a nested
+  // "value" with no pendingKeyAtTopLevel ever set, and the identifier right
+  // after '][:' (cmdDynamic) then never got confirmed as a key because a
+  // comma followed before a second ':'. The doc-comment promises computed
+  // keys are outside the supported shape and THROW — hold it to that,
+  // mirroring the ternary/method-shorthand META cases above.
+  assert.throws(
+    () => countCommandMapEntries(src, 'commands', 'fixture.js'),
+    /computed key/i,
+    'a computed key must throw (fail-loud), not silently vanish from the count',
+  );
+});
+
+test('F-6cfe4d01: a VALUE-position array literal (not a computed key) still counts correctly', () => {
+  // Distinguishes the computed-KEY throw above from an array literal in
+  // VALUE position, which is a supported nested shape (docstring: "nested
+  // objects, arrays ... don't confuse the boundary") — the '[' here is
+  // reached with awaitingKey already false (a ':' was already consumed for
+  // key 'a'), so it must fall through to the generic bracket handler, not
+  // the computed-key throw.
+  const src = [
+    'const commands = {',
+    '  a: [cmdA1, cmdA2],',
+    '  b: cmdB,',
+    '};',
+  ].join('\n');
+  assert.equal(countCommandMapEntries(src, 'commands', 'fixture.js'), 2);
+});
+
+test('F-6cfe4d01: a regex-literal VALUE with an internal colon does not overcount', () => {
+  const src = [
+    'const commands = {',
+    '  a: cmdA,',
+    '  b: /a:b/,',
+    '  c: cmdC,',
+    '};',
+  ].join('\n');
+  // Pre-fix this returned 4 — the scanner had no regex-literal skip, so
+  // '/a:b/' was re-tokenized char by char: the 'a' inside the pattern read
+  // as a key-position identifier (arming pendingKeyAtTopLevel), and the
+  // pattern's own ':' then confirmed a phantom third key before the real
+  // key 'c' ever appeared.
+  assert.equal(
+    countCommandMapEntries(src, 'commands', 'fixture.js'),
+    3,
+    'a colon inside a regex-literal value must not be misread as confirming a phantom key',
+  );
+});
+
+test('F-6cfe4d01: a regex-literal VALUE with a character class does not terminate early', () => {
+  const src = [
+    'const commands = {',
+    '  a: cmdA,',
+    '  b: /[a/b]{1,2}/,', // unescaped '/' inside [...] must not end the literal; '{1,2}' must not corrupt depth
+    '  c: cmdC,',
+    '};',
+  ].join('\n');
+  assert.equal(
+    countCommandMapEntries(src, 'commands', 'fixture.js'),
+    3,
+    'an unescaped / inside a character class, and braces inside the pattern, must not confuse the scanner',
+  );
+});
+
 test('F-1b9456a0 META: schema-conformance refuses a silent downgrade when Ajv is unavailable (config-error by default)', async (t) => {
   const fx = makeFixture(t);
   fx.write('schema.json', JSON.stringify({ type: 'object', required: ['domain'] }));

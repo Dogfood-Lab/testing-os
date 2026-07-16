@@ -39,9 +39,29 @@
  * resubmission is silently dropped as a duplicate with exit 0 — the exact
  * V2-CROSS-BO-001 / F-82429f90 pathology, reached from a new direction.
  *
- * The line this draws: the duplicate guard consumes a run_id when we rendered
- * a VERDICT on a run (policy/provenance rejections still persist — pinned
- * below), never when we could not understand the submission.
+ * The line _skipPersist draws: a submission we could not even PLACE on disk
+ * (unfilable — Class A below) never persists and never touches the run_id.
+ * A submission we COULD place always persists, rejected or not (see 'the
+ * persist-a-verdict doctrine is preserved' below — unconditional, unaffected
+ * by the rest of this note). Whether a persisted rejection also PERMANENTLY
+ * consumes the run_id is the separate, narrower question persist.js's
+ * isRetryableRejection answers per-prefix, via parse-rejection.js's
+ * `retryable` flag (F-f8952a50, wave 10): the SHAPE/ADDRESSING subset of
+ * submission-bad (schema:, repo:, unsafe-record-path:, steps[<id>]:,
+ * policy-config:, submission-contains-verifier-field:,
+ * CONTRACT_SCHEMA_TOO_NEW/OLD:) stays reusable for a genuinely corrected
+ * resubmission — "we could not even read/place/shape your submission" is not
+ * a verdict on what the run actually did. The CONTENT-VERDICT subset
+ * (policy:, provenance:) does NOT become retryable: those two prefixes judge
+ * the run's own reported content, and letting a resubmission retry past one
+ * would let a submitter launder a genuinely-bad run into an accepted one by
+ * resubmitting different self-reported content under the same run_id — see
+ * the "REGRESSION GUARD" test and 'the persist-a-verdict doctrine is
+ * preserved' below, both still pinning that boundary as intentional. An
+ * operational fault never reaches this file at all (it throws instead of
+ * persisting — F-82429f90). See
+ * f-0f9e4077-retry-collision-duplicate-rejection.test.js's 'F-f8952a50'
+ * describe block for the positive (now-retryable) shape/addressing proof.
  *
  * F-4036ae25 (wave 6) NARROWED which schema-invalid submissions get
  * `_skipPersist`: only the subset whose repo/run_id/timing.finished_at are
@@ -300,8 +320,11 @@ describe('verify() marks schema-invalid records _skipPersist', () => {
 
 describe('the persist-a-verdict doctrine is preserved', () => {
   // The fix must NOT widen into "no rejection is ever persisted". A submission
-  // we UNDERSTOOD and ruled against is a verdict about a real run: it persists,
-  // and consuming the run_id is the intended anti-retry behavior.
+  // we UNDERSTOOD and ruled against is a verdict about a real run: it persists
+  // regardless of whether a later corrected resubmission goes on to reuse the
+  // run_id — and for `provenance:`/`policy:` specifically, it never does (see
+  // the "REGRESSION GUARD" test below and F-f8952a50's `retryable: false`
+  // split in parse-rejection.js).
   it('a schema-valid submission rejected on provenance still persists to _rejected', async () => {
     setupTestRoot();
     const result = await ingest(clone(), {
@@ -376,7 +399,20 @@ describe('a genuinely filable schema-invalid submission persists to _rejected (F
     assert.ok(existsSync(first.path));
   });
 
-  it('REGRESSION GUARD: a resubmission after a persisted NON-schema rejection is STILL blocked', async () => {
+  // F-f8952a50 (wave 10): this test's ORIGINAL title/framing ("a resubmission
+  // after a persisted NON-schema rejection is STILL blocked") predates the
+  // per-prefix `retryable` split parse-rejection.js now carries. Re-examined
+  // for this wave, not just left alone: `provenance:` is class
+  // 'submission-bad' (same class as `schema:`), but it is a rendered VERDICT
+  // on the run's own reported content, not a shape/addressing mistake — see
+  // parse-rejection.js's file header for the full split and
+  // f-0f9e4077-retry-collision-duplicate-rejection.test.js's 'F-f8952a50'
+  // describe block for the sibling proof that a shape/addressing prefix
+  // (repo:) DOES become retryable. This assertion is therefore CONFIRMED
+  // correct, not narrowed by the fix — restated here as a regression guard so
+  // a future change to the retryable split cannot silently widen past this
+  // boundary without a red test.
+  it('REGRESSION GUARD: a resubmission after a persisted NON-schema, content-verdict rejection is STILL blocked', async () => {
     setupTestRoot();
     const RUN_ID = 'f-4036ae25-retry-non-schema-class';
 
@@ -384,7 +420,7 @@ describe('a genuinely filable schema-invalid submission persists to _rejected (F
     bad.run_id = RUN_ID;
     // Schema-valid; rejected on provenance instead — a rendered verdict, not
     // "we could not understand the submission". The anti-retry doctrine must
-    // still apply here, unaffected by the schema-class carve-out.
+    // still apply here, unaffected by the shape/addressing carve-out.
     const first = await ingest(bad, { repoRoot: TEST_ROOT, provenance: rejectingProvenance });
     assert.equal(first.written, true, 'precondition: the provenance rejection must persist');
     assert.ok(
@@ -398,6 +434,6 @@ describe('a genuinely filable schema-invalid submission persists to _rejected (F
     // the block is isDuplicate's doing, not a second provenance failure.
     const second = await ingest(retry, { repoRoot: TEST_ROOT, provenance: stubProvenance });
     assert.equal(second.duplicate, true,
-      'a rendered (non-schema) verdict must keep consuming its run_id — the carve-out must not overreach');
+      'a rendered content-verdict (provenance:) must keep consuming its run_id — the shape/addressing carve-out must not overreach');
   });
 });

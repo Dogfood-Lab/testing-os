@@ -125,24 +125,57 @@ export function computeRecordPath(record, repoRoot) {
 
 /**
  * F-4036ae25: a prior `_rejected` record whose rejection_reasons are ALL
- * `schema:`-class is "we could not understand your submission", not a
- * rendered verdict about the run — the same doctrine that already exempts an
- * unfilable (`_skipPersist`) rejection from consuming its run_id. Narrowing
- * `_skipPersist` in verify/index.js means a filable-but-schema-invalid
- * submission now DOES persist (the fleet-wide audit trail F-4036ae25
- * restores), so this is the other half of that fix: persisting the evidence
- * must not resurrect the exact run_id-poisoning pathology F-82429f90
- * eliminated for validator-crash faults. A mixed-reason or non-schema
- * rejection (policy, provenance, ...) is still a rendered verdict and stays
- * blocking — unchanged from today.
+ * retryable-class is "the submitter can fix this and resubmit", not an
+ * unappealable verdict about the run — the same doctrine that already exempts
+ * an unfilable (`_skipPersist`) rejection from consuming its run_id. Narrowing
+ * `_skipPersist` in verify/index.js means a filable-but-rejected submission
+ * now DOES persist (the fleet-wide audit trail F-4036ae25 restores), so this
+ * is the other half of that fix: persisting the evidence must not resurrect
+ * the exact run_id-poisoning pathology F-82429f90 eliminated for
+ * validator-crash faults.
+ *
+ * F-f8952a50 (wave 10): this used to check `parseRejectionReason(r).prefix
+ * === 'schema:'` — ONE of the ten prefixes parse-rejection.js's own "Prefix
+ * taxonomy" documents under `class: 'submission-bad'` ("the submitter fixes
+ * the payload and resubmits"). Proven live with `repo:mismatch` (a pure
+ * identity/addressing mistake — the run happened, only the repo/run_url
+ * pairing was mis-stated): a corrected resubmission's payload never even
+ * reached verify() a second time, because both isDuplicate() call sites
+ * treated the stale `repo:` rejection as an unconditional block — see
+ * f-0f9e4077-retry-collision-duplicate-rejection.test.js's 'F-f8952a50'
+ * describe block for the end-to-end proof.
+ *
+ * The fix reads `parseRejectionReason(r).retryable` — the classifier's OWN
+ * per-prefix routing decision (see parse-rejection.js's file header for the
+ * full split) — instead of re-deriving a prefix allowlist here. A future
+ * prefix parse-rejection.js adds is automatically retryable or not with no
+ * edit to this file. This is intentionally NARROWER than "every submission-bad
+ * class": `retryable` is false for `policy:` and `provenance:` even though
+ * both are class `submission-bad` — those two prefixes are a rendered VERDICT
+ * on the run's own reported content (see parse-rejection.js), and letting a
+ * resubmission retry past one would let a submitter launder a genuinely-bad
+ * run into an accepted one by resubmitting different self-reported content
+ * under the same run_id. That boundary is independently pinned end-to-end by
+ * schema-invalid-skip-persist.test.js's "REGRESSION GUARD" test and the
+ * "persist-a-verdict doctrine is preserved" describe block — this fix must
+ * not (and, via the per-prefix flag, does not) touch it.
+ *
+ * `'operational'` / `'ingest'` / `'unknown'`-class reasons are always
+ * `retryable: false` too (see parse-rejection.js). `'operational'`-class
+ * reasons are not actually reachable here in production today (F-82429f90
+ * and its provenance-fault:/scenario-fetch-fault: siblings THROW instead of
+ * persisting a `_rejected` record — see runValidator in verify/index.js), but
+ * the flag still fails closed on one defensively, matching this function's
+ * existing "any read/parse failure fails closed" discipline below.
  *
  * Any read/parse failure fails closed (blocking): a corrupted or unreadable
  * evidence file must never silently unblock a path collision.
  *
  * @param {string} rejectedPath - Absolute path already confirmed to exist.
- * @returns {boolean} true when every rejection reason is schema-class.
+ * @returns {boolean} true when every rejection reason is individually
+ *   retryable (see parseRejectionReason's `retryable` field).
  */
-function isRetryableSchemaRejection(rejectedPath) {
+function isRetryableRejection(rejectedPath) {
   let parsed;
   try {
     parsed = JSON.parse(readFileSync(rejectedPath, 'utf-8'));
@@ -153,7 +186,7 @@ function isRetryableSchemaRejection(rejectedPath) {
   if (parsed?.verification?.status !== 'rejected' || !Array.isArray(reasons) || reasons.length === 0) {
     return false;
   }
-  return reasons.every(r => parseRejectionReason(r).prefix === 'schema:');
+  return reasons.every(r => parseRejectionReason(r).retryable === true);
 }
 
 /**
@@ -166,9 +199,11 @@ function isRetryableSchemaRejection(rejectedPath) {
  * which violation it reports (an unexpected field with a different name, a
  * different value, even a byte-identical resubmission all collide
  * identically — computeRecordPath never looks at content). The
- * isRetryableSchemaRejection carve-out below exists so a stale schema-class
- * rejection does not block a DIFFERENT-status (now accepted) record from
- * reaching ITS OWN, different path — it was never a promise that the
+ * isRetryableRejection carve-out below exists so a stale retryable-class
+ * rejection (F-f8952a50: any prefix parse-rejection.js's taxonomy flags
+ * `retryable: true` — shape/addressing mistakes, not just schema:) does not
+ * block a DIFFERENT-status (now accepted) record from reaching ITS OWN,
+ * different path — it was never a promise that the
  * REJECTED path specifically is free. Pre-fix, skipping the status check let
  * an uncorrected retry fall through as "not a duplicate," reach
  * writeRecord()'s exclusive-create, and throw DuplicateRunIdError — a
@@ -200,7 +235,7 @@ export function isDuplicate(runId, record, repoRoot) {
     // NEW attempt has nowhere else to go. Only a record now bound for the
     // accepted path (real forward progress) gets to ask that question.
     if (record.verification?.status !== 'accepted') return true;
-    return !isRetryableSchemaRejection(rejectedPath);
+    return !isRetryableRejection(rejectedPath);
   }
 
   return false;

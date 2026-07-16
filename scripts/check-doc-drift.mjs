@@ -1090,17 +1090,23 @@ function resolveOne(spec, repoRoot) {
  *
  * Implementation: locate the binding, find the opening brace of its object
  * literal, then walk the source tracking brace/bracket/paren depth and
- * string/comment state so nested objects, arrays, and template literals don't
- * confuse the boundary. Keys are counted as the identifiers/string-literals
- * that sit at depth 1 immediately before a `:`. A trailing comma produces no
- * phantom key because we only count a key when a `:` follows it at depth 1.
+ * string/template/regex/comment state so nested objects, arrays, template
+ * literals, and regex literals don't confuse the boundary. Keys are counted
+ * as the identifiers/string-literals that sit at depth 1 immediately before
+ * a `:`. A trailing comma produces no phantom key because we only count a
+ * key when a `:` follows it at depth 1.
  *
  * This is deliberately a small purpose-built scanner rather than a full JS
  * parser: pulling acorn/espree into a CI doc-gate would be a heavyweight dep
  * for one resolver, and the dispatch-table shape we parse is constrained
  * (a flat map of verb → handler). If the map ever grows computed keys or
  * spread elements the scanner throws, which surfaces as a config-error rather
- * than a silently-wrong count.
+ * than a silently-wrong count. F-6cfe4d01: a regex-literal VALUE (e.g.
+ * `b: /a:b/`) is skipped as one atomic unit rather than re-tokenized char by
+ * char — without that, an internal `:` reads as a phantom key confirmation
+ * (an overcount) and any bracket the pattern contains (e.g. `/a{2,3}/`)
+ * would corrupt the depth counter this function's own boundary-finding
+ * depends on.
  *
  * @param {string} src         - JS source
  * @param {string} bindingName - e.g. 'commands'
@@ -1160,7 +1166,43 @@ export function countCommandMapEntries(src, bindingName, fileLabel) {
       if (depth === 1) pendingKeyAtTopLevel = true;
       continue;
     }
+    // F-6cfe4d01: skip regex literals wholesale, mirroring the string/
+    // template skip above. A bare '/' here is never division — line/block
+    // comments were already consumed above, and the constrained flat
+    // verb->handler shape this resolver supports never puts an arithmetic
+    // expression in value position, so a stray '/' can only be a regex
+    // literal (e.g. `b: /a:b/`). A character class (`[...]`) is tracked
+    // separately because an unescaped '/' inside one does not terminate the
+    // literal (e.g. `/[a/b]/`). Never a key, so — unlike the string/template
+    // skip above — this never sets pendingKeyAtTopLevel.
+    if (c === '/') {
+      i++;
+      let inClass = false;
+      while (i < n && (inClass || src[i] !== '/')) {
+        if (src[i] === '\\') { i += 2; continue; }
+        if (src[i] === '[') inClass = true;
+        else if (src[i] === ']') inClass = false;
+        i++;
+      }
+      i++; // past closing '/' (or past end-of-source if unterminated)
+      while (i < n && /[a-z]/i.test(src[i])) i++; // regex flags (g, i, m, ...)
+      continue;
+    }
 
+    // F-6cfe4d01: a computed key (`[expr]:`) at the top level of the object
+    // literal is outside the constrained shape this resolver supports — fail
+    // loud, mirroring the ternary/spread/method-shorthand checks below. Must
+    // run before the generic '[' depth++ immediately after, and is gated on
+    // awaitingKey (KEY position) so a VALUE-position array literal (e.g.
+    // `verb: [1, 2, 3]`) still falls through to the generic bracket handler
+    // unaffected — pre-fix, the '[' there bumped depth first regardless of
+    // position, so the computed key's contents were swallowed into a nested
+    // "value" and silently vanished from the count instead of throwing.
+    if (c === '[' && depth === 1 && awaitingKey) {
+      throw new Error(
+        `command-map-count: computed key ('[expr]:') in '${bindingName}' object literal in ${fileLabel} — the resolver only supports a flat verb→handler map (its bracket contents would be swallowed as a nested value, silently vanishing from the count)`,
+      );
+    }
     if (c === '{' || c === '[' || c === '(') {
       depth++;
       i++;

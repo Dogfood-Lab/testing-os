@@ -109,22 +109,24 @@ The verifier emits rejection-reason strings under stable prefixes, each mapping 
 
 Discrimination happens by **class**, surfaced by `parseRejectionReason` (below). Every prefix maps to one of four classes: **submission-bad** (the submitter fixes the payload), **operational** (the verifier/tooling faulted), **ingest** (an ingest-side load fault), or **unknown** (unrecognized prefix).
 
+**Retryable** (F-f8952a50, wave 10) is a SEPARATE, narrower per-prefix flag, orthogonal to `class`: may a same-`run_id` resubmission whose ONLY prior rejection carries this prefix still reach an acceptance, once corrected? `packages/ingest/persist.js`'s duplicate guard (`isDuplicate` → `isRetryableRejection`) reads this flag — never `class` or `prefix` directly — to decide whether a stale `_rejected` record blocks a same-`run_id` retry that is now headed to acceptance. Every `operational` / `ingest` / `unknown` prefix is `retryable: false` (an ops fault or an unrecognized signal is never the submitter's to retry past). Within `submission-bad`, the taxonomy splits further — **shape/addressing** prefixes ("we could not even read/place/shape your submission") are retryable; **content-verdict** prefixes ("we read your submission and rendered a verdict against its own reported content") are not, so a submitter cannot launder a genuinely-bad run into an accepted one by resubmitting different self-reported content under the same `run_id`. The table below marks each `submission-bad` prefix's retryable value explicitly.
+
 **Submission-bad** — `class: 'submission-bad'` (the submitter's payload failed a validator gate; fix the submission and resubmit):
 
-| Prefix | Source | Meaning |
-|---|---|---|
-| `schema:` | `validators/schema.js` | JSON Schema check on the submission/record envelope failed. The rest of the string carries the AJV path + message. |
-| `policy:` | `validators/policy.js` | Per-repo policy gate failed (forbidden tags, missing required fields, surface evidence/CI requirements, or a declarative `when`/`custom_rules` predicate matched — see the [policy DSL](https://dogfood-lab.github.io/testing-os/handbook/policy-dsl/)). |
-| `policy-config:` | `validators/policy.js` | **VERIFY-F1.** A REPO custom-rule predicate hit an eval-time semantic fault the schema could not catch — an unknown leading field, a numeric operator against a non-number, or a depth/width/fan-out budget. The repo authored the bad rule, so the fix is the submitter's. (A malformed GLOBAL predicate is `VALIDATOR_FAULT_POLICY:` operational instead — see below.) |
-| `steps[<id>]:` | `validators/steps.js` | Step-level contract check failed on a specific step id (gate accumulation, ordering, evidence shape). |
-| `provenance:` | `validators/provenance.js` | The run was genuinely **absent / not confirmable** — a 404 from the provider API, or the run head did not match the submitted commit/repo. The submitter's payload points at a run that does not exist or does not bind. (Operational provider faults — 429/5xx/401/403 — are NOT this class; see `provenance-fault:` below.) |
-| `repo:` | `index.js` cross-field guard | `submission.repo` does not match the owner/repo encoded in `source.run_url` (anti-forgery guard). Emitted as `repo:mismatch: …`. |
-| `submission-contains-verifier-field:` | `index.js` | The submission carried a verifier-owned field (`policy_version`, `verification`, or an object `overall_verdict`) it must not author. |
-| `CONTRACT_SCHEMA_TOO_NEW:` | `validators/schema-version.js` | The submission's `schema_version` declares a MAJOR **above** what this build supports (see `SUPPORTED_SCHEMA_VERSIONS` in `@dogfood-lab/schemas`). This build cannot understand a future contract — **the operator must upgrade testing-os**, but the routing class stays submission-bad (the payload as-shipped cannot be accepted by THIS build). |
-| `CONTRACT_SCHEMA_TOO_OLD:` | `validators/schema-version.js` | The submission's `schema_version` declares a MAJOR **below** the supported floor. **The submitter must re-emit** against the current contract. A patch/minor delta inside the supported major range is NOT rejected. |
-| `unsafe-record-path:` | `packages/ingest/run.js`, `writeRecord()` catch | The record passed schema validation but `computeRecordPath()`'s traversal guard (`isUnsafeSegment`, stricter than the schema's `repo` pattern — e.g. `../etc`) still refused to place it on disk. The submitter's own `repo` string is the problem; nothing is persisted (there is no safe path to write to). |
+| Prefix | Retryable | Source | Meaning |
+|---|---|---|---|
+| `schema:` | Yes — shape | `validators/schema.js` | JSON Schema check on the submission/record envelope failed. The rest of the string carries the AJV path + message. |
+| `policy:` | **No — content verdict** | `validators/policy.js` | Per-repo policy gate failed (forbidden tags, missing required fields, surface evidence/CI requirements, or a declarative `when`/`custom_rules` predicate matched — see the [policy DSL](https://dogfood-lab.github.io/testing-os/handbook/policy-dsl/)). Judges the run's OWN reported content (tags, evidence, scenario results); consuming the run_id is the deliberate anti-gaming behavior. |
+| `policy-config:` | Yes — shape | `validators/policy.js` | **VERIFY-F1.** A REPO custom-rule predicate hit an eval-time semantic fault the schema could not catch — an unknown leading field, a numeric operator against a non-number, or a depth/width/fan-out budget. The repo authored the bad RULE (config), not the run's content, so the fix belongs to the submitter and is retryable. (A malformed GLOBAL predicate is `VALIDATOR_FAULT_POLICY:` operational instead — see below.) |
+| `steps[<id>]:` | Yes — shape | `validators/steps.js` | Step-level contract check failed on a specific step id (gate accumulation, ordering, evidence shape — a completeness/structure mismatch, not a verdict on whether the steps passed). |
+| `provenance:` | **No — content verdict** | `validators/provenance.js` | The run was genuinely **absent / not confirmable** — a 404 from the provider API, or the run head did not match the submitted commit/repo. The provider could not confirm THIS specific run happened as claimed; resubmitting different self-reported content under the same run_id to "become confirmable" is exactly the laundering the anti-gaming doctrine blocks. (Operational provider faults — 429/5xx/401/403 — are NOT this class; see `provenance-fault:` below.) |
+| `repo:` | Yes — shape | `index.js` cross-field guard | `submission.repo` does not match the owner/repo encoded in `source.run_url` (anti-forgery guard). Emitted as `repo:mismatch: …`. Pure identity/addressing — the run happened, only the repo/run_url pairing was mis-stated. |
+| `submission-contains-verifier-field:` | Yes — shape | `index.js` | The submission carried a verifier-owned field (`policy_version`, `verification`, or an object `overall_verdict`) it must not author. |
+| `CONTRACT_SCHEMA_TOO_NEW:` | Yes — shape | `validators/schema-version.js` | The submission's `schema_version` declares a MAJOR **above** what this build supports (see `SUPPORTED_SCHEMA_VERSIONS` in `@dogfood-lab/schemas`). This build cannot understand a future contract — **the operator must upgrade testing-os**, but the routing class stays submission-bad (the payload as-shipped cannot be accepted by THIS build). |
+| `CONTRACT_SCHEMA_TOO_OLD:` | Yes — shape | `validators/schema-version.js` | The submission's `schema_version` declares a MAJOR **below** the supported floor. **The submitter must re-emit** against the current contract. A patch/minor delta inside the supported major range is NOT rejected. |
+| `unsafe-record-path:` | Yes — shape | `packages/ingest/run.js`, `writeRecord()` catch | The record passed schema validation but `computeRecordPath()`'s traversal guard (`isUnsafeSegment`, stricter than the schema's `repo` pattern — e.g. `../etc`) still refused to place it on disk. The submitter's own `repo` string is the problem; nothing is persisted (there is no safe path to write to). |
 
-**Operational** — `class: 'operational'` (the validator itself threw an internal error; investigate the verifier, do NOT bounce to the submitter):
+**Operational** — `class: 'operational'`, always `retryable: false` (the validator itself threw an internal error; investigate the verifier, do NOT bounce to the submitter):
 
 | Prefix | Source | Meaning |
 |---|---|---|
@@ -138,7 +140,7 @@ Discrimination happens by **class**, surfaced by `parseRejectionReason` (below).
 
 Any future `VALIDATOR_FAULT_<NEW>:` prefix is classified `operational` by family — `parseRejectionReason` matches the `VALIDATOR_FAULT_` head, so a new validator class needs no parser edit. The `submission-malformed:` prefix is matched literally (it is not part of the `VALIDATOR_FAULT_` family).
 
-**Ingest** — `class: 'ingest'` (an ingest-side load fault, not a verifier gate):
+**Ingest** — `class: 'ingest'`, always `retryable: false` (an ingest-side load fault, not a verifier gate):
 
 | Prefix | Source | Meaning |
 |---|---|---|
@@ -146,13 +148,13 @@ Any future `VALIDATOR_FAULT_<NEW>:` prefix is classified `operational` by family
 
 ### Operator hygiene
 
-Discriminate by **class**, not by hand-rolled `.startsWith()` chains. `parseRejectionReason(reason)` returns `{ class, prefix, detail }`:
+Discriminate by **class**, not by hand-rolled `.startsWith()` chains. `parseRejectionReason(reason)` returns `{ class, prefix, detail, retryable }`:
 
 ```js
 import { parseRejectionReason } from '@dogfood-lab/verify';
 
 for (const r of result.rejection_reasons) {
-  const { class: cls, prefix, detail } =
+  const { class: cls, prefix, detail, retryable } =
     parseRejectionReason(r);
   switch (cls) {
     case 'operational':

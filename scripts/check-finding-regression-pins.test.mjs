@@ -69,7 +69,7 @@ function makeFixture(t) {
 test('clean tree: every source pin has a matching test pin → ok=true', async (t) => {
   const fx = makeFixture(t);
   fx.write('packages/foo/index.js', '// F-100000-001 — defensive guard\n');
-  fx.write('packages/foo/index.test.js', "describe('guard (F-100000-001)', () => {});\n");
+  fx.write('packages/foo/index.test.js', "describe('guard (F-100000-001)', () => { assert.ok(true); });\n");
 
   const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
 
@@ -99,7 +99,12 @@ test('orphan covered by allowlist → ok=true, allowlistApplied includes the id'
 test('unused allowlist entry surfaces as warning but does not fail the gate', async (t) => {
   const fx = makeFixture(t);
   fx.write('packages/foo/index.js', '// F-100000-001\n');
-  fx.write('packages/foo/index.test.js', '// F-100000-001\n');
+  // F-ec9622fd: a bare leading comment with nothing following it no longer
+  // earns structural credit (rule 1 now requires adjacency to a real call) —
+  // use a genuine title+assert pin so this fixture stays clean under the
+  // tightened rules; this test's actual subject is the unused-entry warning,
+  // not the leading-comment rule.
+  fx.write('packages/foo/index.test.js', "test('F-100000-001 stays fixed', () => { assert.ok(true); });\n");
   const allowlistPath = fx.writeAllowlist({
     allow: {
       'F-999999-999': { reason: 'never resolved' },
@@ -133,7 +138,11 @@ test('orphan from one file does not mask a clean orphan elsewhere', async (t) =>
   fx.write('packages/a/x.js', '// F-400000-001 — orphan a\n');
   fx.write('packages/b/y.js', '// F-400000-002 — orphan b\n');
   fx.write('packages/c/z.js', '// F-400000-003 — has test\n');
-  fx.write('packages/c/z.test.js', '// F-400000-003 — regression\n');
+  // F-ec9622fd: a bare leading comment with nothing following it no longer
+  // earns structural credit — give F-400000-003 a genuine title+assert pin
+  // so it stays the one CLEAN id this fixture is contrasting against the two
+  // deliberate orphans.
+  fx.write('packages/c/z.test.js', "test('F-400000-003 regression', () => { assert.ok(true); });\n");
 
   const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
 
@@ -170,14 +179,74 @@ test('orphan from one file does not mask a clean orphan elsewhere', async (t) =>
 // despite the textual mention) and a genuinely-pinned id must stay GREEN.
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('F-f0339e12 unit: findStructuralPinHits recognizes a leading-comment pin', () => {
-  const hits = findStructuralPinHits('// F-893adcd1 — the actual fix reason\n', 'F-893adcd1', 'irrelevant.test.js');
+test('F-f0339e12 unit: findStructuralPinHits recognizes a leading-comment pin (placement-only — F-ec9622fd deliberately did not extend the body-assert bar to this rule)', () => {
+  const text =
+    '// F-100000-014 — the actual fix reason\n' +
+    "test('regression coverage', () => { assert.ok(true); });\n";
+  const hits = findStructuralPinHits(text, 'F-100000-014', 'irrelevant.test.js');
   assert.deepEqual(hits.map((h) => h.kind), ['leading-comment']);
 });
 
-test('F-f0339e12 unit: findStructuralPinHits recognizes a test()/it()/describe() title pin', () => {
-  const hits = findStructuralPinHits("describe('guard (F-100000-001)', () => {});\n", 'F-100000-001', 'irrelevant.test.js');
+test('F-ec9622fd: this repo\'s banner-comment convention (banner block, BLANK line, then describe()) still earns leading-comment credit (rule 1 is placement-only, so this was never at risk)', () => {
+  // Confirmed live shape (wave10-docs-identity-drift.test.js:203): a banner
+  // block followed by a blank line, THEN the call. This is exactly the
+  // pattern an "immediately above the call" tightening of rule 1 was
+  // evaluated against and rejected for (see the module docstring's WHAT
+  // STILL SLIPS THROUGH) — ~52 live ids depend on rule-1 placement credit
+  // that tightening would have broken. Pinned here so a future attempt at
+  // that tightening has an immediate regression signal.
+  const text = [
+    '// ═══════════════════════════════════════════',
+    '// F-100000-010 — banner-style section header',
+    '// ═══════════════════════════════════════════',
+    '',
+    "describe('some suite', () => { assert.ok(true); });",
+  ].join('\n');
+  const hits = findStructuralPinHits(text, 'F-100000-010', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['leading-comment']);
+});
+
+test('F-f0339e12 unit: findStructuralPinHits recognizes a test()/it()/describe() title pin with a body-level assert (F-ec9622fd\'s bar)', () => {
+  const hits = findStructuralPinHits("describe('guard (F-100000-001)', () => { assert.ok(true); });\n", 'F-100000-001', 'irrelevant.test.js');
   assert.deepEqual(hits.map((h) => h.kind), ['title']);
+});
+
+test('F-ec9622fd mutation-probe (RED direction): a title match sitting above a genuinely EMPTY callback body earns no credit', () => {
+  // Pre-fix this earned full 'title' credit on placement alone — the exact
+  // gap the finding proved: `test('F-100000-005: unrelated smoke test', () =>
+  // {})` with zero assertions anywhere in its own body still cleared Class
+  // #14. The id is textually present in the title; nothing in the call ever
+  // exercises anything.
+  const hits = findStructuralPinHits("describe('guard (F-100000-001)', () => {});\n", 'F-100000-001', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['none'],
+    'a title with zero assert/expect anywhere in its own call body must not earn structural credit',
+  );
+});
+
+test('F-ec9622fd: a title match whose assert lives several lines into a multi-line callback body still earns credit (not same-line-only)', () => {
+  const text = [
+    "test('F-100000-007: multi-line body', () => {",
+    '  const x = compute();',
+    '  const y = transform(x);',
+    '  assert.equal(y, 42);',
+    '});',
+  ].join('\n');
+  const hits = findStructuralPinHits(text, 'F-100000-007', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['title'], 'the body-assert check scans the whole call body, not just the title line');
+});
+
+test('F-ec9622fd: a title match on a describe() whose assert lives inside a nested it() still earns credit', () => {
+  const text = [
+    "describe('F-100000-008: outer suite', () => {",
+    "  it('does the thing', () => {",
+    '    assert.ok(doThing());',
+    '  });',
+    '});',
+  ].join('\n');
+  const hits = findStructuralPinHits(text, 'F-100000-008', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['title'], 'an assert nested inside a child it() is still within the describe() call\'s own body span');
 });
 
 test('F-f0339e12 unit: findStructuralPinHits recognizes a same-line assert argument pin', () => {
@@ -189,6 +258,21 @@ test('F-f0339e12 unit: findStructuralPinHits recognizes a self-referencing file-
   const text = '/**\n * verify-fixed.test.js — F-252713-002 (Phase 7 wave 1)\n */\n';
   const hits = findStructuralPinHits(text, 'F-252713-002', 'verify-fixed.test.js');
   assert.deepEqual(hits.map((h) => h.kind), ['self-header']);
+});
+
+test('F-ec9622fd: a self-header hit with the REST of the file entirely unrelated still earns credit alone (rule 3 is placement-only, sufficient on its own — see module docstring WHAT STILL SLIPS THROUGH)', () => {
+  // Finding's exact case (c) — pinned here, not to prove the gap is closed
+  // (it deliberately is not, this wave), but so a future attempt to
+  // downgrade rule 3 to "supplementary only" has an immediate regression
+  // signal: downgrading it would orphan real live ids whose ONLY structural
+  // signal across their whole test file is a dedicated self-header (e.g.
+  // F-252713-002 above, F-39aca64f, F-BACKEND-003 — each a whole file
+  // genuinely dedicated to one id with real describe/it/assert structure
+  // that never repeats the id in a title/leading-comment/assert-line).
+  const text =
+    '/**\n * weird.test.js — F-100000-012 (declares coverage in its own header)\n */\n' +
+    "test('something entirely unrelated', () => { doSomethingWithNoAssertion(); });\n";
+  assert.equal(hasStructuralTestPin(text, 'F-100000-012', 'weird.test.js'), true);
 });
 
 test('F-f0339e12 unit: a bare narrative mention (not leading, no title, no self-header, no same-line assert) is NOT structural', () => {
@@ -204,7 +288,7 @@ test('F-f0339e12 unit: a SECOND id named mid-sentence after a leading id does no
   // cannot itself hand out the structural credit it's proving is absent.
   const leadingId = 'F-c59bb518';
   const namedAfterwardId = 'F-893adcd1';
-  const text = `// ${leadingId}: ${namedAfterwardId} (wave 4) fixed the module docstring to stop\n`;
+  const text = `// ${leadingId}: ${namedAfterwardId} (wave 4) fixed the module docstring to stop\ntest('regression coverage', () => { assert.ok(true); });\n`;
   assert.equal(hasStructuralTestPin(text, leadingId, 'check-finding-regression-pins.test.mjs'), true, 'the LEADING id on the line is a real pin');
   assert.equal(hasStructuralTestPin(text, namedAfterwardId, 'check-finding-regression-pins.test.mjs'), false, 'the id named afterward, mid-sentence, is a narrative cross-reference, not a pin');
 });
@@ -249,7 +333,7 @@ test('F-f0339e12: computeStructuralOrphans — pure function over an injected re
     summary: { source_ids: 2, test_ids: 2, orphan_source_ids: [] },
   };
   const files = {
-    '/x/a.test.js': "test('F-100000-001 stays fixed', () => {});\n",
+    '/x/a.test.js': "test('F-100000-001 stays fixed', () => { assert.equal(1, 1); });\n",
     '/x/b.test.js': "// unlike F-100000-001's approach, F-200000-002 does something else\n",
   };
   const out = computeStructuralOrphans(json, { readFile: (p) => files[p] });
@@ -417,7 +501,7 @@ test('F-5eafee44: the 12 workflow-pinned F-ids named in the finding are still pr
 test('--write-index path: writes JSON to the requested path with parser shape', async (t) => {
   const fx = makeFixture(t);
   fx.write('packages/foo/index.js', '// F-500000-001\n');
-  fx.write('packages/foo/index.test.js', '// F-500000-001\n');
+  fx.write('packages/foo/index.test.js', "test('F-500000-001 stays fixed', () => { assert.ok(true); });\n");
   const indexPath = 'docs/regression-pin-index.json';
 
   const result = await runRegressionPinGate({
@@ -441,7 +525,7 @@ test('--write-index path: writes JSON to the requested path with parser shape', 
 test('without --write-index: no index file is written and indexWritten is null', async (t) => {
   const fx = makeFixture(t);
   fx.write('packages/foo/index.js', '// F-600000-001\n');
-  fx.write('packages/foo/index.test.js', '// F-600000-001\n');
+  fx.write('packages/foo/index.test.js', "test('F-600000-001 stays fixed', () => { assert.ok(true); });\n");
 
   const result = await runRegressionPinGate({ repoRoot: fx.dir, allowlistPath: fx.writeAllowlist({ allow: {} }) });
 

@@ -90,18 +90,35 @@ const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
  *      `// F-893adcd1 — the actual fix reason` or the JSDoc continuation
  *      `*   F-375053-005  schema.js STATUS.run enum…`. This is the exact
  *      "leading-comment line" form parse-regression-pins.test.js's own
- *      docstring documents as canonical.
+ *      docstring documents as canonical. F-ec9622fd: this stays placement-
+ *      only, unlike rule 2 below — see WHAT STILL SLIPS THROUGH for why.
  *   2. TEST TITLE — the id sits inside the quoted title argument of a
  *      test()/it()/describe() call, e.g. `describe('guard (F-100000-001)',
  *      …)` or `test('F-W1-CI-006: main-entry guard …', …)`. The other
- *      canonical form from the same docstring.
+ *      canonical form from the same docstring. F-ec9622fd: placement in the
+ *      title alone is not enough — the call's own body (from the title line
+ *      through the line where the call closes, tracked by paren/brace
+ *      depth over comment/string-masked text) must ALSO contain an
+ *      `assert`/`expect(` call somewhere, mirroring rule 4's bar. This
+ *      closes the titled-but-genuinely-empty-callback shape outright
+ *      (mutation-probe: `test('F-NNNNNN-NNN: unrelated smoke test', () =>
+ *      {})` with no assert anywhere in the body now earns no credit —
+ *      deliberately the same non-matching F-NNNNNN-NNN placeholder rule 4
+ *      uses below, not a real tracked id, for the same reason: a real id
+ *      here would make this docstring's own coverage depend on the
+ *      mutation-probe example never changing shape). It does NOT verify the
+ *      assertion is semantically ABOUT the id — see WHAT STILL SLIPS
+ *      THROUGH.
  *   3. SELF-REFERENCING FILE HEADER — the id is the first F-id mentioned on
  *      a line that ALSO names this file's own basename, within the file's
  *      first 20 lines, e.g. `verify-fixed.test.js — F-252713-002 (Phase 7
  *      wave 1, FT-BACKEND-002)`. A file citing its own name before an id in
- *      its opening docblock is declaring "this file is the regression
+ *      its opening docblock is CLAIMING "this file is the regression
  *      coverage for that id" — categorically different from a stray
- *      cross-reference deep inside an unrelated file.
+ *      cross-reference deep inside an unrelated file. F-ec9622fd: that is
+ *      the file's CLAIM, not a fact this rule verifies — see WHAT STILL
+ *      SLIPS THROUGH for why it stays placement-only (sufficient on its
+ *      own), same as rule 1.
  *   4. SAME-LINE ASSERT ARGUMENT — the id appears anywhere on a line that
  *      also contains `assert` or `expect(`, e.g. an assertion message that
  *      names the id it proves (`assert.doesNotMatch(a, /F-NNNNNN-NNN/,
@@ -144,6 +161,61 @@ const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
  *     which also happens to contain a genuine (unrelated) assert/expect
  *     call would still count under rule 4 — same-line is a far smaller
  *     surface than a proximity window, but it is not zero.
+ *   - F-ec9622fd: rule 2's new body-assert requirement (above) does not
+ *     verify the assertion is semantically ABOUT the id — a titled test
+ *     whose body contains an unrelated assertion (e.g. a coincidental
+ *     `assert.equal(1+1,2)` smoke-check) still earns 'title' credit. Same
+ *     "cheap, not exhaustive" tradeoff rule 4 already accepts for its own
+ *     same-line case; proving semantic relevance is dataflow/intent
+ *     analysis, the same category of check the rejected proximity window
+ *     (above) already ruled out as too expensive for a line-local
+ *     heuristic. Rule 2 proves a real test BODY sits behind the pin, not
+ *     that the body is ABOUT the pin.
+ *   - F-ec9622fd: rule 2's call-body scan (enclosingCallHasAssertBody) masks
+ *     comment and quoted/template-string content before counting brackets
+ *     (STRUCTURAL_MASK_PATTERN) — so punctuation inside a title's own prose
+ *     ("(edge case)") or a body string cannot miscount as a real bracket
+ *     boundary — but does NOT mask regex literals. A regex containing an
+ *     unescaped bracket character (e.g. `assert.match(x, /\(fixme\)/)`) can
+ *     still corrupt the depth count. Same class of gap as
+ *     check-doc-drift.mjs's countCommandMapEntries pre-F-6cfe4d01 fix;
+ *     unlike that resolver (a silent wrong COUNT), the failure direction
+ *     here is closing the scanned span too early or too late, which either
+ *     under-credits (fails closed, surfaces as a visible, actionable orphan
+ *     — safe) or, less likely, over-scans into unrelated code. Distinguishing
+ *     a regex-opening `/` from a division operator needs a real tokenizer;
+ *     not attempted here for the same "no heavyweight parser dependency"
+ *     reason countCommandMapEntries's own docstring gives.
+ *   - Rule 2's call-body scan is bounded (STRUCTURAL_TITLE_BODY_LINE_LIMIT
+ *     lines) and fails CLOSED past that bound (treated as "no body found",
+ *     never a false grant) — an unproven pin surfaces as a visible orphan a
+ *     human must resolve, not a silent miscount.
+ *   - F-ec9622fd: rules 1 (leading-comment) and 3 (self-header) are still
+ *     placement-only — neither requires the file to contain any test
+ *     structure related to (or even near) the id; a comment that is merely
+ *     the leading token of a line, or a header that names the file's own
+ *     basename before the id, earns credit purely from where the text sits.
+ *     Both are mutation-probe-gameable this way (a leading-comment floating
+ *     in a file with no test/describe block anywhere near it; a self-
+ *     referencing header on an otherwise-unrelated file). Rule 2 closed its
+ *     version of this gap by requiring a body-level assert (above); rules 1
+ *     and 3 were deliberately NOT given the same treatment this wave,
+ *     because tightening either provably orphans real live pins rather than
+ *     just closing a theoretical one: an "immediately above a
+ *     test()/it()/describe( call" requirement for rule 1 collides with this
+ *     repo's own pervasive banner-comment convention (a `// ═══ / F-id —
+ *     description / ═══` block separated from its describe() by a blank
+ *     line, e.g. wave10-docs-identity-drift.test.js:203) — confirmed live,
+ *     ~52 ids depend on rule 1 alone today — and downgrading rule 3 to
+ *     "supplementary only" immediately orphans multiple live ids (including
+ *     F-252713-002, this docstring's OWN rule-3 example two paragraphs up)
+ *     whose ONLY structural signal across their whole test file is a
+ *     dedicated file's self-header, with real describe/it/assert structure
+ *     that never repeats the id inside a title, leading comment, or
+ *     same-line assert. Both were measured empirically against the live
+ *     tree before this call was made (see the wave-10 ci-tooling amend
+ *     output). The gap stays open and documented here rather than silently
+ *     traded for a proven regression across files this domain does not own.
  *
  * These are line-based heuristics over the SAME already-classified test
  * files the parser walks — no new file walk, no parser edit. Deliberately
@@ -155,14 +227,108 @@ const STRUCTURAL_COMMENT_DECORATION = /^\s*(?:[/*#-]+\s*)+/;
 const STRUCTURAL_TEST_TITLE = /\b(?:test|it|describe)(?:\.\w+)?\s*\(\s*(['"`])((?:(?!\1).)*?)\1/;
 const STRUCTURAL_ASSERT_LINE = /\bassert\b|\bexpect\s*\(/;
 const STRUCTURAL_HEADER_LINE_LIMIT = 20;
+// F-ec9622fd: safety bound on rule 2's call-body scan (below) — a real
+// test/it/describe body is rarely more than a few dozen lines; this only
+// exists so a pathological (or unbalanced-brace) file can't turn one title
+// hit into an unbounded scan. Falling back to "body not found" at the bound
+// is the same "no body connection found" outcome as a genuinely empty body,
+// so hitting it just means the id gets no title credit — never a crash or a
+// false grant.
+const STRUCTURAL_TITLE_BODY_LINE_LIMIT = 400;
+// F-ec9622fd: blanks out comment and quoted/template-string content
+// (length-preserving, so column positions elsewhere on a line stay valid)
+// before rule 2's call-body scan counts brackets — punctuation inside a
+// title's own prose ("(edge case)") or a body string must never miscount as
+// a real bracket boundary. Regex literals are deliberately NOT masked
+// (distinguishing a regex-opening '/' from a division operator needs a real
+// tokenizer) — see WHAT STILL SLIPS THROUGH in the module docstring above.
+const STRUCTURAL_MASK_PATTERN = /\/\*[\s\S]*?\*\/|\/\/[^\n]*|`(?:[^`\\]|\\.)*`|"(?:[^"\\]|\\.)*"|'(?:[^'\\]|\\.)*'/g;
+
+function maskCommentsAndStrings(s) {
+  return s.replace(STRUCTURAL_MASK_PATTERN, (m) => ' '.repeat(m.length));
+}
 
 function isLeadingCommentPin(line, id) {
   return line.replace(STRUCTURAL_COMMENT_DECORATION, '').startsWith(id);
 }
 
-function isTestTitlePin(line, id) {
+/**
+ * F-ec9622fd: locate a test()/it()/describe( call starting on `line`,
+ * returning its title text and the column of its OWN opening '(' — derived
+ * from the regex match itself (m.index + the first '(' inside the match),
+ * never a blind line-wide search, which would find an EARLIER, unrelated
+ * '(' when some other call precedes the test/it/describe token on the same
+ * line (e.g. `if (x) { test('F-id: …', …); }`) and close the "body" at that
+ * unrelated paren instead.
+ *
+ * @param {string} line
+ * @returns {{ title: string, openParenCol: number } | null}
+ */
+function matchTestCallStart(line) {
   const m = STRUCTURAL_TEST_TITLE.exec(line);
-  return Boolean(m && m[2].includes(id));
+  if (!m) return null;
+  return { title: m[2], openParenCol: m.index + m[0].indexOf('(') };
+}
+
+/**
+ * F-ec9622fd: whether the test/it/describe call opening at
+ * lines[callLineIndex][openParenCol] has an assert/expect() call anywhere in
+ * its OWN body — tracked by combined paren/brace depth from that '(' back to
+ * zero, over text with comments and strings masked first (maskCommentsAndStrings)
+ * so their content cannot corrupt the count (mutation-probe proof: pre-fix,
+ * the title rule granted credit on TEXTUAL PLACEMENT alone — `test('F-NNNNNN-NNN:
+ * unrelated smoke test', () => {})` with a genuinely EMPTY callback earned
+ * full 'title' credit with zero requirement that the body relate to the id).
+ * Mirrors rule 4's own same-line assert bar, widened from "this line" to
+ * "this call's true (bracket-balanced) extent." Bounded by
+ * STRUCTURAL_TITLE_BODY_LINE_LIMIT lines; failing to find the closing paren
+ * within the bound is treated as "no body found" — fail closed, same as a
+ * genuinely empty body, never a false grant. It does NOT verify the
+ * assertion is semantically about the id — see WHAT STILL SLIPS THROUGH.
+ *
+ * @param {string[]} lines
+ * @param {number} callLineIndex
+ * @param {number} openParenCol
+ * @returns {boolean}
+ */
+function enclosingCallHasAssertBody(lines, callLineIndex, openParenCol) {
+  let depth = 0;
+  const lastLine = Math.min(lines.length - 1, callLineIndex + STRUCTURAL_TITLE_BODY_LINE_LIMIT);
+  for (let i = callLineIndex; i <= lastLine; i++) {
+    const raw = i === callLineIndex ? lines[i].slice(openParenCol) : lines[i];
+    const masked = maskCommentsAndStrings(raw);
+    let closedAt = -1;
+    for (let c = 0; c < masked.length; c++) {
+      const ch = masked[c];
+      if (ch === '(' || ch === '{') depth++;
+      else if (ch === ')' || ch === '}') {
+        depth--;
+        if (depth <= 0) { closedAt = c; break; }
+      }
+    }
+    const active = closedAt === -1 ? masked : masked.slice(0, closedAt + 1);
+    if (STRUCTURAL_ASSERT_LINE.test(active)) return true;
+    if (closedAt !== -1) return false;
+  }
+  return false;
+}
+
+/**
+ * F-ec9622fd: a title match alone is textual placement, not proof the test
+ * does anything — additionally require the enclosing call's own body to
+ * contain an assert/expect call somewhere (enclosingCallHasAssertBody). This
+ * closes the "titled but genuinely empty callback" shape from the
+ * mutation-probe outright.
+ *
+ * @param {string[]} lines
+ * @param {number} lineIndex
+ * @param {string} id
+ * @returns {boolean}
+ */
+function isTestTitlePin(lines, lineIndex, id) {
+  const call = matchTestCallStart(lines[lineIndex]);
+  if (!call || !call.title.includes(id)) return false;
+  return enclosingCallHasAssertBody(lines, lineIndex, call.openParenCol);
 }
 
 function isSelfReferencingHeaderPin(line, id, fileBasename, lineIndex) {
@@ -203,7 +369,7 @@ export function findStructuralPinHits(text, id, fileBasename) {
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (!line.includes(id)) continue;
-    if (isTestTitlePin(line, id)) hits.push({ line: i + 1, kind: 'title' });
+    if (isTestTitlePin(lines, i, id)) hits.push({ line: i + 1, kind: 'title' });
     else if (isLeadingCommentPin(line, id)) hits.push({ line: i + 1, kind: 'leading-comment' });
     else if (isSelfReferencingHeaderPin(line, id, fileBasename, i)) hits.push({ line: i + 1, kind: 'self-header' });
     else if (isSameLineAssertArgumentPin(line, id)) hits.push({ line: i + 1, kind: 'assert-line' });

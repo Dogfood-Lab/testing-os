@@ -381,4 +381,50 @@ describe('F-87dc7b35: status.js\'s violations aggregator cross-references the sh
     assert.match(preceding, /observability note, not a fix/i,
       'must be honest that this is documentation, not a functional close of the underlying gap — the gap itself is out of this domain');
   });
+
+  // F-5574e29e (wave 10): the pin above only reads the COMMENT preceding
+  // queryIdx — none of its five assertions look at the query itself, so a
+  // future edit that quietly drops the interpolation from the real SQL (or
+  // swaps in a different, still-wrong filter) while leaving the comment
+  // untouched would stay green here. Mutation-probed: reverting this
+  // interpolation in a scratch copy of status.js flips this pin red while
+  // leaving the pin above green, confirming the two pins now cover
+  // disjoint halves of the same claim rather than one silently standing in
+  // for the other.
+  it('the query body itself — not just the comment above it — still applies the shared filter', () => {
+    const statusPath = join(__dirname, 'commands', 'status.js');
+    const statusSrc = readFileSync(statusPath, 'utf-8');
+
+    const queryIdx = statusSrc.indexOf('const violations = db.prepare(`');
+    assert.ok(queryIdx > -1,
+      'the violations aggregator query must still exist at its documented shape — extraction is broken if this fails');
+
+    const queryBody = statusSrc.slice(queryIdx, queryIdx + 300);
+    assert.match(queryBody, /\$\{LATEST_AGENT_RUN_PER_DOMAIN\}/,
+      'the violations query must actually interpolate LATEST_AGENT_RUN_PER_DOMAIN, not merely be described as doing so by the comment above it');
+  });
+
+  // F-5574e29e (wave 10), second half: the mirror case the comment itself
+  // names — "a change scoped only to lib/advance.js#checkViolations would
+  // leave this operator-facing count still wrong" (status.js:135-136).
+  // Neither file imports the other's query; they are two independent
+  // inlined copies of the same shape, kept honest only by pins like this
+  // one. Reading lib/advance.js here does not edit it — this domain
+  // (package-root *.test.js) owns the read, not the file. Mutation-probed
+  // against a scratch copy of advance.js with the interpolation stripped
+  // from checkViolations only: this pin flips red while the two pins above
+  // (which only ever read status.js) stay green, confirming this is
+  // genuinely the cross-file half and not a restatement of the first pin.
+  it('lib/advance.js#checkViolations — the sibling this comment cross-references by name — has not silently diverged on the same shared filter', () => {
+    const advancePath = join(__dirname, 'lib', 'advance.js');
+    const advanceSrc = readFileSync(advancePath, 'utf-8');
+
+    const fnIdx = advanceSrc.indexOf('function checkViolations');
+    assert.ok(fnIdx > -1,
+      'lib/advance.js#checkViolations must still exist at its documented shape — this pin cross-references it by name (not by import), so a rename here needs a matching rename there');
+
+    const fnBody = advanceSrc.slice(fnIdx, fnIdx + 600);
+    assert.match(fnBody, /\$\{LATEST_AGENT_RUN_PER_DOMAIN\}/,
+      'lib/advance.js#checkViolations must still apply LATEST_AGENT_RUN_PER_DOMAIN — if this is ever changed without commands/status.js:138-146 changing to match (or vice versa), the two cross-references in status.js\'s comment have silently diverged');
+  });
 });

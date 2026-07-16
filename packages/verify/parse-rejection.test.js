@@ -186,3 +186,70 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
     assert.equal(mod.parseRejectionReason('schema: x').class, 'submission-bad');
   });
 });
+
+describe('parseRejectionReason retryable field (F-f8952a50, wave 10)', () => {
+  // packages/ingest/persist.js's isRetryableRejection() keys a same-run_id
+  // resubmission's retry eligibility off THIS field, per-prefix, not off
+  // `class` directly — `class: 'submission-bad'` alone is too coarse: it
+  // covers both shape/addressing mistakes (retryable) and rendered
+  // content-verdicts (not retryable, by design — see the file header and
+  // schema-invalid-skip-persist.test.js's "REGRESSION GUARD" /
+  // "persist-a-verdict doctrine is preserved" tests in @dogfood-lab/ingest).
+  const retryableCases = [
+    // submission-bad, retryable: "we could not even read/place/shape your
+    // submission" — a correction changes nothing about what the run did.
+    ['schema: /repo must be string', true],
+    ['policy-config: rule "bad-type": operator "gt" requires a numeric field value', true],
+    ['repo:mismatch: submission.repo (a/b) does not match source.run_url repo (c/d)', true],
+    ['submission-contains-verifier-field: verification', true],
+    ['CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 but this build supports v1.0.0', true],
+    ['CONTRACT_SCHEMA_TOO_OLD: recordSubmission schema v0.9.0 is below the supported floor', true],
+    ['unsafe-record-path: record passed schema validation but its path could not be safely computed (repo: ../etc, run_id: r1): unsafe repo segment: ../etc', true],
+    ['steps[step-1]: gate accumulation violated', true],
+
+    // submission-bad, NOT retryable: a rendered VERDICT on the run's own
+    // reported content — consuming the run_id is the intended anti-gaming
+    // behavior (a submitter must not launder a genuinely-bad run into an
+    // accepted one by resubmitting different self-reported content under the
+    // same run_id).
+    ['policy: forbidden tag "wip"', false],
+    ['provenance: source run could not be confirmed', false],
+
+    // operational / ingest / unknown — never retryable regardless of class
+    // nuance; only the submitter's own payload earns a retry.
+    ['provenance-fault: verification failed: GitHub API returned 503', false],
+    ['submission-malformed: submission is null or not an object', false],
+    ['VALIDATOR_FAULT_SCHEMA: ajv compile failed', false],
+    ['VALIDATOR_FAULT_POLICY: merge cycle', false],
+    ['scenario-load: not_found scenario-x', false],
+    ['gremlins: something weird happened', false],
+  ];
+
+  for (const [reason, expectedRetryable] of retryableCases) {
+    it(`"${reason.slice(0, 44)}…" → retryable: ${expectedRetryable}`, () => {
+      const parsed = parseRejectionReason(reason);
+      assert.equal(parsed.retryable, expectedRetryable, `retryable for: ${reason}`);
+    });
+  }
+
+  it('is defensive against non-string input: retryable is false', () => {
+    for (const bad of [null, undefined, 42, {}, []]) {
+      assert.equal(parseRejectionReason(bad).retryable, false);
+    }
+  });
+
+  it('the two content-verdict prefixes (policy:, provenance:) are class submission-bad but retryable:false — the split is per-prefix, not per-class', () => {
+    const policy = parseRejectionReason('policy: forbidden tag "wip"');
+    const provenance = parseRejectionReason('provenance: source run could not be confirmed');
+    const repo = parseRejectionReason('repo:mismatch: a/b vs c/d');
+
+    assert.equal(policy.class, 'submission-bad');
+    assert.equal(policy.retryable, false);
+    assert.equal(provenance.class, 'submission-bad');
+    assert.equal(provenance.retryable, false);
+    // Sibling submission-bad prefix, same class, opposite retryable value —
+    // proves retryable is a genuinely separate dimension from class.
+    assert.equal(repo.class, 'submission-bad');
+    assert.equal(repo.retryable, true);
+  });
+});

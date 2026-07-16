@@ -72,6 +72,43 @@ test('multi-line block comment with an internal URL is removed with line count p
   assert.ok(!out.includes('x.test'));
 });
 
+// Wave-9 audit carryover (no formal wave-10 finding_id — flagged in the
+// coordinator's own dispatch as a residual to check after 6a63dda, not in
+// the frozen wave-10 domain map's findings list). Every fixture above this
+// point uses LF-only line joins; the module header promises "LINE NUMBERS
+// ARE PRESERVED" without qualifying which line-ending style, and this repo
+// runs on Windows where CRLF sources are a live possibility. Mutation-
+// probed: a scratch mutant that also fires the internal newline-append on
+// '\r' (a plausible "helpful CRLF fix") doubles the counted newlines for
+// CRLF input and flips this pin red, while leaving the LF-only pin above
+// untouched — confirming this is a distinct, previously-uncovered axis.
+test('CRLF line endings: line count is preserved through a block comment, not just LF', () => {
+  const src = 'before();\r\n/' + '*\r\n * note\r\n *' + '/\r\nafter();';
+  const out = stripComments(src);
+  assert.equal(out.split('\n').length, src.split('\n').length, 'line count preserved across CRLF input');
+  assert.ok(out.includes('before();') && out.includes('after();'));
+  assert.ok(!out.includes('note'));
+});
+
+// Wave-9 audit carryover (same status as the CRLF pin above). The block-
+// comment loop's closing advance (`i += 2`) runs unconditionally whether or
+// not `*/` was actually found, per the header's own "(or off the end when
+// unterminated)" note — but nothing pinned that claim. Verified directly: an
+// unterminated block comment at EOF does not throw, does not hang, and
+// preserves every internal newline up to EOF. (Not mutation-probed: the one
+// plausible regression here — dropping the loop's `i < n` bound — produces
+// an infinite loop rather than a wrong value, which this file's assertion-
+// based pins cannot safely demonstrate without risking the test run hanging.
+// This pin's value is coverage of the EOF-termination path itself, not a
+// wrong-output catch.)
+test('unterminated block comment running to EOF does not throw and preserves line count', () => {
+  const src = ['before();', '/' + '* never closed', 'still open, no closer'].join('\n');
+  const out = stripComments(src);
+  assert.equal(out.split('\n').length, src.split('\n').length, 'line count preserved even though the comment never closes');
+  assert.ok(out.includes('before();'), 'code before the unterminated comment survives');
+  assert.ok(!out.includes('still open'), 'the unterminated comment body itself is not emitted');
+});
+
 test('string and template contents are preserved byte-for-byte', () => {
   const src = [
     "const g = 'lib/*" + "*';",
@@ -86,11 +123,65 @@ test('string and template contents are preserved byte-for-byte', () => {
   assert.ok(out.includes('post`'), 'template tail after ${} survives');
 });
 
+// Wave-9 audit carryover (no formal wave-10 finding_id; see the CRLF pin
+// above for the same status note). The string handler's escape branch reads
+// `source[i + 1] ?? ''` specifically so a lone trailing backslash as the
+// LAST character of an unterminated string does not read past the end of
+// the source into `undefined`. Mutation-probed: a scratch mutant that drops
+// the `?? ''` fallback concatenates the literal word "undefined" into the
+// output for this exact shape and flips this pin red; the same mutant
+// leaves every other fixture in this file untouched, confirming the `?? ''`
+// guard is load-bearing specifically for this EOF shape.
+test('a lone trailing backslash at EOF inside an unterminated string does not leak "undefined"', () => {
+  const src = "const s = 'abc\\";
+  const out = stripComments(src);
+  assert.ok(!out.includes('undefined'), 'reading past the source end must not surface the literal word "undefined"');
+  assert.equal(out, src, 'an unterminated string with no comment content passes through unchanged');
+});
+
 test('comments inside ${ } template expressions are stripped, template body untouched', () => {
   const src = 'const t = `head ${ value /' + '/ trailing note\n } tail`;';
   const out = stripComments(src);
   assert.ok(!out.includes('trailing note'), 'comment inside the expression is stripped');
   assert.ok(out.includes('head ') && out.includes(' tail`'), 'template body preserved');
+});
+
+// Wave-9 audit carryover (same status note as above). consumeTemplateBody is
+// called again by the main loop whenever it meets a backtick — including a
+// backtick that opens a SECOND template literal nested inside the first
+// one's ${ } expression. The shared `frames` array is a real stack (push on
+// entering an expression, pop on leaving it), so nesting should compose
+// automatically; nothing pinned that claim. Mutation-probed: a scratch
+// mutant that degrades the stack to a single overwritten slot (frames[0] = x
+// instead of frames.push(x); frames[0].braceDepth instead of frames.pop())
+// leaves this fixture's own template bodies untouched (both pushes happen
+// to capture braceDepth 0 here) but loses the OUTER frame's true depth, so
+// the trailing comment after the whole expression closes is never reached
+// by the normal main loop and survives unstripped — flips this pin red.
+test('a template literal nested inside another template\'s ${ } expression does not corrupt the outer frame', () => {
+  const src = 'const o = { t: `outer ${ `inner ${x}` } end` }; /' + '* strip me *' + '/ keep();';
+  const out = stripComments(src);
+  assert.ok(!out.includes('strip me'), 'a comment after the doubly-nested template must still be stripped — the outer expression frame must survive the inner template closing');
+  assert.ok(out.includes('keep();'), 'code after the comment survives');
+  assert.ok(out.includes('`outer ${ `inner ${x}` } end`'), 'both template bodies preserved verbatim');
+});
+
+// Wave-9 audit carryover (same status note as above). braceDepth counts `{`
+// / `}` inside a ${ } expression so a nested object literal's own braces
+// cannot be misread as the expression's closer; nothing pinned that claim
+// either. Mutation-probed: a scratch mutant that stops incrementing
+// braceDepth on `{` (so the FIRST `}` at depth 0 inside the object literal
+// looks like the expression's own close) causes the frame to pop one brace
+// early — the rest of the object literal and the comment right after it get
+// swallowed as literal template-body text instead of parsed as code, so the
+// comment survives unstripped. Flips this pin red; the real scanner strips
+// it.
+test('an object literal (nested braces) inside a ${ } expression does not close the expression early', () => {
+  const src = 'const t = `head ${ ({a: {b: 2}}) /' + '* strip me *' + '/ } tail`; keep();';
+  const out = stripComments(src);
+  assert.ok(!out.includes('strip me'), 'a comment after the nested object literal, still inside the expression, must be stripped');
+  assert.ok(out.includes('keep();'), 'code after the template survives');
+  assert.ok(out.includes('({a: {b: 2}})'), 'the object literal itself is preserved verbatim');
 });
 
 test('BOUNDARY CLOSED (wave 9): a bare /' + '* inside a regex character class survives — regexes are lexed', () => {

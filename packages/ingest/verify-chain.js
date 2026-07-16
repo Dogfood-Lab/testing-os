@@ -208,24 +208,43 @@ export function verifyChain(repoRoot, opts = {}) {
  * INGEST-PROACT-001 — reconcile on-disk records against the ledger.
  *
  * Walks every `*.json` under `records/` (accepted AND `_rejected/`) and flags
- * any record file whose `(run_id, seq)` identity is absent from the ledger.
- * Such a file is an ORPHAN: persist wrote the record but the ledger append did
- * not happen (a crash in the torn window between the two steps), so the record
+ * any record file whose repo-relative PATH is absent from the ledger. Such a
+ * file is an ORPHAN: persist wrote the record but the ledger append did not
+ * happen (a crash in the torn window between the two steps), so the record
  * exists OUTSIDE the tamper-evident chain and the plain chain-walk is blind to
  * it. The chain-manifest's own ledger lines are NOT under `records/`, so they
  * are never mistaken for orphans.
+ *
+ * F-d4bcf5d0 (wave 10, HIGH): this used to ALSO fall back to a run_id-only
+ * match — "a record is accounted for if EITHER its path OR its run_id is
+ * ledgered anywhere". That fallback was unsound: a single run_id can
+ * legitimately own TWO on-disk records at TWO different paths (the
+ * accepted-after-a-prior-rejection resubmission flow persist.js's
+ * isRetryableRejection carve-out exists for — see
+ * F-0f9e4077/F-4036ae25/F-f8952a50), each needing its OWN ledger line. Once
+ * ANY entry for a run_id was ledgered, the fallback treated EVERY later
+ * record sharing that run_id as accounted for — including one at a
+ * genuinely un-ledgered path, exactly the torn-write shape this
+ * reconciliation pass exists to catch (proven live: a ledgered `_rejected`
+ * record followed by an accepted record for the SAME run_id whose OWN
+ * ledger line was then lost — the plain run_id match hid the orphan).
+ * Path identity is both the necessary AND the sufficient check: every ledger
+ * line carries an exact `path` field (lib/chain-manifest.js's documented
+ * line shape, always populated by persist.js's appendChainEntry call), and
+ * this function's own `relPath` computation (`relative(repoRoot,
+ * absPath).split(sep).join('/')`) is the identical normalization persist.js
+ * uses to produce that field. Dropping the run_id fallback removes the
+ * unsound generalization without weakening real coverage — see
+ * ingest-proact-001-004-verify-chain-reconcile-allbreaks.test.js's
+ * 'shared run_id, different paths' regression test.
  *
  * @param {string} repoRoot
  * @param {Array<object>} entries - The ledger entries (already read).
  * @returns {ChainOrphan[]}
  */
 function collectOrphanRecords(repoRoot, entries) {
-  // Index the ledger by run_id and by repo-relative path so a record matches if
-  // EITHER identity is present — a record is ledgered as long as its line exists.
-  const ledgerRunIds = new Set();
   const ledgerPaths = new Set();
   for (const e of entries) {
-    if (e.run_id) ledgerRunIds.add(e.run_id);
     if (e.path) ledgerPaths.add(e.path);
   }
 
@@ -250,11 +269,8 @@ function collectOrphanRecords(repoRoot, entries) {
       continue;
     }
 
-    const runId = record.run_id ?? null;
-    if (runId && ledgerRunIds.has(runId)) continue;
-
     orphans.push({
-      run_id: runId,
+      run_id: record.run_id ?? null,
       seq: record.integrity?.seq ?? null,
       path: relPath,
       reason:
