@@ -104,6 +104,22 @@ Include **deletion and emptiness** operators explicitly, not just value perturba
 
 Keep it cheap. Petrovic et al. 2022 (DOI 10.1109/TSE.2021.3107634) report Google made mutation testing viable at scale by surfacing **one mutant per covered line in code review and reporting no mutation score** — no overhead complaints from thousands of developers. Mutate one gate per diff; do not build a mutation matrix.
 
+### Fixing a class, not an instance
+
+**An amend is not done when the named instance is green. It is done when you have swept for siblings and found none.** This is the single most expensive lesson this protocol has: run `swarm-1784091637-5127` spent waves 16→21 rediscovering it, and every wave's confirming audit caught the previous wave's fixes patching the one instance in front of them. The audit is not a formality that finds churn — **it is the mechanism that catches instance-patches masquerading as class-fixes**, and it worked every single time.
+
+This repo already encoded this lesson **for documentation** — doc-drift Class #11, "multi-occurrence fix completeness … per-instance fixes are anti-pattern" (see the comment above `## The 10-Phase Play`). It was never generalized to code. Generalize it:
+
+**Before writing any fix, grep for the defect's shape across the whole tree. Put the sweep's result in your output — including "swept, found none."** A sweep that finds nothing is evidence; a sweep you didn't run is a finding waiting to be filed against you. Measured on the run above: a coordinator sweep for one bad identifier found it in **four** files where the audit had named one; a sweep for a stale claim found it inside the gate's own console output, echoed on every run for two waves after the "fix."
+
+Five sub-laws, each earned by a real defect on that run:
+
+1. **The authoritative source, never memory.** Finding ids come from the control-plane DB (the brief is generated from it) — never from an audit's `output.json`, whose ids are agent-local labels. Scope comes from the frozen domain map — never from a coordinator's prose. Coverage comes from the gate's own output — never from recollection. Three consecutive waves shipped auditor-local ids into briefs, and one reached four code artifacts as an id that does not exist.
+2. **A detector's blind spot IS the defect.** When a sweep misses an instance, the instance is the symptom; fix the sweep. A sweep searching for `spawnSync` missed `execFileSync` twice — and when it was made call-shape-agnostic it immediately surfaced a further instance using **the very name the original searched for**, proving the gap was never the spelling but that no sweep had enumerated the population. **Enumerate the population independently and diff it against what your detector sees.**
+3. **Prose is not code.** Any gate that greps raw source will eventually credit a comment (false grant) or trip on one (false positive). Both happened here: the pin matcher leaked on seven consecutive audits crediting prose, and a wave-2 pin false-positived when a comment mentioned the very call it forbids. **Strip comments before asserting** — `packages/dogfood-swarm/test-support/strip-comments.js` exists for this.
+4. **"Passes against real data" can be true and useless.** A verification that cannot fail is not a verification. One wave claimed "zero false rejections against the real corpus" — true, and worthless: the corpus contained zero records of the shape under test. The next wave's matrix varied every axis except the one its own warning was about. **Exercise the shape, not the corpus** — and state which axes you varied.
+5. **A fix is not done until its consumer is wired, and a count is not integrity.** A helper exported and unit-tested but imported by zero production code does not close its finding (the finding's own stated goal went unmet for two waves). A frozen manifest guarded by `length === 256` is guarded by a headcount: swap a drained id for a fresh one and the count holds. **Content-address what must not change** (RFC 8785 + SHA-256, as `dispatch.lock.json` does), and check the consumer, not just the artifact.
+
 ---
 
 ## Prerequisites

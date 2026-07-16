@@ -19,14 +19,14 @@
  * role the literature says it is valid for:
  *
  *   1. `hasLegacyStructuralHit` / `findLegacyStructuralHits` — as of
- *      F-W19-CI-001 (wave 20), NOT consumed by
+ *      F-ca8e7b44 (wave 20), NOT consumed by
  *      check-finding-regression-pins.mjs at all: that gate's grandfather
  *      bucket now checks membership in a FROZEN, static manifest
  *      (scripts/grandfathered-pins.json, snapshotted once at commit
  *      132dc18) rather than re-running this live heuristic on every run. A
  *      finding minted after that freeze cannot be grandfathered no matter
  *      what its source text looks like — the exact vintage-boundary gap
- *      F-W19-CI-001 closed. These two exports now feed ONLY the
+ *      F-ca8e7b44 closed. These two exports now feed ONLY the
  *      `suggestPinsForRepo` candidate generator below, one further step
  *      removed from blocking authority than before this fix.
  *   2. `suggestPinsForRepo` / the `--suggest-pins` CLI mode — proposes

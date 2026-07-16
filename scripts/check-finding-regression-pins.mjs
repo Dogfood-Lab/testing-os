@@ -39,7 +39,7 @@
  *                      red on that wave's own commit.
  *   4. ORPHAN        — none of the above. BLOCKS the gate.
  *
- * F-W19-CI-001 (wave 20 fix): the grandfather bucket IS a static list,
+ * F-ca8e7b44 (wave 20 fix): the grandfather bucket IS a static list,
  * frozen at commit 132dc18 (the wave-18 cutover) into
  * scripts/grandfathered-pins.json — membership in THAT file is the only
  * question asked. The retired heuristic (suggest-pins.mjs's
@@ -102,7 +102,7 @@
  *     placed in a source file is not evaluated.
  *   - The grandfather bucket (scripts/grandfathered-pins.json) is a static
  *     snapshot frozen at commit 132dc18 — membership only, never a live
- *     heuristic re-check (F-W19-CI-001). It can still be WRONG at the id
+ *     heuristic re-check (F-ca8e7b44). It can still be WRONG at the id
  *     level (the retired heuristic that produced the original 132dc18
  *     classification could itself have over- or under-counted), but that
  *     imprecision is now bounded to a fixed, auditable, shrinking set
@@ -149,10 +149,10 @@ const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
 const defaultGrandfatherManifestPath = resolve(here, 'grandfathered-pins.json');
 
 const DISCLOSED_GAPS = [
-  'Tier 2 (mutation proof that a pinned test fails without its fix) is not implemented — wave 19 per the dispatch. A well-formed, correctly-attached, but semantically vacuous pin currently passes Tier 1 — including the worst case: an empty describe() with zero test children, a describe() whose only children are all .skip()-ed, or a directly test.skip()-ed call all qualify for a declared tag exactly as if they executed a real assertion (F-21dc98e0). "Vacuous" tops out at zero test registration, not merely a trivial assert.ok(true).',
+  'Tier 2 (mutation proof that a pinned test fails without its fix) is not implemented — see docs/pin-matcher-rewrite.dispatch.md for its design; the sequencing lives there, not here. A well-formed, correctly-attached, but semantically vacuous pin currently passes Tier 1 — including the worst case: an empty describe() with zero test children, a describe() whose only children are all .skip()-ed, or a directly test.skip()-ed call all qualify for a declared tag exactly as if they executed a real assertion (F-21dc98e0). "Vacuous" tops out at zero test registration, not merely a trivial assert.ok(true).',
   "The differential cross-check against the independently-coded reference matcher runs in the test suite (npm test / pin-declarations-differential.test.mjs), not inside this CLI's own live execution.",
   '@pins tags are only scanned in files classifyFile() buckets as "test" — a tag placed in a source file is not evaluated.',
-  'The grandfather bucket (scripts/grandfathered-pins.json) is a static snapshot frozen at commit 132dc18 — membership only, never a live heuristic re-check (F-W19-CI-001). It can still be WRONG at the id level (the retired heuristic that produced the original 132dc18 classification could itself have over- or under-counted), but that imprecision is now bounded to a fixed, auditable, shrinking set rather than a live, unboundedly-growing surface. Grandfathered status is exemption-with-disclosure, never verified credit.',
+  'The grandfather bucket (scripts/grandfathered-pins.json) is a static snapshot frozen at commit 132dc18 — membership only, never a live heuristic re-check (F-ca8e7b44). It can still be WRONG at the id level (the retired heuristic that produced the original 132dc18 classification could itself have over- or under-counted), but that imprecision is now bounded to a fixed, auditable, shrinking set rather than a live, unboundedly-growing surface. Grandfathered status is exemption-with-disclosure, never verified credit.',
 ];
 
 /**
@@ -201,7 +201,7 @@ export function loadAllowlist(path) {
 }
 
 /**
- * F-W19-CI-001: load the FROZEN grandfather manifest (scripts/grandfathered-
+ * F-ca8e7b44: load the FROZEN grandfather manifest (scripts/grandfathered-
  * pins.json) — a closed, enumerated set of ids, snapshotted once at commit
  * 132dc18, that the gate checks by MEMBERSHIP ONLY. Same C8 discipline as
  * loadAllowlist: every entry requires { owner, revalidate_by }, and this
@@ -272,7 +272,7 @@ function explainUnusedAllowEntry(id, sourceIds, declared) {
 }
 
 /**
- * F-W19-CI-001: partition `candidateIds` by membership in the FROZEN
+ * F-ca8e7b44: partition `candidateIds` by membership in the FROZEN
  * grandfather manifest — no file reads, no heuristic evaluation. A pure
  * function (mirrors applyAllowlist) so the precedence rule ("is this id in
  * the closed set snapshotted at 132dc18") is directly unit-testable without
@@ -306,7 +306,7 @@ export function applyGrandfatherManifest(candidateIds, manifest) {
  * @param {ReturnType<typeof scanRepoForDeclaredPins>} opts.declared
  * @param {{ allow: Record<string, unknown> }} opts.allowlist
  * @param {{ grandfathered: Record<string, unknown> }} [opts.grandfatherManifest] -
- *   F-W19-CI-001: the FROZEN membership set (scripts/grandfathered-pins.json).
+ *   F-ca8e7b44: the FROZEN membership set (scripts/grandfathered-pins.json).
  *   Defaults to empty so a caller that doesn't care about the grandfather
  *   bucket (most classifyCoverage unit tests) doesn't have to construct one.
  * @returns {{
@@ -321,7 +321,7 @@ export function classifyCoverage({ sourceIds, declared, allowlist, grandfatherMa
   const { remaining: remainingAfterAllowlist, applied: allowlistApplied, unused: unusedAllowEntries } =
     applyAllowlist(remainingAfterDeclared, allowlist);
 
-  // F-W19-CI-001: membership in the FROZEN manifest only — the retired
+  // F-ca8e7b44: membership in the FROZEN manifest only — the retired
   // heuristic (suggest-pins.mjs's hasLegacyStructuralHit) is never invoked
   // live here. See scripts/grandfathered-pins.json and this file's module
   // docstring's GRANDFATHERED bucket paragraph.
@@ -358,7 +358,7 @@ export function classifyCoverage({ sourceIds, declared, allowlist, grandfatherMa
  * @param {object} [opts]
  * @param {string} [opts.repoRoot]
  * @param {string} [opts.allowlistPath]
- * @param {string} [opts.grandfatherManifestPath] - F-W19-CI-001: the frozen
+ * @param {string} [opts.grandfatherManifestPath] - F-ca8e7b44: the frozen
  *   membership snapshot (default scripts/grandfathered-pins.json).
  * @param {string} [opts.writeIndexPath]
  * @returns {Promise<{
@@ -398,7 +398,7 @@ export async function runRegressionPinGate({
     .filter(({ entry }) => entry.revalidate_by < today)
     .map(({ id, entry }) => ({ id, revalidate_by: entry.revalidate_by, owner: entry.owner }));
 
-  // F-W19-CI-001: the "is the debt draining" signal (C6) — how many of the
+  // F-ca8e7b44: the "is the debt draining" signal (C6) — how many of the
   // ids frozen at 132dc18 have left the live grandfathered bucket (declared,
   // allowlisted, or their source pin removed) since the freeze, without ever
   // editing the frozen manifest itself.
@@ -468,7 +468,7 @@ export function formatHuman(result, repoRoot) {
   lines.push(`[check-finding-regression-pins] ${json.summary.source_ids} source-pinned F-id(s) across ${json.files_scanned} scanned file(s)`);
   lines.push(`  declared (Tier-1 verified, AST-checked @pins tag): ${declaredIds.length}`);
   if (grandfatheredIds.length > 0 || grandfatherFrozenTotal > 0) {
-    // F-W19-CI-001: report the frozen total alongside the live outstanding
+    // F-ca8e7b44: report the frozen total alongside the live outstanding
     // count so the debt visibly DRAINS across waves (C6) rather than reading
     // as a static, unchanging number.
     lines.push(
@@ -501,7 +501,7 @@ export function formatHuman(result, repoRoot) {
     for (const i of tagIssues) lines.push(`    ${relative(repoRoot, i.file) || i.file}:${i.line ?? '?'} [${i.kind}] ${i.detail}`);
   }
   if (orphans.length === 0 && parseErrors.length === 0 && tagIssues.length === 0) {
-    // F-W19-CI-001: the invariant, as this file's own header defines it,
+    // F-ca8e7b44: the invariant, as this file's own header defines it,
     // does NOT hold for a grandfathered id — only a declared or allowlisted
     // one is actually verified. Never claim "invariant holds" while any
     // grandfathered debt remains outstanding.

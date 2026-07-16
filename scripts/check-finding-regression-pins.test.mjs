@@ -19,7 +19,7 @@
  *   4. loadAllowlist / applyAllowlist — the C8 provenance schema (reason +
  *      owner + revalidate_by, all required) and dueForRevalidation
  *   5. loadGrandfatherManifest — same C8 discipline, frozen membership only
- *      (F-W19-CI-001) — every fixture test below passes an EMPTY manifest
+ *      (F-ca8e7b44) — every fixture test below passes an EMPTY manifest
  *      via fx.writeGrandfatherManifest({}) unless it is specifically
  *      exercising the grandfather bucket, mirroring the existing allowlist
  *      discipline: the DEFAULT manifest path resolves to the REAL repo's
@@ -71,7 +71,7 @@ function makeFixture(t) {
       writeFileSync(abs, JSON.stringify(obj, null, 2));
       return abs;
     },
-    // F-W19-CI-001: mirrors writeAllowlist exactly — every fixture test
+    // F-ca8e7b44: mirrors writeAllowlist exactly — every fixture test
     // must explicitly point at its OWN manifest (usually empty) or it
     // silently inherits the real repo's 256-entry frozen manifest, since
     // runRegressionPinGate's default grandfatherManifestPath (like
@@ -135,7 +135,7 @@ test('grandfather: a source pin with no declared tag but present in the FROZEN m
   fx.write('packages/foo/index.js', '// F-300000-001 — a fix\n');
   // Deliberately NOT legacy-heuristic-shaped text (no title match, no leading
   // comment, no assert-line) — proving grandfather status now depends SOLELY
-  // on frozen-manifest membership (F-W19-CI-001), never on what the test
+  // on frozen-manifest membership (F-ca8e7b44), never on what the test
   // file's text looks like.
   fx.write('packages/foo/index.test.js', "test('unrelated title, no legacy signal of any kind', () => { assert.ok(true); });\n");
 
@@ -154,7 +154,7 @@ test('grandfather: a source pin with no declared tag but present in the FROZEN m
 });
 
 /**
- * F-W19-CI-001 — THE HIGH FIX'S OWN REPRODUCTION, now asserted closed. Before
+ * F-ca8e7b44 — THE HIGH FIX'S OWN REPRODUCTION, now asserted closed. Before
  * this fix: a fixture tree with src/fix.js containing only
  * `// F-fac00001: fixed a totally fake, brand-new bug` (a source pin, zero
  * test coverage anywhere) and test/fix.test.js containing only
@@ -168,8 +168,8 @@ test('grandfather: a source pin with no declared tag but present in the FROZEN m
  * 132dc18), so it must now orphan regardless of how legacy-shaped its decoy
  * text is.
  */
-/** @pins F-W19-CI-001 */
-test('F-W19-CI-001: a brand-new id decorated with a classic legacy-leak decoy comment is an ORPHAN, not grandfathered — the frozen list has no live path in', async (t) => {
+/** @pins F-ca8e7b44 */
+test('F-ca8e7b44: a brand-new id decorated with a classic legacy-leak decoy comment is an ORPHAN, not grandfathered — the frozen list has no live path in', async (t) => {
   const fx = makeFixture(t);
   fx.write('src/fix.js', '// F-fac00001: fixed a totally fake, brand-new bug\n');
   fx.write(
@@ -360,7 +360,7 @@ test('C3: a dangling-id tag (well-formed, correctly attached, but matches no sou
 test('classifyCoverage: precedence is declared > allowlisted > grandfathered > orphan', () => {
   const declared = { byId: new Map([['F-1', [{ id: 'F-1', file: 'a.test.js', line: 1, title: 't' }]]]) };
   const allowlist = { allow: { 'F-2': allowEntry('cross-ref', 'x.js') } };
-  // F-W19-CI-001: grandfather status is FROZEN-MANIFEST membership only —
+  // F-ca8e7b44: grandfather status is FROZEN-MANIFEST membership only —
   // F-3 is a member (so it grandfathers with zero text/file evidence needed
   // at all), F-4 is not (so it orphans even though nothing else about it
   // differs from F-3).
@@ -398,7 +398,7 @@ test('classifyCoverage: dangling-id tags are reported once per occurrence, with 
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// applyGrandfatherManifest — the pure partition function (F-W19-CI-001)
+// applyGrandfatherManifest — the pure partition function (F-ca8e7b44)
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('applyGrandfatherManifest: partitions by membership only, no file reads', () => {
@@ -421,7 +421,7 @@ test('applyGrandfatherManifest: empty candidate list produces empty buckets even
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// loadGrandfatherManifest — the C8 provenance schema (F-W19-CI-001)
+// loadGrandfatherManifest — the C8 provenance schema (F-ca8e7b44)
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('loadGrandfatherManifest: missing file returns empty grandfathered map', () => {
@@ -672,7 +672,7 @@ test('formatHuman: a clean result with NO grandfather debt claims the invariant 
 });
 
 /**
- * F-W19-CI-001: the finding's own required reword — "reword the OK line so
+ * F-ca8e7b44: the finding's own required reword — "reword the OK line so
  * it does not say the invariant 'holds' when the majority of coverage is
  * admittedly unverified... with no unqualified 'invariant holds' claim
  * until the grandfathered count reaches zero." This is the test that would
@@ -774,7 +774,7 @@ test('formatHuman: FAIL section lists parseErrors and tagIssues distinctly from 
 test('F-3ec5b54f META: a HASH-style source pin (F-xxxxxxxx) with no coverage still fails the gate', async (t) => {
   const fx = makeFixture(t);
   fx.write('packages/foo/index.js', '// F-42e57a77 — defer the red run past the commit step\n');
-  // F-W19-CI-001: F-42e57a77 is a REAL id in the live repo's frozen
+  // F-ca8e7b44: F-42e57a77 is a REAL id in the live repo's frozen
   // manifest (grandfathered at 132dc18) — this fixture's whole point is
   // that a FRESH tree with genuinely zero coverage must orphan, so it must
   // explicitly use an EMPTY grandfather manifest or it would silently
@@ -883,7 +883,7 @@ test('live tree sanity: scanRepoForDeclaredPins runs cleanly (zero parse errors)
 });
 
 /**
- * F-W19-CI-001: the frozen manifest is a SNAPSHOT, not a live computation —
+ * F-ca8e7b44: the frozen manifest is a SNAPSHOT, not a live computation —
  * this test pins that scripts/grandfathered-pins.json continues to load
  * validly and stays internally consistent with the live gate's own
  * accounting (every currently-grandfathered id must be a member of the

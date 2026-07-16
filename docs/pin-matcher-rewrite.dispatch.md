@@ -2,7 +2,7 @@
 
 **Repo:** `dogfood-lab/testing-os` · **Target:** `scripts/check-finding-regression-pins.mjs` (the Class #14 gate in `npm run verify`, `ci.yml`, `release.yml`)
 **Run:** `swarm-1784091637-5127` · **Branch:** `swarm/health-amend-a-1784091637` @ `860ed73`
-**Status:** design dispatch — research-grounded per the study-swarm protocol. Citations gated at Step 4 before any architectural connection.
+**Status:** design dispatch — research-grounded per the study-swarm protocol. Citations were run through the Step-4 external gate, but **that gate did not reach every citation** — see the Step-4 verification record below for exactly what was and was not gated. (This line previously claimed all citations were gated before any architectural connection; the record 26 lines down said otherwise. Both cannot be true.)
 
 ## Why this exists
 
@@ -191,7 +191,7 @@ This is the part that makes the rewrite worth doing rather than being leak #8 wi
 
 ## Scope decision (Director, 2026-07-16)
 
-**Wave 18 = Tier 1 + the full C9 assurance rig.** Tier 2 (C4's mutation proof) is designed above and lands in wave 19 — it is a StrykerJS integration with real runtime cost, and bundling it would delay the false-grant fix that is actually bleeding. Wave 19 also serves as the confirming audit for wave 18.
+**Wave 18 = Tier 1 + the full C9 assurance rig.** Tier 2 (C4's mutation proof) is designed above and is **not yet built** — it is a StrykerJS integration with real runtime cost, and bundling it would have delayed the false-grant fix that was actually bleeding. **It is queued in the control plane, not scheduled in this sentence.** An earlier version of this line named a wave number; that plan was invalidated by its own author within the hour, and the stale claim then survived here — and in the gate's console output on every run — for two further waves after HANDOFF.md had been corrected. A wave number written into a document is a plan wearing a fact's clothes. Sequencing lives in `swarm status` and the control plane; this document owns the design, not the calendar.
 
 Rationale for not deferring C9 alongside it: findings 24/27/28 say seven human-found leaks means manual review is the weaker oracle. Shipping the rewrite *without* the rig that proves it would rest this attempt on the same basis as the previous six — "we were careful."
 
