@@ -31,7 +31,7 @@
  *   the operator's first `swarm` invocation.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +46,16 @@ import { transitionWave } from './lib/wave-state-machine.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const CLI_PATH = join(__dirname, 'cli.js');
+
+// Every CLI child below pins SWARM_DB off the live repo control-plane.db
+// (task_6026249b): cmdHistory opens the DB BEFORE validating its wave-id arg,
+// so even a "pure usage-error" spawn (`swarm history abc`) opened the
+// operational DB mid-suite — the WAL sidecar churn that flaked
+// stageD-output-dir-tracks-db.test.js under full-suite concurrency. The
+// live-DB isolation sweep in meta-wal-sidecar-teardown-guard.test.js enforces
+// this pin at every CLI-spawn site package-wide.
+const SAFE_DB_DIR = mkdtempSync(join(tmpdir(), 'cli-smoke-safe-db-'));
+after(() => { try { rmSync(SAFE_DB_DIR, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
 
 function stubStatus(assessmentState, nextAction = 'noop') {
   return {
@@ -79,6 +89,7 @@ function runCli(args = []) {
     cwd: __dirname,
     // Inherit env so node modules resolve; bound stdio so we capture both
     // streams without parser-load output sneaking past.
+    env: { ...process.env, SWARM_DB: join(SAFE_DB_DIR, 'control-plane.db') },
   });
 }
 
@@ -303,7 +314,7 @@ describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
     return spawnSync(process.execPath, [CLI_PATH, 'history', ...args], {
       encoding: 'utf-8',
       cwd: __dirname,
-      env: { ...process.env, ...extraEnv },
+      env: { ...process.env, SWARM_DB: join(SAFE_DB_DIR, 'control-plane.db'), ...extraEnv },
     });
   }
 

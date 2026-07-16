@@ -382,8 +382,19 @@ describe('fp-p-003: buildDogfoodSubmission is dedup-stable for an INCOMPLETE run
 // ═══════════════════════════════════════════
 
 describe('cli-r-002: main() extraction keeps the help + usage contract intact', () => {
+  // SWARM_DB pin (task_6026249b): help/usage paths exit before touching the DB
+  // today, but that ordering is not contractual (cmdHistory already opens the
+  // DB before arg validation) — never let a CLI child inherit the repo default.
+  // Enforced package-wide by meta-wal-sidecar-teardown-guard.test.js.
+  const safeDbDir = mkdtempSync(join(tmpdir(), 'cli-r-002-safe-db-'));
+  after(() => { try { rmSync(safeDbDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
+
   function runCli(args) {
-    return spawnSync(process.execPath, [CLI_PATH, ...args], { encoding: 'utf-8', cwd: __dirname });
+    return spawnSync(process.execPath, [CLI_PATH, ...args], {
+      encoding: 'utf-8',
+      cwd: __dirname,
+      env: { ...process.env, SWARM_DB: join(safeDbDir, 'control-plane.db') },
+    });
   }
 
   it('no-args prints the help banner and exits 0', () => {

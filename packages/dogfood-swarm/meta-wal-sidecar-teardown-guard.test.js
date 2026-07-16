@@ -172,6 +172,14 @@
  *     constant" residual above — that bullet discloses the PATH constant's
  *     name is load-bearing; this one discloses the CALL SHAPE's name is
  *     equally alias-fragile.
+ *
+ * A SECOND, sibling sweep lives at the bottom of this file (task_6026249b,
+ * post-wave-22): the live-DB ISOLATION sweep — same segment machinery, the
+ * other half of the same WAL-sidecar disease. This sweep polices how a
+ * CLI-spawning segment CLEANS UP; that one polices what a CLI-spawning
+ * segment AIMS AT (every spawn site must pin SWARM_DB, so no test can open
+ * the repo-default swarms/control-plane.db). See its own header below for
+ * scope and residuals.
  */
 
 import { describe, it } from 'node:test';
@@ -566,5 +574,254 @@ describe('meta — every CLI-spawning test segment tolerates Windows teardown lo
     ].join('\n');
     const offenders = findUnguardedRmSyncOffenders(synthetic);
     assert.deepEqual(offenders, [], `a non-CLI child-process spawn must not be flagged; got ${JSON.stringify(offenders)}`);
+  });
+});
+
+/*
+ * ─────────────────────────────────────────────────────────────────────────
+ * Live-DB isolation sweep (task_6026249b, post-wave-22) — the TARGET half.
+ *
+ * THE DEFECT THIS CLOSES: cli-smoke.test.js's `swarm history abc` smoke test
+ * spawned the CLI with no SWARM_DB in env. cmdHistory resolves getDbPath()
+ * and OPENS the DB before validating that the wave-id is a positive integer
+ * (cli.js:1302 → commands/history.js), so a "pure usage-error" test opened
+ * the LIVE repo swarms/control-plane.db mid-suite — churning its WAL
+ * -shm/-wal sidecars inside stageD-output-dir-tracks-db.test.js's
+ * before/after snapshot window, an intermittent full-suite-only flake. On a
+ * fresh clone it would even CREATE swarms/control-plane.db in the repo tree
+ * (openDb creates file + schema). Proven by instrumenting getDbPath()/
+ * openDb() and running the package suite (2026-07-16): exactly one process
+ * resolved the repo default — `cli.js history abc`, swarmDbEnv: null.
+ *
+ * THE CLASS, NOT THE INSTANCE (swarms/PROTOCOL.md discipline): 8 more spawn
+ * sites/helpers had no SWARM_DB pin and survived only because their command
+ * paths happen to usage-exit before touching the DB — an ordering that
+ * cmdHistory proves is NOT contractual. One refactor (resolving the DB
+ * before arg validation, as history already does) silently flips every one
+ * of them into a live-repo-DB opener. So the invariant is enforced at the
+ * spawn CALL: every spawn of CLI_PATH must contain the SWARM_DB literal
+ * inside its own argument text — i.e. the call pins (or explicitly
+ * forwards) the env key itself. A helper that delegates pinning to its call
+ * sites is an offender BY DESIGN: the live defect happened exactly because
+ * runHistoryCli left the pin to callers and one call site forgot. A helper
+ * that pins a temp-path fallback (`env: { ...process.env, SWARM_DB: <temp>,
+ * ...extraEnv }`) makes call-site forgetting impossible while keeping
+ * overrides expressible.
+ *
+ * WHY PER-CALL, NOT PER-SEGMENT (this sweep's own blind-spot lesson, caught
+ * before it shipped): an early draft tested SWARM_DB presence per top-level
+ * SEGMENT, the same granularity the teardown sweep above uses. Run against
+ * the pre-fix tree it flagged only 5 of the 9 live sites — and MISSED the
+ * one that actually opened the live DB: runHistoryCli is nested inside a
+ * describe block whose SIBLING call sites pass `{ SWARM_DB: dbPath }`, so
+ * the segment contained the literal while the spawn call itself pinned
+ * nothing. Segment-presence is structurally blind to exactly the
+ * delegated-pin shape that shipped the bug ("a detector's blind spot IS the
+ * defect"). The check therefore extracts each spawn call's full argument
+ * text (string-aware balanced-paren walk) and requires the pin THERE. The
+ * nested-helper regression fixture below pins this red-then-green.
+ *
+ * SCOPE, STATED PLAINLY (disclosed residuals, same honesty contract as the
+ * teardown sweep above; the CLI_PATH-anchor + literal-name + alias-fragility
+ * bullets in the main header apply to this sweep unchanged — shared
+ * constants):
+ *   - PRESENCE of the pin, not VALUE safety: a segment that writes
+ *     `SWARM_DB: DEFAULT_DB_PATH` (deliberately aiming at the repo DB), or
+ *     deletes the key from a built env object after pinning it, passes this
+ *     sweep. Verifying the value lands in a temp dir is data-flow analysis —
+ *     the same not-cheap-enough boundary the teardown sweep draws for
+ *     function-reference indirection.
+ *   - A spawn whose options object is BUILT outside the call parens
+ *     (`const OPTS = { env: { ...process.env, SWARM_DB: x } };` then
+ *     `spawnSync(cmd, argv, OPTS)`) would over-flag: the call's own argument
+ *     text lacks the literal. Likewise a spawn whose argv array inlines
+ *     CLI_PATH via a variable built elsewhere escapes the CLI_PATH anchor
+ *     entirely (under-flag). Neither is a live shape in this package today —
+ *     all 44 CLI-spawn sites inline both the CLI_PATH argv and the options
+ *     object in the call (verified this pass; this sweep ships green over
+ *     the whole tree). If either arises, inline the pin in the call.
+ *   - In-process openDb(path) targets are OUT of this sweep's scope — every
+ *     one of the ~300 in-process openDb call sites takes an explicit path
+ *     variable, and asserting those values statically is the same data-flow
+ *     boundary. Ground truth was established dynamically instead
+ *     (2026-07-16 instrumentation run: zero in-process opens resolved to
+ *     the repo default; the history CLI child was the only one).
+ * ─────────────────────────────────────────────────────────────────────────
+ */
+
+// Walk forward from an opening paren to its balanced close, skipping over
+// string literals (' " `) so a paren inside a message/path argument cannot
+// unbalance the walk. On this package's Prettier-formatted spawn calls this
+// recovers the exact call-argument text; a truncated/unbalanced tail
+// degrades to "rest of file", which can only widen the text searched (never
+// silently narrow the check).
+function extractCallText(text, openParenIndex) {
+  let depth = 0;
+  let quote = null;
+  for (let i = openParenIndex; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === '\\') { i++; continue; }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === "'" || ch === '"' || ch === '`') { quote = ch; continue; }
+    if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return text.slice(openParenIndex, i + 1);
+    }
+  }
+  return text.slice(openParenIndex);
+}
+
+function findUnpinnedCliSpawnOffenders(rawText) {
+  const text = stripComments(rawText); // preserves line numbers
+  const rawLines = rawText.split('\n');
+  const offenders = [];
+  // Per spawn CALL, not per segment — see header ("WHY PER-CALL"): the pin
+  // must live inside the call's own argument text. A helper that delegates
+  // the pin to its call sites is the defect shape that shipped the live
+  // offender, so helper-indirected call sites are deliberately NOT what is
+  // checked here; the helper's own spawn call is.
+  for (const m of text.matchAll(new RegExp(CLI_SPAWN_SHAPE.source, 'g'))) {
+    const callText = extractCallText(text, m.index + m[0].length - 1);
+    if (!callText.includes('CLI_PATH')) continue; // not a swarm-CLI spawn
+    if (callText.includes('SWARM_DB')) continue; // pinned (or forwarded) at the call
+    const line = text.slice(0, m.index).split('\n').length;
+    offenders.push({ line, snippet: (rawLines[line - 1] || '').trim() });
+  }
+  return offenders;
+}
+
+// Same interpolated-parts discipline as syntheticOffender above: this file is
+// itself a *.test.js under PKG_ROOT, so every token the sweep matches on must
+// arrive via interpolation, never as contiguous literal source text.
+function syntheticSpawnTarget({ pinned }) {
+  const cliPathName = ['CLI', 'PATH'].join('_');
+  const spawnName = ['spawn', 'Sync'].join('');
+  const dbKey = ['SWARM', '_DB'].join('');
+  const envText = pinned
+    ? `env: { ...process.env, ${dbKey}: join(tmp, 'control-plane.db') },`
+    : `env: { ...process.env },`;
+  return [
+    `const ${cliPathName} = join(__dirname, 'cli.js');`,
+    `describe('synthetic target', () => {`,
+    `  it('spawns the CLI', () => {`,
+    `    const r = ${spawnName}(process.execPath, [${cliPathName}, 'status'], {`,
+    `      encoding: 'utf-8',`,
+    `      ${envText}`,
+    `    });`,
+    `  });`,
+    `});`,
+  ].join('\n');
+}
+
+describe('meta — every CLI-spawning test segment pins SWARM_DB off the live repo control plane (task_6026249b)', () => {
+  it('sweep must visit at least one test file', () => {
+    // Anti-vacuity insurance, same shape as the teardown sweep's own.
+    assert.ok(walkTestFiles(PKG_ROOT).length > 0, 'sweep must visit at least one test file');
+  });
+
+  it('no test segment anywhere in this package spawns the CLI without a SWARM_DB pin at the spawn site', () => {
+    const offenders = [];
+    for (const f of walkTestFiles(PKG_ROOT)) {
+      const text = readFileSync(f, 'utf-8');
+      const relPath = f.slice(PKG_ROOT.length + 1).split('\\').join('/');
+      for (const { line, snippet } of findUnpinnedCliSpawnOffenders(text)) {
+        offenders.push(`${relPath}:${line}: ${snippet}`);
+      }
+    }
+    assert.deepEqual(offenders, [],
+      `CLI spawned as a subprocess without SWARM_DB pinned in the same segment — the child inherits the ` +
+      `repo-default swarms/control-plane.db, opens the LIVE operational DB (cmdHistory proves usage-error ` +
+      `paths can open before validating args), churns its WAL sidecars under full-suite concurrency, and ` +
+      `on a fresh clone CREATES the DB inside the repo tree. Pin a temp fallback at the spawn site: ` +
+      `env: { ...process.env, SWARM_DB: join(<mkdtemp dir>, 'control-plane.db'), ...extraEnv } — matching ` +
+      `every already-fixed sibling in this package.\n  ${offenders.join('\n  ')}`);
+  });
+
+  it('catches a direct CLI spawn whose env never pins SWARM_DB', () => {
+    const offenders = findUnpinnedCliSpawnOffenders(syntheticSpawnTarget({ pinned: false }));
+    assert.equal(offenders.length, 1,
+      `expected exactly one offender for an unpinned CLI spawn; got ${JSON.stringify(offenders)}`);
+    assert.match(offenders[0].snippet, /process\.execPath/,
+      'the flagged offender must be the spawn call itself');
+  });
+
+  it('does NOT flag a CLI spawn that pins SWARM_DB in the same segment', () => {
+    const offenders = findUnpinnedCliSpawnOffenders(syntheticSpawnTarget({ pinned: true }));
+    assert.deepEqual(offenders, [],
+      `a spawn with a SWARM_DB pin must not be flagged; got ${JSON.stringify(offenders)}`);
+  });
+
+  it('flags a spawn HELPER that delegates the SWARM_DB pin to its call sites (the exact shape that shipped the live offender)', () => {
+    // runHistoryCli's pre-fix shape: `env: { ...process.env, ...extraEnv }` in
+    // the helper, `{ SWARM_DB: dbPath }` at SOME call sites — and the one call
+    // site that forgot (`runHistoryCli(['abc'])`) opened the live repo DB.
+    // The pin belongs in the helper; the caller-side key must not satisfy the
+    // sweep.
+    const cliPathName = ['CLI', 'PATH'].join('_');
+    const spawnName = ['spawn', 'Sync'].join('');
+    const dbKey = ['SWARM', '_DB'].join('');
+    const synthetic = [
+      `const ${cliPathName} = join(__dirname, 'cli.js');`,
+      `function runCli(args, extraEnv = {}) {`,
+      `  return ${spawnName}(process.execPath, [${cliPathName}, ...args], { env: { ...process.env, ...extraEnv } });`,
+      `}`,
+      `describe('caller pins, helper does not', () => {`,
+      `  it('x', () => { runCli(['status'], { ${dbKey}: dbPath }); });`,
+      `});`,
+    ].join('\n');
+    const offenders = findUnpinnedCliSpawnOffenders(synthetic);
+    assert.equal(offenders.length, 1,
+      `the unpinned helper must be flagged even when a call site passes the key; got ${JSON.stringify(offenders)}`);
+    assert.match(offenders[0].snippet, /process\.execPath/,
+      'the flagged offender must be the helper spawn site, not the call site');
+  });
+
+  it('catches an unpinned spawn helper nested INSIDE a describe whose sibling call site passes SWARM_DB (the exact runHistoryCli shape the segment-granularity draft missed)', () => {
+    // Pre-fix cli-smoke.test.js, distilled: the helper and a PINNED call site
+    // share one top-level describe segment, so segment-level presence testing
+    // sees the literal somewhere in the segment and goes blind — proven
+    // against the pre-fix tree, where the segment-granularity draft flagged
+    // only 5 of the 9 live sites and missed the one that actually opened the
+    // live DB. Per-call extraction must flag exactly the helper's own spawn
+    // call, once.
+    const cliPathName = ['CLI', 'PATH'].join('_');
+    const spawnName = ['spawn', 'Sync'].join('');
+    const dbKey = ['SWARM', '_DB'].join('');
+    const synthetic = [
+      `const ${cliPathName} = join(__dirname, 'cli.js');`,
+      `describe('history smoke', () => {`,
+      `  function runHistoryCli(args, extraEnv = {}) {`,
+      `    return ${spawnName}(process.execPath, [${cliPathName}, 'history', ...args], {`,
+      `      encoding: 'utf-8',`,
+      `      env: { ...process.env, ...extraEnv },`,
+      `    });`,
+      `  }`,
+      `  it('pinned call site', () => {`,
+      `    const r = runHistoryCli(['999999'], { ${dbKey}: emptyDbPath });`,
+      `  });`,
+      `  it('forgotten call site', () => {`,
+      `    const r = runHistoryCli(['abc']);`,
+      `  });`,
+      `});`,
+    ].join('\n');
+    const offenders = findUnpinnedCliSpawnOffenders(synthetic);
+    assert.equal(offenders.length, 1,
+      `the nested unpinned helper must be flagged despite the sibling pinned call site; got ${JSON.stringify(offenders)}`);
+    assert.match(offenders[0].snippet, /process\.execPath/,
+      'the flagged offender must be the helper spawn call');
+  });
+
+  it('does NOT flag a non-CLI child-process spawn (e.g. a `git` helper) without SWARM_DB, because it never references CLI_PATH', () => {
+    const execName = ['exec', 'FileSync'].join('');
+    const synthetic = [
+      `function git(cwd, args) { return ${execName}('git', args, { cwd, env: { ...process.env } }); }`,
+    ].join('\n');
+    const offenders = findUnpinnedCliSpawnOffenders(synthetic);
+    assert.deepEqual(offenders, [],
+      `a non-CLI child-process spawn must not be flagged; got ${JSON.stringify(offenders)}`);
   });
 });

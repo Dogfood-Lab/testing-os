@@ -19,20 +19,29 @@
  *      family so a bare invocation is not flag-blind.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, 'cli.js');
+
+// SWARM_DB pin (task_6026249b): help-surface spawns exit before touching the
+// DB today, but that ordering is not contractual — never let a CLI child
+// inherit the repo-default control-plane.db. Enforced package-wide by
+// meta-wal-sidecar-teardown-guard.test.js.
+const SAFE_DB_DIR = mkdtempSync(join(tmpdir(), 'w8-gloss-safe-db-'));
+after(() => { try { rmSync(SAFE_DB_DIR, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
 
 function runCli(args) {
   return spawnSync(process.execPath, [CLI_PATH, ...args], {
     encoding: 'utf-8',
     cwd: __dirname,
-    env: { ...process.env },
+    env: { ...process.env, SWARM_DB: join(SAFE_DB_DIR, 'control-plane.db') },
   });
 }
 

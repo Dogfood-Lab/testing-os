@@ -28,7 +28,7 @@
  *     CLI_INVALID_GLOBS_JSON).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -44,11 +44,17 @@ const CLI_PATH = join(__dirname, 'cli.js');
 
 const RUN_ID = 'test-d3b-004';
 
+// SWARM_DB fallback pin (task_6026249b): a call site that forgets extraEnv must
+// hit a temp DB, never the live repo control-plane.db — enforced package-wide
+// by meta-wal-sidecar-teardown-guard.test.js.
+const SAFE_DB_DIR = mkdtempSync(join(tmpdir(), 'd3b-004-safe-db-'));
+after(() => { try { rmSync(SAFE_DB_DIR, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
+
 function runCli(args, extraEnv = {}) {
   return spawnSync(process.execPath, [CLI_PATH, ...args], {
     encoding: 'utf-8',
     cwd: __dirname,
-    env: { ...process.env, ...extraEnv },
+    env: { ...process.env, SWARM_DB: join(SAFE_DB_DIR, 'control-plane.db'), ...extraEnv },
   });
 }
 

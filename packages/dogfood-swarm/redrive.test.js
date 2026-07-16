@@ -33,7 +33,7 @@
  *     - the literal package directory name
  */
 
-import { describe, it, before } from 'node:test';
+import { describe, it, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
@@ -1241,11 +1241,17 @@ describe('redrive — T4 preserved-count surface in summary', () => {
 describe('redrive — CLI subprocess smoke', () => {
   const CLI_PATH = join(__dirname, 'cli.js');
 
+  // SWARM_DB fallback pin (task_6026249b): a call site that forgets env must
+  // hit a temp DB, never the live repo control-plane.db — enforced
+  // package-wide by meta-wal-sidecar-teardown-guard.test.js.
+  const safeDbDir = mkdtempSync(join(tmpdir(), 'redrive-smoke-safe-db-'));
+  after(() => { try { rmSync(safeDbDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
+
   function runRedriveCli(args, { cwd, env = {} } = {}) {
     return spawnSync(process.execPath, [CLI_PATH, 'redrive', ...args], {
       encoding: 'utf-8',
       cwd: cwd || __dirname,
-      env: { ...process.env, ...env },
+      env: { ...process.env, SWARM_DB: join(safeDbDir, 'control-plane.db'), ...env },
     });
   }
 

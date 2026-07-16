@@ -29,6 +29,18 @@ const CLI_PATH = join(__dirname, 'cli.js');
 const REPO_SWARMS = resolve(__dirname, '..', '..', 'swarms');
 const RUN_ID = 'outdir-probe-run';
 
+// task_6026249b: the live control plane's own file family is ambient state,
+// not a getOutputDir output — operator CLI use (`swarm status`, `swarm
+// collect`) and WAL checkpointing churn control-plane.db's -shm/-wal sidecars
+// independently of this test's snapshot window, and under full-suite
+// concurrency that churn landed INSIDE the window and flaked this test. The
+// leak this test polices is run-directory/delta creation in the repo tree, so
+// the DB family is excluded from the diff. (The companion fix: the live-DB
+// isolation sweep in meta-wal-sidecar-teardown-guard.test.js keeps sibling
+// tests from opening the repo DB at all; this filter keeps the snapshot honest
+// even against an operator terminal churning sidecars mid-run.)
+const LIVE_DB_FAMILY = /^control-plane\.db(-shm|-wal|-journal)?$/;
+
 test('getOutputDir: verify-* delta follows SWARM_DB and does not pollute the repo swarms/ tree', () => {
   const tmp = mkdtempSync(join(tmpdir(), 'swarm-outdir-'));
   const dbPath = join(tmp, 'control-plane.db');
@@ -63,7 +75,7 @@ test('getOutputDir: verify-* delta follows SWARM_DB and does not pollute the rep
       `getOutputDir leaked into the repo swarms/ tree: ${join(REPO_SWARMS, RUN_ID)} was created`,
     );
     const after = existsSync(REPO_SWARMS) ? new Set(readdirSync(REPO_SWARMS)) : new Set();
-    const leaked = [...after].filter((n) => !before.has(n));
+    const leaked = [...after].filter((n) => !before.has(n) && !LIVE_DB_FAMILY.test(n));
     assert.deepEqual(leaked, [], `repo swarms/ gained unexpected entries: ${leaked.join(', ')}`);
   } finally {
     // F-8ad2d58d-class: spawnSync above runs the CLI as a real child process

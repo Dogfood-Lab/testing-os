@@ -885,11 +885,17 @@ describe('rewind — T4: preserved-count surface in summary', () => {
 describe('rewind — CLI subprocess smoke', () => {
   const CLI_PATH = join(__dirname, 'cli.js');
 
+  // SWARM_DB fallback pin (task_6026249b): a call site that forgets env must
+  // hit a temp DB, never the live repo control-plane.db — enforced
+  // package-wide by meta-wal-sidecar-teardown-guard.test.js.
+  const safeDbDir = mkdtempSync(join(tmpdir(), 'rewind-smoke-safe-db-'));
+  after(() => { try { rmSync(safeDbDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
+
   function runRewindCli(args, { cwd, env = {} } = {}) {
     return spawnSync(process.execPath, [CLI_PATH, 'rewind', ...args], {
       encoding: 'utf-8',
       cwd: cwd || __dirname,
-      env: { ...process.env, ...env },
+      env: { ...process.env, SWARM_DB: join(safeDbDir, 'control-plane.db'), ...env },
     });
   }
 
