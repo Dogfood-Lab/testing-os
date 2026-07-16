@@ -74,11 +74,14 @@
  *     findings database lookup).
  *
  * DISCLOSED GAPS (C6 — stated here AND surfaced in this gate's own runtime
- * output every run, never only in a docstring that can drift; this
- * paragraph is kept word-for-word in sync with the DISCLOSED_GAPS array
- * below it — two descriptions of the same gap disagreeing is exactly the
- * self-contradiction class F-a544c1c4 found elsewhere in this wave, and
- * this file does not get to repeat it):
+ * output every run, never only in a docstring that can drift; the Tier-2
+ * bullet below is kept word-for-word in sync with DISCLOSED_GAPS[0], and
+ * every bullet pairs one-to-one, in order, with its array entry — ENFORCED
+ * by the "docstring sync" tests in check-finding-regression-pins.test.mjs,
+ * not merely promised, after this exact prose-only promise drifted twice.
+ * Two descriptions of the same gap disagreeing is exactly the
+ * self-contradiction class F-a544c1c4, and this file does not get to
+ * repeat it):
  *   - Tier 2 (mutation proof that a pinned test fails without its fix —
  *     dispatch C4) is NOT implemented here; it is designed in
  *     docs/pin-matcher-rewrite.dispatch.md and queued in the control

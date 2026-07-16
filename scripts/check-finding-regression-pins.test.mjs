@@ -39,6 +39,12 @@
  *      must go RED on a swap, an eviction, an addition, or a header-comment
  *      edit, stay GREEN on the real untouched file, and never fire against
  *      a caller-supplied override path (every fixture in this file).
+ *  11. Docstring ↔ DISCLOSED_GAPS sync — the gate docstring's DISCLOSED
+ *      GAPS bullets and the runtime DISCLOSED_GAPS array are two
+ *      descriptions of the same gaps; the Tier-2 pair must match
+ *      word-for-word (backticks / ALL-CAPS emphasis / line-wrap are the
+ *      only tolerated differences) and the rest must pair one-to-one in
+ *      order. The promise was prose-only and drifted twice before this.
  */
 import { test, describe } from 'node:test';
 import { strict as assert } from 'node:assert';
@@ -341,6 +347,123 @@ test('F-e618b3e7: verifies the disclosed floor against real scanFileForDeclaredP
   );
   assert.equal(neverInvokedFunction.issues.length, 0);
   assert.deepEqual(neverInvokedFunction.pins.map((p) => p.id), ['F-100000-095']);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Docstring ↔ DISCLOSED_GAPS sync — the gate's module docstring and its
+// runtime DISCLOSED_GAPS array are two descriptions of the same gaps (the
+// F-a544c1c4 self-contradiction class). The docstring's "kept word-for-word
+// in sync" claim was a prose-only promise and drifted exactly the way prose
+// promises do — twice: a stale "wave 19" scheduling claim survived in the
+// docstring and this gate's own console output for two further waves after
+// the dispatch doc had been corrected (caught by the wave-21 audit), and
+// then wave-22's F-e618b3e7 rewrite of that same paragraph left the stale
+// phrase behind again, caught only by a hand check against git history
+// (commit 3d3e30a) mid-wave. These tests are the mechanical enforcement
+// that was missing both times. Extraction is deliberately local and manual
+// (no shared helper exists for this): the docstring side comes from the raw
+// source text, the runtime side through runRegressionPinGate — the same
+// value formatHuman prints on every run.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Unwraps the DISCLOSED GAPS section of the module docstring into one
+// string per bullet: a ` *   - ` line starts a bullet, an indented ` *   `
+// continuation line extends it, and the first blank ` *` line (or the
+// comment close) ends the section. The header parenthetical between the
+// section title and the first bullet is skipped.
+function extractDocstringGapBullets(source) {
+  const docstring = source.match(/\/\*\*[\s\S]*?\*\//)?.[0] ?? '';
+  const lines = docstring.split(/\r?\n/);
+  const headerIdx = lines.findIndex((line) => line.includes('DISCLOSED GAPS'));
+  if (headerIdx === -1) return [];
+  const bullets = [];
+  let current = null;
+  for (let i = headerIdx + 1; i < lines.length; i++) {
+    const bulletStart = lines[i].match(/^\s*\*\s+-\s(.*)$/);
+    if (bulletStart) {
+      if (current !== null) bullets.push(current);
+      current = bulletStart[1];
+      continue;
+    }
+    if (current === null) continue;
+    const continuation = lines[i].match(/^\s*\*\s+(\S.*)$/);
+    if (continuation) {
+      current += ` ${continuation[1]}`;
+      continue;
+    }
+    break;
+  }
+  if (current !== null) bullets.push(current);
+  return bullets;
+}
+
+// The tolerated stylistic differences between the JSDoc side and the
+// plain-string side, and nothing more: backticks (JSDoc code styling),
+// ALL-CAPS emphasis (NOT/NO/PASSES/ZERO vs lowercase), and hard-wrap
+// whitespace. Same normalization the wave-22 hand check used.
+function normalizeDisclosure(text) {
+  return text.replace(/`/g, '').toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+async function readDisclosureSides(t) {
+  const src = readFileSync(resolve(repoRoot, 'scripts/check-finding-regression-pins.mjs'), 'utf8');
+  const bullets = extractDocstringGapBullets(src);
+  const fx = makeFixture(t);
+  const result = await runRegressionPinGate({
+    repoRoot: fx.dir,
+    allowlistPath: fx.writeAllowlist({ allow: {} }),
+    grandfatherManifestPath: fx.writeGrandfatherManifest(EMPTY_GRANDFATHER),
+  });
+  return { bullets, gaps: result.disclosedGaps };
+}
+
+test('docstring sync: the Tier-2 disclosure bullet and DISCLOSED_GAPS[0] carry identical content — backticks, ALL-CAPS emphasis, and line-wrap are the only tolerated differences', async (t) => {
+  const { bullets, gaps } = await readDisclosureSides(t);
+  assert.ok(bullets.length > 0, 'extraction found no DISCLOSED GAPS bullets in the module docstring — if the docstring was restructured, update extractDocstringGapBullets in the same change');
+  assert.ok(gaps.length > 0, 'runRegressionPinGate returned an empty disclosedGaps array — the C6 disclosure must never be emptied silently');
+
+  const doc = normalizeDisclosure(bullets[0]);
+  const runtime = normalizeDisclosure(gaps[0]);
+  assert.match(doc, /^tier 2 \(mutation proof/, 'the first docstring bullet is no longer the Tier-2 disclosure — extraction grabbed the wrong text, or the section was reordered without reordering DISCLOSED_GAPS');
+  assert.match(runtime, /^tier 2 \(mutation proof/, 'DISCLOSED_GAPS[0] is no longer the Tier-2 disclosure — if the array was reordered, reorder the docstring bullets to match');
+
+  if (doc !== runtime) {
+    let d = 0;
+    while (d < Math.min(doc.length, runtime.length) && doc[d] === runtime[d]) d++;
+    assert.fail(
+      'the module docstring\'s Tier-2 disclosure bullet and DISCLOSED_GAPS[0] have drifted apart — the third occurrence of the exact drift this test exists to block. ' +
+      'Edit BOTH texts together so they say the same thing.\n' +
+      `  first divergence at normalized char ${d} (docstring ${doc.length} chars, runtime ${runtime.length} chars):\n` +
+      `    docstring: ...${doc.slice(Math.max(0, d - 60), d + 120)}\n` +
+      `    runtime:   ...${runtime.slice(Math.max(0, d - 60), d + 120)}`,
+    );
+  }
+});
+
+test('docstring sync: every DISCLOSED GAPS bullet pairs one-to-one, in order, with a DISCLOSED_GAPS entry — console-side abridgment tolerated, disagreement and reordering not', async (t) => {
+  const { bullets, gaps } = await readDisclosureSides(t);
+  assert.equal(
+    bullets.length,
+    gaps.length,
+    `the docstring lists ${bullets.length} gap bullet(s) but DISCLOSED_GAPS has ${gaps.length} — a gap added or removed on only one side is the same self-contradiction class; update both in the same change`,
+  );
+  for (let i = 0; i < gaps.length; i++) {
+    const doc = normalizeDisclosure(bullets[i]);
+    const runtime = normalizeDisclosure(gaps[i]);
+    let common = 0;
+    while (common < Math.min(doc.length, runtime.length) && doc[common] === runtime[common]) common++;
+    // Entries 1 and 2 are deliberately abridged in the array (the docstring
+    // keeps citations and rationale the console form drops), so full
+    // equality is only demanded of the Tier-2 pair above. What every pair
+    // must share is its opening — the words that name WHICH gap it is.
+    assert.ok(
+      common >= 40,
+      `docstring bullet ${i} and DISCLOSED_GAPS[${i}] no longer open as the same gap (normalized common prefix ${common} chars, expected >= 40). ` +
+      'The array entry may be abridged relative to the docstring bullet, but both must name the same gap in the same opening words, in the same order.\n' +
+      `  docstring: ${doc.slice(0, 120)}\n` +
+      `  runtime:   ${runtime.slice(0, 120)}`,
+    );
+  }
 });
 
 test('orphan from one file does not mask a clean id elsewhere', async (t) => {
