@@ -72,6 +72,25 @@ export function validateStepResults(scenarioResult) {
     }
   }
 
+  // F-88fb37ff: mirror of the pass-direction check above. A scenario cannot
+  // claim "fail"/"blocked" while every reported step says otherwise either —
+  // computeVerdict() (validators/verdict.js) trusts scenario_results[].verdict
+  // verbatim and never re-derives it from step_results, so without this check
+  // a self-reported "blocked" verdict backed by zero failing/blocked steps
+  // sailed through with no rejection reason at all. Scoped to fail/blocked
+  // only: "partial" has no analogous contradiction (a partial pass is
+  // legitimately a mixed evidence shape) and is left untouched.
+  if (verdict === 'fail' || verdict === 'blocked') {
+    const hasFailingStep = step_results.some(
+      s => s != null && (s.status === 'fail' || s.status === 'blocked')
+    );
+    if (!hasFailingStep) {
+      errors.push(
+        `scenario verdict is "${verdict}" but no step reports status fail/blocked`
+      );
+    }
+  }
+
   return errors;
 }
 
@@ -133,6 +152,29 @@ export function validateRequiredSteps(scenarioResult, requiredSteps) {
           `[step-verdict-consistent] scenario verdict is "pass" but required step "${stepId}" has status "${result.status}"`
         );
       }
+    }
+  }
+
+  // F-88fb37ff: mirror of the pass-direction block above, scoped to REQUIRED
+  // steps (the sibling check in validateStepResults enforces the same rule
+  // over ALL reported steps regardless of which are required). Fires only
+  // when every required step is accounted for AND none of the present ones
+  // shows fail/blocked — i.e. the record's own required-step evidence is
+  // uniformly non-failing while the verdict claims otherwise. A required step
+  // that is simply MISSING is deliberately excluded from "evidence of
+  // failure" here: its absence is already rejected unconditionally by the
+  // [step-results-present] loop above, regardless of verdict, so treating a
+  // missing step as fail-evidence too would only ever duplicate that
+  // rejection for the exact same gap.
+  if ((verdict === 'fail' || verdict === 'blocked') && requiredSteps.length > 0) {
+    const hasFailingRequiredStep = requiredSteps.some(stepId => {
+      const result = resultMap.get(stepId);
+      return !result || result.status === 'fail' || result.status === 'blocked';
+    });
+    if (!hasFailingRequiredStep) {
+      errors.push(
+        `[step-verdict-consistent] scenario verdict is "${verdict}" but no required step reports status fail/blocked`
+      );
     }
   }
 

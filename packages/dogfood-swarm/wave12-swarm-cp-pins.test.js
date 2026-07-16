@@ -119,7 +119,18 @@ describe('F-SWARMCP-001/002 — swarm defer / reject terminal-disposition verbs'
     dbPath = join(tmp, 'control-plane.db');
     seedFindings();
   });
-  afterEach(() => { closeDb(dbPath); rmSync(tmp, { recursive: true, force: true }); });
+  // F-8ad2d58d/F-f8798fd7: 6 of this block's 7 it()s spawn the CLI via
+  // spawnCli()/execFileSync against this real file-backed dbPath. closeDb only
+  // releases THIS process's own pooled connection (db/connection.js) — it
+  // cannot release the just-exited child process's OS-level lock on the
+  // -wal/-shm sidecar files, so rmSync (the call that actually raises Windows
+  // EBUSY/EPERM) must be guarded too, matching the sibling idiom established
+  // package-wide for this exact race (meta-amendB-operator-output.test.js,
+  // amend2-d3b-004-cli-globs.test.js, cli-smoke.test.js, et al.).
+  afterEach(() => {
+    try { closeDb(dbPath); } catch { /* */ }
+    try { rmSync(tmp, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
+  });
 
   it('defer flips status to deferred AND writes a reason-bearing finding_event', () => {
     const r = spawnCli('defer', [RUN, '--ids', 'F-001,F-002', '--reason', 'accepted for next stage'], dbPath);

@@ -5,25 +5,41 @@
  * Commands: cargo check, cargo clippy, cargo test, cargo build.
  */
 
-import { existsSync, readFileSync, statSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { runSteps } from '../runner.js';
-import { MAX_AGENT_OUTPUT_BYTES } from '../../bounded-json-read.js';
+import { readBoundedText, BoundedJsonError } from '../../bounded-json-read.js';
 
 // d4-swarm-core-004 (Stage A): the target-repo manifest is UNTRUSTED — we probe
 // arbitrary external repos. A hostile or accidentally-bloated multi-GB
-// Cargo.toml would otherwise be read entirely into the coordinator's memory by
-// a bare readFileSync during an otherwise cheap probe. The node sibling already
-// bounds its package.json read (node.js routes through readBoundedJson with the
-// same 50 MB cap); this lifts the TOML sibling into lockstep. A statSync size
-// check is sufficient here because the manifest is consumed with .match() /
-// .includes() string scans, not a JSON.parse — so an oversized file is simply
-// skipped (size-dependent evidence stays unset), never buffered.
+// Cargo.toml would otherwise be read entirely into the coordinator's memory
+// during an otherwise cheap probe. The node sibling already bounds its
+// package.json read (node.js routes through readBoundedJson with the same
+// 50 MB cap); this lifts the TOML sibling into lockstep.
+//
+// F-a89f89f7 (Wave 18, class fix): this used to be a PRIVATE
+// statSync-then-readFileSync copy — the exact TOCTOU gap bounded-json-read.js
+// exists to close (a file that grows past the cap between the two calls was
+// still read in full before any check could reject it), reproduced here
+// WORSE (no post-read recheck at all). Now routes through the shared
+// readBoundedText, which bounds the READ ITSELF via chunked fs.readSync, not
+// just a post-hoc length check. A SIZE_LIMIT error means "oversized
+// untrusted manifest" and is swallowed to a skip (the manifest is consumed
+// with .match() / .includes() string scans, not JSON.parse, so a skip is
+// simply unset evidence, never buffered); any other error (missing file,
+// EISDIR, ...) propagates to the caller's manifestUnreadable signal below,
+// same as before — BoundedJsonError surfaces the underlying fs `.code` so
+// that signal stays just as specific as the raw readFileSync error it
+// replaces.
 function readBoundedManifest(filePath) {
-  if (statSync(filePath).size > MAX_AGENT_OUTPUT_BYTES) {
-    return null; // oversized untrusted manifest — skip the read, do not buffer
+  try {
+    return readBoundedText(filePath);
+  } catch (e) {
+    if (e instanceof BoundedJsonError && e.kind === 'SIZE_LIMIT') {
+      return null; // oversized untrusted manifest — skip the read, do not buffer
+    }
+    throw e;
   }
-  return readFileSync(filePath, 'utf-8');
 }
 
 function probe(repoPath) {

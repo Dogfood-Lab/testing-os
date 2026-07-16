@@ -23,6 +23,7 @@ import { openDb } from '../db/connection.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { FINDING_GATED_PHASES } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 /**
  * Build a receipt object from DB truth.
@@ -337,7 +338,15 @@ export function formatReceiptMarkdown(r) {
     lines.push('## State Transitions');
     lines.push('');
     for (const t of r.state_transitions) {
-      lines.push(`- **${t.domain}**: ${t.from} → ${t.to}${t.reason ? ` — ${t.reason}` : ''}`);
+      // F-7c3e91a4 class (wave 18): t.reason is a STORED
+      // agent_state_events.reason (built at line ~196 above from the same
+      // stateEvents this receipt's JSON export writes losslessly) —
+      // rendered here into the markdown receipt with zero escaping,
+      // pre-fix. exportReceipt's JSON path is untouched by this change: it
+      // serializes the raw `receipt` object directly, never through this
+      // formatter. See commands/lib/escape-reason.js.
+      const reasonClause = t.reason ? ` — ${escapeReasonForDisplay(t.reason)}` : '';
+      lines.push(`- **${t.domain}**: ${t.from} → ${t.to}${reasonClause}`);
     }
     lines.push('');
   }

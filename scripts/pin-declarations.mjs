@@ -1,0 +1,428 @@
+/**
+ * pin-declarations.mjs — the Tier-1 declared-link matcher (dispatch C1-C3,
+ * C7; see docs/pin-matcher-rewrite.dispatch.md).
+ *
+ * Wave 18 replaces check-finding-regression-pins.mjs's text-heuristic credit
+ * rules (isLeadingCommentPin / isTestTitlePin / isSelfReferencingHeaderPin /
+ * isSameLineAssertArgumentPin — now living in suggest-pins.mjs as a demoted
+ * candidate generator, see that file) with this: a test earns Class #14
+ * credit ONLY by carrying a schema'd `@pins <F-id>` tag in a comment that is
+ * a REAL AST leading-comment of a real test()/it()/describe() call — read
+ * from an actual parse, never inferred from text position.
+ *
+ *   ```js
+ *   /** @pins F-e003b1fb *\/
+ *   test('escaped-quote title does not defeat the title mask', () => { … });
+ *   ```
+ *
+ * This collapses the false-grant class BY CONSTRUCTION (dispatch C1): a
+ * template-literal continuation line, a regex-literal body, a test title, or
+ * comment prose can no longer accidentally look like a pin, because credit
+ * now requires a declared tag in a defined AST position, not an id that
+ * happens to sit near a word. The seven historical leak shapes this domain
+ * has found (bracket/char-class depth, test-title prose, escaped-quote
+ * titles, comment prose, string prose, regex-literal bodies spelling
+ * "assert", and F-6573391e's raw-line startsWith) are NOT individually
+ * patched here — none of them are `@pins`-tag-shaped, so none of them can
+ * produce a credit decision through this code path at all. See
+ * pin-declarations.test.mjs's "historical leak corpus" suite for the proof,
+ * and pin-declarations-corpus.mjs for the generalized-relation fixtures
+ * (dispatch findings 26-28).
+ *
+ * SUBSTRATE (dispatch C2, findings 3/4/31/34/35): `@babel/parser` with the
+ * `estree` plugin, already resolved in this repo's lockfile at 7.29.3 (a
+ * transitive dependency of vite/vitest, confirmed present at that exact
+ * version in node_modules and package-lock.json) — not the TypeScript
+ * compiler's scanner
+ * (finding 3, refuted by the scanner's own authors), not a hand-rolled
+ * tokenizer (finding 4, refuted by js-tokens' own maintainer), and not the
+ * TypeScript compiler API / typescript-eslint (finding 34 — internal-API
+ * drift for type information this gate never needs). One parser, not two:
+ * `@babel/parser` combined with the `typescript` plugin parses `.ts`/`.tsx`
+ * to the same ESTree-shaped CallExpression/Literal/TemplateLiteral/Comment
+ * nodes this file walks for `.js`/`.mjs`/`.cjs`/`.jsx` — verified empirically
+ * against all 339 real *.test.{js,mjs,cjs,ts,tsx} files in this repo before
+ * this design was committed to (zero parse failures). DEVIATION FROM THE
+ * DISPATCH'S LITERAL WORDING, DISCLOSED: C2 names "espree/acorn natively...
+ * the ESTree-compatible TS parser" as the illustrative substrate; neither is
+ * in this repo's dependency tree (verified: grepped package-lock.json for
+ * acorn/espree/typescript-estree — zero hits), while `@babel/parser` +
+ * `@babel/types` both already are. A single already-resolved parser
+ * satisfying every C2 requirement (ESTree-shaped, comment-attached, no type
+ * information, not the compiler's internal API) is a strictly smaller
+ * dependency footprint than adding a JS parser AND a separate TS parser, and
+ * @babel/traverse was deliberately NOT added alongside it — this file's own
+ * `forEachNode` (below) is a ~20-line generic tree walk sufficient for
+ * "find which node owns this leading comment," and a full traversal-with-
+ * scope-analysis library is unjustified weight for that narrow need (rule 10:
+ * match existing patterns, don't invent — a hand-rolled walk here is smaller
+ * surface than a new heavyweight dependency for a job this contained).
+ *
+ * CROSS-DOMAIN FOLLOW-UP, DISCLOSED (repo-first / domain-ownership rule):
+ * this module imports `@babel/parser` directly, and it resolves correctly
+ * today ONLY because vite/vitest already pull it in transitively (verified:
+ * `node_modules/@babel/parser` at 7.29.3, matching package-lock.json). The
+ * hygienic fix — adding `"@babel/parser": "^7.29.3"` to root
+ * `package.json` `devDependencies` so this is a direct, not incidental,
+ * dependency — touches root `package.json`/`package-lock.json`, which are
+ * NOT in this wave's `.github/**`/`scripts/**`/`tsconfig*.json` ownership
+ * (checked against every wave-18 domain's frozen map: none owns them
+ * either). Per this domain's hard rule ("cross-domain changes: note, do not
+ * edit"), that edit was made, verified working, then REVERTED rather than
+ * landed out-of-domain — see this wave's ci-tooling output for the exact
+ * diff to apply. Until it lands, this module's dependency on
+ * `@babel/parser` is real but UNDECLARED — a future change that removes
+ * vite/vitest's own need for it would silently break this file with
+ * "Cannot find module '@babel/parser'" and no warning beforehand.
+ *
+ * FAIL-CLOSED (C7, findings 32/33): `errorRecovery` is left at its default
+ * `false` — an unparseable file throws inside scanFileForDeclaredPins and the
+ * caller (scanRepoForDeclaredPins) surfaces it as a `parseErrors` entry,
+ * never a silently-skipped file. "Skipped" and "clean" are indistinguishable
+ * to a gate (finding 32) — check-finding-regression-pins.mjs treats any
+ * non-empty parseErrors as a hard, blocking defect (ok=false), the same
+ * severity as a real orphan.
+ *
+ * SCOPE, DISCLOSED (not silently assumed — C6): this module only scans files
+ * `classifyFile()` (parse-regression-pins.js) buckets as "test" — a `@pins`
+ * tag written in a source file is not evaluated by this module at all. Tag
+ * attachment is LEADING-only: a tag that Babel attaches as a trailing or
+ * inner comment (e.g. written AFTER the call it's meant to describe) is
+ * reported as `not-attached`, not silently credited — this matches the one
+ * convention the dispatch documents (tag immediately BEFORE the call) rather
+ * than inventing a second accepted position. A qualifying call is
+ * `test(...)`/`it(...)`/`describe(...)`, optionally with ONE member-access
+ * modifier (`test.skip(...)`, `it.only(...)`) or ONE `.each(...)(...)` call
+ * chain (`test.each(table)(...)`) — verified against the live corpus
+ * (grepped for `.each(` in every *.test.* file: zero live uses today, so
+ * this is "supported, not currently exercised," the same evidentiary posture
+ * this domain has used before for a mechanism proven-but-not-live).
+ */
+
+import { parse } from '@babel/parser';
+import { readFileSync } from 'node:fs';
+
+import { F_ID_PATTERN, walkSourceFiles, classifyFile } from '../packages/portfolio/lib/parse-regression-pins.js';
+
+/**
+ * Anchored, single-token form of F_ID_PATTERN — F_ID_PATTERN itself carries
+ * the `g` flag and is designed for scanning free text (see its own JSDoc);
+ * reusing a `g`-flagged pattern across repeated `.test()` calls is a classic
+ * `lastIndex` statefulness footgun, so a fresh, unflagged, anchored copy is
+ * built from the SAME `.source` (never a hand-rolled second id grammar) once
+ * here and reused for every tag-token validation.
+ */
+const F_ID_PATTERN_ANCHORED = new RegExp(`^(?:${F_ID_PATTERN.source})$`);
+
+/**
+ * Matches a genuine `@pins` JSDoc tag: `@pins` must be the FIRST substantive
+ * token on its line (after optional leading whitespace and an optional
+ * single `*` JSDoc continuation marker) — never merely appearing mid-
+ * sentence. Anchored (not a bare `\b` scan) so this module's OWN docstrings
+ * can say the word "@pins" in prose (as this file's and others' inevitably
+ * do, documenting the very convention) without being misread as a malformed
+ * tag attempt — caught for real during this wave's own development: a
+ * prose sentence reading "...cannot carry a per-iteration @pins tag — a
+ * static comment..." produced nine bogus bad-shape issues under the
+ * earlier, unanchored `/@pins\b(.*)$/` pattern before this fix. Real JSDoc
+ * tags always open their line by convention (`@param`, `@returns`, …);
+ * requiring the same shape here is not an invented restriction.
+ */
+const PINS_TAG_LINE = /^\s*\*?\s*@pins\b(.*)$/;
+
+const QUALIFYING_CALL_NAMES = new Set(['test', 'it', 'describe']);
+
+const JS_PARSE_OPTS = {
+  sourceType: 'module',
+  allowImportExportEverywhere: true,
+  allowReturnOutsideFunction: true,
+  attachComment: true,
+  errorRecovery: false, // C7 / finding 33: fail closed, never best-effort recover.
+  plugins: ['estree', 'jsx'],
+};
+const TS_PARSE_OPTS = { ...JS_PARSE_OPTS, plugins: ['estree', 'jsx', 'typescript'] };
+
+function parseOptsFor(filePath) {
+  return /\.tsx?$/.test(filePath) ? TS_PARSE_OPTS : JS_PARSE_OPTS;
+}
+
+/**
+ * Split one `@pins` comment's raw value into declared tokens, one entry per
+ * token, each already shape-checked against F_ID_PATTERN_ANCHORED. A line
+ * with `@pins` but nothing after it produces one `{ token: null }` entry
+ * (the "empty tag" defect) rather than silently contributing zero pins.
+ *
+ * @param {string} commentValue - Babel Comment.value (delimiters stripped).
+ * @returns {{ token: string | null, ok: boolean }[]}
+ */
+export function extractDeclaredIds(commentValue) {
+  const out = [];
+  for (const rawLine of commentValue.split('\n')) {
+    const m = PINS_TAG_LINE.exec(rawLine);
+    if (!m) continue;
+    const tokens = m[1].split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (tokens.length === 0) {
+      out.push({ token: null, ok: false });
+      continue;
+    }
+    for (const token of tokens) out.push({ token, ok: F_ID_PATTERN_ANCHORED.test(token) });
+  }
+  return out;
+}
+
+// Node properties that are never semantically-meaningful children for this
+// walk's purposes — skipped so forEachNode doesn't waste cycles descending
+// into position bookkeeping, and so a `comments` back-reference (were one
+// ever added upstream) can't turn the walk into a cycle.
+const WALK_SKIP_KEYS = new Set([
+  'loc', 'start', 'end', 'range', 'extra',
+  'leadingComments', 'trailingComments', 'innerComments', 'comments', 'tokens',
+]);
+
+/**
+ * Generic recursive walk over every AST node reachable from `root`, calling
+ * `visit(node)` once per node. Deliberately property-introspective rather
+ * than a per-type children table (contrast the old file's hand-maintained
+ * STATEMENT_LIST_KEYS-style approach) — a raw `@babel/parser` output has no
+ * parent back-references (those are a `@babel/traverse` NodePath concept,
+ * never added at parse time), so a plain object tree walk is cycle-safe and
+ * cannot under-cover a node shape this module's authors didn't anticipate
+ * (e.g. an IIFE, a `const x = describe(...)` assignment, a `.forEach(fn)`
+ * parametrized-test helper) — every one of those is just "a node with more
+ * nodes inside it" to this walk, with no per-shape special-casing needed.
+ *
+ * @param {object} root
+ * @param {(node: object) => void} visit
+ */
+export function forEachNode(root, visit) {
+  const seen = new Set();
+  (function walk(value) {
+    if (value === null || typeof value !== 'object') return;
+    if (Array.isArray(value)) {
+      for (const item of value) walk(item);
+      return;
+    }
+    if (seen.has(value)) return;
+    seen.add(value);
+    if (typeof value.type === 'string') visit(value);
+    for (const key of Object.keys(value)) {
+      if (WALK_SKIP_KEYS.has(key)) continue;
+      walk(value[key]);
+    }
+  })(root);
+}
+
+/**
+ * Resolve a CallExpression's callee down to the base `test`/`it`/`describe`
+ * identifier name, or null if the shape doesn't lead to one. Handles three
+ * shapes: a bare call (`test(...)`), one member-access modifier
+ * (`test.skip(...)`), and one `.each(...)(...)` call chain
+ * (`test.each(table)(...)`) — see module docstring for why `.each` is
+ * supported-but-unverified-live.
+ *
+ * @param {object} callee
+ * @returns {string | null}
+ */
+function calleeBaseName(callee) {
+  if (callee.type === 'Identifier') return callee.name;
+  if (callee.type === 'MemberExpression' && !callee.computed && callee.object.type === 'Identifier') {
+    return callee.object.name;
+  }
+  if (callee.type === 'CallExpression') return calleeBaseName(callee.callee);
+  return null;
+}
+
+function looksLikeTitleArg(node) {
+  if (!node) return false;
+  if (node.type === 'TemplateLiteral') return true;
+  if (node.type === 'Literal') return typeof node.value === 'string';
+  if (node.type === 'StringLiteral') return true; // defensive: non-estree Babel node shape
+  return false;
+}
+
+/**
+ * @param {object} node
+ * @returns {boolean} true iff `node` is a CallExpression shaped like
+ *   test(title, fn) / it(title, fn) / describe(title, fn), a single-modifier
+ *   variant, or an `.each` chain, with a string/template title as its first
+ *   argument.
+ */
+export function isQualifyingTestCall(node) {
+  if (!node || node.type !== 'CallExpression') return false;
+  const name = calleeBaseName(node.callee);
+  if (!name || !QUALIFYING_CALL_NAMES.has(name)) return false;
+  if (node.arguments.length < 1) return false;
+  return looksLikeTitleArg(node.arguments[0]);
+}
+
+function extractTitle(call) {
+  const first = call.arguments[0];
+  if (first.type === 'TemplateLiteral') {
+    return first.quasis.map((q) => q.value.raw).join('${…}');
+  }
+  return typeof first.value === 'string' ? first.value : null;
+}
+
+/**
+ * Given the AST node a leading comment attaches to, find the qualifying
+ * test call it declares a pin for, if any. Covers the direct
+ * `ExpressionStatement` case (the documented convention) and a
+ * `const x = test(...)` VariableDeclaration binding, since a generic walk
+ * (forEachNode) has no reason to privilege one over the other.
+ *
+ * @param {object | null} hostNode
+ * @returns {object | null}
+ */
+function qualifyingCallFromHost(hostNode) {
+  if (!hostNode) return null;
+  if (hostNode.type === 'ExpressionStatement' && isQualifyingTestCall(hostNode.expression)) {
+    return hostNode.expression;
+  }
+  if (hostNode.type === 'VariableDeclaration') {
+    for (const decl of hostNode.declarations ?? []) {
+      if (decl.init && isQualifyingTestCall(decl.init)) return decl.init;
+    }
+  }
+  return null;
+}
+
+/**
+ * Index every node's leadingComments by comment start offset, once per file,
+ * so per-comment lookup below is O(1) instead of re-walking the tree per
+ * comment. `!index.has` keeps the FIRST (outermost-visited) owner if a
+ * comment object were ever attached to more than one node — not observed in
+ * practice, but a defined tie-break beats an unspecified one.
+ *
+ * @param {object} programAst
+ * @returns {Map<number, object>}
+ */
+function buildLeadingCommentIndex(programAst) {
+  const index = new Map();
+  forEachNode(programAst, (node) => {
+    if (!Array.isArray(node.leadingComments)) return;
+    for (const c of node.leadingComments) {
+      if (!index.has(c.start)) index.set(c.start, node);
+    }
+  });
+  return index;
+}
+
+/**
+ * Scan one file's text for declared `@pins` tags, from a real parse.
+ *
+ * @param {string} filePath - used only to pick JS vs TS parse plugins and to
+ *   stamp `file` on returned records; not read unless `textOverride` is
+ *   omitted.
+ * @param {string} [textOverride] - injection point for tests / callers that
+ *   already have the text in memory.
+ * @returns {{
+ *   file: string,
+ *   parseError: { message: string, line: number|null, column: number|null } | null,
+ *   pins: { id: string, file: string, line: number|null, title: string|null }[],
+ *   issues: { file: string, line: number|null, kind: 'empty-tag'|'bad-shape'|'wrong-node'|'not-attached', token: string|null, detail: string }[],
+ * }}
+ */
+export function scanFileForDeclaredPins(filePath, textOverride) {
+  const text = textOverride ?? readFileSync(filePath, 'utf-8');
+  let ast;
+  try {
+    ast = parse(text, parseOptsFor(filePath));
+  } catch (err) {
+    return {
+      file: filePath,
+      parseError: {
+        message: err.message,
+        line: err.loc?.line ?? null,
+        column: err.loc?.column ?? null,
+      },
+      pins: [],
+      issues: [],
+    };
+  }
+
+  const leadingIndex = buildLeadingCommentIndex(ast.program);
+  const pins = [];
+  const issues = [];
+
+  for (const comment of ast.comments ?? []) {
+    const tagTokens = extractDeclaredIds(comment.value);
+    if (tagTokens.length === 0) continue; // this comment carries no @pins tag at all
+
+    const hostNode = leadingIndex.get(comment.start) ?? null;
+    const call = qualifyingCallFromHost(hostNode);
+    const title = call ? extractTitle(call) : null;
+    const line = comment.loc?.start?.line ?? null;
+
+    for (const { token, ok } of tagTokens) {
+      if (token === null) {
+        issues.push({ file: filePath, line, kind: 'empty-tag', token: null, detail: '@pins tag has no id token after it' });
+        continue;
+      }
+      if (!ok) {
+        issues.push({ file: filePath, line, kind: 'bad-shape', token, detail: `"${token}" is not a well-formed F-id (see F_ID_PATTERN)` });
+        continue;
+      }
+      if (!call) {
+        issues.push({
+          file: filePath,
+          line,
+          kind: hostNode ? 'wrong-node' : 'not-attached',
+          token,
+          detail: hostNode
+            ? `@pins ${token} is attached to a ${hostNode.type}, not a test()/it()/describe() call`
+            : `@pins ${token} is not a leading comment of any statement (check it sits immediately before the test call, not after)`,
+        });
+        continue;
+      }
+      pins.push({ id: token, file: filePath, line, title });
+    }
+  }
+
+  return { file: filePath, parseError: null, pins, issues };
+}
+
+/**
+ * @param {string} rootDir
+ * @returns {string[]} absolute paths of every file classifyFile() buckets as
+ *   "test" under rootDir — see module docstring's SCOPE paragraph for why
+ *   only test files are scanned.
+ */
+export function defaultWalkTestFiles(rootDir) {
+  return walkSourceFiles(rootDir).filter((f) => classifyFile(f) === 'test');
+}
+
+/**
+ * Repo-wide declared-pin scan: the Tier-1 gate's actual evidence source.
+ *
+ * @param {string} rootDir
+ * @param {object} [opts]
+ * @param {(rootDir: string) => string[]} [opts.walkFiles]
+ * @returns {{
+ *   byId: Map<string, { id: string, file: string, line: number|null, title: string|null }[]>,
+ *   issues: object[],
+ *   parseErrors: { file: string, message: string, line: number|null, column: number|null }[],
+ *   filesScanned: number,
+ * }}
+ */
+export function scanRepoForDeclaredPins(rootDir, { walkFiles = defaultWalkTestFiles } = {}) {
+  const files = walkFiles(rootDir);
+  const byId = new Map();
+  const issues = [];
+  const parseErrors = [];
+
+  for (const file of files) {
+    const result = scanFileForDeclaredPins(file);
+    if (result.parseError) {
+      parseErrors.push({ file, ...result.parseError });
+      continue; // C7: this file's pins are UNDETERMINED, never counted as either credited or clean.
+    }
+    issues.push(...result.issues);
+    for (const pin of result.pins) {
+      const arr = byId.get(pin.id);
+      if (arr) arr.push(pin);
+      else byId.set(pin.id, [pin]);
+    }
+  }
+
+  return { byId, issues, parseErrors, filesScanned: files.length };
+}

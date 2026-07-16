@@ -19,11 +19,16 @@
  * Render contract: plain-ASCII fixed-column table. No ANSI/emoji so the
  * output renders identically under CI plaintext logs, screen-readers, and
  * Markdown. Matches the visual discipline used by D-STRUCT-001 frames in
- * `swarm status`.
+ * `swarm status`. Enforced, not just documented, as of F-7c3e91a4 (wave 18):
+ * every `reason` cell routes through escapeReasonForDisplay before
+ * rendering, so an operator-supplied --reason (unrestricted free text, no
+ * character validation upstream) cannot inject a raw newline, ANSI escape,
+ * or other control byte into this table.
  */
 
 import { openDb } from '../db/connection.js';
 import { getWaveTransitionHistory } from '../lib/wave-state-machine.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 /**
  * @param {object} opts
@@ -89,7 +94,12 @@ export function formatHistory(report) {
   lines.push(rule);
 
   for (const e of events) {
-    const reason = e.reason == null ? '(none)' : String(e.reason);
+    // F-7c3e91a4: escape BEFORE truncate, not after — truncate() is a plain
+    // String#slice with no control-byte awareness of its own, so by the
+    // time the reason reaches it every dangerous byte must already be gone.
+    // Escaping first also means the REASON_W column budget is spent on the
+    // operator-VISIBLE (escaped) text, matching what actually prints.
+    const reason = e.reason == null ? '(none)' : escapeReasonForDisplay(String(e.reason));
     const ts = e.created_at || '(unknown)';
     lines.push(
       pad(e.from_status, FROM_W) + '  ' +

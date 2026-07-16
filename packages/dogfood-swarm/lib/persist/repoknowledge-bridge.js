@@ -102,8 +102,10 @@ export function buildAuditPayload(exportData) {
   // open-findings computation so no aborted run can fall through to 'pass'
   // or 'pass_with_findings'. See export-verdict-aborted-sibling-agreement
   // .test.js for the 4-state × both-artifacts pin.
+  const runAborted = run.status === 'aborted';
+
   let overallStatus, overallPosture;
-  if (run.status === 'aborted') {
+  if (runAborted) {
     overallStatus = 'fail';
     overallPosture = 'critical';
   } else if (criticalCount > 0) {
@@ -120,6 +122,24 @@ export function buildAuditPayload(exportData) {
   // Get test count from verification
   const testCount = exportData.verification.reduce((sum, v) => sum + (v.test_count || 0), 0);
 
+  // F-be8db3ee: the aborted branch above forces overall_status/overall_posture/
+  // blocking_release to the release-blocking reading regardless of what was
+  // actually open when the run stopped — but the summary sentence used to
+  // report ONLY the raw counts ("N findings (X open critical, Y open high)"),
+  // with nothing distinguishing "we found a critical" from "we stopped
+  // looking". For an aborted run with zero (or non-critical) open findings,
+  // that summary flatly contradicted overall_posture:'critical' sitting
+  // right next to it. Naming the abort explicitly here — instead of silently
+  // forcing counts that don't match reality — keeps the counts honest while
+  // making the REASON for the critical posture legible from the sentence
+  // alone.
+  const summary = runAborted
+    ? `Swarm audit: RUN ABORTED before completion (${findingSummary.total} findings observed, ` +
+      `${criticalCount} open critical, ${highCount} open high, at time of abort). ` +
+      `${exportData.waves.length} waves, ${exportData.promotions.length} promotions.`
+    : `Swarm audit: ${findingSummary.total} findings (${criticalCount} open critical, ${highCount} open high). ` +
+      `${exportData.waves.length} waves, ${exportData.promotions.length} promotions.`;
+
   const auditRun = {
     slug: run.repo,
     commit_sha: run.commit_sha,
@@ -129,10 +149,10 @@ export function buildAuditPayload(exportData) {
     overall_status: overallStatus,
     overall_posture: overallPosture,
     domains_checked: [...domainsChecked].sort(),
-    summary: `Swarm audit: ${findingSummary.total} findings (${criticalCount} open critical, ${highCount} open high). ${exportData.waves.length} waves, ${exportData.promotions.length} promotions.`,
+    summary,
     // F-6859e492: blocking_release must agree with overallStatus above — an
     // aborted run blocks release the same way an open CRITICAL does.
-    blocking_release: run.status === 'aborted' || criticalCount > 0,
+    blocking_release: runAborted || criticalCount > 0,
     started_at: run.created,
     completed_at: run.completed,
   };
@@ -140,6 +160,18 @@ export function buildAuditPayload(exportData) {
   // Severity metrics mirror the open-only gate semantics above. The full
   // per-status truth is still exported: every item in `findings` carries its
   // lifecycle status, and run.summary reports the historical total.
+  //
+  // F-be8db3ee: critical_count/high_count stay the HONEST open-finding
+  // counts even when runAborted forced overall_posture to 'critical' above —
+  // this file is written to metrics.json, a SEPARATE artifact from run.json
+  // (see commands/persist.js), so a consumer reading metrics.json alone has
+  // no access to overall_posture or the summary sentence at all. run_aborted
+  // is the signal that lets metrics.json explain itself in isolation: a
+  // reader who sees critical_count:0 next to run_aborted:true knows the
+  // release is blocked because the sweep never finished, not because a
+  // phantom critical was fabricated into the count. Always present
+  // (true/false, never omitted) so the field's absence never has to be
+  // interpreted as "false".
   const metrics = {
     critical_count: criticalCount,
     high_count: highCount,
@@ -150,6 +182,7 @@ export function buildAuditPayload(exportData) {
     controls_passed: exportData.waves.filter(w => w.status === 'advanced' || w.status === 'verified').length,
     controls_failed: exportData.waves.filter(w => w.status === 'failed').length,
     controls_total: exportData.waves.length,
+    run_aborted: runAborted,
   };
 
   return { run: auditRun, findings: auditFindings, metrics };

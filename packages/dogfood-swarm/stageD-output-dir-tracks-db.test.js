@@ -66,6 +66,11 @@ test('getOutputDir: verify-* delta follows SWARM_DB and does not pollute the rep
     const leaked = [...after].filter((n) => !before.has(n));
     assert.deepEqual(leaked, [], `repo swarms/ gained unexpected entries: ${leaked.join(', ')}`);
   } finally {
-    rmSync(tmp, { recursive: true, force: true });
+    // F-8ad2d58d-class: spawnSync above runs the CLI as a real child process
+    // against this real file-backed dbPath (WAL mode). closeDb only releases
+    // this process's own pooled connection, never the just-exited child's
+    // OS-level lock on the -wal/-shm sidecar files, so rmSync must tolerate
+    // Windows lock lag too (matches the established package-wide idiom).
+    try { rmSync(tmp, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
   }
 });

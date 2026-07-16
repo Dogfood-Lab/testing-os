@@ -14,6 +14,7 @@ import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js
 import { FINDING_GATED_PHASES, PHASE_MAP } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
 import { formatDomainRow } from '../lib/domain-row.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 /**
  * @param {object} opts
@@ -332,7 +333,19 @@ export function formatStatus(s) {
       lines.push('  [!] ownership probe DEGRADED — re-dispatch with --isolate for full attribution');
     }
     if (w.history && w.history.interesting) {
-      lines.push(`  History: ${w.history.count} ${w.history.count === 1 ? 'transition' : 'transitions'}${w.history.lastReason ? ` (last reason: "${w.history.lastReason}")` : ''} — see \`swarm history ${w.id}\``);
+      // F-463c7179: escape HERE, at the render site, not inside
+      // summarizeWaveHistory/truncateReason (data layer, below) — that
+      // function's return value also feeds this same field's
+      // --format=json output (buildStatusJSON is an identity projection of
+      // the status() object), which must stay the lossless, unescaped
+      // canonical form. Escaping only at the point of text interpolation
+      // closes both the newline row-split forgery AND the quote-clause
+      // forgery (F-fa23cc37's class, reopened here via a field position
+      // that fix never reached) without touching the JSON path at all.
+      const reasonClause = w.history.lastReason
+        ? ` (last reason: "${escapeReasonForDisplay(w.history.lastReason)}")`
+        : '';
+      lines.push(`  History: ${w.history.count} ${w.history.count === 1 ? 'transition' : 'transitions'}${reasonClause} — see \`swarm history ${w.id}\``);
     }
     lines.push('');
 

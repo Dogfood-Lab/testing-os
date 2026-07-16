@@ -47,11 +47,30 @@
  * this describe block, which pin both shapes so neither gap can silently
  * reopen.
  *
+ * A THIRD gap shipped undocumented too (F-fc8be6ed, wave 18): the call-site
+ * alternation covered readFileSync/readFile/require but omitted dynamic
+ * import(), even though import() is idiomatic in this exact package's
+ * mutation-testing pattern (redrive.test.js's
+ * importRedriveWithCompletePromotedToEligible, clean-claims.test.js's
+ * loadCleanClaimsMutant — both do `await import(pathToFileURL(mutantPath).href)`,
+ * a dynamically-constructed path one edit away from being hardcoded during a
+ * debugging session, which is exactly how F-2a8f4d17/F-4a7309f9 themselves
+ * shipped). No live instance existed when this was found — every direct
+ * import('literal') call site in this package's root test files already used
+ * a portable relative path — so this was a coverage gap in the guard, not a
+ * live defect, matching how F-1c3fc4dd's two gaps above were rated. Closed
+ * below: `import` joins the call-site alternation, with a third self-test
+ * fixture pinning the shape so it cannot silently reopen.
+ *
  * SCOPE, STATED PLAINLY (a narrow, honest guard beats a broad, noisy one):
  *   - Catches: a single-quoted, double-quoted, or backtick-quoted string
  *     literal shaped like a Windows drive-letter path (`X:\` / `X:/`) or a
  *     POSIX-absolute path (`/something`) passed DIRECTLY as the argument
- *     to readFileSync(/readFile(/require(.
+ *     to readFileSync(/readFile(/require(/import(. The last is a dynamic
+ *     import() CALL EXPRESSION (`import('...')`), not a static
+ *     `import ... from '...'` declaration — a static import never has an
+ *     open-paren immediately after the `import` keyword, so it cannot match
+ *     this alternation.
  *   - Catches it even when the call is wrapped across multiple lines —
  *     e.g. the identifier and open-paren on one line, the string literal
  *     on the next — because matching runs against each file's WHOLE TEXT
@@ -73,8 +92,8 @@
  *     or reimplementing gitignore matching) — scoped OUT of this pass as
  *     not-cheap-enough; see wave-4 swarm-cp-tests output.json.
  *   - Deliberately anchored to the CALL SITE (readFileSync(/readFile(/
- *     require(, not just "an absolute-path-shaped literal anywhere in the
- *     file") so ordinary test data that happens to look path-shaped is
+ *     require(/import(, not just "an absolute-path-shaped literal anywhere
+ *     in the file") so ordinary test data that happens to look path-shaped is
  *     never flagged. A file-wide scan for the bare shape was tried first
  *     during development of this guard and hit 60+ unrelated string
  *     literals across this package alone — SQL fixture values
@@ -117,8 +136,15 @@ function walkTestFiles(dir, files = []) {
 // scans with a clone of this regex's match state rather than mutating the
 // module-level constant's lastIndex, unlike a manual global .exec()/.test()
 // loop — which is exactly the footgun this refactor avoids reintroducing.
+//
+// `import` joins the alternation for F-fc8be6ed (wave 18): `\b` requires a
+// word boundary immediately before, and the whole alternative still needs
+// the immediately-following `(` this pattern requires of every alternative
+// — so a static `import ... from '...'` declaration (keyword, whitespace,
+// then `{`/an identifier/`*`, never `(`) cannot match this alternation; only
+// the dynamic import(...) CALL EXPRESSION can.
 const HARDCODED_ABSOLUTE_PATH_ARG =
-  /\b(?:readFileSync|readFile|require)\(\s*[`'"](?:[A-Za-z]:[\\/]|\/[A-Za-z])/g;
+  /\b(?:readFileSync|readFile|require|import)\(\s*[`'"](?:[A-Za-z]:[\\/]|\/[A-Za-z])/g;
 
 // Extracted so the two self-test fixtures below can exercise the exact
 // detection logic the real sweep uses, without writing throwaway files to
@@ -149,7 +175,7 @@ describe('meta — no hardcoded absolute fixture paths in any test file (closes 
     assert.ok(walkTestFiles(PKG_ROOT).length > 0, 'sweep must visit at least one test file');
   });
 
-  it('no *.test.js file passes a hardcoded absolute path literal directly to readFileSync/readFile/require', () => {
+  it('no *.test.js file passes a hardcoded absolute path literal directly to readFileSync/readFile/require/import', () => {
     const offenders = [];
     for (const f of walkTestFiles(PKG_ROOT)) {
       const text = readFileSync(f, 'utf-8');
@@ -159,11 +185,12 @@ describe('meta — no hardcoded absolute fixture paths in any test file (closes 
       }
     }
     assert.deepEqual(offenders, [],
-      `hardcoded absolute path literal(s) passed directly to readFileSync/readFile/require — this is ` +
-      `the exact shape that shipped as F-2a8f4d17 (silent — a describe()-body throw does not fail ` +
-      `node --test) and F-caeeb671 (loud — a module-top-level throw does). Resolve portably instead: ` +
-      `join(dirname(fileURLToPath(import.meta.url)), ..., 'fixtures', 'case-files', ...), matching ` +
-      `case-file.test.js's FIXTURES constant.\n  ${offenders.join('\n  ')}`);
+      `hardcoded absolute path literal(s) passed directly to readFileSync/readFile/require/import — this ` +
+      `is the exact shape that shipped as F-2a8f4d17 (silent — a describe()-body throw does not fail ` +
+      `node --test) and F-caeeb671 (loud — a module-top-level throw does), and the dynamic-import() ` +
+      `variant of the same shape F-fc8be6ed named as this exact package's live mutation-testing idiom. ` +
+      `Resolve portably instead: join(dirname(fileURLToPath(import.meta.url)), ..., 'fixtures', ` +
+      `'case-files', ...), matching case-file.test.js's FIXTURES constant.\n  ${offenders.join('\n  ')}`);
   });
 
   it('catches a hardcoded absolute path literal wrapped across multiple lines, which a per-line sweep cannot see (F-1c3fc4dd)', () => {
@@ -197,5 +224,28 @@ describe('meta — no hardcoded absolute fixture paths in any test file (closes 
     assert.equal(offenders.length, 1,
       `a readFileSync( call using a backtick-quoted hardcoded absolute path must be caught, not just ` +
       `single/double-quoted forms; got ${JSON.stringify(offenders)}`);
+  });
+
+  it('catches a hardcoded absolute path literal passed directly to dynamic import(), the F-fc8be6ed gap (idiomatic in this package for mutation-testing: redrive.test.js, clean-claims.test.js)', () => {
+    // Same "built from parts" reasoning as the two fixtures above: `fn` is
+    // held in a variable so this file's own raw source never contains the
+    // literal offending sequence (this file is itself a *.test.js under
+    // PKG_ROOT, so walkTestFiles() visits it too).
+    const fn = 'import';
+    const q = "'";
+    const offending = `await ${fn}(${q}E:/AI/testing-os/swarms/run-id/wave-1/mutant.mjs${q});`;
+    const offenders = findHardcodedAbsolutePathOffenders(offending);
+    assert.equal(offenders.length, 1,
+      `a dynamic import( call with a hardcoded absolute path must be caught — this is the exact live ` +
+      `pattern (await import(pathToFileURL(mutantPath).href)) one edit away from a hardcoded literal in ` +
+      `redrive.test.js / clean-claims.test.js's mutation-testing helpers; got ${JSON.stringify(offenders)}`);
+
+    // Negative control alongside the positive: a STATIC import declaration
+    // (never a call — `\bimport\(` cannot match because no `(` immediately
+    // follows the keyword) must not be flagged, so this guard cannot regress
+    // into the "60+ unrelated string literals" noise the header rejects.
+    const staticImport = `import { readFileSync } from 'node:fs';`;
+    assert.deepEqual(findHardcodedAbsolutePathOffenders(staticImport), [],
+      'a static import declaration must never be flagged, only the dynamic import(...) call expression');
   });
 });

@@ -109,6 +109,7 @@ import {
 } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 const REDRIVE_TARGET_STATUS = 'dispatched';
 
@@ -621,10 +622,12 @@ function formatPlanSummary(report) {
   lines.push(`  Preserved: ${report.preserved.length} complete agent_runs (receipts unchanged)${formatByteIdentitySuffix(report)}`);
   lines.push(`  Redriven:  ${report.eligible.length} agent_runs to ${REDRIVE_TARGET_STATUS}`);
   lines.push(`  Refused:   ${report.refused.length} agent_runs (named recovery verb per row)`);
+  // F-7c3e91a4 class (wave 18): immediate echo of the operator's own
+  // just-typed --reason. See commands/lib/escape-reason.js.
   if (report.apply) {
-    lines.push(`  Reason recorded: "${report.reasonRecorded}"`);
+    lines.push(`  Reason recorded: "${escapeReasonForDisplay(report.reasonRecorded)}"`);
   } else {
-    lines.push(`  Reason would be: "redrive: ${report.reason}"`);
+    lines.push(`  Reason would be: "redrive: ${escapeReasonForDisplay(report.reason)}"`);
     lines.push('  Re-run with --apply to mutate.');
   }
   return lines.join('\n');

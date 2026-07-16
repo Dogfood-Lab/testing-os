@@ -39,6 +39,7 @@ import { redrive, formatRedrive } from './commands/redrive.js';
 import { clean, formatClean } from './commands/clean.js';
 import { cleanClaims, formatCleanClaims } from './commands/clean-claims.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
+import { escapeReasonForDisplay } from './commands/lib/escape-reason.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
 import { verifyRecurring as runVerifyRecurring } from './commands/verify-recurring.js';
@@ -466,7 +467,10 @@ function cmdDomains(args) {
     // hatch was unreachable from the CLI surface that prints the message.
     const force = args.includes('--force');
     unfreezeDomains(db, runId, reason, { force });
-    console.log(`Domains unfrozen for ${runId} (reason: ${reason})`);
+    // F-7c3e91a4 class (wave 18): immediate echo of the operator's own
+    // just-typed --reason, same family as rewind/redrive/revalidate/
+    // clean-claims's "Reason recorded" lines — see commands/lib/escape-reason.js.
+    console.log(`Domains unfrozen for ${runId} (reason: ${escapeReasonForDisplay(reason)})`);
     return;
   }
 
@@ -536,7 +540,14 @@ function cmdDomains(args) {
     }
     console.log('Domain events:');
     for (const e of events) {
-      console.log(`  ${e.created_at} | ${e.domain_name} | ${e.event_type}${e.reason ? ' — ' + e.reason : ''}`);
+      // F-7c3e91a4 class (wave 18): domain_events.reason is the SAME
+      // stored-audit-trail shape as wave_state_events/agent_state_events
+      // (clean-claims's file_claims_cleaned rows and unfreezeDomains both
+      // write here with a raw operator --reason) — a read-later verb exactly
+      // like `swarm history`/`swarm status`, so the same forged-row hazard
+      // applies. See commands/lib/escape-reason.js.
+      const reasonClause = e.reason ? ' — ' + escapeReasonForDisplay(e.reason) : '';
+      console.log(`  ${e.created_at} | ${e.domain_name} | ${e.event_type}${reasonClause}`);
     }
     return;
   }
@@ -1722,49 +1733,17 @@ async function cmdAdjudicate(args) {
 }
 
 /**
- * Escape a free-text override reason for embedding inside the quoted clause
- * formatOverrideGroups renders (F-fa23cc37). --reason is unrestricted
- * operator free text (parseValueFlag(args, '--reason') at cmdAdvance below —
- * no character validation anywhere), so wrapping it in quotes with no
- * escaping would only move the collision: a reason containing a literal '"'
- * could forge what looks like the clause's own closing quote followed by a
- * fake second clause (e.g. reason `a"; ownership: "fake` would render
- * `adjudication: "a"; ownership: "fake"` — visually indistinguishable from a
- * genuine second override on `ownership`). Backslash-escaping runs FIRST so
- * a `\"` already present in the source reason round-trips as `\\"` (a literal
- * backslash then an escaped quote) instead of being misread as an escaped
- * quote it never was — standard escape-pair ordering (JSON/CSV-style).
- *
- * F-11f0e453: quote/backslash-fencing assumed the reason's hazard surface
- * was purely lexical — characters that could be misread WITHIN the one
- * line `console.log` prints. A literal newline breaks that assumption one
- * layer down: `console.log` prints whatever bytes it is given, so an
- * embedded '\n' does not stay inside the quoted clause from the terminal's
- * point of view — it ends the current line and starts a new one, and that
- * new line can be shaped, byte-for-byte, to look like a genuine second
- * `--history` row (its own fake timestamp, phase transition, gate count,
- * and authorizer). No amount of quote- or backslash-escaping stops this,
- * because the forged text is never part of the QUOTED STRING as far as the
- * terminal is concerned — it is a wholly separate physical line. '\n',
- * '\r', and '\t' are now escaped to their visible two-character form for
- * the same reason '"' already is, so the entire rendered row — whatever an
- * operator's --reason contains — is mechanically confined to the one line
- * `console.log` was asked to print. These three still run AFTER the
- * backslash pass for the same invariant the '"' ordering already depends
- * on: each escape introduces a NEW backslash ('\\n', '\\r', '\\t') that
- * must never itself be re-escaped by a later pass.
- *
- * @param {string} reason
- * @returns {string}
+ * escapeReasonForDisplay (F-fa23cc37 / F-11f0e453 / F-7c3e91a4+F-463c7179
+ * wave-18) now lives in commands/lib/escape-reason.js — every reason-
+ * rendering site in this package (this file's formatOverrideGroups plus the
+ * `--unfreeze`/`--history` sites in cmdDomains below, history.js, status.js,
+ * rewind.js, redrive.js, revalidate.js, clean-claims.js, receipt.js) routes
+ * through that ONE shared helper so the escaping contract cannot drift
+ * between call sites again — wave 16 hardened exactly this one call site
+ * while seven near-identical siblings shipped unescaped. See that file's
+ * docstring for the full escaping-contract history and the C0/C1/line-
+ * separator control-byte class it now covers.
  */
-function escapeReasonForDisplay(reason) {
-  return reason
-    .replace(/\\/g, '\\\\')
-    .replace(/"/g, '\\"')
-    .replace(/\n/g, '\\n')
-    .replace(/\r/g, '\\r')
-    .replace(/\t/g, '\\t');
-}
 
 /**
  * Render a promotion's `overrides` (each `{gate, reason}` — recordPromotion in

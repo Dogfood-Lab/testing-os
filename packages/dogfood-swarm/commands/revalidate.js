@@ -61,6 +61,7 @@ import { getActualTouchedFiles, resolveWorktreeBaseRef } from '../lib/git-touche
 // (both write paths superseded the SAME way) — see reconcileFileClaims's own
 // doc comment there for the full rationale.
 import { reconcileFileClaims } from './collect.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
@@ -644,13 +645,18 @@ export function revalidate(opts) {
         `inspect with \`swarm status ${runId}\`.)`
       : '';
 
+    // F-7c3e91a4 class (wave 18): immediate echo of the operator's own
+    // just-typed --reason — this line was the LEAST protected of the whole
+    // family (no quote-fencing at all, unlike every sibling site), so it
+    // now gets both the quote-fence and the escape. See
+    // commands/lib/escape-reason.js.
     report.summary =
       `Revalidate (APPLIED) — Wave ${wave.wave_number} (${wave.phase}):\n` +
       `  Repaired: ${repairCount} agent_run(s)\n` +
       `  Refused:  ${refusalCount}\n` +
       `  Skipped:  ${skipCount}\n` +
       `  Wave status: ${report.waveStatusBefore} → ${report.waveStatusAfter}${recoveryClause}\n` +
-      `  Reason: ${reason}`;
+      `  Reason: "${escapeReasonForDisplay(reason)}"`;
   } else {
     report.summary =
       `Revalidate (DRY-RUN) — Wave ${wave.wave_number} (${wave.phase}):\n` +
@@ -659,7 +665,7 @@ export function revalidate(opts) {
       `  Skipped:      ${skipCount}\n` +
       `  Wave status would: ${report.waveStatusBefore} → ` +
       `${plannedCount > 0 && report.waveStatusBefore === 'failed' ? 'collected (only if ALL agents repaired)' : report.waveStatusBefore}\n` +
-      `  Re-run with --apply to mutate. Reason will be: "${reason}"`;
+      `  Re-run with --apply to mutate. Reason will be: "${escapeReasonForDisplay(reason)}"`;
   }
 
   return report;

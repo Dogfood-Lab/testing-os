@@ -73,23 +73,6 @@ export class CollectUpsertError extends Error {
 }
 
 /**
- * Thrown by transitionAgent when a state-machine transition is rejected.
- *
- * Pre-fix history (F-091578-002): the rejection path threw a bare
- * `new Error('Illegal transition: ${check.reason}')`, leaking internal
- * state-machine vocabulary ("`complete` is terminal — no transitions
- * allowed") to operators with no class differentiator and no actionable
- * hint. An operator hitting this had no way to tell whether the rejection
- * was their problem (BLOCKED — needs override), the program's problem
- * (TERMINAL — caller bug), or a missing edge in TRANSITIONS (INVALID —
- * legitimate disallowed transition).
- *
- * The wave-17 fix routes every rejection through this typed error with a
- * `code` field (`BLOCKED` / `TERMINAL` / `INVALID`) so the CLI's top-level
- * handler can render a code-specific actionable hint. Sibling concept to
- * IsolationError + CollectUpsertError: structured shape > prose-only.
- */
-/**
  * Thrown when a `swarm dispatch` precondition fails (missing run, frozen-
  * domain check, missing domains).
  *
@@ -242,6 +225,31 @@ export class CriterionIntentOverflowError extends Error {
   }
 }
 
+/**
+ * Thrown by transitionAgent when a state-machine transition is rejected.
+ *
+ * Pre-fix history (F-091578-002): the rejection path threw a bare
+ * `new Error('Illegal transition: ${check.reason}')`, leaking internal
+ * state-machine vocabulary ("`complete` is terminal — no transitions
+ * allowed") to operators with no class differentiator and no actionable
+ * hint. An operator hitting this had no way to tell whether the rejection
+ * was their problem (BLOCKED — needs override), the program's problem
+ * (TERMINAL — caller bug), or a missing edge in TRANSITIONS (INVALID —
+ * legitimate disallowed transition).
+ *
+ * The wave-17 fix routes every rejection through this typed error with a
+ * `code` field (`BLOCKED` / `TERMINAL` / `INVALID`) so the CLI's top-level
+ * handler can render a code-specific actionable hint. Sibling concept to
+ * IsolationError + CollectUpsertError: structured shape > prose-only.
+ *
+ * F-e0fb3761 (Wave 18): this doc block previously sat above
+ * DispatchPreconditionError instead of above this class — an
+ * insertion-ordering slip (DispatchPreconditionError's own comment+class
+ * pair was added between this doc and its class, and this class was later
+ * relocated to the bottom of the file without its comment following it).
+ * Moved here, directly above the class it actually documents. Zero runtime
+ * effect either way; see errors-orphaned-jsdoc-placement.test.js.
+ */
 export class StateMachineRejectionError extends Error {
   /**
    * @param {string} message

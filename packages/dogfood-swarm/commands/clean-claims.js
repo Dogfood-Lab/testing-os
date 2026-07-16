@@ -87,6 +87,7 @@ import { BLOCKED_STATUSES as AGENT_BLOCKED_STATUSES } from '../lib/state-machine
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 // SQLite bind-parameter ceiling is host-dependent (999 on older builds);
 // batching the id-list DELETE keeps the verb safe at any row count.
@@ -524,7 +525,9 @@ function formatPlanSummary(report) {
     lines.push(`  Refused:  ${t.agent_runs_refused} agent_run(s) / ${t.claims_refused} row(s) (named jurisdiction per row)`);
     lines.push(`  Audit:    ${report.audit_events.length} domain_events row(s) written (event_type file_claims_cleaned; restorable old_value)`);
     lines.push(`  Scope invariants: ${report.scope_invariants_verified ? 'VERIFIED (violation=0 rows + other-run rows untouched)' : 'not verified (nothing was deleted)'}`);
-    lines.push(`  Reason recorded: "${report.reasonRecorded}"`);
+    // F-7c3e91a4 class (wave 18): immediate echo of the operator's own
+    // just-typed --reason. See commands/lib/escape-reason.js.
+    lines.push(`  Reason recorded: "${escapeReasonForDisplay(report.reasonRecorded)}"`);
   } else {
     lines.push(`  Eligible: ${t.claims_eligible} violation=1 file_claims row(s) across ${t.agent_runs_eligible} agent_run(s)${waveNote}`);
     lines.push(`  Refused:  ${t.agent_runs_refused} agent_run(s) / ${t.claims_refused} row(s) (named jurisdiction per row)`);
@@ -553,9 +556,14 @@ export function formatCleanClaims(report) {
         `phase ${g.phase}, agent '${g.agent_status}'): ${g.claim_count} violation row(s)\n`;
       const ev = g.evidence;
       if (ev.last_event) {
+        // F-7c3e91a4 class (wave 18): a STORED agent_state_events.reason,
+        // the agent-level twin of wave_state_events (fed by the same
+        // revalidate.js override path via transitionAgent) — same
+        // read-later hazard as `swarm history`. See commands/lib/escape-reason.js.
+        const evReason = ev.last_event.reason ? ` — "${escapeReasonForDisplay(ev.last_event.reason)}"` : '';
         out += `    evidence: ${ev.event_count} agent_state_events row(s) (untouched); last: ` +
           `${ev.last_event.from_status} -> ${ev.last_event.to_status}` +
-          `${ev.last_event.reason ? ` — "${ev.last_event.reason}"` : ''} (${ev.last_event.created_at})\n`;
+          `${evReason} (${ev.last_event.created_at})\n`;
       } else {
         out += '    evidence: no agent_state_events rows for this agent_run\n';
       }

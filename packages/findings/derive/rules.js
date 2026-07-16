@@ -61,6 +61,22 @@ function scenarioVerdict(record) {
   return record.scenario_results?.[0]?.verdict || null;
 }
 
+// F-88fb37ff: a scenario's step_results is the ONLY corroborating evidence
+// for a self-reported "blocked" (or "fail") verdict — a verifier fix closed
+// this same gap in @dogfood-lab/verify's validateStepResults, but the derive
+// pipeline reads records from BOTH records/ and records/_rejected/ (see
+// load-records.js) and never consults verification.status, so a
+// self-contradictory record still reaches every rule here with
+// scenario_results untouched. ruleScenarioStepFailure already gates on
+// failedSteps(record).length > 0 for the "fail" verdict; this mirrors that
+// same evidentiary floor for a single scenario object (rule-blocked-scenario
+// iterates scenarios directly rather than through the record-level,
+// index-0-only helpers above).
+function hasFailOrBlockedStep(scenario) {
+  const results = scenario.step_results || [];
+  return results.some(s => s != null && (s.status === 'fail' || s.status === 'blocked'));
+}
+
 // ─── Rule 1: Surface/interface misclassification ────────────
 
 const ruleSurfaceMisclassification = {
@@ -262,12 +278,16 @@ const ruleBlockedScenario = {
   description: 'Detects scenarios that were blocked entirely, typically indicating a missing precondition or infrastructure gap.',
 
   applies(ctx) {
-    return ctx.record.scenario_results?.some(s => s.verdict === 'blocked');
+    // F-88fb37ff: require step evidence backing the self-reported verdict —
+    // otherwise a self-contradictory record (blocked verdict, every step
+    // reports pass) synthesizes a plausible-sounding but false
+    // "infrastructure gap" finding the record's own evidence contradicts.
+    return ctx.record.scenario_results?.some(s => s.verdict === 'blocked' && hasFailOrBlockedStep(s));
   },
 
   derive(ctx) {
     const { record, repoSlug } = ctx;
-    const blocked = record.scenario_results.filter(s => s.verdict === 'blocked');
+    const blocked = record.scenario_results.filter(s => s.verdict === 'blocked' && hasFailOrBlockedStep(s));
 
     return blocked.map(scenario => {
       const reason = scenario.blocking_reason || 'No blocking reason provided';
