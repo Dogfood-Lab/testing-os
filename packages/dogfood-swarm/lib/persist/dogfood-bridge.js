@@ -40,10 +40,25 @@ export function buildDogfoodSubmission(exportData, overallVerdict) {
       });
     }
 
-    // Determine wave verdict
-    const allAgentsPass = w.agents.every(a => a.status === 'complete');
+    // Determine wave verdict.
+    //
+    // F-1f8fd647: `w.agents.every(...)` is vacuously TRUE on an empty array,
+    // so a wave that dispatched ZERO agents (the already-established
+    // all-domains-'shared' 0-agent dispatch shape — buildRunExport's
+    // `agents: agents.map(...)` in export.js carries an empty array straight
+    // through with no guard) fell through to allAgentsPass:true and reported
+    // a clean 'pass' scenario_result with an empty step_results array —
+    // success claimed with literally zero evidence behind it. Guard the
+    // empty case explicitly, before the vacuous-truth `.every()` ever runs:
+    // zero agents is never a pass on its own terms, regardless of what
+    // `.every()` returns for it. 'blocked' (paired with `blocking_reason`
+    // below) is the schema's own vocabulary for "could not verify", and is
+    // more honest here than 'partial', which implies some evidence exists.
+    const noAgentsDispatched = w.agents.length === 0;
+    const allAgentsPass = !noAgentsDispatched && w.agents.every(a => a.status === 'complete');
     const verifyPass = !w.verification || w.verification.passed;
-    const waveVerdict = allAgentsPass && verifyPass ? 'pass' :
+    const waveVerdict = noAgentsDispatched ? 'blocked' :
+                        allAgentsPass && verifyPass ? 'pass' :
                         w.violations.length > 0 ? 'fail' : 'partial';
 
     // Determine product surface from domain structure
@@ -56,6 +71,13 @@ export function buildDogfoodSubmission(exportData, overallVerdict) {
       product_surface: surface,
       execution_mode: 'bot',
       verdict: waveVerdict,
+      // dogfood-record-submission.schema.json documents blocking_reason as
+      // "Required when verdict is blocked" and packages/verify/validators/
+      // policy.js enforces that pairing — set it here so the artifact is
+      // never a 'blocked' verdict with a silently-missing reason.
+      ...(noAgentsDispatched ? {
+        blocking_reason: `wave ${w.number} (${w.phase}) dispatched zero agents — no evidence to verify`,
+      } : {}),
       step_results: agentSteps,
       evidence: w.violations.length > 0 ? [{
         kind: 'artifact',

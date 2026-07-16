@@ -73,10 +73,15 @@ function seedFixture() {
   return { tmp, dbPath, waveId };
 }
 
+// F-8ad2d58d: every afterEach below is Windows-tolerant (matches the
+// established sibling idiom in redrive.test.js, rewind.test.js, and every
+// wave4/6/8/10/12-*-swarm-cp-pins.test.js) — the CLI subprocess each it()
+// spawns can still hold the WAL sidecar lock for a beat after it exits.
+
 describe('advance --check-only --format=json', () => {
   let fx;
   beforeEach(() => { fx = seedFixture(); });
-  afterEach(() => { rmSync(fx.tmp, { recursive: true, force: true }); });
+  afterEach(() => { try { rmSync(fx.tmp, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
 
   it('emits the checkGates() object as pure JSON', () => {
     const r = runCli(['advance', RUN_ID, '--check-only', '--format=json'], fx.dbPath);
@@ -100,7 +105,7 @@ describe('advance --check-only --format=json', () => {
 describe('receipt --format=json', () => {
   let fx;
   beforeEach(() => { fx = seedFixture(); });
-  afterEach(() => { rmSync(fx.tmp, { recursive: true, force: true }); });
+  afterEach(() => { try { rmSync(fx.tmp, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
 
   it('emits the receipt object as pure JSON', () => {
     const r = runCli(['receipt', RUN_ID, '--format=json'], fx.dbPath);
@@ -118,7 +123,7 @@ describe('receipt --format=json', () => {
 describe('history --format=json', () => {
   let fx;
   beforeEach(() => { fx = seedFixture(); });
-  afterEach(() => { rmSync(fx.tmp, { recursive: true, force: true }); });
+  afterEach(() => { try { rmSync(fx.tmp, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
 
   it('emits the history() report as pure JSON', () => {
     const r = runCli(['history', String(fx.waveId), '--format=json'], fx.dbPath);

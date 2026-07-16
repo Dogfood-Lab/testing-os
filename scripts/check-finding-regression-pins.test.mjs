@@ -312,6 +312,196 @@ test('F-16275dfd mutation-probe (RED direction): an unbalanced-bracket regex in 
   );
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// F-f37bb9ae — enclosingCallHasAssertBody character-class awareness
+// (mutation-probe, both directions, plus a systematic audit-sweep fix and one
+// disclosed-but-not-fixed residual, all proven by direct construction against
+// the real production function per the finding's own methodology).
+//
+// PRE-FIX MECHANISM: the depth loop treated every raw '(' '{' ')' '}'
+// character as a real bracket, with zero character-class ('[...]')
+// awareness — so an UNESCAPED bracket char sitting inside a regex character
+// class (where it is a literal to match, never a group/quantifier boundary)
+// miscounted depth. An unescaped OPEN bracket in a class INFLATED depth,
+// delaying closure past the call's true end and leaking the scan into a
+// LATER, unrelated call — a FALSE GRANT (the dangerous direction). An
+// unescaped CLOSE bracket DEFLATED depth, closing early and denying a
+// genuinely-covered id — an under-credit (the safe-but-still-wrong
+// direction). Both are closed by the same `inClass` fix.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-f37bb9ae TREATMENT (was a false grant, now correctly denied): an unescaped OPEN bracket inside a regex character class must not inflate depth and leak the scan into a later, unrelated test', () => {
+  // Verbatim shape from the finding's own reproduction: the first id's own
+  // body has zero real assertions; pre-fix, the class's '(' inflated depth
+  // so the scan never reached <=0 at this call's true '});' and leaked into
+  // the second, unrelated test, crediting the first id with the second
+  // test's assert.
+  const text =
+    "test('F-100000-021: unrelated smoke test', () => {\n" +
+    '  const re = /[(]/;\n' +
+    '  doSomethingHarmless();\n' +
+    '});\n' +
+    "test('a different test', () => {\n" +
+    '  assert.ok(true);\n' +
+    '});\n';
+  const hits = findStructuralPinHits(text, 'F-100000-021', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['none'],
+    'an unescaped open bracket in a character class must not manufacture false assert-body credit by leaking the scan into a later, unrelated call',
+  );
+});
+
+test('F-f37bb9ae A/B control: the identical shape with an ESCAPED open paren (not a character class) stays correctly denied, isolating the trigger to the character class specifically', () => {
+  const text =
+    "test('F-100000-022: unrelated smoke test', () => {\n" +
+    '  const re = /\\(/;\n' +
+    '  doSomethingHarmless();\n' +
+    '});\n' +
+    "test('a different test', () => {\n" +
+    '  assert.ok(true);\n' +
+    '});\n';
+  const hits = findStructuralPinHits(text, 'F-100000-022', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['none'], 'an escaped paren was already correctly denied pre-fix (F-16275dfd) — this stays denied, confirming the character class is what F-f37bb9ae\'s fix targets, not escaping');
+});
+
+test('F-f37bb9ae counter-proof (GREEN direction, open bracket): a genuinely-covered id whose body legitimately contains an open-bracket character class AND a real assert in its OWN call still earns credit', () => {
+  const text =
+    "test('F-100000-023: strips a literal open paren', () => {\n" +
+    '  const re = /[(]/;\n' +
+    '  const result = strip(input);\n' +
+    '  assert.equal(result, expected);\n' +
+    '});\n';
+  const hits = findStructuralPinHits(text, 'F-100000-023', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['title'], 'the fix must suppress the character class\'s effect on depth, not deny credit outright — a real assert in the same call body must still be found');
+});
+
+test('F-f37bb9ae counter-proof (GREEN direction, close bracket — this sub-case was a TRUE ORPHAN pre-fix, not merely a coincidentally-correct denial): a genuinely-covered id whose body contains a character class with two literal close-bracket characters now earns credit', () => {
+  // A standard `test('id', () => { ... })` body starts the scan at depth=2
+  // (the call's own '(' plus the block-bodied arrow's own '{'), so ONE
+  // stray close-bracket-in-class only brings depth to 1, not 0 — matching
+  // why F-16275dfd's own repro needed TWO escaped closes to trigger. This
+  // class holds two literal close characters to cancel both baseline
+  // levels, reproducing the actual pre-fix premature-closure bug (not the
+  // weaker single-close shape, which never actually triggered the bug).
+  const text =
+    "test('F-100000-024: validates trailing-paren stripping', () => {\n" +
+    '  const re = /[)}]/;\n' +
+    '  const result = stripTrailing(input);\n' +
+    '  assert.equal(result, expected);\n' +
+    '});\n';
+  const hits = findStructuralPinHits(text, 'F-100000-024', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['title'],
+    'pre-fix this collapsed depth to zero mid-class (two literal closes cancelling the test-call paren and the block-brace) and returned false before ever reaching the real assert one line later — a true orphan for a genuinely-covered id, not a coincidentally-correct denial',
+  );
+});
+
+test('F-f37bb9ae (audit sweep) DISCLOSED, NOT FIXED THIS WAVE: a regex literal whose PATTERN TEXT (not a bracket) literally spells "assert" or "expect(" still manufactures false assert-body credit — a distinct mechanism from the bracket-depth miscounting above, needing the same tokenizer this file has repeatedly declined to add', () => {
+  // This is NOT closed by the inClass fix above — inClass only changes how
+  // BRACKET CHARACTERS affect depth; STRUCTURAL_ASSERT_LINE.test() still
+  // runs against the same regex-literal-inclusive text regardless, and a
+  // regex whose SOURCE spells "assert" (not its match target) satisfies the
+  // check with zero real assertion anywhere. Confirmed not currently live
+  // in the corpus (see the module docstring's WHAT STILL SLIPS THROUGH).
+  // Pinned here, GREEN (documenting the actual current behavior, not
+  // asserting a not-yet-true fix), so a future wave inherits a
+  // reproduction instead of rediscovering this from scratch.
+  const text =
+    "test('F-100000-059: unrelated smoke test', () => {\n" +
+    '  const re = /assert/;\n' +
+    '  doSomethingHarmless();\n' +
+    '});\n';
+  const hits = findStructuralPinHits(text, 'F-100000-059', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['title'],
+    'KNOWN OPEN GAP (documented in the module docstring, not fixed this wave): a regex literal\'s pattern TEXT spelling the word "assert" grants false credit through the text-match, independent of bracket-depth counting',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-f37bb9ae (audit sweep) — rule 1 (isLeadingCommentPin) hardened against
+// the same "unmasked text plus a regex literal" evasion class: a line that
+// is really a regex-literal statement (testing an id shape — an ordinary
+// thing to write in a repo whose own job is id-pattern matching) starts
+// with a lone '/', which STRUCTURAL_COMMENT_DECORATION's `[/*#-]+` class
+// cannot distinguish from a real '//' or '/*' comment opener.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-f37bb9ae (audit sweep) TREATMENT: a regex-literal statement testing an id shape must not earn leading-comment credit on placement alone', () => {
+  const hits = findStructuralPinHits('/F-100000-029/.test(candidate);\n', 'F-100000-029', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['none'],
+    'a lone leading slash is a regex-literal delimiter, not a comment opener — it must not be stripped as decoration',
+  );
+});
+
+test('F-f37bb9ae (audit sweep) GREEN controls: every real comment-decoration convention this repo uses stays unaffected by the lone-slash guard', () => {
+  const cases = [
+    ['// line comment', '// F-100000-030 — the actual fix reason\n', 'F-100000-030'],
+    ['/* block comment opener', '/* F-100000-031 block header\n', 'F-100000-031'],
+    ['* JSDoc continuation', '*   F-100000-032  schema.js STATUS.run enum\n', 'F-100000-032'],
+    ['# shell-style comment', '# F-100000-033 — orphaned prefixed-format pin\n', 'F-100000-033'],
+    ['- markdown list marker', '- F-100000-034 — desc\n', 'F-100000-034'],
+  ];
+  for (const [label, text, id] of cases) {
+    const hits = findStructuralPinHits(text, id, 'irrelevant.test.js');
+    assert.deepEqual(hits.map((h) => h.kind), ['leading-comment'], `${label} must still earn leading-comment credit`);
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-c7927c58 — isSameLineAssertArgumentPin (rule 4) title-span masking
+// (mutation-probe, both directions, plus a precision proof that the fix
+// excludes only the title span and not the whole line).
+//
+// PRE-FIX MECHANISM: rule 4 deliberately tests the RAW, unmasked line (by
+// design, to find ids living inside real assertion-message strings) — but
+// that also meant it could not distinguish a REAL assert/expect( CALL from
+// the bare English word "assert" or literal "expect(" text sitting inside a
+// test/it/describe TITLE, silently overriding rule 2's correct empty-body
+// denial on the exact same line.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-c7927c58 TREATMENT: a test title containing the ordinary English word "assert" must not override rule 2\'s correct denial for a genuinely empty callback body', () => {
+  const text = "test('F-100000-025: should not assert when input is valid', () => { doSomethingWithNoAssertion(); });\n";
+  const hits = findStructuralPinHits(text, 'F-100000-025', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['none'],
+    'title prose containing the bare word "assert" must not satisfy rule 4 — the callback body has zero real assertions',
+  );
+});
+
+test('F-c7927c58 TREATMENT: a test title containing literal "expect()" as prose must not override rule 2\'s correct denial for a genuinely empty callback body', () => {
+  const text = "test('F-100000-026: does not call expect() directly', () => { doSomethingWithNoAssertion(); });\n";
+  const hits = findStructuralPinHits(text, 'F-100000-026', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['none'],
+    'title prose containing literal "expect()" text must not satisfy rule 4 — the callback body has zero real assertions',
+  );
+});
+
+test('F-c7927c58 negative control: ordinary title wording with the same empty body was already correctly denied and stays denied', () => {
+  const text = "test('F-100000-027: handles the edge case correctly', () => { doSomethingWithNoAssertion(); });\n";
+  const hits = findStructuralPinHits(text, 'F-100000-027', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['none'], 'isolates the trigger to assert/expect-shaped prose specifically, not to titled-empty-bodies in general (already covered by F-ec9622fd)');
+});
+
+test('F-c7927c58 precision proof: maskTestTitleSpan excludes only the quoted title span, not the whole line — a real, unrelated assert naming the id later on the same physical line still earns credit', () => {
+  const text = "test('F-100000-028', () => {}); assert.ok(true, 'F-100000-028 checked');\n";
+  const hits = findStructuralPinHits(text, 'F-100000-028', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['assert-line'],
+    'the empty test() call correctly earns no title credit, but the genuine assert.ok(...) call later on the same line, naming the id in its own message, must still earn rule-4 credit — proves the fix is surgical, not a blanket same-line denial',
+  );
+});
+
 test('F-f0339e12 unit: findStructuralPinHits recognizes a same-line assert argument pin', () => {
   const hits = findStructuralPinHits("assert.doesNotMatch(a, /F-B-001/, 'domain-a leaked F-B-001');\n", 'F-B-001', 'irrelevant.test.js');
   assert.deepEqual(hits.map((h) => h.kind), ['assert-line']);

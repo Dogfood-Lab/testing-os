@@ -29,6 +29,18 @@
  * that tree grows): a corpus with pre-chain records AND one genuine
  * post-chain torn write must report ONLY the torn write as an orphan; a fully
  * clean post-chain corpus (with pre-chain history present) must report ok:true.
+ *
+ * F-1907b2bc (wave 14, MEDIUM) hardens the SAME adoption boundary one step
+ * further. F-29134790 above treats "no integrity block" as sufficient proof a
+ * record predates the chain, but that only holds for records that actually
+ * went through writeRecord() — a record dropped directly onto disk (no
+ * writeRecord call at all) also has no integrity block, and was silently
+ * absorbed into `preAdoption` with a "predates the chain" reason string that
+ * is provably false whenever the dropped record's OWN claimed
+ * timing.finished_at/verification.verified_at is on or after
+ * CHAIN_ADOPTION_DATE. The fix cross-checks that claimed timestamp before
+ * accepting the pre-adoption narrative; see the 'F-1907b2bc' describe block
+ * below and verify-chain.js's matching doc paragraphs.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -40,7 +52,7 @@ import { resolve, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { writeRecord, computeRecordPath } from './persist.js';
-import { verifyChain, formatChainResult } from './verify-chain.js';
+import { verifyChain, formatChainResult, CHAIN_ADOPTION_DATE } from './verify-chain.js';
 import { chainManifestPath } from './lib/chain-manifest.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -213,5 +225,116 @@ describe('F-29134790 — adoption boundary for pre-chain records', () => {
     assert.ok(lines.some((l) => /1 orphan record/.test(l)), `expected exactly one orphan line, got ${JSON.stringify(lines)}`);
     assert.ok(lines.some((l) => /2 pre-chain record/.test(l)), `expected a two-pre-chain-record line, got ${JSON.stringify(lines)}`);
     assert.ok(lines.some((l) => l.includes('fmt-notok-torn')), 'the genuine orphan must still be named');
+  });
+});
+
+describe('F-1907b2bc — a no-integrity record must also pass a timestamp plausibility check before pre_adoption', () => {
+  it('CORE PIN: a no-integrity record whose OWN timestamp is AFTER the adoption date is a genuine orphan, not pre_adoption', () => {
+    setup();
+    // The exact live repro from the finding: a record dropped at the sharded
+    // path a real record would occupy, with no integrity block, claiming a
+    // timestamp well after persist.js gained unconditional integrity-stamping.
+    const afterCutoff = new Date(CHAIN_ADOPTION_DATE.getTime() + 24 * 60 * 60 * 1000).toISOString();
+    const { path } = writePreChainRecord(TEST_ROOT, {
+      run_id: 'forged-recent-001',
+      timing: { started_at: afterCutoff, finished_at: afterCutoff },
+      verification: {
+        status: 'accepted', verified_at: afterCutoff,
+        provenance_confirmed: true, schema_valid: true, policy_valid: true,
+      },
+    });
+
+    const result = verifyChain(TEST_ROOT, { collectOrphans: true });
+
+    assert.equal(result.ok, false, 'a record claiming a post-adoption date must fail ok, not be excused as historical');
+    assert.equal(result.pre_adoption.length, 0, 'must NOT be silently absorbed into pre_adoption');
+    assert.equal(result.orphans.length, 1);
+    assert.equal(result.orphans[0].run_id, 'forged-recent-001');
+    assert.ok(!/predates the integrity chain/.test(result.orphans[0].reason),
+      `the reason must not repeat the false "predates the chain" claim, got: ${result.orphans[0].reason}`);
+    assert.ok(existsSync(path));
+  });
+
+  it('the boundary is inclusive: a record dated exactly AT CHAIN_ADOPTION_DATE is a genuine orphan; one millisecond before is pre_adoption', () => {
+    setup();
+    const atCutoff = CHAIN_ADOPTION_DATE.toISOString();
+    const justBefore = new Date(CHAIN_ADOPTION_DATE.getTime() - 1).toISOString();
+
+    writePreChainRecord(TEST_ROOT, {
+      run_id: 'boundary-at-cutoff',
+      timing: { started_at: atCutoff, finished_at: atCutoff },
+      verification: {
+        status: 'accepted', verified_at: atCutoff,
+        provenance_confirmed: true, schema_valid: true, policy_valid: true,
+      },
+    });
+    writePreChainRecord(TEST_ROOT, {
+      run_id: 'boundary-just-before',
+      timing: { started_at: justBefore, finished_at: justBefore },
+      verification: {
+        status: 'accepted', verified_at: justBefore,
+        provenance_confirmed: true, schema_valid: true, policy_valid: true,
+      },
+    });
+
+    const result = verifyChain(TEST_ROOT, { collectOrphans: true });
+
+    assert.equal(result.orphans.length, 1, `expected exactly the at-cutoff record as orphan, got ${JSON.stringify(result.orphans)}`);
+    assert.equal(result.orphans[0].run_id, 'boundary-at-cutoff');
+    assert.equal(result.pre_adoption.length, 1, `expected exactly the just-before record as pre_adoption, got ${JSON.stringify(result.pre_adoption)}`);
+    assert.equal(result.pre_adoption[0].run_id, 'boundary-just-before');
+  });
+
+  it('a no-integrity record with no readable timing/verification timestamp at all is a genuine orphan, not silently excused', () => {
+    setup();
+    // Not reachable through any real persist path (computeRecordPath itself
+    // requires timing.finished_at to shard the file), but collectOrphanRecords
+    // must not treat "no timestamp to check" as "check passed" — the burden is
+    // on the record to support the pre-adoption claim, not the other way round.
+    const path = resolve(TEST_ROOT, 'records', 'dogfood-lab', 'testing-os', '2026', '01', '01', 'run-no-timestamp.json');
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, JSON.stringify({ run_id: 'no-timestamp-001', repo: 'dogfood-lab/testing-os' }) + '\n', 'utf-8');
+
+    const result = verifyChain(TEST_ROOT, { collectOrphans: true });
+
+    assert.equal(result.ok, false);
+    assert.equal(result.orphans.length, 1);
+    assert.equal(result.orphans[0].run_id, 'no-timestamp-001');
+    assert.equal(result.pre_adoption.length, 0);
+    assert.ok(existsSync(path));
+  });
+
+  it('both self-reported fields are consulted: a stale timing.finished_at cannot mask a post-adoption verification.verified_at', () => {
+    setup();
+    const afterCutoff = new Date(CHAIN_ADOPTION_DATE.getTime() + 1000).toISOString();
+    // timing.finished_at is left at buildRecord's default (2026-03-19, safely
+    // pre-cutoff) — only verification.verified_at is forged forward.
+    writePreChainRecord(TEST_ROOT, {
+      run_id: 'mixed-timestamps-001',
+      verification: {
+        status: 'accepted', verified_at: afterCutoff,
+        provenance_confirmed: true, schema_valid: true, policy_valid: true,
+      },
+    });
+
+    const result = verifyChain(TEST_ROOT, { collectOrphans: true });
+
+    assert.equal(result.orphans.length, 1, `expected the mixed-timestamp record to be a genuine orphan, got ${JSON.stringify(result)}`);
+    assert.equal(result.orphans[0].run_id, 'mixed-timestamps-001');
+    assert.equal(result.pre_adoption.length, 0);
+  });
+
+  it('the real 53 historical pre-chain records are all dated more than a month before CHAIN_ADOPTION_DATE (documents the fixed margin the constant relies on)', () => {
+    // This is a sanity check on the CONSTANT, not on collectOrphanRecords —
+    // it pins that CHAIN_ADOPTION_DATE (2026-06-21) sits safely after every
+    // real pre-chain record's own timestamp, so the cross-check added by this
+    // fix cannot flip any of the real repo's 53 genuine historical records
+    // into orphans. See this test file's own manual real-repo verification in
+    // the wave-14 amend output for the live verifyChain(realRepoRoot) count.
+    const lastKnownRealPreChainRecordDate = new Date('2026-05-26T04:47:25Z');
+    assert.ok(
+      lastKnownRealPreChainRecordDate.getTime() < CHAIN_ADOPTION_DATE.getTime(),
+      'CHAIN_ADOPTION_DATE must stay after the latest real pre-chain record or this fix would start failing real history'
+    );
   });
 });

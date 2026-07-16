@@ -183,6 +183,11 @@ describe('Run verdict', () => {
 
   it('pass for complete run', () => {
     buildCompleteRun(db, { status: 'complete' });
+    // buildCompleteRun always seeds an open MEDIUM (F-002); close it so this
+    // fixture is genuinely all-clean — computeRunVerdict now counts open
+    // findings even for a complete run (F-b721038e), so a real open finding
+    // would correctly make this 'partial'. Mirrors the all-fixed fixture below.
+    db.prepare("UPDATE findings SET status = 'fixed' WHERE finding_id = 'F-002' AND run_id = 'r1'").run();
     const exp = buildRunExport(db, 'r1');
     assert.equal(computeRunVerdict(exp), 'pass');
     db.close();

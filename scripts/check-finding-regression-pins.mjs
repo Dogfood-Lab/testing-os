@@ -92,6 +92,9 @@ const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
  *      "leading-comment line" form parse-regression-pins.test.js's own
  *      docstring documents as canonical. F-ec9622fd: this stays placement-
  *      only, unlike rule 2 below — see WHAT STILL SLIPS THROUGH for why.
+ *      F-f37bb9ae: the decoration match must be a genuine comment opener
+ *      ('//' or '/*'), never a bare regex-literal '/' delimiter — see WHAT
+ *      STILL SLIPS THROUGH for the evasion this closes.
  *   2. TEST TITLE — the id sits inside the quoted title argument of a
  *      test()/it()/describe() call, e.g. `describe('guard (F-100000-001)',
  *      …)` or `test('F-W1-CI-006: main-entry guard …', …)`. The other
@@ -129,6 +132,8 @@ const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
  *      the non-matching F-NNNNNN-NNN placeholder, not a real tracked id —
  *      a real id here would make THIS docstring's own coverage depend on
  *      an unrelated file in another domain never refactoring it away.)
+ *      F-c7927c58: excludes a same-line test()/it()/describe( call's own
+ *      quoted TITLE span before matching — see WHAT STILL SLIPS THROUGH.
  *
  * Each signal is deliberately LINE-LOCAL, never a multi-line proximity
  * window. A window-based "within N lines of an assert" heuristic was
@@ -189,24 +194,112 @@ const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
  *     paragraph previously framed it. (This paragraph's prior worked
  *     example, `/\(fixme\)/`, has a BALANCED escaped-bracket count and was
  *     never actually reproducible — equal escaped opens and closes cancel
- *     out regardless of escape-awareness.) Still not attempted: recognizing
- *     an UNESCAPED literal bracket that is not a real group/quantifier
- *     boundary (e.g. inside a character class, `/[(]/`) — that residual
- *     still fails closed (under-credits into a visible, actionable orphan,
- *     same as before) and needs a real tokenizer to distinguish a regex-
- *     opening `/` from a division operator; not attempted here for the same
- *     "no heavyweight parser dependency" reason countCommandMapEntries's own
- *     docstring gives.
+ *     out regardless of escape-awareness.)
+ *   - F-f37bb9ae: the previous version of THIS paragraph claimed an
+ *     UNESCAPED literal bracket inside a character class (e.g. `/[(]/`)
+ *     "still fails closed, same as before." THAT CLAIM WAS FALSE for the
+ *     open-bracket sub-case — a docstring overclaiming a false-positive-
+ *     safe residual that was actually a false-grant residual is a Class #14
+ *     violation one level up, the same failure mode this whole gate exists
+ *     to catch elsewhere. Proof: `test('F-id: unrelated smoke test', () =>
+ *     { const re = /[(]/; doSomethingHarmless(); }); test('a different
+ *     test', () => { assert.ok(true); });` — pre-fix, the class's unescaped
+ *     '(' INFLATED depth instead of being ignored, so the scan never
+ *     reached <=0 at the first call's true '});' and leaked into the
+ *     second, unrelated test, crediting the first id with the second
+ *     test's assert. An unescaped CLOSE bracket in a class (`/[)]/`) has
+ *     the opposite, safe-direction bug — it DEFLATES depth, which only
+ *     trips the closedAt branch early enough to matter once depth is down
+ *     to its last level (needs two stray closes to cancel both the `test(`
+ *     call's own paren and the block-bodied arrow's own '{', matching why
+ *     F-16275dfd's own repro needed two escaped closes) — that sub-case
+ *     really did fail closed as claimed, under-crediting a genuinely-
+ *     covered id into a visible orphan. FIX: track an `inClass` boolean in
+ *     the same escape-aware loop — true on an unmasked '[', false on ']' —
+ *     and suppress the '(' / '{' / ')' / '}' depth adjustment entirely
+ *     while inClass is true, mirroring check-doc-drift.mjs:1180-1185's own
+ *     `if (src[i] === '[') inClass = true; else if (src[i] === ']')
+ *     inClass = false;` disambiguation (the file this module's escape
+ *     handling already cited as its model). This closes BOTH directions at
+ *     once — the dangerous false-grant and the merely inconvenient
+ *     under-credit — because both stemmed from the same missing
+ *     distinction. Still not attempted, for the same "no heavyweight parser
+ *     dependency" reason countCommandMapEntries's own docstring gives:
+ *     recognizing when a regex literal's PATTERN TEXT — not a bracket, just
+ *     ordinary characters — happens to spell "assert" or "expect(" verbatim
+ *     (e.g. `const re = /assert/;`, or `/expect(x)/` as a real, unescaped
+ *     capture group). STRUCTURAL_ASSERT_LINE.test() runs against the same
+ *     regex-literal-inclusive text the depth scan uses, and a regex whose
+ *     SOURCE spells those words (not its match target — the pattern's own
+ *     characters) satisfies the assert/expect check with zero real
+ *     assertion anywhere in the body. Distinguishing "text that names an
+ *     assert-like word" from "text that is inside a regex literal" needs
+ *     exactly the tokenizer this file keeps declining to add. Confirmed NOT
+ *     currently live in the corpus (grepped every test file for a regex
+ *     literal whose pattern body contains "assert" or "expect(" as literal,
+ *     non-argument text — zero matches) — a proven mechanism, not a
+ *     currently-red gate, same evidentiary posture F-f37bb9ae and
+ *     F-16275dfd themselves were disposed under. Pinned by a mutation-probe
+ *     test (search the test file for "regex PATTERN TEXT") so a future wave
+ *     inherits a reproduction instead of rediscovering it from scratch.
+ *   - F-c7927c58: rule 4 (isSameLineAssertArgumentPin) deliberately tests
+ *     the RAW, unmasked line — masking would break its designed ability to
+ *     find an id living inside a real assertion-message string (e.g.
+ *     `assert.doesNotMatch(a, /F-id/, 'domain-a leaked F-id')`). But
+ *     unmasked also meant it could not tell a REAL assert/expect() call
+ *     from the bare English word "assert" or literal "expect(" text
+ *     appearing anywhere on the line — including inside the id's own test
+ *     TITLE (`test('F-id: should not assert when input is valid', () => {
+ *     doSomethingWithNoAssertion(); });` or a title reading 'does not call
+ *     expect() directly'), silently overriding rule 2's correct empty-body
+ *     denial on the exact same line. FIX: maskTestTitleSpan blanks out
+ *     (length-preserving) just the quoted title span of a test()/it()/
+ *     describe( call opening on the line, if any, before rule 4 runs its
+ *     pattern test AND its id-membership check — narrower than masking the
+ *     whole line (a real assert/expect call elsewhere on the same physical
+ *     line, before or after an empty-titled call, still earns credit
+ *     correctly — see the mixed-line mutation-probe test) and narrower
+ *     than masking every quoted string (which would blind rule 4 to its
+ *     own reason for existing). The title is the one span that is
+ *     structurally never a legitimate rule-4 pin site — rule 2 is its sole
+ *     authority — so excluding exactly that span, and nothing else, closes
+ *     the gap without trading away the canonical case.
+ *   - F-f37bb9ae (audit sweep): auditing rules 1 and 3 for the same
+ *     "unmasked text plus a regex literal" evasion class found one real
+ *     instance, in rule 1. STRUCTURAL_COMMENT_DECORATION's `[/*#-]+`
+ *     character class cannot distinguish a real comment opener ('//' or
+ *     '/*') from a regex literal's own lone '/' delimiter, so a line that
+ *     is really a regex-literal statement testing an id shape (e.g.
+ *     `/F-NNNNNN-NNN/.test(candidate);` — an ordinary thing to write in a
+ *     repo whose own job is id-pattern matching) was mistaken for a
+ *     decorated comment line and credited on placement alone. FIX:
+ *     isLeadingCommentPin now rejects a decoration match whose non-
+ *     whitespace content is nothing but a lone '/' — real comment openers
+ *     are always '//' or '/*' (two characters), so this only ever excludes
+ *     the ambiguous case, never a genuine comment. Rule 3 (self-header) was
+ *     audited for the same class and found NOT to share the mechanism: it
+ *     never runs an assert/expect pattern test or a bracket-depth scan, and
+ *     the only unmasked text it inspects is whether the file's own
+ *     basename literally appears before the id — a regex literal would
+ *     have to spell out the file's own name AND an F-id-shaped substring,
+ *     in that order, inside the first 20 lines, to matter at all, which is
+ *     not a plausible accidental shape (unlike rule 1's single-character
+ *     delimiter collision or rule 4's common-English-word collision). No
+ *     change made to rule 3 this wave; if that conclusion is ever
+ *     overturned, it belongs here, not silently re-derived.
  *   - Rule 2's call-body scan is bounded (STRUCTURAL_TITLE_BODY_LINE_LIMIT
  *     lines) and fails CLOSED past that bound (treated as "no body found",
  *     never a false grant) — an unproven pin surfaces as a visible orphan a
  *     human must resolve, not a silent miscount.
  *   - F-ec9622fd: rules 1 (leading-comment) and 3 (self-header) are still
- *     placement-only — neither requires the file to contain any test
- *     structure related to (or even near) the id; a comment that is merely
- *     the leading token of a line, or a header that names the file's own
- *     basename before the id, earns credit purely from where the text sits.
- *     Both are mutation-probe-gameable this way (a leading-comment floating
+ *     placement-only in the broader sense — neither requires the file to
+ *     contain any test structure related to (or even near) the id; a
+ *     comment that is merely the leading token of a line, or a header that
+ *     names the file's own basename before the id, earns credit purely
+ *     from where the text sits (F-f37bb9ae's rule-1 fix above closes one
+ *     narrow regex-delimiter ambiguity WITHIN this same placement-only
+ *     design — it does not change the design itself). Both are
+ *     mutation-probe-gameable this way (a leading-comment floating
  *     in a file with no test/describe block anywhere near it; a self-
  *     referencing header on an otherwise-unrelated file). Rule 2 closed its
  *     version of this gap by requiring a body-level assert (above); rules 1
@@ -259,7 +352,26 @@ function maskCommentsAndStrings(s) {
   return s.replace(STRUCTURAL_MASK_PATTERN, (m) => ' '.repeat(m.length));
 }
 
+/**
+ * F-f37bb9ae (audit sweep): a decoration match whose non-whitespace content
+ * is nothing but a lone '/' is a regex literal's own delimiter, not a real
+ * comment opener ('//' or '/*') — STRUCTURAL_COMMENT_DECORATION's `[/*#-]+`
+ * character class cannot otherwise tell them apart, so a line that is
+ * really a regex-literal statement (e.g. `/F-NNNNNN-NNN/.test(x);` — an
+ * ordinary shape in a repo whose own job is id-pattern matching) would
+ * otherwise be mistaken for a decorated comment line and credited on
+ * placement alone. Real comment openers are always two characters ('//' or
+ * '/*'), so this guard only ever excludes the ambiguous single-slash case,
+ * never a genuine comment. Left unstripped, the ambiguous line correctly
+ * fails the startsWith(id) check below (it starts with '/', not the id).
+ *
+ * @param {string} line
+ * @param {string} id
+ * @returns {boolean}
+ */
 function isLeadingCommentPin(line, id) {
+  const m = STRUCTURAL_COMMENT_DECORATION.exec(line);
+  if (m && m[0].replace(/\s/g, '') === '/') return false;
   return line.replace(STRUCTURAL_COMMENT_DECORATION, '').startsWith(id);
 }
 
@@ -278,7 +390,15 @@ function isLeadingCommentPin(line, id) {
 function matchTestCallStart(line) {
   const m = STRUCTURAL_TEST_TITLE.exec(line);
   if (!m) return null;
-  return { title: m[2], openParenCol: m.index + m[0].indexOf('(') };
+  // F-c7927c58: the overall match ends exactly at the title's closing quote
+  // (the pattern's last token is `\1`, the backreference to the opening
+  // quote), so the quoted span's column range derives from m[0].length and
+  // m[2].length alone — no `d`-flag match-indices needed. Exposed so
+  // maskTestTitleSpan below reuses this file's one parser of "where does
+  // this call's title text live" instead of re-deriving it.
+  const titleEnd = m.index + m[0].length;
+  const titleStart = titleEnd - m[2].length - 2; // opening quote + title text + closing quote
+  return { title: m[2], openParenCol: m.index + m[0].indexOf('('), titleStart, titleEnd };
 }
 
 /**
@@ -304,6 +424,15 @@ function matchTestCallStart(line) {
  */
 function enclosingCallHasAssertBody(lines, callLineIndex, openParenCol) {
   let depth = 0;
+  // F-f37bb9ae: true while the scan is inside a regex character class
+  // ([...]) — declared once and persisted across lines exactly like
+  // `depth` above (never reset per line). A multi-line array/destructure/
+  // computed-access can legitimately span lines and this stays safe either
+  // way (their bracket contents are inherently balanced in valid JS —
+  // suppressing a balanced pair changes no net depth); a regex literal
+  // never spans lines in valid JS, so persistence costs nothing for the
+  // actual risk case either.
+  let inClass = false;
   const lastLine = Math.min(lines.length - 1, callLineIndex + STRUCTURAL_TITLE_BODY_LINE_LIMIT);
   for (let i = callLineIndex; i <= lastLine; i++) {
     const raw = i === callLineIndex ? lines[i].slice(openParenCol) : lines[i];
@@ -324,6 +453,22 @@ function enclosingCallHasAssertBody(lines, callLineIndex, openParenCol) {
       // characters of the escape pair, same "advance by 2" effect as the
       // sibling's `i += 2`.
       if (ch === '\\') { c++; continue; }
+      // F-f37bb9ae: an UNESCAPED '[' opens a regex character class, where
+      // '(' '{' ')' '}' are literal characters to match, never group or
+      // quantifier boundaries (e.g. the docstring's own worked example
+      // `/[(]/`). Mirrors check-doc-drift.mjs:1180-1185's `if (src[i] ===
+      // '[') inClass = true; else if (src[i] === ']') inClass = false;` —
+      // the same disambiguation this file's escape handling above already
+      // cites as its model. Pre-fix, an unescaped OPEN bracket in a class
+      // INFLATED depth (delaying closure past the call's true end and
+      // leaking the scan into a later, unrelated call — a false grant)
+      // while an unescaped CLOSE bracket DEFLATED it (closing early and
+      // denying a genuinely-covered id — an under-credit); suppressing all
+      // four bracket characters while inClass closes both directions at
+      // once, not just the dangerous one.
+      if (ch === '[') { inClass = true; continue; }
+      if (ch === ']') { inClass = false; continue; }
+      if (inClass) continue;
       if (ch === '(' || ch === '{') depth++;
       else if (ch === ')' || ch === '}') {
         depth--;
@@ -373,8 +518,51 @@ function isSelfReferencingHeaderPin(line, id, fileBasename, lineIndex) {
   return true;
 }
 
+/**
+ * F-c7927c58: blank out the quoted TITLE argument of a test()/it()/describe(
+ * call opening on `line` (length-preserving, like maskCommentsAndStrings),
+ * before rule 4's raw-line pattern test. Rule 4 deliberately does NOT mask
+ * general string content — its whole purpose is finding an id living inside
+ * a real assertion-message string (e.g. `assert.doesNotMatch(a, /F-id/,
+ * 'domain-a leaked F-id')`) — but a test/it/describe TITLE is prose about
+ * the test, never a pin site of its own; rule 2 (isTestTitlePin) is the
+ * sole authority for title-borne credit, and unlike rule 4's bare text
+ * match, it requires a real body-level assert. Without this, title prose
+ * that spells 'assert' as an ordinary English word ('should not assert
+ * when input is valid') or 'expect(' as if it were a call ('does not call
+ * expect() directly') satisfies STRUCTURAL_ASSERT_LINE and silently
+ * overrides rule 2's correct denial for a genuinely-empty callback body.
+ * Only the quoted title span is masked, never the whole line — a real
+ * assert/expect call elsewhere on the same physical line, before or after
+ * an empty-titled call, still earns rule-4 credit correctly (see the
+ * mixed-line mutation-probe test).
+ *
+ * @param {string} line
+ * @returns {string}
+ */
+function maskTestTitleSpan(line) {
+  const call = matchTestCallStart(line);
+  if (!call) return line;
+  return line.slice(0, call.titleStart) + ' '.repeat(call.titleEnd - call.titleStart) + line.slice(call.titleEnd);
+}
+
+/**
+ * F-c7927c58: rule 4 runs against maskTestTitleSpan(line), not the raw
+ * line — see that function's docstring for why. Both the assert/expect
+ * pattern test and the id-membership check use the title-masked text, so
+ * an id living ONLY inside a title (already correctly adjudicated by rule
+ * 2) cannot piggyback on an unrelated real assert elsewhere on the same
+ * physical line either — the same "cheap, line-local, no dataflow
+ * analysis" bar the rest of this file holds itself to, applied to the one
+ * span that is structurally never a legitimate rule-4 pin site.
+ *
+ * @param {string} line
+ * @param {string} id
+ * @returns {boolean}
+ */
 function isSameLineAssertArgumentPin(line, id) {
-  return STRUCTURAL_ASSERT_LINE.test(line) && line.includes(id);
+  const withoutTitle = maskTestTitleSpan(line);
+  return STRUCTURAL_ASSERT_LINE.test(withoutTitle) && withoutTitle.includes(id);
 }
 
 /**

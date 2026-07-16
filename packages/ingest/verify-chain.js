@@ -27,6 +27,17 @@
  * push that touched a record but not the chain), and it catches middle-deletion,
  * reorder, and forged-insertion (they break the seq run or the prev-link).
  *
+ * The `pre_adoption` exemption inside collectOrphanRecords (below) narrows the
+ * "push that touched a record but not the chain" promise one step further: it
+ * excuses an un-ledgered, no-integrity record from `ok` only when the record's
+ * OWN claimed timing.finished_at/verification.verified_at predates
+ * CHAIN_ADOPTION_DATE (F-1907b2bc, wave 14), so dropping a record with a
+ * fabricated RECENT date is still caught as a genuine orphan. Dropping one with
+ * a fabricated OLD date is not caught — that record is indistinguishable from
+ * genuine history, because both are self-reported fields the same privileged
+ * writer controls. That residual is the SAME already-disclosed ingest-write-
+ * credential trust boundary named two paragraphs up, not a new one.
+ *
  * KNOWN LIMITATION — tail truncation. Removing the most-recent entries (and
  * their record files) leaves a SHORTER but internally-consistent chain, which
  * verifies OK: the offline verifier has no external record of the expected head
@@ -76,10 +87,12 @@ import { findJsonFiles } from './rebuild-indexes.js';
  *   is set). These are genuine torn writes — persist-succeeded, ledger-append-
  *   missed — and they make `ok` false.
  * @property {ChainOrphan[]} [pre_adoption] - Records on disk but absent from
- *   the ledger that predate the chain's adoption (no `integrity` block, so
- *   they could never have been ledgered in the first place — only present
- *   when `collectOrphans` is set). Visible for operator awareness; does NOT
- *   make `ok` false.
+ *   the ledger that predate the chain's adoption: no `integrity` block AND a
+ *   self-reported timing.finished_at/verification.verified_at before
+ *   CHAIN_ADOPTION_DATE (F-1907b2bc — a no-integrity record whose own claimed
+ *   timestamp is on/after that date is a genuine `orphans` entry instead;
+ *   only present when `collectOrphans` is set). Visible for operator
+ *   awareness; does NOT make `ok` false.
  */
 
 /**
@@ -223,6 +236,49 @@ export function verifyChain(repoRoot, opts = {}) {
 }
 
 /**
+ * The commit that gave persist.js's writeRecord its UNCONDITIONAL
+ * integrity-stamping logic — f4ca987 "feat(integrity): tamper-evident hash
+ * chain over records/", 2026-06-21T18:35:36-04:00 (2026-06-21T22:35:36Z).
+ * Every record genuinely written by writeRecord() from this date onward
+ * carries a fully-formed `integrity` block; a record with none at all can
+ * only predate it — see collectOrphanRecords' F-1907b2bc doc paragraph below.
+ *
+ * Set to the START of the commit's UTC calendar day, not its exact
+ * timestamp, so the boundary errs toward NOT excusing a borderline record
+ * (the fail-loud direction) rather than toward hair-splitting a commit
+ * second no real record is anywhere near — the actual gap in this repo's own
+ * history is five weeks wide (last genuine pre-chain record 2026-05-26,
+ * first genuine ledgered record 2026-07-03; see F-29134790's doc paragraph
+ * below), so this constant has a wide margin on both sides.
+ */
+export const CHAIN_ADOPTION_DATE = new Date('2026-06-21T00:00:00Z');
+
+/**
+ * The later of a record's own self-reported `timing.finished_at` /
+ * `verification.verified_at`, or `null` when neither is present and
+ * parseable. F-1907b2bc: used only to sanity-check a would-be `preAdoption`
+ * bucketing — this is NOT a trust boundary (the same privileged writer that
+ * can drop a record with no `integrity` block can also forge these fields;
+ * see the top-of-file threat-model paragraph). It only stops the tool from
+ * asserting "predates the chain" when the record's own data already
+ * contradicts that claim, or supports no claim at all.
+ *
+ * @param {object} record
+ * @returns {Date|null}
+ */
+function latestClaimedTimestamp(record) {
+  const candidates = [record.timing?.finished_at, record.verification?.verified_at];
+  let latest = null;
+  for (const value of candidates) {
+    if (!value) continue;
+    const parsed = new Date(value);
+    if (isNaN(parsed.getTime())) continue;
+    if (latest === null || parsed.getTime() > latest.getTime()) latest = parsed;
+  }
+  return latest;
+}
+
+/**
  * INGEST-PROACT-001 — reconcile on-disk records against the ledger.
  *
  * Walks every `*.json` under `records/` (accepted AND `_rejected/`) and flags
@@ -283,6 +339,28 @@ export function verifyChain(repoRoot, opts = {}) {
  * (visible, does not fail `ok`); a record WITH an `integrity` block that is
  * still un-ledgered remains a genuine `orphans` entry exactly as before.
  *
+ * F-1907b2bc (wave 14, MEDIUM): the paragraph above treats "does this record
+ * carry an `integrity` block" as the WHOLE adoption boundary, but that
+ * equivalence only holds for records that actually passed through the real
+ * writeRecord(). A record dropped directly onto disk — bypassing writeRecord
+ * entirely — also has no `integrity` block, and pre-fix was silently
+ * absorbed into `preAdoption` with a "predates the chain" reason string that
+ * is provably FALSE whenever the dropped record's own claimed timestamp is on
+ * or after CHAIN_ADOPTION_DATE (persist.js has stamped `integrity`
+ * UNCONDITIONALLY on every record it writes since that date — see the
+ * constant's doc comment above — so a record genuinely written from then on
+ * could not lack one). The fix cross-checks a would-be `preAdoption` record's
+ * own `timing.finished_at`/`verification.verified_at` (the later of the two
+ * — see `latestClaimedTimestamp`) against CHAIN_ADOPTION_DATE before
+ * accepting the "predates the chain" narrative; a record with no verifiable
+ * timestamp of its own, or one on/after the cutoff, is bucketed into
+ * `orphans` instead, with a reason string honest about why. This closes the
+ * LOW-effort version of dropping a forged record (not bothering to fake a
+ * plausible pre-adoption date) but not a DILIGENT one that also forges an old
+ * timing/verification block — no purely offline, record-content-based check
+ * can tell a forged old date from a genuine one; see the threat-model
+ * paragraph at the top of this file.
+ *
  * @param {string} repoRoot
  * @param {Array<object>} entries - The ledger entries (already read).
  * @returns {{ orphans: ChainOrphan[], preAdoption: ChainOrphan[] }} `orphans`
@@ -338,16 +416,44 @@ function collectOrphanRecords(repoRoot, entries) {
       continue;
     }
 
-    // Adoption boundary — see the F-29134790 doc paragraph above.
+    // Adoption boundary — see the F-29134790 doc paragraph above. "No
+    // integrity block" is NECESSARY for pre-adoption but, on its own, not
+    // SUFFICIENT — see the F-1907b2bc doc paragraph above. Cross-check the
+    // record's own claimed timestamp against CHAIN_ADOPTION_DATE before
+    // accepting the "predates the chain" narrative.
     if (record.integrity == null) {
-      preAdoption.push({
+      const claimedAt = latestClaimedTimestamp(record);
+      const isPreAdoption = claimedAt !== null && claimedAt.getTime() < CHAIN_ADOPTION_DATE.getTime();
+
+      if (isPreAdoption) {
+        preAdoption.push({
+          run_id: record.run_id ?? null,
+          seq: null,
+          path: relPath,
+          reason:
+            `record predates the integrity chain (no integrity block — written ` +
+            `before tamper-evident chaining was introduced); expected for ` +
+            `historical records, not counted as an audit failure.`,
+        });
+        continue;
+      }
+
+      orphans.push({
         run_id: record.run_id ?? null,
         seq: null,
         path: relPath,
-        reason:
-          `record predates the integrity chain (no integrity block — written ` +
-          `before tamper-evident chaining was introduced); expected for ` +
-          `historical records, not counted as an audit failure.`,
+        reason: claimedAt === null
+          ? `record has no integrity block, and no readable timing.finished_at ` +
+            `or verification.verified_at either — its "predates the chain" claim ` +
+            `cannot be supported by anything on the record itself, so it is ` +
+            `treated as a genuine orphan rather than silently excused as historical.`
+          : `record has no integrity block, but its own timing.finished_at / ` +
+            `verification.verified_at (latest: ${claimedAt.toISOString()}) is on or ` +
+            `after the chain-adoption date (${CHAIN_ADOPTION_DATE.toISOString()}) — ` +
+            `a record genuinely written by writeRecord() from that date onward ` +
+            `always carries an integrity block, so this one cannot genuinely ` +
+            `predate the chain. Re-run ingest for this record or investigate how ` +
+            `it reached disk without one.`,
       });
       continue;
     }

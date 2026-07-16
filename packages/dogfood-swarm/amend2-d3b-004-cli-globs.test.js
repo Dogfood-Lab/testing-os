@@ -63,6 +63,13 @@ function setupRun(dbPath) {
   closeDb(dbPath);
 }
 
+// F-8ad2d58d: every `finally` block below is Windows-tolerant on its rmSync
+// (matches the established sibling idiom in redrive.test.js, rewind.test.js,
+// and every wave4/6/8/10/12-*-swarm-cp-pins.test.js) — the CLI subprocess
+// each it() spawns can still hold the WAL sidecar lock for a beat after it
+// exits. closeDb(dbPath) only ever releases THIS process's own pooled
+// connection, never the just-exited child's, so guarding it alone would not
+// have protected the rmSync call that actually raises EBUSY/EPERM.
 describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
   it('--edit --globs <invalid-json> exits non-zero with CLI_INVALID_GLOBS_JSON code', () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'd3b-004-edit-bad-'));
@@ -84,7 +91,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must include an actionable Next: hint; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -103,7 +110,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must name the code CLI_INVALID_GLOBS_JSON; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -122,7 +129,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must name the code; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -141,7 +148,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must name the code; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -160,7 +167,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must name the code; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -180,7 +187,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `valid --globs must not trip the JSON-shape guard; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 });

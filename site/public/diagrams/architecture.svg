@@ -58,18 +58,19 @@
   <!-- Arrow: dispatch -> verifier -->
   <path d="M 380 95 L 422 95" class="arrow-line" marker-end="url(#arrow)" />
 
-  <!-- Section: Verifier (7 steps) -->
+  <!-- Section: Verifier (8 steps) -->
   <text x="420" y="30" class="section-label">testing-os ingestion (ingest.yml)</text>
   <rect x="420" y="50" width="240" height="180" class="accent-bg" />
-  <text x="540" y="78" text-anchor="middle" class="stage-title">Verifier — 7 steps</text>
-  <text x="435" y="100" class="step-label">1. Schema validate (AJV)</text>
-  <text x="435" y="116" class="step-label">2. Verifier-owned field guard</text>
-  <text x="435" y="132" class="step-label">3. Provenance check (GH API)</text>
-  <text x="435" y="148" class="step-label">4. Step results validation</text>
-  <text x="435" y="164" class="step-label">5. Policy evaluation</text>
-  <text x="435" y="180" class="step-label">6. Verdict computation</text>
-  <text x="435" y="196" class="step-label">7. Record assembly</text>
-  <text x="540" y="220" text-anchor="middle" class="stage-label">packages/verify + packages/ingest</text>
+  <text x="540" y="76" text-anchor="middle" class="stage-title">Verifier — 8 steps</text>
+  <text x="435" y="94" class="step-label">1. Repo binding (repo/run_url)</text>
+  <text x="435" y="108" class="step-label">2. Schema validate (AJV)</text>
+  <text x="435" y="122" class="step-label">3. Verifier-owned field guard</text>
+  <text x="435" y="136" class="step-label">4. Provenance check (GH API)</text>
+  <text x="435" y="150" class="step-label">5. Step results validation</text>
+  <text x="435" y="164" class="step-label">6. Policy evaluation</text>
+  <text x="435" y="178" class="step-label">7. Verdict computation</text>
+  <text x="435" y="192" class="step-label">8. Record assembly</text>
+  <text x="540" y="216" text-anchor="middle" class="stage-label">packages/verify + packages/ingest</text>
 
   <!-- Arrow: verifier -> accepted persist -->
   <path d="M 660 105 L 702 105" class="arrow-line" marker-end="url(#arrow)" />

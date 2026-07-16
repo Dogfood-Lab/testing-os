@@ -44,7 +44,25 @@ describe('--isolate help gloss (F-d045e2fc)', () => {
     const help = r.stdout;
     const dispatchIdx = help.indexOf('dispatch <run-id> <phase>');
     assert.ok(dispatchIdx >= 0, 'dispatch command block must be present in help');
-    const block = help.slice(dispatchIdx, dispatchIdx + 1400);
+    // F-2b8e1797: the block end used to be a fixed `dispatchIdx + 1400`
+    // window — the same magic-number-slice shape F-3e449453 (wave 12, this
+    // same package) fixed in wave8-4091637-5127-swarm-cp-pins.test.js, for
+    // the identical reason: a fixed window can fail for the WRONG reason (an
+    // unrelated, benign edit growing the preceding content past the window)
+    // while staying silent about the real defect it exists to catch.
+    // Anchored on the next command entry's own opening token instead — the
+    // slice now grows and shrinks with the dispatch block's real content.
+    // Mutation-probed both directions against a captured copy of real `node
+    // cli.js` stdout (not the repo's cli.js): (a) splicing ~1000 benign
+    // filler chars into the gloss preamble pushes OWNERSHIP PROBE DEGRADED
+    // from offset 532 to ~1500 — past the old fixed-1400 budget (868 chars
+    // of headroom today), false-failing the old version while this anchor
+    // stays green; (b) deleting the OWNERSHIP PROBE DEGRADED sentence still
+    // flips this pin red, same as before.
+    const nextEntryIdx = help.indexOf('\n  collect <run-id> [opts]', dispatchIdx);
+    assert.ok(nextEntryIdx > dispatchIdx,
+      'the next command entry (collect) must still exist to bound the dispatch block — extraction is broken if this fails');
+    const block = help.slice(dispatchIdx, nextEntryIdx);
     assert.match(block, /--isolate/, '--isolate must be named in the dispatch help block');
     assert.match(block, /worktree/, '--isolate gloss must name the per-agent git worktree');
     assert.match(block, /attribut/i, '--isolate gloss must name the per-agent attribution it restores');

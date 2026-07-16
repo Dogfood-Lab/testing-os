@@ -42,12 +42,30 @@
  * them; reusing a raw value across tests would make a later test's
  * "must warn" assertion fail on stale state from an earlier one, not on a
  * defect in the fix.
+ *
+ * FOLLOW-UP — F-d535bde5. The paragraph above ("the dedup Set persists
+ * across [it() blocks]") described a module-level Set with process-lifetime
+ * scope, correct for the one-shot `swarm verify` CLI but not for
+ * `lib/verify/runner.js`'s other supported entry point: the package's
+ * `"./lib/*"` export, which lets a long-running host embed runStep/runSteps
+ * across many independent calls in one process. There, module-lifetime dedup
+ * meant a persistently-misconfigured tenant was warned about ONCE, EVER, not
+ * once per verify batch. The fix scopes runSteps()'s dedup to its OWN
+ * invocation (a fresh Set threaded into every runStep() call within that one
+ * runSteps() loop) rather than the module-level default — see the new
+ * describe block below. The tests ABOVE this point are unaffected: within a
+ * single runSteps() call the dedup still collapses repeats across all of
+ * that call's steps exactly as before, and two DIFFERENT raw values across
+ * two separate runSteps() calls always warned independently regardless of
+ * scope. What changes is the SAME raw value across two SEPARATE runSteps()
+ * calls: pre-fix, silent on the second call (module-level Set); post-fix,
+ * warns again (fresh per-invocation Set) — proven below.
  */
 
 import { describe, it, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { runSteps } from './verify/runner.js';
+import { runSteps, runStep } from './verify/runner.js';
 
 const ENV_VAR = 'SWARM_VERIFY_MAX_BUFFER_BYTES';
 const trivialStep = (name) => ({ name, cmd: 'node', args: ['-e', 'console.log(1)'] });
@@ -125,5 +143,46 @@ describe('readEnvMaxBufferBytes (via runSteps) — the malformed-value warning i
     assert.equal(result.steps.length, 3, 'fixture sanity: all 3 steps must still run with the env var unset');
     const malformedEvents = ndjsonEvents(lines).filter((e) => e.stage === 'verify_max_buffer_env_malformed');
     assert.equal(malformedEvents.length, 0, 'the ordinary unset case must stay completely silent across every step, exactly as a single runStep() call already does');
+  });
+});
+
+describe('F-d535bde5 — the malformed-value dedup Set is scoped PER runSteps() invocation, not the life of the process', () => {
+  it('the SAME malformed value across TWO SEPARATE runSteps() calls warns on EACH call — a persistent host gets one warning per batch, not one ever', () => {
+    process.env[ENV_VAR] = 'same-value-two-batches';
+    const first = captureStderrLines(() => runSteps(process.cwd(), THREE_STEP_PIPELINE));
+    const firstEvents = ndjsonEvents(first.lines).filter((e) => e.stage === 'verify_max_buffer_env_malformed');
+    assert.equal(firstEvents.length, 1, 'fixture sanity: the first batch warns once across its own 3 steps');
+
+    // A SECOND, SEPARATE runSteps() call — e.g. a persistent host (the
+    // package's `"./lib/*"` export makes this a real, supported embedding,
+    // not a purely theoretical one) verifying a second repo/tenant that
+    // happens to share the same misconfigured env value. Pre-fix, the
+    // module-level warnedMalformedMaxBufferValues Set persisted across BOTH
+    // calls in this one process, so this second batch would have logged
+    // ZERO events — the exact "warned once, ever, for the life of the host"
+    // defect F-d535bde5 fixed.
+    const second = captureStderrLines(() => runSteps(process.cwd(), THREE_STEP_PIPELINE));
+    const secondEvents = ndjsonEvents(second.lines).filter((e) => e.stage === 'verify_max_buffer_env_malformed');
+    assert.equal(secondEvents.length, 1,
+      'pre-fix: the module-level Set would have silenced this second, independent runSteps() batch entirely');
+    assert.equal(secondEvents[0].raw_value, 'same-value-two-batches');
+  });
+
+  it('a bare runStep() call (no runSteps() wrapper) keeps the ORIGINAL module-level, process-lifetime dedup as its default', () => {
+    process.env[ENV_VAR] = 'bare-runstep-same-value';
+    const first = captureStderrLines(() => runStep(process.cwd(), trivialStep('solo-a')));
+    const firstEvents = ndjsonEvents(first.lines).filter((e) => e.stage === 'verify_max_buffer_env_malformed');
+    assert.equal(firstEvents.length, 1, 'fixture sanity: the first bare call warns');
+
+    // A second bare runStep() call with the SAME raw value and no `opts`:
+    // this is the documented default for the low-level primitive, which has
+    // no batch boundary of its own, and is UNCHANGED by F-d535bde5 — only
+    // runSteps() (the actual `swarm verify`-equivalent batch entry point,
+    // and the one every production adapter calls) got the new
+    // per-invocation scoping.
+    const second = captureStderrLines(() => runStep(process.cwd(), trivialStep('solo-b')));
+    const secondEvents = ndjsonEvents(second.lines).filter((e) => e.stage === 'verify_max_buffer_env_malformed');
+    assert.equal(secondEvents.length, 0,
+      'a bare runStep() call must still dedupe against the module-level Set by default — this contract is unchanged');
   });
 });

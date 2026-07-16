@@ -51,7 +51,7 @@
     <text x="36" y="192" class="text-info">[check-regression-pins]</text><text x="266" y="192" class="text-ok"> every source-pinned F-id has a test pin.</text>
 
     <text x="36" y="216" class="text-dim"># tsc --build (composite refs)</text>
-    <text x="36" y="236" class="text-ok">  ✓ packages/schemas → built (8 schemas, 0 errors)</text>
+    <text x="36" y="236" class="text-ok">  ✓ packages/schemas → built (all schemas, 0 errors)</text>
 
     <text x="36" y="264" class="text-dim"># node --test "scripts/*.test.mjs"</text>
     <text x="36" y="284" class="text-ok">  ✓ test:scripts — all script test files green</text>

@@ -209,9 +209,14 @@ describe('cli-p-002: `swarm verify` exits non-zero unless the verdict is a clean
     seedRunWithWave(db, 'r1', repoPath);
     closeDb(dbPath);
   });
+  // F-8ad2d58d: rmSync itself must be Windows-tolerant, not just closeDb —
+  // closeDb only releases THIS process's own pooled connection, never the
+  // just-exited CLI child's, so the WAL sidecar can still be lock-held for a
+  // beat here. Matches the established sibling idiom (redrive.test.js,
+  // rewind.test.js, every wave4/6/8/10/12-*-swarm-cp-pins.test.js).
   after(() => {
     try { closeDb(dbPath); } catch { /* */ }
-    rmSync(tempDir, { recursive: true, force: true });
+    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
   });
 
   it('a no_tests verdict makes `swarm verify <run>` exit non-zero with an explanation', () => {
@@ -270,7 +275,10 @@ describe('cli-p-001: `swarm persist --ingest` exits non-zero when ingest hard-fa
     // SWARM_DB) the persist artifacts — one rmSync clears the lot. No repo-tree
     // cleanup is needed; a leak there would mean getOutputDir regressed, and
     // silently sweeping it would hide that (stageD-output-dir-tracks-db guards it).
-    rmSync(tempDir, { recursive: true, force: true });
+    // F-8ad2d58d: rmSync itself must be Windows-tolerant, not just closeDb —
+    // the two `it()`s above each spawn a CLI subprocess, which can still hold
+    // the WAL sidecar lock for a beat after it exits.
+    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
   });
 
   it('exit is non-zero and the reproduce line is surfaced when the ingest subprocess fails', () => {

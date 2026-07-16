@@ -351,7 +351,11 @@ describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
         `unknown wave-id error must NOT include a stack trace; got stderr:\n${r.stderr}`);
     } finally {
       try { closeDb(emptyDbPath); } catch { /* */ }
-      rmSync(emptyTempDir, { recursive: true, force: true });
+      // F-8ad2d58d: matches teardownFixtureDb() above — the CLI subprocess
+      // just spawned can still hold the WAL sidecar lock for a beat after it
+      // exits, so rmSync (the call that actually raises EBUSY) must be
+      // guarded too, not just closeDb.
+      try { rmSync(emptyTempDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 

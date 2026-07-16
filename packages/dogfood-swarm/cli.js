@@ -1722,6 +1722,27 @@ async function cmdAdjudicate(args) {
 }
 
 /**
+ * Escape a free-text override reason for embedding inside the quoted clause
+ * formatOverrideGroups renders (F-fa23cc37). --reason is unrestricted
+ * operator free text (parseValueFlag(args, '--reason') at cmdAdvance below —
+ * no character validation anywhere), so wrapping it in quotes with no
+ * escaping would only move the collision: a reason containing a literal '"'
+ * could forge what looks like the clause's own closing quote followed by a
+ * fake second clause (e.g. reason `a"; ownership: "fake` would render
+ * `adjudication: "a"; ownership: "fake"` — visually indistinguishable from a
+ * genuine second override on `ownership`). Backslash-escaping runs FIRST so
+ * a `\"` already present in the source reason round-trips as `\\"` (a literal
+ * backslash then an escaped quote) instead of being misread as an escaped
+ * quote it never was — standard escape-pair ordering (JSON/CSV-style).
+ *
+ * @param {string} reason
+ * @returns {string}
+ */
+function escapeReasonForDisplay(reason) {
+  return reason.replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+
+/**
  * Render a promotion's `overrides` (each `{gate, reason}` — recordPromotion in
  * lib/advance.js always applies ONE --reason string to every gate an override
  * masks) as an operator-facing tag. Groups gate names sharing an IDENTICAL
@@ -1731,6 +1752,17 @@ async function cmdAdjudicate(args) {
  * twice joined by the same '; ' delimiter used elsewhere to separate DISTINCT
  * items — indistinguishable from two different justifications, and with no
  * way to tell which gate either one applied to (F-51fa8e13).
+ *
+ * F-fa23cc37: F-51fa8e13's fix still joined `${gates.join(', ')}: ${reason}`
+ * clauses with the SAME '; ' used as the reason's OWN internal punctuation —
+ * a reason containing the literal substrings '; ' or ': ' (unrestricted free
+ * text, no character validation) read ambiguously, indistinguishable in
+ * shape from a genuine second clause. Each reason is now visually fenced in
+ * double quotes (escapeReasonForDisplay), so the reason's own punctuation —
+ * including a raw '"' — can never be misread as clause structure: the only
+ * UNESCAPED quote in a clause is its true closing one. `--format=json`
+ * (buildPromotionsJSON) is untouched by this — it stays the lossless,
+ * unescaped canonical form; this escaping exists only in the text view.
  *
  * @param {Array<{gate: string, reason: string}>} overrides
  * @returns {string}
@@ -1742,7 +1774,7 @@ function formatOverrideGroups(overrides) {
     gatesByReason.get(o.reason).push(o.gate);
   }
   return [...gatesByReason.entries()]
-    .map(([reason, gates]) => `${gates.join(', ')}: ${reason}`)
+    .map(([reason, gates]) => `${gates.join(', ')}: "${escapeReasonForDisplay(reason)}"`)
     .join('; ');
 }
 

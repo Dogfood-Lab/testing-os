@@ -50,12 +50,21 @@ const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
 
 /**
  * Raw SWARM_VERIFY_MAX_BUFFER_BYTES values already reported via the
- * `verify_max_buffer_env_malformed` diagnostic in this process (F-d6cfc2ad).
- * Keyed by the raw string so a DIFFERENT malformed value later in the same
- * process still warns on its own first appearance — only a REPEAT of a
- * value already seen stays silent. See readEnvMaxBufferBytes's own header
- * for why process-lifetime dedup is equivalent to "once per swarm verify
- * invocation" in production.
+ * `verify_max_buffer_env_malformed` diagnostic in THIS Set's lifetime
+ * (F-d6cfc2ad). Keyed by the raw string so a DIFFERENT malformed value
+ * later still warns on its own first appearance — only a REPEAT of a value
+ * already seen stays silent.
+ *
+ * F-d535bde5: this module-level Set is now only the DEFAULT dedup scope —
+ * used when a caller does not supply its own (see readEnvMaxBufferBytes's
+ * `seen` parameter below). runSteps() no longer relies on this default: it
+ * threads a fresh per-invocation Set instead, so dedup is scoped to "one
+ * `swarm verify`-equivalent BATCH", not to the life of the process. This
+ * module-level Set now backs only a bare, standalone runStep() call — itself
+ * a supported, documented entry point (`@dogfood-lab/dogfood-swarm`'s
+ * `"./lib/*"` package export) with no natural batch boundary of its own, so
+ * a hand-written script calling runStep() directly keeps the original
+ * process-lifetime behavior unless it opts into its own scope.
  */
 const warnedMalformedMaxBufferValues = new Set();
 
@@ -107,29 +116,45 @@ const warnedMalformedMaxBufferValues = new Set();
  * N-step `swarm verify` run with one misconfigured value emitted N
  * byte-identical NDJSON lines, once per step, even though the
  * misconfiguration is a single process-wide fact the operator only needs to
- * see once. The LOG is now deduplicated by the raw string value for the
- * life of this module's import (warnedMalformedMaxBufferValues below); the
- * env READ and the returned value are untouched — still fresh every call,
- * still `null` on every malformed call — so the existing "picks up a newly
- * set value on the very next call" contract still holds. A real `swarm
- * verify` invocation is exactly one process (the CLI starts fresh each
- * run), so process-lifetime dedup and "once per swarm verify invocation"
- * are the same guarantee in production. The two only diverge inside a
- * long-lived process that calls runStep/runSteps many times with the SAME
- * raw value (this package's own test suite, chiefly) — there, a repeat of
- * an already-warned-about value correctly stays silent on its second and
- * later appearances, while a DIFFERENT malformed value still warns on its
- * own first appearance.
+ * see once. The LOG is now deduplicated by the raw string value; the env
+ * READ and the returned value are untouched — still fresh every call, still
+ * `null` on every malformed call — so the existing "picks up a newly set
+ * value on the very next call" contract still holds.
  *
+ * F-d535bde5: the dedup scope is no longer ALWAYS module-lifetime. A real
+ * `swarm verify` invocation IS exactly one process (the CLI starts fresh
+ * each run), so module-lifetime dedup happened to equal "once per swarm
+ * verify invocation" for that one call path — but this module is also
+ * published via `@dogfood-lab/dogfood-swarm`'s `"./lib/*"` package export, a
+ * supported, documented entry point for embedding runStep/runSteps in a
+ * long-running host (e.g. a webhook/daemon process verifying many
+ * repos/tenants across many calls in one Node process — not a purely
+ * theoretical caveat). There, module-lifetime dedup meant a
+ * persistently-misconfigured tenant was warned about ONCE, EVER, for the
+ * life of the host — every later, independent verify() call for that same
+ * tenant silently fell back to the module default with no further signal,
+ * even though each call is a fresh operational event the operator arguably
+ * needs to see. `seen` lets a caller supply its own dedup scope; runSteps()
+ * below now creates a fresh one per invocation, so a persistent host gets
+ * one warning per `swarm verify`-equivalent BATCH, not one ever. A bare
+ * runStep() call with no `seen` argument keeps the original module-level,
+ * process-lifetime Set as its default — appropriate since runStep() is the
+ * lower-level primitive with no batch boundary of its own (a hand-written
+ * script calling it directly defines what "one batch" means, if anything,
+ * for its own use case).
+ *
+ * @param {Set<string>} [seen] — dedup scope for the malformed-value warning;
+ *   defaults to the module-level, process-lifetime Set. runSteps() passes a
+ *   Set scoped to its own invocation instead.
  * @returns {number|null}
  */
-function readEnvMaxBufferBytes() {
+function readEnvMaxBufferBytes(seen = warnedMalformedMaxBufferValues) {
   const raw = process.env.SWARM_VERIFY_MAX_BUFFER_BYTES;
   if (!raw) return null;
   const n = Number(raw);
   if (Number.isFinite(n) && n > 0) return n;
-  if (!warnedMalformedMaxBufferValues.has(raw)) {
-    warnedMalformedMaxBufferValues.add(raw);
+  if (!seen.has(raw)) {
+    seen.add(raw);
     logStage('verify_max_buffer_env_malformed', {
       component: 'dogfood-swarm',
       env_var: 'SWARM_VERIFY_MAX_BUFFER_BYTES',
@@ -189,15 +214,21 @@ const TOOL_NOT_FOUND_STDERR = /is not recognized as an internal or external comm
  *   `SWARM_VERIFY_MAX_BUFFER_BYTES` environment variable, read fresh per call
  *   and applied when `step.maxBufferBytes` is absent (see
  *   readEnvMaxBufferBytes below).
+ * @param {object} [opts]
+ * @param {Set<string>} [opts.warnedMaxBufferValues] — dedup scope for the
+ *   SWARM_VERIFY_MAX_BUFFER_BYTES malformed-value warning (F-d535bde5, see
+ *   readEnvMaxBufferBytes's `seen` param). runSteps() passes a Set scoped to
+ *   its own invocation; a bare runStep() call omits this and falls back to
+ *   readEnvMaxBufferBytes's own module-level default.
  * @returns {object} — StepResult
  */
-export function runStep(repoPath, step) {
+export function runStep(repoPath, step, opts = {}) {
   const cmdArgs = step.args || [];
   const timeoutMs = step.timeoutMs ?? STEP_TIMEOUT_MS;
   // Most-specific-wins, mirroring step.timeoutMs's own override shape:
   // per-step property > process-wide env override (F-014c22f0,
   // readEnvMaxBufferBytes) > module default.
-  const maxBufferBytes = step.maxBufferBytes ?? readEnvMaxBufferBytes() ?? MAX_BUFFER_BYTES;
+  const maxBufferBytes = step.maxBufferBytes ?? readEnvMaxBufferBytes(opts.warnedMaxBufferValues) ?? MAX_BUFFER_BYTES;
   // `command` is the human-readable display string returned to callers and
   // asserted by callers/tests; it is NOT what executes. `execFileSync`
   // receives `step.cmd` + the argv array separately below.
@@ -333,16 +364,26 @@ export function runStep(repoPath, step) {
  *   every non-pass verdict the runner originates, absent on a plain `pass`.
  *   `output_exceeded` (F-8d355b64) is a step-level capture-overflow signal,
  *   distinct from `timed_out` — see runStep's MAX_BUFFER_BYTES comment.
+ *   F-d535bde5: the SWARM_VERIFY_MAX_BUFFER_BYTES malformed-value warning
+ *   (see readEnvMaxBufferBytes) is deduplicated per runSteps() invocation,
+ *   not for the life of the process — a persistent host calling runSteps()
+ *   repeatedly gets one warning per call, not one ever.
  */
 export function runSteps(repoPath, steps, opts = {}) {
   const results = [];
   const totalStart = Date.now();
   let testCount = null;
+  // F-d535bde5: fresh per invocation rather than readEnvMaxBufferBytes's
+  // module-level default — see that function's header for why this is what
+  // makes "once per swarm verify invocation" hold for a persistent host
+  // embedding this module via the package's `./lib/*` export, not just for
+  // the one-shot CLI process where the two used to coincide by accident.
+  const warnedMaxBufferValues = new Set();
 
   for (const step of steps) {
     if (!step) continue; // null steps are skipped (adapter said "not applicable")
 
-    const result = runStep(repoPath, step);
+    const result = runStep(repoPath, step, { warnedMaxBufferValues });
     results.push(result);
 
     // ve-trunc-001: the count is measured inside runStep against the FULL
