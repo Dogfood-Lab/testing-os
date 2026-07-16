@@ -1039,3 +1039,153 @@ describe('Multi-scenario derivation (F-375053-007)', () => {
     assert.deepEqual(stepFail.scenario_ids, ['cli-full-test']);
   });
 });
+
+import { parseRejectionReason } from '@dogfood-lab/verify';
+
+// ============================================================
+// Regression: F-e1d45d27 — schema:/policy: routed through
+// parseRejectionReason instead of hand-rolled regex
+// ============================================================
+//
+// ruleSchemaRejection.applies/derive and rulePolicyRejection.applies/derive
+// (rules.js:347/353/386/392) used to test rejection_reasons entries with
+// `/^schema:/.test(r)` / `/^policy:/.test(r)` directly instead of importing
+// parse-rejection.js's authoritative classifier — the exact "hand-rolled
+// .startsWith() chain" drift source parse-rejection.js's own file header
+// names as its reason for existing. Fix imports `parseRejectionReason` from
+// `@dogfood-lab/verify` (already a transitive dependency via
+// @dogfood-lab/ingest; now direct) and reads `.prefix === 'schema:'` /
+// `'policy:'`.
+//
+// This is a differential-equivalence proof, not just a "still fires" smoke
+// test: `oldMatch` below is the two retired regexes, lifted verbatim, and the
+// matrix proves the new classifier-based check agrees with them on every
+// case — including the `policy-config:` adjacency the finding's own evidence
+// cites (a longer, unrelated prefix that must NOT collide with the bare
+// `policy:` match). A pure behavior test alone cannot catch a future
+// reversion to hand-rolled regex (today the two mechanisms agree on every
+// input), so the final test in this block source-scans rules.js for the
+// retired call shape as a structural pin.
+
+describe('Regression: rules.js schema:/policy: routes through parseRejectionReason (F-e1d45d27)', () => {
+  const schemaRule = getRuleById('rule-schema-rejection');
+  const policyRule = getRuleById('rule-policy-rejection');
+
+  // The retired oracle: rules.js's pre-fix hand-rolled matchers, verbatim.
+  const oldSchemaMatch = (r) => /^schema:/.test(r);
+  const oldPolicyMatch = (r) => /^policy:/.test(r);
+
+  // [reason, expected old-schema-match, expected old-policy-match]
+  const CASES = [
+    ['schema: /repo must be string', true, false],
+    ['schema:no-space-variant', true, false],
+    ['policy: forbidden tag "wip"', false, true],
+    ['policy:no-space-variant', false, true],
+    // Adjacency: policy-config: (VERIFY-F1's repo-custom-rule-predicate-fault
+    // prefix) must NOT satisfy the policy: match.
+    ['policy-config: predicate crashed evaluating custom rule', false, false],
+    // A prefix sharing no token with either.
+    ['provenance: source run could not be confirmed', false, false],
+  ];
+
+  for (const [reason, expectSchema, expectPolicy] of CASES) {
+    it(`parseRejectionReason agrees with the retired regex for ${JSON.stringify(reason)}`, () => {
+      const parsed = parseRejectionReason(reason);
+      assert.equal(parsed.prefix === 'schema:', oldSchemaMatch(reason),
+        `schema: classification must match the retired /^schema:/ regex for ${reason}`);
+      assert.equal(parsed.prefix === 'policy:', oldPolicyMatch(reason),
+        `policy: classification must match the retired /^policy:/ regex for ${reason}`);
+      // Sanity-anchor the table itself against what the retired oracle says,
+      // so a typo in CASES fails loudly here rather than masking a real gap.
+      assert.equal(oldSchemaMatch(reason), expectSchema);
+      assert.equal(oldPolicyMatch(reason), expectPolicy);
+    });
+  }
+
+  it('ruleSchemaRejection.applies still fires on a schema: rejection (behaviorally unchanged)', () => {
+    const ctx = {
+      record: { verification: { schema_valid: false, rejection_reasons: ['schema: /repo must be string'] } },
+      rejected: true,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(schemaRule.applies(ctx), true);
+  });
+
+  it('rulePolicyRejection.applies still fires on a policy: rejection (behaviorally unchanged)', () => {
+    const ctx = {
+      record: { verification: { policy_valid: false, rejection_reasons: ['policy: forbidden tag "wip"'] } },
+      rejected: true,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(policyRule.applies(ctx), true);
+  });
+
+  it('ruleSchemaRejection.applies does NOT fire on a policy-config: rejection (no adjacency collision)', () => {
+    const ctx = {
+      record: { verification: { schema_valid: false, rejection_reasons: ['policy-config: predicate crashed'] } },
+      rejected: true,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(schemaRule.applies(ctx), false);
+  });
+
+  it('rulePolicyRejection.applies does NOT fire on a policy-config: rejection (no adjacency collision)', () => {
+    const ctx = {
+      record: { verification: { policy_valid: false, rejection_reasons: ['policy-config: predicate crashed'] } },
+      rejected: true,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(policyRule.applies(ctx), false);
+  });
+
+  it('ruleSchemaRejection.derive filters reasons to only the schema: subset via the classifier', () => {
+    const record = {
+      run_id: 'e1d45d27-schema-filter',
+      verification: {
+        schema_valid: false,
+        rejection_reasons: [
+          'schema: /repo must be string',
+          'policy: forbidden tag "wip"',
+          'schema: /timing/started_at must match format "date-time"'
+        ]
+      }
+    };
+    const [finding] = schemaRule.derive({ record, repoSlug: 'test-repo' });
+    assert.match(finding.summary, /\/repo must be string/);
+    assert.match(finding.summary, /started_at must match format/);
+    assert.doesNotMatch(finding.summary, /forbidden tag/);
+  });
+
+  it('rulePolicyRejection.derive filters reasons to only the policy: subset via the classifier', () => {
+    const record = {
+      run_id: 'e1d45d27-policy-filter',
+      verification: {
+        policy_valid: false,
+        rejection_reasons: [
+          'policy: forbidden tag "wip"',
+          'schema: /repo must be string',
+          'policy: surface[cli]: requires 2 evidence items, got 1'
+        ]
+      }
+    };
+    const [finding] = policyRule.derive({ record, repoSlug: 'test-repo' });
+    assert.match(finding.summary, /forbidden tag/);
+    assert.match(finding.summary, /requires 2 evidence items/);
+    assert.doesNotMatch(finding.summary, /\/repo must be string/);
+  });
+
+  it('structural pin: rules.js imports the classifier and no longer hand-rolls /^schema:/ or /^policy:/ regex tests', () => {
+    // A behavioral differential test cannot catch a reversion to hand-rolled
+    // regex, because the two mechanisms agree on every input today (that IS
+    // the fix's own correctness claim). This is the only test in the file
+    // that actually pins "uses the shared classifier" rather than "produces
+    // the same answer the classifier would have produced."
+    const source = readFileSync(resolve(__dirname, 'rules.js'), 'utf-8');
+    assert.doesNotMatch(source, /\/\^schema:\/\.test\(/,
+      'rules.js must not reintroduce a hand-rolled /^schema:/.test(...) — use parseRejectionReason(r).prefix instead');
+    assert.doesNotMatch(source, /\/\^policy:\/\.test\(/,
+      'rules.js must not reintroduce a hand-rolled /^policy:/.test(...) — use parseRejectionReason(r).prefix instead');
+    assert.match(source, /from ['"]@dogfood-lab\/verify['"]/,
+      'rules.js must import the authoritative classifier from @dogfood-lab/verify');
+  });
+});

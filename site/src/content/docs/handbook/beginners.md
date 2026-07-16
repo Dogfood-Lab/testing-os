@@ -74,7 +74,7 @@ A healthy run looks like this — green checkmarks across every workspace packag
 <figure>
   <img
     src="/testing-os/screenshots/verify-output.svg"
-    alt="Terminal output of a healthy npm run verify in the testing-os repo. The sequence runs sync-version:check (clean, README block matches package.json), check-doc-drift (17 of 17 checks passed), check-regression-pins (every source-pinned F-id has a test pin), test:scripts (all script test files green), tsc --build (composite refs, no errors), and the workspace test fan-out across schemas (vitest, passed), verify (node --test, passed), ingest (passed), findings (passed), report (passed), portfolio (passed), and dogfood-swarm (passed). Each package shows a green check and the test runner used. No red, no warnings."
+    alt="Terminal output of a healthy npm run verify in the testing-os repo. The sequence runs sync-version:check (clean, README block matches package.json), check-doc-drift (17 of 17 checks passed), check-regression-pins (every source-pinned F-id has a test pin), tsc --build (composite refs, no errors), test:scripts (all script test files green), and the workspace test fan-out across schemas (vitest, passed), verify (node --test, passed), ingest (passed), findings (passed), report (passed), portfolio (passed), and dogfood-swarm (passed). Each package shows a green check and the test runner used. No red, no warnings."
     style="width: 100%; height: auto;"
   />
   <figcaption>Healthy `npm run verify` output. If a package shows red instead of a green check, fix the failure before proceeding — the verify gate is the canonical pre-commit check.</figcaption>

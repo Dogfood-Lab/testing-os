@@ -484,30 +484,67 @@ function maxSeverity(a, b) {
  *       existing, pinned by this file's own "cross-wave PATH case-fold
  *       stability is preserved for a still-open prior" tests.
  *
- * SEVERITY is the signal used to tell them apart for every status except
- * 'fixed'. A re-audit re-describing the SAME open bug does not spontaneously
- * invent a jump to a STRICTLY higher severity tier — LLM severity assessment
- * has noise, but noise moves a rating by one notch or leaves it level far
- * more often than it manufactures a new, more alarming defect out of an old
- * one. A strictly higher incoming severity is therefore treated as positive
- * evidence of scenario (1); anything else (equal or lower) is treated as
- * scenario (2) and allowed to collapse via the ordinary status-routing in
- * classifyFindings below.
+ * TWO discriminators tell these apart for every status except 'fixed' — a
+ * severity check FIRST, a description-content check SECOND (F-f0c537bf,
+ * this class's 4th pass; see git log for fp-002 / F-a8c0cf04 / F-20bde286,
+ * the three passes before it):
  *
- *   - status === 'fixed': UNCONDITIONAL salt on raw-mismatch, no severity
- *     check — F-a8c0cf04's original, already-proven behavior, unchanged. A
- *     raw-mismatch against CLOSED material has no "just re-cased, still the
- *     same open bug" reading available in the first place (there is no
- *     "still open" for a fixed row); treating it with LESS suspicion than an
- *     open prior would be backwards, not more lenient.
+ *   - SEVERITY: a re-audit re-describing the SAME open bug does not
+ *     spontaneously invent a jump to a STRICTLY higher severity tier — LLM
+ *     severity assessment has noise, but noise moves a rating by one notch
+ *     or leaves it level far more often than it manufactures a new, more
+ *     alarming defect out of an old one. A strictly higher incoming
+ *     severity is, on its own, sufficient positive evidence of scenario (1)
+ *     — checked FIRST, independent of description content.
+ *   - DESCRIPTION (F-f0c537bf): severity alone left a gap. Two
+ *     INDEPENDENTLY-authored, genuinely different bugs at the SAME (or a
+ *     lower) severity tier, sharing the coarse key by coincidence, used to
+ *     fall all the way through to scenario (2) unconditionally — silently
+ *     merging into the prior's row and discarding the incoming finding's
+ *     real description/recommendation with no separate finding_id to
+ *     recover it from. This does not defeat checkFindingSeverity's numeric
+ *     gate the way scenario (1) can (the companion maxSeverity fix in
+ *     upsertFindings still bumps the surviving row to the more severe of
+ *     the two), but it still permanently hides that a second, distinct bug
+ *     exists. For the equal-or-lower case, this function now ALSO compares
+ *     the incoming finding's description against the prior row's — the
+ *     SAME normalizeDescription()-based exact-match chooseBareKeeper
+ *     already uses to identify a same-wave collision's rightful keeper. A
+ *     description that does NOT match (post-normalization: lowercased,
+ *     whitespace-collapsed, trimmed) is treated as proof this is scenario
+ *     (1) after all, even though severity alone did not give it away. A
+ *     MATCHING description is scenario (2) — the same re-audited bug,
+ *     case-respelled — and collapses exactly as it did before F-f0c537bf.
+ *
+ *     Why exact equality, not fuzzy similarity: this file has no
+ *     fuzzy-match dependency anywhere, and exact equality (after the SAME
+ *     normalization chooseBareKeeper already trusts for same-wave keeper
+ *     selection) is sufficient for every "must still collapse" fixture in
+ *     this package's pin suite — a genuine re-audit of the SAME bug reports
+ *     the SAME prose far more often than not. The asymmetry of harm also
+ *     favors erring toward a false split over a false collapse: a false
+ *     split is a small, visible, operator-correctable duplicate row; a
+ *     false collapse is a silent, permanent loss of a distinct bug's
+ *     description/recommendation with no separate finding_id to recover it
+ *     from.
+ *
+ *   - status === 'fixed': UNCONDITIONAL salt on raw-mismatch, no severity OR
+ *     description check — F-a8c0cf04's original, already-proven behavior,
+ *     unchanged. A raw-mismatch against CLOSED material has no "just
+ *     re-cased, still the same open bug" reading available in the first
+ *     place (there is no "still open" for a fixed row); treating it with
+ *     LESS suspicion than an open prior would be backwards, not more
+ *     lenient.
  *   - status in {new, recurring, unverified, deferred}: salted iff the
- *     incoming severity is STRICTLY more severe than priorRow.severity.
- *     'deferred' rides this same rule rather than being excluded: a
- *     coordinator's decision to defer one specific, understood bug must not
- *     silently absorb an unrelated, MORE severe defect under that same
- *     deferred banner (the harm F-20bde286 rates worse in kind than the
- *     open-status gate defeat, even though deferred findings are already
- *     excluded from the gate's count) — but an equal-or-lower-severity
+ *     incoming severity is STRICTLY more severe than priorRow.severity, OR
+ *     (F-f0c537bf) the incoming description does not match priorRow's
+ *     description post-normalization. 'deferred' rides this same rule
+ *     rather than being excluded: a coordinator's decision to defer one
+ *     specific, understood bug must not silently absorb an unrelated
+ *     defect — same severity tier or not — under that same deferred banner
+ *     (the harm F-20bde286 rates worse in kind than the open-status gate
+ *     defeat, even though deferred findings are already excluded from the
+ *     gate's count) — but a matching-description, equal-or-lower-severity
  *     rediscovery while deferred is still exactly scenario (2) and must
  *     still reach classifyFindings' `recurred_while_closed` handling
  *     (F-130dee59/F-833dff6f) untouched.
@@ -527,7 +564,15 @@ function shouldSaltCrossWaveCollision(finding, priorRow) {
   if (priorRow.status === 'fixed') return true;
   if (priorRow.status === 'new' || priorRow.status === 'recurring'
     || priorRow.status === 'unverified' || priorRow.status === 'deferred') {
-    return severityRank(finding.severity) < severityRank(priorRow.severity);
+    if (severityRank(finding.severity) < severityRank(priorRow.severity)) return true;
+    // F-f0c537bf: severity alone cannot tell a genuinely different,
+    // same-or-lower-severity bug apart from the SAME bug re-audited under
+    // different path casing — both look identical to the check above. A
+    // description that does not match the prior row's (post-normalization)
+    // is the second, content-based signal: two independently-authored
+    // findings essentially never share prose verbatim, while a re-audit of
+    // the SAME defect overwhelmingly does.
+    return normalizeDescription(finding.description) !== normalizeDescription(priorRow.description);
   }
   return false;
 }

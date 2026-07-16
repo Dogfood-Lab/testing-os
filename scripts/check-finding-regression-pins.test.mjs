@@ -249,6 +249,69 @@ test('F-ec9622fd: a title match on a describe() whose assert lives inside a nest
   assert.deepEqual(hits.map((h) => h.kind), ['title'], 'an assert nested inside a child it() is still within the describe() call\'s own body span');
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// F-16275dfd — enclosingCallHasAssertBody escape-awareness (mutation-probe,
+// A/B controlled). Pre-fix, the depth loop treated every raw '(' '{' ')' '}'
+// character as a real bracket with zero backslash-escape awareness, so a
+// regex literal between a test's title and its real assert — an ordinary
+// shape for a test that validates literal bracket/paren stripping — could
+// corrupt the count. Equal escaped opens and closes cancel out even without
+// escape-awareness (the CONTROL below), so the trigger is specifically an
+// UNBALANCED escaped-bracket count within one regex literal (the TREATMENT
+// below): pre-fix, two escaped close-parens with zero escaped opens collapsed
+// depth to zero mid-regex, closed the scanned span on the "const re = …"
+// line, and returned false without ever reaching the real assert two lines
+// later — a TRUE ORPHAN for a genuinely-covered id. Only the regex's escaped-
+// bracket balance differs between CONTROL and TREATMENT.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-16275dfd CONTROL: a title match whose body contains a regex with a BALANCED escaped-bracket count still earns credit', () => {
+  const text = [
+    "test('F-100000-018: validates trailing-paren stripping', () => {",
+    '  const re = /a\\(b\\)c/;',
+    '  const result = stripTrailing(input);',
+    '  assert.equal(result, expected);',
+    '});',
+  ].join('\n');
+  const hits = findStructuralPinHits(text, 'F-100000-018', 'irrelevant.test.js');
+  assert.deepEqual(hits.map((h) => h.kind), ['title'], 'a balanced escaped-bracket count nets to the same depth with or without escape-awareness');
+});
+
+test('F-16275dfd TREATMENT (was RED, now GREEN): a title match whose body contains a regex with an UNBALANCED escaped-bracket count still earns credit', () => {
+  const text = [
+    "test('F-100000-019: validates trailing-paren stripping', () => {",
+    '  const re = /a\\)b\\)c/;',
+    '  const result = stripTrailing(input);',
+    '  assert.equal(result, expected);',
+    '});',
+  ].join('\n');
+  const hits = findStructuralPinHits(text, 'F-100000-019', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['title'],
+    'pre-F-16275dfd this collapsed depth to zero mid-regex (two escaped closes, zero escaped opens) and returned false ' +
+      'before ever reaching the real assert two lines later — a true orphan for a genuinely-covered id',
+  );
+});
+
+test('F-16275dfd mutation-probe (RED direction): an unbalanced-bracket regex in the body does not manufacture credit for a genuinely uncovered id', () => {
+  // The escape-skip must only remove a FALSE orphan, never introduce a FALSE
+  // grant — a title with the same unbalanced-escape regex but NO real assert
+  // anywhere in its body must still earn no credit.
+  const text = [
+    "test('F-100000-020: unrelated smoke test', () => {",
+    '  const re = /a\\)b\\)c/;',
+    '  doSomethingWithNoAssertion();',
+    '});',
+  ].join('\n');
+  const hits = findStructuralPinHits(text, 'F-100000-020', 'irrelevant.test.js');
+  assert.deepEqual(
+    hits.map((h) => h.kind),
+    ['none'],
+    'an unbalanced-bracket regex in the body must not manufacture false assert-body credit for a genuinely uncovered id',
+  );
+});
+
 test('F-f0339e12 unit: findStructuralPinHits recognizes a same-line assert argument pin', () => {
   const hits = findStructuralPinHits("assert.doesNotMatch(a, /F-B-001/, 'domain-a leaked F-B-001');\n", 'F-B-001', 'irrelevant.test.js');
   assert.deepEqual(hits.map((h) => h.kind), ['assert-line']);
@@ -266,9 +329,13 @@ test('F-ec9622fd: a self-header hit with the REST of the file entirely unrelated
   // downgrade rule 3 to "supplementary only" has an immediate regression
   // signal: downgrading it would orphan real live ids whose ONLY structural
   // signal across their whole test file is a dedicated self-header (e.g.
-  // F-252713-002 above, F-39aca64f, F-BACKEND-003 — each a whole file
+  // above: F-252713-002; also F-39aca64f, F-BACKEND-003 — each a whole file
   // genuinely dedicated to one id with real describe/it/assert structure
   // that never repeats the id in a title/leading-comment/assert-line).
+  // F-1555de3f: this comment used to lead its F-252713-002 mention with the
+  // bare id, mechanically self-granting a redundant leading-comment pin for
+  // the very id it was describing as self-header-only ("above:" now comes
+  // first) — wording only, no logic change.
   const text =
     '/**\n * weird.test.js — F-100000-012 (declares coverage in its own header)\n */\n' +
     "test('something entirely unrelated', () => { doSomethingWithNoAssertion(); });\n";

@@ -49,6 +49,17 @@ const MAX_STEP_OUTPUT_CHARS = 8000;
 const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
 
 /**
+ * Raw SWARM_VERIFY_MAX_BUFFER_BYTES values already reported via the
+ * `verify_max_buffer_env_malformed` diagnostic in this process (F-d6cfc2ad).
+ * Keyed by the raw string so a DIFFERENT malformed value later in the same
+ * process still warns on its own first appearance — only a REPEAT of a
+ * value already seen stays silent. See readEnvMaxBufferBytes's own header
+ * for why process-lifetime dedup is equivalent to "once per swarm verify
+ * invocation" in production.
+ */
+const warnedMalformedMaxBufferValues = new Set();
+
+/**
  * F-014c22f0: `step.maxBufferBytes` (F-3a098ded) is a real, honored override,
  * but it is reachable ONLY from a hand-written Node script calling
  * runStep()/runVerification() directly — `swarm verify`'s CLI surface has no
@@ -91,6 +102,25 @@ const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
  * `verify_max_buffer_env_malformed`), naming the raw value so the typo is
  * visible without reproducing it.
  *
+ * F-d6cfc2ad: that warning is a per-CALL diagnostic, but this function runs
+ * once per runStep() call (see "read fresh on every call" above) — an
+ * N-step `swarm verify` run with one misconfigured value emitted N
+ * byte-identical NDJSON lines, once per step, even though the
+ * misconfiguration is a single process-wide fact the operator only needs to
+ * see once. The LOG is now deduplicated by the raw string value for the
+ * life of this module's import (warnedMalformedMaxBufferValues below); the
+ * env READ and the returned value are untouched — still fresh every call,
+ * still `null` on every malformed call — so the existing "picks up a newly
+ * set value on the very next call" contract still holds. A real `swarm
+ * verify` invocation is exactly one process (the CLI starts fresh each
+ * run), so process-lifetime dedup and "once per swarm verify invocation"
+ * are the same guarantee in production. The two only diverge inside a
+ * long-lived process that calls runStep/runSteps many times with the SAME
+ * raw value (this package's own test suite, chiefly) — there, a repeat of
+ * an already-warned-about value correctly stays silent on its second and
+ * later appearances, while a DIFFERENT malformed value still warns on its
+ * own first appearance.
+ *
  * @returns {number|null}
  */
 function readEnvMaxBufferBytes() {
@@ -98,12 +128,15 @@ function readEnvMaxBufferBytes() {
   if (!raw) return null;
   const n = Number(raw);
   if (Number.isFinite(n) && n > 0) return n;
-  logStage('verify_max_buffer_env_malformed', {
-    component: 'dogfood-swarm',
-    env_var: 'SWARM_VERIFY_MAX_BUFFER_BYTES',
-    raw_value: raw,
-    reason: 'not a finite positive number — falling back to the module default',
-  });
+  if (!warnedMalformedMaxBufferValues.has(raw)) {
+    warnedMalformedMaxBufferValues.add(raw);
+    logStage('verify_max_buffer_env_malformed', {
+      component: 'dogfood-swarm',
+      env_var: 'SWARM_VERIFY_MAX_BUFFER_BYTES',
+      raw_value: raw,
+      reason: 'not a finite positive number — falling back to the module default',
+    });
+  }
   return null;
 }
 

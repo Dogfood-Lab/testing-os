@@ -391,6 +391,22 @@ describe('F-87dc7b35: status.js\'s violations aggregator cross-references the sh
   // leaving the pin above green, confirming the two pins now cover
   // disjoint halves of the same claim rather than one silently standing in
   // for the other.
+  //
+  // F-3e449453 (wave 12): the FIXED `queryIdx + 300` window below originally
+  // used here left only ~67 chars of slack past the interpolation's real
+  // offset (233 at the time this was measured). Two benign, functionally-
+  // inert SQL comment lines added ahead of the WHERE clause — an ordinary,
+  // plausible future edit, e.g. a maintainer clarifying the query — push the
+  // interpolation to offset ~359+ and past the window, failing this pin for
+  // the WRONG reason (a slice-size accident) even though the interpolation
+  // is still fully present and the query is functionally unchanged. Anchored
+  // on the query's own closing `` `).get(opts.runId); `` marker instead: the
+  // slice now grows and shrinks with the query's real content, so it cannot
+  // be broken by an unrelated edit to the preamble. Mutation-probed both
+  // directions: (a) inserting two benign comment lines between the opening
+  // backtick and the WHERE clause leaves this pin green (the old fixed-300
+  // version would have false-failed here); (b) removing the real
+  // interpolation still flips this pin red, same as before.
   it('the query body itself — not just the comment above it — still applies the shared filter', () => {
     const statusPath = join(__dirname, 'commands', 'status.js');
     const statusSrc = readFileSync(statusPath, 'utf-8');
@@ -399,7 +415,11 @@ describe('F-87dc7b35: status.js\'s violations aggregator cross-references the sh
     assert.ok(queryIdx > -1,
       'the violations aggregator query must still exist at its documented shape — extraction is broken if this fails');
 
-    const queryBody = statusSrc.slice(queryIdx, queryIdx + 300);
+    const queryEnd = statusSrc.indexOf('`).get(opts.runId);', queryIdx);
+    assert.ok(queryEnd > queryIdx,
+      'the query\'s own closing `).get(opts.runId); marker must still exist — extraction is broken if this fails');
+
+    const queryBody = statusSrc.slice(queryIdx, queryEnd);
     assert.match(queryBody, /\$\{LATEST_AGENT_RUN_PER_DOMAIN\}/,
       'the violations query must actually interpolate LATEST_AGENT_RUN_PER_DOMAIN, not merely be described as doing so by the comment above it');
   });

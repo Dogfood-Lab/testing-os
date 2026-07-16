@@ -72,7 +72,14 @@ import { findJsonFiles } from './rebuild-indexes.js';
  * @property {ChainBreak[]} [breaks] - All independent breaks (only present when
  *   `collectAllBreaks` is set). The first element equals `break`.
  * @property {ChainOrphan[]} [orphans] - Records on disk but absent from the
- *   ledger (only present when `collectOrphans` is set).
+ *   ledger AND written by chain-aware code (only present when `collectOrphans`
+ *   is set). These are genuine torn writes — persist-succeeded, ledger-append-
+ *   missed — and they make `ok` false.
+ * @property {ChainOrphan[]} [pre_adoption] - Records on disk but absent from
+ *   the ledger that predate the chain's adoption (no `integrity` block, so
+ *   they could never have been ledgered in the first place — only present
+ *   when `collectOrphans` is set). Visible for operator awareness; does NOT
+ *   make `ok` false.
  */
 
 /**
@@ -93,6 +100,10 @@ import { findJsonFiles } from './rebuild-indexes.js';
  *   ledger (a torn write between record-write and ledger-append). An orphan
  *   makes the result `ok: false` — the audit DETECTS the orphan instead of
  *   silently passing while a real record lives outside the tamper-evident chain.
+ *   F-29134790 (wave 12): also returns `pre_adoption[]` — records absent from
+ *   the ledger that predate the chain's existence entirely (see
+ *   collectOrphanRecords's adoption-boundary doc below). Pre-adoption records
+ *   are visible for operator awareness but do NOT affect `ok`.
  * @returns {ChainVerifyResult}
  */
 export function verifyChain(repoRoot, opts = {}) {
@@ -112,7 +123,10 @@ export function verifyChain(repoRoot, opts = {}) {
       head_digest: GENESIS_DIGEST,
       break: brk,
       ...(collectAllBreaks ? { breaks: [brk] } : {}),
-      ...(collectOrphans ? { orphans: [] } : {}),
+      // pre_adoption included alongside orphans (both empty here) so the
+      // result shape is consistent whenever collectOrphans is set, regardless
+      // of which early-return path produced it.
+      ...(collectOrphans ? { orphans: [], pre_adoption: [] } : {}),
     };
   }
 
@@ -191,8 +205,12 @@ export function verifyChain(repoRoot, opts = {}) {
     prevDigest = entry.submission_digest;
   }
 
-  const orphans = collectOrphans ? collectOrphanRecords(repoRoot, entries) : null;
+  const reconciled = collectOrphans ? collectOrphanRecords(repoRoot, entries) : null;
+  const orphans = reconciled ? reconciled.orphans : null;
+  const preAdoption = reconciled ? reconciled.preAdoption : null;
 
+  // Only genuine orphans (post-adoption, ledger-eligible records) affect ok.
+  // pre_adoption is informational — see collectOrphanRecords's doc comment.
   const ok = breaks.length === 0 && (orphans === null || orphans.length === 0);
   return {
     ok,
@@ -200,7 +218,7 @@ export function verifyChain(repoRoot, opts = {}) {
     head_digest: headDigest,
     break: breaks.length > 0 ? breaks[0] : null,
     ...(collectAllBreaks ? { breaks } : {}),
-    ...(collectOrphans ? { orphans } : {}),
+    ...(collectOrphans ? { orphans, pre_adoption: preAdoption } : {}),
   };
 }
 
@@ -238,9 +256,40 @@ export function verifyChain(repoRoot, opts = {}) {
  * ingest-proact-001-004-verify-chain-reconcile-allbreaks.test.js's
  * 'shared run_id, different paths' regression test.
  *
+ * F-29134790 (wave 12, HIGH): path-identity membership is correct for records
+ * the chain COULD have ledgered, but on its own it has no ADOPTION BOUNDARY —
+ * every un-ledgered path reads identically, so a record that predates the
+ * chain feature's existence is indistinguishable from a genuine crash-window
+ * torn write. Proven live against this repo's own `records/` tree: 53 files
+ * with no ledger line, every one dated 2026-03-19 through 2026-05-26 — all
+ * BEFORE persist.js gained its integrity-stamping logic (f4ca987,
+ * 2026-06-21) — versus the 7 real ledgered records, all dated 2026-07-03
+ * onward. Pre-fix, `verifyChain({ collectOrphans: true })` reported all 53 as
+ * indistinguishable "torn persist" orphans (a 53:0 signal-to-noise ratio; a
+ * genuine orphan today would be the 54th unlabeled line).
+ *
+ * The fix needs no new marker file or backfill tool: persist.js's writeRecord
+ * already stamps `record.integrity = { submission_digest, prev_digest, seq }`
+ * UNCONDITIONALLY, in memory, BEFORE it writes the record file and BEFORE it
+ * appends the ledger line (see persist.js — the stamp happens ahead of
+ * validateRecord() and the atomic file write). That ordering guarantees a
+ * genuine post-adoption torn write (file landed, ledger append lost) still
+ * carries a fully-formed `integrity` block on disk; only a record written
+ * before persist.js gained this stamping logic can lack one entirely. So
+ * "does this record carry an `integrity` block" is not a proxy for the
+ * adoption boundary — it IS the adoption boundary, already recorded per-record
+ * by the exact code change that introduced the chain, for free. A record
+ * missing `integrity` is bucketed into the returned `preAdoption` array
+ * (visible, does not fail `ok`); a record WITH an `integrity` block that is
+ * still un-ledgered remains a genuine `orphans` entry exactly as before.
+ *
  * @param {string} repoRoot
  * @param {Array<object>} entries - The ledger entries (already read).
- * @returns {ChainOrphan[]}
+ * @returns {{ orphans: ChainOrphan[], preAdoption: ChainOrphan[] }} `orphans`
+ *   are un-ledgered records stamped by chain-aware code — genuine torn
+ *   writes. `preAdoption` are un-ledgered records with no `integrity` block —
+ *   they predate the chain and were never ledgerable. Only `orphans` affects
+ *   verifyChain's `ok`.
  */
 function collectOrphanRecords(repoRoot, entries) {
   const ledgerPaths = new Set();
@@ -249,6 +298,7 @@ function collectOrphanRecords(repoRoot, entries) {
   }
 
   const orphans = [];
+  const preAdoption = [];
   const recordsDir = join(repoRoot, 'records');
   for (const absPath of findJsonFiles(recordsDir)) {
     const relPath = relative(repoRoot, absPath).split(sep).join('/');
@@ -259,12 +309,45 @@ function collectOrphanRecords(repoRoot, entries) {
       record = JSON.parse(readFileSync(absPath, 'utf-8'));
     } catch {
       // A record file we cannot even parse, that is also absent from the ledger,
-      // is still an orphan — report it with what little identity we have.
+      // is still an orphan — report it with what little identity we have. We
+      // cannot read `.integrity` to classify it as pre-adoption either, so this
+      // fails loud rather than being silently excused.
       orphans.push({
         run_id: null,
         seq: null,
         path: relPath,
         reason: `record file present on disk but absent from the ledger, and not valid JSON`,
+      });
+      continue;
+    }
+
+    // A value that parses but is not a plain record object (null, an array, a
+    // bare primitive) is not something we can read `.integrity` off to
+    // classify as pre-adoption. Mirroring the not-valid-JSON branch above:
+    // when we cannot positively identify what the record actually IS, fail
+    // loud as a genuine orphan rather than silently excusing it into
+    // preAdoption — the adoption boundary is a claim we can only make about
+    // something shaped like a record.
+    if (record === null || typeof record !== 'object' || Array.isArray(record)) {
+      orphans.push({
+        run_id: null,
+        seq: null,
+        path: relPath,
+        reason: `record file present on disk but absent from the ledger, and its JSON content is not a record object`,
+      });
+      continue;
+    }
+
+    // Adoption boundary — see the F-29134790 doc paragraph above.
+    if (record.integrity == null) {
+      preAdoption.push({
+        run_id: record.run_id ?? null,
+        seq: null,
+        path: relPath,
+        reason:
+          `record predates the integrity chain (no integrity block — written ` +
+          `before tamper-evident chaining was introduced); expected for ` +
+          `historical records, not counted as an audit failure.`,
       });
       continue;
     }
@@ -280,7 +363,7 @@ function collectOrphanRecords(repoRoot, entries) {
     });
   }
 
-  return orphans;
+  return { orphans, preAdoption };
 }
 
 /**
@@ -298,6 +381,13 @@ export function formatChainResult(result) {
     ];
     if (Array.isArray(result.orphans)) {
       lines.push(`reconciliation: 0 orphan record(s) on disk`);
+      // F-29134790: ok:true only guarantees zero GENUINE orphans — pre-adoption
+      // records (no integrity block) are excused from ok but still worth
+      // surfacing so an operator isn't left wondering why the disk record
+      // count exceeds the ledgered count.
+      if (Array.isArray(result.pre_adoption) && result.pre_adoption.length > 0) {
+        lines.push(`  (${result.pre_adoption.length} pre-chain record(s) predate the integrity ledger and are excluded from reconciliation)`);
+      }
     }
     return lines;
   }
@@ -326,6 +416,14 @@ export function formatChainResult(result) {
     for (const o of result.orphans) {
       lines.push(`  - ${o.path}${o.run_id ? ` (run_id: ${o.run_id})` : ''}: ${o.reason}`);
     }
+  }
+
+  // F-29134790: pre-adoption records never make ok false, but when the result
+  // IS not-ok for some other reason (a break, or a genuine orphan), still name
+  // the excluded count so an operator triaging the failure isn't misled into
+  // thinking every un-ledgered record on disk is part of the break.
+  if (Array.isArray(result.pre_adoption) && result.pre_adoption.length > 0) {
+    lines.push(`reconciliation: ${result.pre_adoption.length} pre-chain record(s) predate the integrity ledger (excluded from reconciliation, not an audit failure)`);
   }
 
   return lines;

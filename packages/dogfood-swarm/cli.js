@@ -1721,10 +1721,54 @@ async function cmdAdjudicate(args) {
   process.exitCode = out.result.overall === 'corroborate' ? 0 : 1;
 }
 
+/**
+ * Render a promotion's `overrides` (each `{gate, reason}` — recordPromotion in
+ * lib/advance.js always applies ONE --reason string to every gate an override
+ * masks) as an operator-facing tag. Groups gate names sharing an IDENTICAL
+ * reason into a single clause instead of repeating the reason once per gate:
+ * pre-fix this rendered `o.reason` alone (dropping `.gate` entirely), so two
+ * concurrently-overridden gates sharing one reason printed the SAME string
+ * twice joined by the same '; ' delimiter used elsewhere to separate DISTINCT
+ * items — indistinguishable from two different justifications, and with no
+ * way to tell which gate either one applied to (F-51fa8e13).
+ *
+ * @param {Array<{gate: string, reason: string}>} overrides
+ * @returns {string}
+ */
+function formatOverrideGroups(overrides) {
+  const gatesByReason = new Map();
+  for (const o of overrides) {
+    if (!gatesByReason.has(o.reason)) gatesByReason.set(o.reason, []);
+    gatesByReason.get(o.reason).push(o.gate);
+  }
+  return [...gatesByReason.entries()]
+    .map(([reason, gates]) => `${gates.join(', ')}: ${reason}`)
+    .join('; ');
+}
+
+/**
+ * Identity-projection seam for `swarm advance --history --format=json`.
+ * getPromotions() (lib/advance.js) already returns each promotion with
+ * gates_checked/overrides/finding_snapshot parsed into real arrays/objects,
+ * not JSON-string columns — this names the seam (mirroring buildCheckGatesJSON
+ * / buildRunsJSON) and pins the contract that the JSON path emits the SAME
+ * array the text formatter reads. Always an array, even when empty, matching
+ * buildRunsJSON's `[]` contract rather than the text branch's "No promotions
+ * yet." string — a scraper needs a parseable empty list. F-51fa8e13: pre-fix
+ * --history had no --format=json at all, so the only way to recover which
+ * gate(s) a past override named was raw SQL against promotions.overrides.
+ *
+ * @param {Array} promotions — the array from getPromotions()
+ * @returns {Array}
+ */
+function buildPromotionsJSON(promotions) {
+  return promotions;
+}
+
 function cmdAdvance(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm advance <run-id> [--override --reason "..."] [--check-only] [--format=json]');
+    console.error('Usage: swarm advance <run-id> [--override --reason "..."] [--check-only] [--history] [--format=json]');
     process.exit(1);
   }
 
@@ -1755,9 +1799,17 @@ function cmdAdvance(args) {
     return;
   }
 
-  // --history: show promotion history
+  // --history: show promotion history. --format=json emits the getPromotions()
+  // array as-is (buildPromotionsJSON) instead of the text table — see that
+  // function's docstring and F-51fa8e13 for why this branch previously had no
+  // machine-readable escape hatch.
   if (args.includes('--history')) {
+    const format = parseFormatFlag(args);
     const promotions = getPromotions(db, runId);
+    if (format === 'json') {
+      console.log(JSON.stringify(buildPromotionsJSON(promotions), null, 2));
+      return;
+    }
     if (promotions.length === 0) {
       console.log('No promotions yet.');
       return;
@@ -1766,7 +1818,9 @@ function cmdAdvance(args) {
     for (const p of promotions) {
       const gates = p.gates_checked.filter(g => g.passed).length;
       const total = p.gates_checked.length;
-      const override = p.overrides ? ` [OVERRIDE: ${p.overrides.map(o => o.reason).join('; ')}]` : '';
+      // F-51fa8e13: name WHICH gate(s) each override reason consented to —
+      // pre-fix this rendered `o.reason` alone, discarding `o.gate` entirely.
+      const override = p.overrides ? ` [OVERRIDE: ${formatOverrideGroups(p.overrides)}]` : '';
       console.log(`  ${p.created_at} | ${p.from_phase} → ${p.to_phase} | ${gates}/${total} gates | ${p.authorized_by}${override}`);
     }
     return;
@@ -2725,6 +2779,12 @@ Commands:
                              advance --check-only --format=json emits the
                              checkGates() {verdict,nextPhase,reason,gates[],
                              overridable} object for machine consumers.
+                             advance --history [--format=json] lists past
+                             promotions; each [OVERRIDE: ...] tag now names
+                             the gate(s) its reason consented to, and
+                             --format=json emits the full getPromotions()
+                             array (gates_checked/overrides included) with
+                             no raw SQL needed.
   adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]
                              Dispatch a case-file to the cross-family jury and
                              record the advisory verdict on the current wave (the

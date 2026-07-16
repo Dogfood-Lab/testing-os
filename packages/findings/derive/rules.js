@@ -13,6 +13,21 @@
  *   repoSlug  — e.g. "repo-crawler-mcp"
  */
 
+// F-e1d45d27 (wave 12, LOW): ruleSchemaRejection/rulePolicyRejection below used
+// to hand-roll `/^schema:/` / `/^policy:/` against raw rejection_reasons
+// strings — exactly the drift parse-rejection.js's own file header exists to
+// end ("every operator discriminated failure class with hand-rolled
+// .startsWith() chains ... a fresh drift source the moment a prefix is
+// added"). `@dogfood-lab/verify` was already a TRANSITIVE dependency here (via
+// @dogfood-lab/ingest) and depends on nothing beyond @dogfood-lab/schemas +
+// js-yaml, so importing it directly adds no new workspace cycle. Routing
+// through the authoritative classifier (`.prefix === 'schema:'` / `'policy:'`)
+// is behaviorally identical today — see derive.test.js's "Regression: rules.js
+// schema:/policy: routes through parseRejectionReason (F-e1d45d27)" describe
+// block for the differential proof — and stays correct automatically if the
+// taxonomy ever grows or reorders.
+import { parseRejectionReason } from '@dogfood-lab/verify';
+
 // ─── Helpers ────────────────────────────────────────────────
 
 function hasRejectionMatching(record, pattern) {
@@ -330,13 +345,13 @@ const ruleSchemaRejection = {
     // Only fire if not already covered by surface misclassification
     const reasons = ctx.record.verification?.rejection_reasons || [];
     const hasSurfaceIssue = reasons.some(r => /product_surface/.test(r));
-    const hasSchemaIssue = reasons.some(r => /^schema:/.test(r));
+    const hasSchemaIssue = reasons.some(r => parseRejectionReason(r).prefix === 'schema:');
     return hasSchemaIssue && !hasSurfaceIssue;
   },
 
   derive(ctx) {
     const { record, repoSlug } = ctx;
-    const reasons = record.verification?.rejection_reasons?.filter(r => /^schema:/.test(r)) || [];
+    const reasons = record.verification?.rejection_reasons?.filter(r => parseRejectionReason(r).prefix === 'schema:') || [];
     const surface = safeRecordSurface(record, repoSlug);
 
     return [{
@@ -369,13 +384,13 @@ const rulePolicyRejection = {
     // Only fire if not already covered by evidence policy mismatch
     const reasons = ctx.record.verification?.rejection_reasons || [];
     const hasEvidenceIssue = reasons.some(r => /evidence/.test(r));
-    const hasPolicyIssue = reasons.some(r => /^policy:/.test(r));
+    const hasPolicyIssue = reasons.some(r => parseRejectionReason(r).prefix === 'policy:');
     return hasPolicyIssue && !hasEvidenceIssue;
   },
 
   derive(ctx) {
     const { record, repoSlug } = ctx;
-    const reasons = record.verification?.rejection_reasons?.filter(r => /^policy:/.test(r)) || [];
+    const reasons = record.verification?.rejection_reasons?.filter(r => parseRejectionReason(r).prefix === 'policy:') || [];
     const surface = safeRecordSurface(record, repoSlug);
 
     return [{

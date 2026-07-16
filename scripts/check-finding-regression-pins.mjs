@@ -175,17 +175,28 @@ const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
  *     comment and quoted/template-string content before counting brackets
  *     (STRUCTURAL_MASK_PATTERN) — so punctuation inside a title's own prose
  *     ("(edge case)") or a body string cannot miscount as a real bracket
- *     boundary — but does NOT mask regex literals. A regex containing an
- *     unescaped bracket character (e.g. `assert.match(x, /\(fixme\)/)`) can
- *     still corrupt the depth count. Same class of gap as
- *     check-doc-drift.mjs's countCommandMapEntries pre-F-6cfe4d01 fix;
- *     unlike that resolver (a silent wrong COUNT), the failure direction
- *     here is closing the scanned span too early or too late, which either
- *     under-credits (fails closed, surfaces as a visible, actionable orphan
- *     — safe) or, less likely, over-scans into unrelated code. Distinguishing
- *     a regex-opening `/` from a division operator needs a real tokenizer;
- *     not attempted here for the same "no heavyweight parser dependency"
- *     reason countCommandMapEntries's own docstring gives.
+ *     boundary — but does NOT mask regex literals. F-16275dfd: the depth
+ *     loop is now escape-aware (a `\` consumes the next character without
+ *     counting it as a bracket, mirroring check-doc-drift.mjs's
+ *     countCommandMapEntries regex-skip: `if (src[i] === '\\') { i += 2;
+ *     continue; }`), closing the proven trigger — an UNBALANCED count of
+ *     BACKSLASH-ESCAPED brackets within one regex literal (e.g. the
+ *     trailing-paren-stripping pattern `/a\)b\)c/`, two escaped closes and
+ *     zero escaped opens) could collapse depth to zero mid-regex and close
+ *     the scanned span on the wrong line, causing TOTAL loss of structural
+ *     credit for a genuinely-covered id whenever its title and real assert
+ *     sit on different lines — not merely an early-or-late close, as this
+ *     paragraph previously framed it. (This paragraph's prior worked
+ *     example, `/\(fixme\)/`, has a BALANCED escaped-bracket count and was
+ *     never actually reproducible — equal escaped opens and closes cancel
+ *     out regardless of escape-awareness.) Still not attempted: recognizing
+ *     an UNESCAPED literal bracket that is not a real group/quantifier
+ *     boundary (e.g. inside a character class, `/[(]/`) — that residual
+ *     still fails closed (under-credits into a visible, actionable orphan,
+ *     same as before) and needs a real tokenizer to distinguish a regex-
+ *     opening `/` from a division operator; not attempted here for the same
+ *     "no heavyweight parser dependency" reason countCommandMapEntries's own
+ *     docstring gives.
  *   - Rule 2's call-body scan is bounded (STRUCTURAL_TITLE_BODY_LINE_LIMIT
  *     lines) and fails CLOSED past that bound (treated as "no body found",
  *     never a false grant) — an unproven pin surfaces as a visible orphan a
@@ -300,6 +311,19 @@ function enclosingCallHasAssertBody(lines, callLineIndex, openParenCol) {
     let closedAt = -1;
     for (let c = 0; c < masked.length; c++) {
       const ch = masked[c];
+      // F-16275dfd: a backslash-escaped character is never a real bracket
+      // boundary — mirrors check-doc-drift.mjs's countCommandMapEntries
+      // regex-skip escape handling (`if (src[i] === '\\') { i += 2;
+      // continue; }`). Comments/strings are already masked above, so the
+      // only place a raw '\' can still reach this loop is inside an
+      // unmasked regex literal (STRUCTURAL_MASK_PATTERN deliberately does
+      // not mask those — see the module docstring); an escaped bracket
+      // there (e.g. the trailing-paren-stripping pattern `/a\)b\)c/`) is a
+      // literal character, not a group boundary, and must not perturb
+      // depth. `c++` here plus the loop's own increment consumes both
+      // characters of the escape pair, same "advance by 2" effect as the
+      // sibling's `i += 2`.
+      if (ch === '\\') { c++; continue; }
       if (ch === '(' || ch === '{') depth++;
       else if (ch === ')' || ch === '}') {
         depth--;

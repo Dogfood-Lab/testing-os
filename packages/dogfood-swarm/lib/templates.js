@@ -223,28 +223,71 @@ function fenceSafe(text) {
  * the chunk boundary keeps that example's own opener+closer pair together in
  * one fenceSafe call, exactly as a lone finding's text always has.
  *
- * Residual (honest, bounded): the boundary is a heuristic anchored on
- * dispatch.js's actual bullet format, not a structural parse — this module
- * has no finding-boundary metadata to parse against once the caller has
- * already joined everything into one string. If a finding's own description
- * happens to contain a line starting with the literal `- [` (not Markdown
- * syntax anyone authors mid-sentence — vanishingly unlikely), that ONE
- * finding's text is over-segmented into two chunks. The failure mode is
- * strictly conservative: a legitimate paired fence split across the
- * accidental boundary becomes two odd chunks and BOTH get neutralized (a
- * fenced-code rendering the reader would otherwise have kept is lost),
- * never the reverse (an actual hazard slipping through because a neighbor
- * chunk happened to complete its parity). That asymmetry — safe to
- * over-transform, never safe to under-transform — is the same "bounded,
- * never data loss" shape fingerprint.js's disambiguateFingerprints documents
- * for its own safety-net residual.
+ * Residual (honest, bounded — narrowed by F-f2dc3caf): the boundary is a
+ * heuristic anchored on dispatch.js's actual bullet format, not a
+ * structural parse — this module has no finding-boundary metadata to parse
+ * against once the caller has already joined everything into one string.
+ * F-f2dc3caf: the ORIGINAL anchor (`/^- \[/gm`, matching ANY line starting
+ * with the two literal characters `- [`) called the over-segmentation risk
+ * "vanishingly unlikely," but it was proven reachable by an entirely
+ * ordinary shape — a finding's own multi-line description embedding a GFM
+ * task-list checklist (`- [ ] step one` / `- [x] step two`) inside an
+ * otherwise legitimate, evenly-paired fenced repro-steps example. Every
+ * checklist line matched the bare anchor too, over-segmenting ONE finding
+ * into three chunks and neutralizing BOTH markers of a well-formed fence
+ * that would otherwise have survived (F-01458fdb's own protection).
+ *
+ * The anchor now requires the FULL real-bullet shape —
+ * `- [<2+ word chars>] <colon-terminated token>` — rather than the bare
+ * `- [` prefix. CommonMark/GFM task-list syntax is ALWAYS a single
+ * space/x/X inside the brackets (never 2+ word characters), so a checklist
+ * line can never satisfy the tightened anchor; it is simply never a
+ * boundary candidate, and the finding's whole chunk (fence included) is left
+ * intact for a single, whole-chunk fenceSafe() parity check — the same
+ * treatment any lone finding already receives.
+ *
+ * A fence-parity-aware scan (walk the text, toggle an "inside a fence" flag
+ * on every backtick run, and reject a `- [` candidate found while that flag
+ * is set) was considered and rejected: it cannot distinguish a fence that
+ * belongs to and re-closes WITHIN the current finding (the checklist case
+ * above) from several INDEPENDENT findings whose own individually-odd stray
+ * markers merely happen to sum to even ACROSS a finding boundary — exactly
+ * the shape F-62e467be's own pin suite (templates-fence-safe-concatenation
+ * .test.js) exists to keep splitting correctly. Collapsing that distinction
+ * would silently re-merge neighboring findings into a shared fake fence,
+ * regressing F-62e467be. Anchoring on the real bullet shape sidesteps the
+ * ambiguity: boundaries are still found unconditionally, independent of any
+ * fence state, so F-62e467be's per-finding isolation is untouched, and a
+ * checklist line is simply never a candidate in the first place.
+ *
+ * The residual left standing is narrower, not zero: a finding's own
+ * description containing a line that happens to match the FULL tightened
+ * shape — a 2+-letter bracketed word immediately followed by a
+ * colon-terminated token with no space between them, e.g. a quoted example
+ * of another finding's own bullet, or a hyphenated-key log-line sample like
+ * `- [ERROR] auth-failed: ...` — would still over-segment. That residual is
+ * smaller than the one it replaces (it requires mimicking dispatch.js's
+ * specific bullet grammar, not just two Markdown characters) and inherits
+ * the same strictly conservative failure direction: a legitimate paired
+ * fence split across an accidental boundary becomes two odd chunks and BOTH
+ * get neutralized (a fenced-code rendering the reader would otherwise have
+ * kept is lost), never the reverse (an actual hazard slipping through
+ * because a neighbor chunk happened to complete its parity). That asymmetry
+ * — safe to over-transform, never safe to under-transform — is the same
+ * "bounded, never data loss" shape fingerprint.js's disambiguateFingerprints
+ * documents for its own safety-net residual.
  *
  * @param {string} text
  * @returns {string}
  */
 function fenceSafeBlock(text) {
   if (!text) return text;
-  const starts = [...text.matchAll(/^- \[/gm)].map((m) => m.index);
+  // F-f2dc3caf: anchored on dispatch.js's ACTUAL bullet shape
+  // (`- [status] finding_id: description (file)`, commands/dispatch.js:494)
+  // instead of the bare `- \[` prefix — see the residual paragraph above for
+  // why a fence-parity-aware scan was considered and rejected in favor of
+  // this tightened anchor.
+  const starts = [...text.matchAll(/^- \[[a-zA-Z_]{2,}\] \S+:/gm)].map((m) => m.index);
   if (starts.length === 0) return fenceSafe(text);
 
   const chunks = [];

@@ -853,7 +853,10 @@ MODES:
 
 STANDALONE AUDIT VERBS (no submission, no stdin, no --provenance):
   --verify-chain       Verify the append-only integrity ledger (offline).
-    --reconcile        Also fail on on-disk records missing from the ledger.
+    --reconcile        Also fail on genuine torn-write orphans (on-disk records
+                       missing from the ledger). Records that predate the
+                       integrity chain itself are reported separately and do
+                       not fail the audit.
     --all              Report every independent break instead of the first.
   --anchor-compute     Compute + write the next XRPL anchor manifest (offline).
   --anchor-post        Compute if needed + post the anchor to XRPL (needs XRPL_SEED).
@@ -1037,7 +1040,12 @@ if (isMain) {
       // operator asked for it, so a grep of the NDJSON shows how many breaks and
       // orphans were found, not just the first break.
       ...(Array.isArray(result.breaks) ? { break_count: result.breaks.length } : {}),
-      ...(Array.isArray(result.orphans) ? { orphan_count: result.orphans.length } : {})
+      ...(Array.isArray(result.orphans) ? { orphan_count: result.orphans.length } : {}),
+      // F-29134790: pre-adoption records are excluded from chain_ok but still
+      // worth a grep-able count — an operator diffing orphan_count over time
+      // should see the pre-chain figure hold steady while orphan_count reflects
+      // only genuine torn writes.
+      ...(Array.isArray(result.pre_adoption) ? { pre_adoption_count: result.pre_adoption.length } : {})
     });
     const lines = formatChainResult(result);
     if (result.ok) {
