@@ -86,7 +86,7 @@ Five parallel research lanes, retrieval-mandatory. 37 findings returned; the loa
 
 20. **Real analyses are "soundy" — a sound core plus specific under-approximated features assumed away by convention — and the manifesto's central complaint is that this handling is routinely left undisclosed, letting readers wrongly conclude the analysis is sound.** Livshits, Sridharan, Smaragdakis et al. 2015 (*In Defense of Soundiness: A Manifesto*, CACM 58(2), DOI 10.1145/2644805, https://yanniss.github.io/Soundiness-CACM.pdf). **Implication:** unsoundness is permitted; **undisclosed** unsoundness is the defect. Our "WHAT STILL SLIPS THROUGH" docstring was the right instinct executed dishonestly — it was incomplete, which made the gate's self-description a lie. Every gap must be enumerated, in the gate's own output.
 
-21. **Suppression lists rot at a measured rate: 50.8% of 7,357 suppressions across 46 projects matched zero live warnings, counts only ever grow, and dead suppressions "woke up" to silently hide newly-introduced unrelated findings.** Hu, Wang, Rubin & Pradel 2025 (*An Empirical Study of Suppressed Static Analysis Warnings*, Proc. ACM Softw. Eng. 2(FSE), DOI 10.1145/3715729). **Implication:** our 15-entry allowlist needs per-entry provenance and periodic re-validation; append-only growth is a known failure mode with a ~1-in-2 base rate.
+21. **Suppression lists rot at a measured rate: 50.8% of 7,357 suppressions across 46 projects matched zero live warnings, counts only ever grow, and dead suppressions "woke up" to silently hide newly-introduced unrelated findings.** Hu, Wang, Rubin & Pradel 2025 (*An Empirical Study of Suppressed Static Analysis Warnings*, Proc. ACM Softw. Eng. 2(FSE), DOI 10.1145/3715729). **Implication:** our allowlist (the gate prints its live entry count each run — no hardcoded figure here; it grows as cross-references accrue, and an earlier "15" was already stale, F-D27-01) needs per-entry provenance and periodic re-validation; append-only growth is a known failure mode with a ~1-in-2 base rate.
 
 22. **Developers and customers repeatedly and wrongly insisted a correct tool-reported bug was a false positive, only for it to be confirmed real later.** Bessey, Block, Chelf et al. 2010 (*A Few Billion Lines of Code Later: Using Static Analysis to Find Bugs in the Real World*, CACM 53(2), DOI 10.1145/1646353.1646374). **Implication:** pushback is not evidence of gate error. Any override path needs an evidence trail, never a trust-the-human bypass.
 
@@ -175,7 +175,7 @@ A file that will not parse is a **loud defect** (`fatal`), never a silent skip �
 
 ### C8 — Allowlist entries carry provenance and expire. *(Findings 21, 22)*
 
-Each of the 15 entries gains a reason, an owner and a revalidation date; the gate reports entries matching zero live findings (21's ~1-in-2 dead-weight base rate). Overrides require an evidence trail, never a trust-the-human bypass (22).
+Each allowlist entry gains a reason, an owner and a revalidation date; the gate reports entries matching zero live findings (21's ~1-in-2 dead-weight base rate). Overrides require an evidence trail, never a trust-the-human bypass (22).
 
 ### C9 — Prove the gate cannot leak, mechanically. *(Findings 23, 24, 25, 26, 27, 28, 29, 30)*
 
