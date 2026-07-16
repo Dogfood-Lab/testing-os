@@ -18,6 +18,7 @@ import { openDb } from '../db/connection.js';
 import { buildRunExport, computeRunVerdict } from '../lib/persist/export.js';
 import { buildDogfoodSubmission } from '../lib/persist/dogfood-bridge.js';
 import { buildAuditPayload } from '../lib/persist/repoknowledge-bridge.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 // Resolve REPO_ROOT off this file (commands/persist.js → packages/dogfood-swarm → repo root).
 // Mirrors the pattern in persist-results.js so the ingest path survives the consumer's cwd.
@@ -80,14 +81,24 @@ export function persist(opts) {
       const ingestScript = resolve(REPO_ROOT, 'packages/ingest/run.js');
       if (existsSync(ingestScript)) {
         // F-21240958: argv-array form (execFileSync), never a shell-string
-        // exec — this was the only shell-string exec in the package's
-        // command layer. `submissionPath` carries the operator-settable
-        // SWARM_DB env var AND the <run-id> CLI positional (neither
-        // shell-metacharacter-validated), and `ingestScript` derives from
-        // the install path. execFileSync never invokes a shell, so there is
-        // no quoting to get right and no metacharacter surface at all —
-        // matching every sibling git/node invocation in this package
-        // (dispatch.js's execFileSync('git', [...]), lib/worktree.js).
+        // exec. `submissionPath` carries the operator-settable SWARM_DB env
+        // var AND the <run-id> CLI positional (neither shell-metacharacter-
+        // validated), and `ingestScript` derives from the install path.
+        // execFileSync never invokes a shell, so there is no quoting to get
+        // right and no metacharacter surface at all — matching every
+        // sibling git/node invocation in this package (dispatch.js's
+        // execFileSync('git', [...]), lib/worktree.js, and — as of
+        // F-264bd9d2, wave 20 — commands/init.js's git() helper).
+        //
+        // F-264bd9d2 (wave 20): this comment previously claimed to be "the
+        // only shell-string exec in the package's command layer". That was
+        // inaccurate when written — persist-results.js's sibling instance
+        // (F-1f7f9de8) and init.js's git() helper (fixed this wave) both
+        // predated it — and it is not a claim this file can verify on its
+        // own: there is still no mechanical gate (e.g. a meta-test grepping
+        // commands/**+cli.js for `execSync(` with a template-literal
+        // argument) preventing a future instance from reintroducing the
+        // pattern elsewhere in this package.
         execFileSync('node', [ingestScript, '--provenance=stub', '--file', submissionPath], {
           stdio: ['ignore', 'pipe', 'pipe'],
           encoding: 'utf-8',
@@ -151,7 +162,17 @@ export function formatPersist(r) {
   if (r.dogfood?.ingested) {
     lines.push(`  Ingested: YES`);
   } else {
-    lines.push(`  Ingested: NO — ${r.dogfood?.reason}`);
+    // F-bf28b667 (wave 20): r.dogfood.reason is not adversary-controlled
+    // (it is either a fixed literal — 'Dry run' / 'Not requested' / 'Ingest
+    // script not found' — or, on a failed ingest, a local execFileSync
+    // child-process error message: `Command failed: <cmd>\n<stderr>`, per
+    // Node's own child_process error shape), but that stderr CAN legitimately
+    // be multi-line (packages/ingest/run.js's own validation output). Escaped
+    // for display robustness so a multi-line ingest failure renders as one
+    // summary line instead of visually fragmenting into several, matching
+    // this package's escaping convention for every other reason-shaped
+    // render site rather than leaving this one as a silent exception.
+    lines.push(`  Ingested: NO — ${escapeReasonForDisplay(r.dogfood?.reason)}`);
   }
   lines.push('');
 

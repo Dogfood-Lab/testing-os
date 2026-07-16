@@ -209,7 +209,7 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
           kind: 'INVALID',
           from,
           to: toStatus,
-          agentRunId: waveId,
+          waveId,
           hint: `canonical statuses: ${Object.keys(TRANSITIONS).join(' | ')}`,
         }
       );
@@ -228,7 +228,7 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
           kind: 'TERMINAL',
           from,
           to: toStatus,
-          agentRunId: waveId,
+          waveId,
           hint: `file a bug — check the call site for a missing 'wave is already advanced' guard before transitionWave(${waveId}, '${toStatus}')`,
         }
       );
@@ -241,7 +241,7 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
           kind: 'BLOCKED',
           from,
           to: toStatus,
-          agentRunId: waveId,
+          waveId,
           hint: `wave ${waveId} is blocked ('${from}'); the canonical recovery is \`swarm revalidate <run-id> --reason "<text>" --apply\`, which calls transitionWave(... override=true, reason) under the hood and writes the audit row.`,
         }
       );
@@ -254,7 +254,7 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
         kind: 'INVALID',
         from,
         to: toStatus,
-        agentRunId: waveId,
+        waveId,
         allowedTransitions: allowed,
         hint: allowed.length > 0
           ? `pick a legal target: ${allowed.join(' | ')}`

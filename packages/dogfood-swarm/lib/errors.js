@@ -214,6 +214,7 @@ export class CriterionIntentOverflowError extends Error {
    * @param {string} opts.criterionId — the criterion under test when the overflow was found
    * @param {number} opts.headLength — the mandatory section's actual length
    * @param {number} opts.maxChars — prism's intent cap (MAX_INTENT_CHARS)
+   * @param {string} [opts.hint] — override the default remediation hint
    */
   constructor(message, opts) {
     super(message);
@@ -222,6 +223,15 @@ export class CriterionIntentOverflowError extends Error {
     this.criterionId = opts.criterionId;
     this.headLength = opts.headLength;
     this.maxChars = opts.maxChars;
+    // F-4b72faf9: this class never set `.hint`, so renderTopLevelError printed
+    // no "Next:" line even though the thrown `message` embeds the same
+    // remediation text inline — every sibling typed error in this file with a
+    // self-contained one-line remedy (e.g. ControlPlaneSchemaTooNewError)
+    // surfaces it through `.hint` instead of leaving operators to parse it out
+    // of the message. Default only; a future throw site can still override.
+    this.hint = opts.hint
+      || `criterion '${opts.criterionId}': mandatory section is ${opts.headLength} chars ` +
+         `(cap ${opts.maxChars}) — shorten the objective, split the criterion, or trim the out-of-scope list`;
   }
 }
 
@@ -257,7 +267,13 @@ export class StateMachineRejectionError extends Error {
    * @param {'BLOCKED' | 'TERMINAL' | 'INVALID'} opts.kind
    * @param {string} opts.from
    * @param {string} opts.to
-   * @param {number|string} [opts.agentRunId]
+   * @param {number|string} [opts.agentRunId] — set by transitionAgent (lib/state-machine.js) rejections
+   * @param {number|string} [opts.waveId] — set by transitionWave (lib/wave-state-machine.js)
+   *   rejections (F-f4a64538). Mirrors CollectUpsertError's existing `waveId` field so
+   *   error-render.js's already-correct `e.waveId` branch renders "Wave: N" instead of
+   *   mislabeling a wave id as an agent-run id — the two are separate AUTOINCREMENT
+   *   sequences in the same DB. A single throw site should set exactly one of
+   *   agentRunId/waveId, matching whichever state machine actually rejected the transition.
    * @param {string} [opts.hint] — actionable next-step text
    * @param {string[]} [opts.allowedTransitions] — legal `to` set from `from`
    */
@@ -269,6 +285,7 @@ export class StateMachineRejectionError extends Error {
     this.from = opts.from;
     this.to = opts.to;
     if (opts.agentRunId != null) this.agentRunId = opts.agentRunId;
+    if (opts.waveId != null) this.waveId = opts.waveId;
     if (opts.hint) this.hint = opts.hint;
     if (opts.allowedTransitions) this.allowedTransitions = opts.allowedTransitions;
   }

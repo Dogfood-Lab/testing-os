@@ -54,9 +54,9 @@ const sourceText = readFileSync(sourcePath, 'utf-8');
 const MUTANTS = [
   {
     name: 'invert-id-shape-check',
-    rationale: 'C3 shape validation must reject malformed ids and accept well-formed ones — inverting the test should flip every corpus/probe assertion touching bad-shape or well-formed ids.',
-    find: 'for (const token of tokens) out.push({ token, ok: F_ID_PATTERN_ANCHORED.test(token) });',
-    replace: 'for (const token of tokens) out.push({ token, ok: !F_ID_PATTERN_ANCHORED.test(token) });',
+    rationale: 'C3 shape validation must reject malformed ids and accept well-formed ones — inverting the test should flip every corpus/probe assertion touching bad-shape or well-formed ids. (Retargeted for F-d77ffe1a\'s extractDeclaredIds rewrite — the single-line ok-computation this mutant inverts still exists, just inside the left-to-right token walk that also stops at the first post-valid-id failure.)',
+    find: 'const ok = F_ID_PATTERN_ANCHORED.test(token);',
+    replace: 'const ok = !F_ID_PATTERN_ANCHORED.test(token);',
   },
   {
     name: 'remove-qualifying-name-check',

@@ -58,22 +58,23 @@
  * match existing patterns, don't invent — a hand-rolled walk here is smaller
  * surface than a new heavyweight dependency for a job this contained).
  *
- * CROSS-DOMAIN FOLLOW-UP, DISCLOSED (repo-first / domain-ownership rule):
- * this module imports `@babel/parser` directly, and it resolves correctly
- * today ONLY because vite/vitest already pull it in transitively (verified:
- * `node_modules/@babel/parser` at 7.29.3, matching package-lock.json). The
- * hygienic fix — adding `"@babel/parser": "^7.29.3"` to root
- * `package.json` `devDependencies` so this is a direct, not incidental,
- * dependency — touches root `package.json`/`package-lock.json`, which are
- * NOT in this wave's `.github/**`/`scripts/**`/`tsconfig*.json` ownership
- * (checked against every wave-18 domain's frozen map: none owns them
- * either). Per this domain's hard rule ("cross-domain changes: note, do not
- * edit"), that edit was made, verified working, then REVERTED rather than
- * landed out-of-domain — see this wave's ci-tooling output for the exact
- * diff to apply. Until it lands, this module's dependency on
- * `@babel/parser` is real but UNDECLARED — a future change that removes
- * vite/vitest's own need for it would silently break this file with
- * "Cannot find module '@babel/parser'" and no warning beforehand.
+ * CROSS-DOMAIN FOLLOW-UP, RESOLVED (F-a544c1c4, wave 20 — corrects a
+ * same-commit self-contradiction): this module imports `@babel/parser`
+ * directly. At commit 132dc18 (the commit that shipped this file) it is a
+ * DIRECT, declared dependency — `"@babel/parser": "^7.29.3"` was added to
+ * root `package.json`'s `devDependencies` in that same commit (see
+ * `package.json`, and that commit's own message: "Declared @babel/parser in
+ * root package.json (no wave-18 domain owned the file; the gate's parser
+ * was real but undeclared, surviving only on vitest's transitive
+ * resolution)."). Verified at HEAD: `package.json` still carries the direct
+ * devDependency today, alongside `package-lock.json`. An earlier draft of
+ * this paragraph, written in the SAME commit, described a different final
+ * decision — that the package.json edit had been made, verified, then
+ * REVERTED as an out-of-domain change for a later wave to land — which was
+ * superseded before the commit closed and was never true of the shipped
+ * state. No functional impact either way: `@babel/parser` resolves
+ * correctly, and has been a direct (not merely transitively-available)
+ * dependency since 132dc18.
  *
  * FAIL-CLOSED (C7, findings 32/33): `errorRecovery` is left at its default
  * `false` — an unparseable file throws inside scanFileForDeclaredPins and the
@@ -152,6 +153,19 @@ function parseOptsFor(filePath) {
  * with `@pins` but nothing after it produces one `{ token: null }` entry
  * (the "empty tag" defect) rather than silently contributing zero pins.
  *
+ * F-d77ffe1a: once at least one well-formed id has been accepted on the
+ * line, the FIRST subsequent token that fails F_ID_PATTERN ends id-scanning
+ * — everything from that token onward is treated as a free-text
+ * description, not further tokens to validate. This is what lets the
+ * natural, JSDoc-conventional `@pins F-id - explanation` style (the same
+ * `@tag value - description` shape `@param name - description` already
+ * uses) credit the id without also raising one bad-shape issue per
+ * whitespace-delimited word of prose. Before any valid id has been found,
+ * every failing token is still reported as bad-shape (unchanged from
+ * before this fix) — a genuinely malformed tag (`@pins NOT-AN-ID`, nothing
+ * valid anywhere on the line) must still be a defect, never silently
+ * swallowed as "just description text."
+ *
  * @param {string} commentValue - Babel Comment.value (delimiters stripped).
  * @returns {{ token: string | null, ok: boolean }[]}
  */
@@ -165,7 +179,17 @@ export function extractDeclaredIds(commentValue) {
       out.push({ token: null, ok: false });
       continue;
     }
-    for (const token of tokens) out.push({ token, ok: F_ID_PATTERN_ANCHORED.test(token) });
+    let foundValid = false;
+    for (const token of tokens) {
+      const ok = F_ID_PATTERN_ANCHORED.test(token);
+      if (ok) {
+        out.push({ token, ok: true });
+        foundValid = true;
+        continue;
+      }
+      if (foundValid) break; // F-d77ffe1a: remainder of the line is a free-text description, not more id attempts.
+      out.push({ token, ok: false });
+    }
   }
   return out;
 }
@@ -265,10 +289,33 @@ function extractTitle(call) {
 
 /**
  * Given the AST node a leading comment attaches to, find the qualifying
- * test call it declares a pin for, if any. Covers the direct
- * `ExpressionStatement` case (the documented convention) and a
- * `const x = test(...)` VariableDeclaration binding, since a generic walk
- * (forEachNode) has no reason to privilege one over the other.
+ * test call it declares a pin for, if any. Covers three shapes:
+ *   - a direct `ExpressionStatement` (the documented convention, `test(...)`
+ *     as its own statement);
+ *   - a `const x = test(...)` VariableDeclaration binding;
+ *   - F-d9cdcff2: a bare CallExpression host — the shape Babel attaches a
+ *     leading comment to when the tagged call is itself an ARRAY ELEMENT,
+ *     e.g. a data-driven test table:
+ *       `const cases = [ /** @pins F-id *\/ test('t', fn), ];`
+ *     The comment attaches to the `test('t', fn)` CallExpression node
+ *     directly (there is no enclosing statement or declarator inside an
+ *     array literal), so without this branch the tag reported a false
+ *     `wrong-node` orphan even though the call genuinely executes.
+ * A generic walk (forEachNode) has no reason to privilege any one of the
+ * three over the others, since all reach the SAME underlying question:
+ * "does this host resolve to a qualifying call?"
+ *
+ * DELIBERATELY NOT covering an IIFE wrapper
+ * (`/** @pins F-id *\/ (function () { test('t', fn); })();`) or an
+ * arrow-function variable indirection
+ * (`/** @pins F-id *\/ const wrapper = () => test('t', fn); wrapper();`):
+ * in both, the comment attaches to a REAL node this function inspects (the
+ * IIFE's own ExpressionStatement; the VariableDeclaration whose declarator
+ * init is an ArrowFunctionExpression, not a CallExpression) but that node
+ * does not itself resolve to a qualifying call — correctly reported as
+ * `wrong-node`, per F-d9cdcff2's own fix note that these two are out of
+ * scope (least realistic of the three surveyed shapes; no live use in this
+ * repo's corpus either way).
  *
  * @param {object | null} hostNode
  * @returns {object | null}
@@ -283,6 +330,7 @@ function qualifyingCallFromHost(hostNode) {
       if (decl.init && isQualifyingTestCall(decl.init)) return decl.init;
     }
   }
+  if (isQualifyingTestCall(hostNode)) return hostNode;
   return null;
 }
 
@@ -323,7 +371,29 @@ function buildLeadingCommentIndex(programAst) {
  * }}
  */
 export function scanFileForDeclaredPins(filePath, textOverride) {
-  const text = textOverride ?? readFileSync(filePath, 'utf-8');
+  // F-d1e38dd0: the read itself can throw (file deleted between
+  // walkSourceFiles' listing and this read, a permissions error, or any
+  // other I/O fault — plausible under concurrent CI filesystem activity).
+  // Caught HERE, in its own branch, and reported as the same parseErrors-
+  // shaped record a parse failure produces, so one unreadable file degrades
+  // gracefully into a per-file blocking defect (C7) rather than an
+  // uncaught throw that takes the whole gate down (no results for ANY
+  // file, not just the offending one). `??` (not `!==`) matches the
+  // original nullish-coalescing semantics exactly: an explicit `null`
+  // override still falls through to a real read, same as before this fix.
+  let text = textOverride;
+  if (text === undefined || text === null) {
+    try {
+      text = readFileSync(filePath, 'utf-8');
+    } catch (err) {
+      return {
+        file: filePath,
+        parseError: { message: `failed to read file: ${err.message}`, line: null, column: null },
+        pins: [],
+        issues: [],
+      };
+    }
+  }
   let ast;
   try {
     ast = parse(text, parseOptsFor(filePath));

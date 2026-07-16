@@ -511,10 +511,16 @@ describe('F-a7eb2d09 — cmdAdjudicate parses --format before runAdjudicate, not
 
 describe('F-21240958 — persist.js ingest call never builds a shell command string', () => {
   it('GATE: no execSync( call in persist.js — execFileSync with an argv array only', () => {
-    assert.doesNotMatch(PERSIST_SRC, /execSync\(/,
+    // Assert against CODE, not raw bytes. This gate scanned the whole file including
+    // comments, so wave 20's correction of persist.js's own header prose — which names
+    // `execSync(` while describing the discipline it documents — tripped it. That is the
+    // false-grant class this repo spent waves 16-20 eliminating from the pin matcher
+    // (prose in a non-code position read as code), living inside one of its own pins.
+    const persistCode = stripComments(PERSIST_SRC);
+    assert.doesNotMatch(persistCode, /execSync\(/,
       'pre-fix: execSync(`node "${ingestScript}" --provenance=stub --file "${submissionPath}"`) interpolated ' +
       'two attacker-adjacent values (SWARM_DB-derived outputDir, the run-id positional) into a shell command string');
-    assert.match(PERSIST_SRC, /execFileSync\('node', \[ingestScript, '--provenance=stub', '--file', submissionPath\]/,
+    assert.match(persistCode, /execFileSync\('node', \[ingestScript, '--provenance=stub', '--file', submissionPath\]/,
       'expected the argv-array form used by every other subprocess call in this package (dispatch.js, lib/worktree.js)');
   });
 });

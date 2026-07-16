@@ -384,7 +384,20 @@ export function formatReceiptMarkdown(r) {
   // Recommendation
   lines.push('## Recommendation');
   lines.push('');
-  lines.push(`**${r.recommendation.action}**${r.recommendation.reason ? ` — ${r.recommendation.reason}` : ''}`);
+  // F-d6cf96e4 (wave 20): r.recommendation.reason is computeRecommendation()'s
+  // return value — every branch builds a fixed template string interpolating
+  // only counts/statuses/internal identifiers (wave.id, adapter names,
+  // openBySeverity tallies) this function already knows, never operator or
+  // target-repo content, so the value is safe today. Escaped anyway, for two
+  // reasons: (1) reason-escaping-discipline.test.js is a FILE-level check —
+  // it already exempts this file via the escapeReasonForDisplay call at
+  // formatReceiptMarkdown's t.reason site above, so this site's absence was
+  // invisible to that gate; leaving it unescaped was a live, if safe-valued,
+  // coverage gap. (2) computeRecommendation's reason strings are hand-edited
+  // prose, not a schema-enforced enum — a future edit that interpolates a
+  // less-trusted value (a stored --reason, an adapter-derived string) would
+  // silently inherit whatever discipline this call site has today.
+  lines.push(`**${r.recommendation.action}**${r.recommendation.reason ? ` — ${escapeReasonForDisplay(r.recommendation.reason)}` : ''}`);
 
   return lines.join('\n');
 }

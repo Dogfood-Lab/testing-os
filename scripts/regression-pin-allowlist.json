@@ -132,6 +132,12 @@
       "file": "scripts/pin-declarations-corpus.mjs",
       "owner": "ci-tooling",
       "revalidate_by": "2026-10-14"
+    },
+    "F-a544c1c4": {
+      "reason": "Doc-only correction in pin-declarations.mjs's module docstring (CROSS-DOMAIN FOLLOW-UP paragraph): the docstring, written in the same commit (132dc18) that shipped the fix, described a DIFFERENT final decision than the one actually shipped — it claimed the @babel/parser package.json edit had been reverted rather than landed, contradicting that commit's own diff and commit message. No new behavior: @babel/parser resolves identically either way (it was already a real, working dependency, only its DECLARED-vs-transitive status was in question), so there is nothing to test-pin — the fix corrects prose to match a state that was already true at HEAD. Same accepted class as F-eb9fc4aa/F-33ff7b4b/F-e241fa61 (doc-only corrections whose real behavioral coverage predates and is independent of the correction id).",
+      "file": "scripts/pin-declarations.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
     }
   }
 }

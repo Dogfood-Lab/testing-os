@@ -77,14 +77,22 @@ export function validateStepResults(scenarioResult) {
   // computeVerdict() (validators/verdict.js) trusts scenario_results[].verdict
   // verbatim and never re-derives it from step_results, so without this check
   // a self-reported "blocked" verdict backed by zero failing/blocked steps
-  // sailed through with no rejection reason at all. Scoped to fail/blocked
-  // only: "partial" has no analogous contradiction (a partial pass is
-  // legitimately a mixed evidence shape) and is left untouched.
+  // sailed through with no rejection reason at all.
+  //
+  // F-e42e8f80 (wave 20, amends F-88fb37ff): the original gate required at
+  // least one step to ACTIVELY report fail/blocked, which wrongly rejected
+  // the common honest shape "the scenario was blocked before any step could
+  // run, so every step reports 'skip'" — 'skip' and 'partial' are NEUTRAL
+  // (no evidence either way), not "evidence of no failure." Only 'pass' is an
+  // ACTIVE CONTRADICTION of a fail/blocked verdict (the step ran and claimed
+  // success). The gate now fires only when EVERY reported step actively says
+  // "pass" — a single skip/partial/fail/blocked step is enough to keep a
+  // fail/blocked verdict internally consistent.
   if (verdict === 'fail' || verdict === 'blocked') {
-    const hasFailingStep = step_results.some(
-      s => s != null && (s.status === 'fail' || s.status === 'blocked')
+    const allStepsActivelyPass = step_results.every(
+      s => s != null && s.status === 'pass'
     );
-    if (!hasFailingStep) {
+    if (allStepsActivelyPass) {
       errors.push(
         `scenario verdict is "${verdict}" but no step reports status fail/blocked`
       );
@@ -157,21 +165,26 @@ export function validateRequiredSteps(scenarioResult, requiredSteps) {
 
   // F-88fb37ff: mirror of the pass-direction block above, scoped to REQUIRED
   // steps (the sibling check in validateStepResults enforces the same rule
-  // over ALL reported steps regardless of which are required). Fires only
-  // when every required step is accounted for AND none of the present ones
-  // shows fail/blocked — i.e. the record's own required-step evidence is
-  // uniformly non-failing while the verdict claims otherwise. A required step
-  // that is simply MISSING is deliberately excluded from "evidence of
-  // failure" here: its absence is already rejected unconditionally by the
-  // [step-results-present] loop above, regardless of verdict, so treating a
-  // missing step as fail-evidence too would only ever duplicate that
-  // rejection for the exact same gap.
+  // over ALL reported steps regardless of which are required).
+  //
+  // F-e42e8f80 (wave 20, amends F-88fb37ff): "no required step reports
+  // fail/blocked" was too narrow a bar — a required step honestly reporting
+  // 'skip' (never ran because the scenario was blocked upstream) or 'partial'
+  // is NEUTRAL, not an active contradiction, and must not force a rejection.
+  // The gate now fires only when every PRESENT required step actively says
+  // "pass" — mirroring validateStepResults' all-pass bar. A required step
+  // that is simply MISSING is "not an active pass" exactly like skip/partial
+  // would be, so it never by itself forces this check to fire (`result !=
+  // null && result.status === 'pass'` is false for a missing step too); its
+  // absence is already rejected unconditionally by the [step-results-present]
+  // loop above, regardless of verdict, so this check deliberately does not
+  // pile a second, verdict-specific error onto the exact same gap.
   if ((verdict === 'fail' || verdict === 'blocked') && requiredSteps.length > 0) {
-    const hasFailingRequiredStep = requiredSteps.some(stepId => {
+    const allPresentRequiredStepsActivelyPass = requiredSteps.every(stepId => {
       const result = resultMap.get(stepId);
-      return !result || result.status === 'fail' || result.status === 'blocked';
+      return result != null && result.status === 'pass';
     });
-    if (!hasFailingRequiredStep) {
+    if (allPresentRequiredStepsActivelyPass) {
       errors.push(
         `[step-verdict-consistent] scenario verdict is "${verdict}" but no required step reports status fail/blocked`
       );

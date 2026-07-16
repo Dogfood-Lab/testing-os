@@ -76,8 +76,12 @@
  * schema-invalid-skip-persist.test.js already pin that boundary as
  * intentional. The shape/addressing subset (schema:, repo:,
  * unsafe-record-path:, steps[<id>]:, policy-config:,
- * submission-contains-verifier-field:, CONTRACT_SCHEMA_TOO_NEW/OLD:) is what
- * becomes retryable. See the 'F-f8952a50' describe block below.
+ * submission-contains-verifier-field:, CONTRACT_SCHEMA_TOO_OLD:) is what
+ * becomes retryable. (CONTRACT_SCHEMA_TOO_NEW: looks like a sibling of
+ * TOO_OLD: but is NOT part of this subset — F-be0deacd, wave 20 moved it to
+ * class 'operational', always retryable:false, because only a testing-os
+ * upgrade fixes it, never a submitter resubmission.) See the 'F-f8952a50'
+ * describe block below.
  * The wave-8 invariants above (an uncorrected retry stays a clean duplicate;
  * a corrected schema-class retry is unblocked) are UNCHANGED by this — the
  * retryable check is only ever consulted when the NEW record is headed to

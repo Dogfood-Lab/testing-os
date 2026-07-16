@@ -13,7 +13,7 @@
  * 6. Print domain proposal for coordinator review
  */
 
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { resolve, basename } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -36,20 +36,20 @@ export function init(opts) {
   }
 
   // Check clean working tree
-  const status = git(repoPath, 'status --porcelain');
+  const status = git(repoPath, ['status', '--porcelain']);
   if (status.trim()) {
     throw new Error(`Working tree is not clean. Commit or stash changes first.\n${status}`);
   }
 
   // 2. Read HEAD commit + branch
-  const commitSha = git(repoPath, 'rev-parse HEAD').trim();
-  const branch = git(repoPath, 'rev-parse --abbrev-ref HEAD').trim();
+  const commitSha = git(repoPath, ['rev-parse', 'HEAD']).trim();
+  const branch = git(repoPath, ['rev-parse', '--abbrev-ref', 'HEAD']).trim();
 
   // Auto-detect org/repo from remote
   let repo = opts.repo;
   if (!repo) {
     try {
-      const remoteUrl = git(repoPath, 'remote get-url origin').trim();
+      const remoteUrl = git(repoPath, ['remote', 'get-url', 'origin']).trim();
       const match = remoteUrl.match(/[:/]([^/]+\/[^/.]+?)(?:\.git)?$/);
       repo = match ? match[1] : basename(repoPath);
     } catch {
@@ -60,7 +60,7 @@ export function init(opts) {
   // 3. Create save point tag
   const timestamp = Math.floor(Date.now() / 1000);
   const savePointTag = `swarm-save-${timestamp}`;
-  git(repoPath, `tag ${savePointTag}`);
+  git(repoPath, ['tag', savePointTag]);
 
   // 4. Auto-detect domains
   const { domains, unmatched } = detectDomains(repoPath);
@@ -99,6 +99,14 @@ export function init(opts) {
   };
 }
 
-function git(cwd, cmd) {
-  return execSync(`git ${cmd}`, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+// F-264bd9d2 (wave 20): argv-array form (execFileSync), never a shell-string
+// exec. Every call site below passes only a hardcoded literal argv or a pure
+// internal timestamp (`tag`, savePointTag — `swarm-save-${Date.now()}`, never
+// operator or target-repo input), so this closes the THIRD documented
+// instance of this class in this package (F-21240958 commands/persist.js,
+// its sibling F-1f7f9de8 persist-results.js) — matching every other git/node
+// invocation in the command layer (dispatch.js's execFileSync('git', [...]),
+// lib/worktree.js).
+function git(cwd, args) {
+  return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
 }

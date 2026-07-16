@@ -49,7 +49,7 @@
  * `retryable` flag (F-f8952a50, wave 10): the SHAPE/ADDRESSING subset of
  * submission-bad (schema:, repo:, unsafe-record-path:, steps[<id>]:,
  * policy-config:, submission-contains-verifier-field:,
- * CONTRACT_SCHEMA_TOO_NEW/OLD:) stays reusable for a genuinely corrected
+ * CONTRACT_SCHEMA_TOO_OLD:) stays reusable for a genuinely corrected
  * resubmission — "we could not even read/place/shape your submission" is not
  * a verdict on what the run actually did. The CONTENT-VERDICT subset
  * (policy:, provenance:) does NOT become retryable: those two prefixes judge
@@ -57,9 +57,11 @@
  * would let a submitter launder a genuinely-bad run into an accepted one by
  * resubmitting different self-reported content under the same run_id — see
  * the "REGRESSION GUARD" test and 'the persist-a-verdict doctrine is
- * preserved' below, both still pinning that boundary as intentional. An
- * operational fault never reaches this file at all (it throws instead of
- * persisting — F-82429f90). See
+ * preserved' below, both still pinning that boundary as intentional. Most
+ * operational faults never reach this file at all (they throw instead of
+ * persisting — F-82429f90); CONTRACT_SCHEMA_TOO_NEW: is the one documented
+ * exception (F-be0deacd, wave 20) — it is class 'operational' but is
+ * RETURNED, not thrown, so it does persist here, always retryable:false. See
  * f-0f9e4077-retry-collision-duplicate-rejection.test.js's 'F-f8952a50'
  * describe block for the positive (now-retryable) shape/addressing proof.
  *

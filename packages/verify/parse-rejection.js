@@ -31,9 +31,12 @@
  *                   read/place/shape your submission" (schema:, repo:,
  *                   unsafe-record-path:, steps[<id>]:, policy-config:,
  *                   submission-contains-verifier-field:,
- *                   CONTRACT_SCHEMA_TOO_NEW:, CONTRACT_SCHEMA_TOO_OLD:) — a
- *                   correction changes nothing about what the run actually
- *                   did, only how it was addressed/formatted/configured.
+ *                   CONTRACT_SCHEMA_TOO_OLD:) — a correction changes nothing
+ *                   about what the run actually did, only how it was
+ *                   addressed/formatted/configured. (CONTRACT_SCHEMA_TOO_NEW:
+ *                   moved to class 'operational' / retryable: false in
+ *                   F-be0deacd, wave 20 — see the LITERAL_PREFIXES entry
+ *                   below for why it is NOT the submitter's problem.)
  *                 - retryable: false — the prefix means "we read your
  *                   submission and rendered a VERDICT against its content"
  *                   (policy:, provenance:) — consuming the run_id is the
@@ -59,8 +62,11 @@
  *                                     submission-contains-verifier-field:,
  *                                     submission-malformed:,
  *                                     VALIDATOR_FAULT_<NAME>:
- *   - validators/schema-version.js:   CONTRACT_SCHEMA_TOO_NEW:,
- *                                     CONTRACT_SCHEMA_TOO_OLD:
+ *   - validators/schema-version.js:   CONTRACT_SCHEMA_TOO_NEW: (this BUILD is
+ *                                       behind a schema major its submitters
+ *                                       already adopted → operational, F-be0deacd
+ *                                       wave 20), CONTRACT_SCHEMA_TOO_OLD: (the
+ *                                       SUBMITTER is behind → submission-bad)
  *   - packages/ingest/run.js:         scenario-load:,
  *                                     unsafe-record-path: (F-4acd28d8,
  *                                       computeRecordPath's traversal guard
@@ -144,7 +150,18 @@ const LITERAL_PREFIXES = [
     class: 'submission-bad',
     retryable: true,
   },
-  { match: 'CONTRACT_SCHEMA_TOO_NEW:', prefix: 'CONTRACT_SCHEMA_TOO_NEW:', class: 'submission-bad', retryable: true },
+  // F-be0deacd (wave 20): TOO_NEW and TOO_OLD are NOT symmetric, despite the
+  // near-identical prefixes and shared emitter (validators/schema-version.js).
+  // TOO_OLD means the SUBMITTER is behind — re-emitting against the current
+  // contract fixes it, so it stays submission-bad/retryable. TOO_NEW means
+  // THIS BUILD is behind a schema major its own submitters have already
+  // adopted (schema-version.js's own JSDoc: "operator must upgrade
+  // testing-os") — no resubmission, corrected or not, can ever satisfy a
+  // `major > maxMajor` comparison until testing-os itself ships an upgrade.
+  // That is an ops action, not a submitter action, so TOO_NEW routes
+  // operational/not-retryable — the same bucket VALIDATOR_FAULT_* and
+  // submission-malformed: use for "page ops, don't bounce it back".
+  { match: 'CONTRACT_SCHEMA_TOO_NEW:', prefix: 'CONTRACT_SCHEMA_TOO_NEW:', class: 'operational', retryable: false },
   { match: 'CONTRACT_SCHEMA_TOO_OLD:', prefix: 'CONTRACT_SCHEMA_TOO_OLD:', class: 'submission-bad', retryable: true },
   // submission-bad — F-4acd28d8: the record passed schema validation but its
   // OWN repo identifier is unsafe to file under (computeRecordPath's

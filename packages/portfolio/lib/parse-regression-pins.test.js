@@ -157,6 +157,50 @@ describe('classifyFile', () => {
     assert.equal(classifyFile('C:\\repo\\packages\\report\\report.test.js'), 'test');
     assert.equal(classifyFile('C:\\repo\\packages\\schemas\\test\\helpers.ts'), 'test');
   });
+
+  /** @pins F-a27680f9 */
+  describe('F-a27680f9: node --test\'s non-dot discovery forms (-test./_test./bare test.)', () => {
+    it('classifies "foo-test.js" (dash suffix) as test', () => {
+      assert.equal(classifyFile('/repo/packages/report/report-test.js'), 'test');
+    });
+
+    it('classifies "foo_test.js" (underscore suffix) as test', () => {
+      assert.equal(classifyFile('/repo/packages/report/report_test.js'), 'test');
+    });
+
+    it('classifies a bare "test.js" (exact basename) as test', () => {
+      assert.equal(classifyFile('/repo/packages/report/test.js'), 'test');
+      assert.equal(classifyFile('/repo/packages/report/test.mjs'), 'test');
+    });
+
+    it('classifies the .ts/.mjs/.cjs/.jsx/.tsx variants of each new form as test', () => {
+      assert.equal(classifyFile('/repo/lib/foo-test.ts'), 'test');
+      assert.equal(classifyFile('/repo/lib/foo_test.mjs'), 'test');
+      assert.equal(classifyFile('/repo/lib/foo-test.tsx'), 'test');
+    });
+
+    it('does NOT double-match the already-handled dot form (foo.test.js has "." not "-"/"_" before "test.")', () => {
+      // Regression guard: the new pattern must not change WHY foo.test.js
+      // classifies as test (it already did, via the dot-form regex above) —
+      // this only proves the new branch does not mis-fire on it either.
+      assert.equal(classifyFile('/repo/lib/foo.test.js'), 'test');
+    });
+
+    it('does NOT match an unrelated substring like "protest.js" (no separator before "test.")', () => {
+      assert.equal(classifyFile('/repo/lib/protest.js'), 'source');
+    });
+
+    it('does NOT match "test.js" appearing mid-path as a directory name, only as the final segment', () => {
+      // "test.js" here is a DIRECTORY, not the file basename — the file is
+      // "helper.js", which matches none of the test forms.
+      assert.equal(classifyFile('/repo/test.js/helper.js'), 'source');
+    });
+
+    it('uses POSIX-normalised match logic so Windows backslashes still classify the new forms', () => {
+      assert.equal(classifyFile('C:\\repo\\packages\\report\\report-test.js'), 'test');
+      assert.equal(classifyFile('C:\\repo\\packages\\report\\test.js'), 'test');
+    });
+  });
 });
 
 describe('extractPinsFromText', () => {

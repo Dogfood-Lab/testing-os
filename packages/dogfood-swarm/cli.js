@@ -1587,7 +1587,15 @@ function cmdReceipt(args) {
   console.log(`  JSON: ${jsonPath}`);
   console.log(`  MD:   ${mdPath}`);
   console.log('');
-  console.log(`Recommendation: ${receipt.recommendation.action}${receipt.recommendation.reason ? ' — ' + receipt.recommendation.reason : ''}`);
+  // F-d6cf96e4 (wave 20) class-completion: receipt.recommendation.reason is
+  // the SAME computeRecommendation() value commands/receipt.js's
+  // formatReceiptMarkdown now escapes (see that file's Recommendation
+  // section) — this is the CLI's own separate text render of that field
+  // (the --format=json branch above already returned with the raw object).
+  // Escaping only the .md artifact and leaving this stdout render bare would
+  // be exactly the single-instance-patch shape wave 19's audit exists to
+  // catch, applied to a field this wave already touched once.
+  console.log(`Recommendation: ${receipt.recommendation.action}${receipt.recommendation.reason ? ' — ' + escapeReasonForDisplay(receipt.recommendation.reason) : ''}`);
 }
 
 /**
@@ -2075,7 +2083,15 @@ function cmdPersist(args) {
   // pasteable reproduce line (mirroring persist-results.js) so the operator
   // can replay the ingest with full output.
   if (ingestDogfood && !dryRun && result.dogfood && result.dogfood.ingested !== true) {
-    console.error(`ERROR [INGEST_FAILED]: dogfood ingest did not complete — ${result.dogfood.reason}`);
+    // F-bf28b667 (wave 20) class-completion: result.dogfood.reason is the
+    // SAME value commands/persist.js's formatPersist now escapes (see that
+    // file's "Ingested: NO" line) — this is cmdPersist's own SEPARATE
+    // render of it on the exit-1 error path. A local execFileSync
+    // child-process error message can legitimately be multi-line (see
+    // persist.js); escaping only the summary render and leaving this error
+    // render bare would repeat the single-instance-patch shape this wave
+    // exists to close.
+    console.error(`ERROR [INGEST_FAILED]: dogfood ingest did not complete — ${escapeReasonForDisplay(result.dogfood.reason)}`);
     if (result.artifacts?.dogfoodSubmission) {
       console.error(`  Submission: ${result.artifacts.dogfoodSubmission}`);
       console.error(`  Reproduce:  node "<repo>/packages/ingest/run.js" --provenance=stub --file "${result.artifacts.dogfoodSubmission}"`);

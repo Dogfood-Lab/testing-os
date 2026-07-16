@@ -72,9 +72,20 @@ function scenarioVerdict(record) {
 // same evidentiary floor for a single scenario object (rule-blocked-scenario
 // iterates scenarios directly rather than through the record-level,
 // index-0-only helpers above).
-function hasFailOrBlockedStep(scenario) {
+//
+// F-e42e8f80 (wave 20, amends F-88fb37ff): renamed from hasFailOrBlockedStep
+// and its condition widened — the original "at least one step actively
+// fail/blocked" bar had the identical blind spot the verifier-level fix
+// (validateStepResults/validateRequiredSteps) closed: a genuinely blocked
+// scenario whose steps honestly report 'skip' (never ran) has ZERO
+// fail/blocked steps, so the old bar silently dropped the
+// 'verification_gap'/'missing_precondition' finding for exactly the class of
+// record most likely to deserve it. Only an ACTIVE 'pass' is a contradiction
+// of a blocked verdict; 'skip'/'partial' are neutral, like a step that never
+// ran. Mirrors the verifier-level fix's "not all pass" bar exactly.
+function hasNonPassStepEvidence(scenario) {
   const results = scenario.step_results || [];
-  return results.some(s => s != null && (s.status === 'fail' || s.status === 'blocked'));
+  return results.some(s => s != null && s.status !== 'pass');
 }
 
 // ─── Rule 1: Surface/interface misclassification ────────────
@@ -282,12 +293,12 @@ const ruleBlockedScenario = {
     // otherwise a self-contradictory record (blocked verdict, every step
     // reports pass) synthesizes a plausible-sounding but false
     // "infrastructure gap" finding the record's own evidence contradicts.
-    return ctx.record.scenario_results?.some(s => s.verdict === 'blocked' && hasFailOrBlockedStep(s));
+    return ctx.record.scenario_results?.some(s => s.verdict === 'blocked' && hasNonPassStepEvidence(s));
   },
 
   derive(ctx) {
     const { record, repoSlug } = ctx;
-    const blocked = record.scenario_results.filter(s => s.verdict === 'blocked' && hasFailOrBlockedStep(s));
+    const blocked = record.scenario_results.filter(s => s.verdict === 'blocked' && hasNonPassStepEvidence(s));
 
     return blocked.map(scenario => {
       const reason = scenario.blocking_reason || 'No blocking reason provided';

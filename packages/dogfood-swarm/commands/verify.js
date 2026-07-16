@@ -12,6 +12,7 @@ import { openDb } from '../db/connection.js';
 import { runVerification, probeAll, selectAdapter, listAdapters } from '../lib/verify/registry.js';
 import { transitionWave } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 /**
  * Mint a synthetic correlation_id for the verify wave-gate. Mirrors the
@@ -224,10 +225,33 @@ export function formatVerify(result) {
   // `reason` the adapter/registry constructed precisely — surface it so the
   // operator sees WHY, not just a bare verdict token. Mirrors the
   // `if (result.reason)` print already used by cmdPromote/cmdGate in cli.js.
+  //
+  // F-4773fb77 (wave 20): deliberately NOT escaped, unlike result.probe.reason
+  // below. result.reason is runner.js's own runSteps()/adapters' run() output
+  // — every value it can take is a fixed template string interpolating only
+  // internal literals (step names, step.cmd — both hardcoded per-adapter, never
+  // target-repo content — see lib/verify/runner.js's own SECURITY comment),
+  // counts, durations, and byte sizes. It never embeds target-repo manifest
+  // content the way probe.reason does (verified by reading every runSteps()
+  // and adapter run() branch that assigns `reason`). Escaping it anyway would
+  // suggest a trust distinction that does not exist and would misdirect a
+  // future reader auditing this file's escaping discipline.
   if (result.reason) lines.push(`Reason: ${result.reason}`);
   lines.push(`Adapter: ${result.adapter || 'none'}`);
   if (result.probe) {
-    lines.push(`Probe: score ${result.probe.score} — ${result.probe.reason}`);
+    // F-4773fb77 (wave 20): result.probe.reason, unlike result.reason above,
+    // is a ZERO-PRIVILEGE trust boundary — it embeds the AUDITED TARGET
+    // REPO's own manifest content verbatim (node.js's probe() reads
+    // package.json's `name` via plain JSON.parse with no character
+    // restriction; rust.js's probe() extracts Cargo.toml's `name` via a
+    // regex whose `[^"]` class matches raw newlines and ANSI bytes alike).
+    // Reachable by simply being the repo `swarm verify` audits — no
+    // operator --reason flag involved anywhere in this package. Neither
+    // `swarm verify` nor `swarm verify --probe-only` supports
+    // `--format=json`, so this text render is the ONLY surface this value
+    // reaches; there is no lossless escape hatch to fall back on the way
+    // there is for every other reason-render site in this package.
+    lines.push(`Probe: score ${result.probe.score} — ${escapeReasonForDisplay(result.probe.reason)}`);
   }
   lines.push(`Duration: ${result.duration_ms}ms`);
   if (result.test_count != null) {
@@ -253,7 +277,13 @@ export function formatProbe(probes) {
   for (const p of probes) {
     const bar = '#'.repeat(Math.round(p.score / 5));
     lines.push(`  ${p.name.padEnd(8)} ${String(p.score).padStart(3)}/100 ${bar}`);
-    lines.push(`           ${p.reason}`);
+    // F-4773fb77 (wave 20): p.reason is the same untrusted, target-repo-derived
+    // value as formatVerify's result.probe.reason above (probeAll() in
+    // lib/verify/registry.js spreads each adapter's own probe() return
+    // directly — `{ name, ...probe }` — so p.reason IS probe.reason, reached
+    // here via `swarm verify --probe-only` instead of the default invocation).
+    // Same zero-privilege trust boundary, same fix.
+    lines.push(`           ${escapeReasonForDisplay(p.reason)}`);
   }
   return lines.join('\n');
 }

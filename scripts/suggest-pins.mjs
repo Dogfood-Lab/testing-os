@@ -18,13 +18,17 @@
  * had), but stripped of all GRANTING authority. It now serves exactly the
  * role the literature says it is valid for:
  *
- *   1. `hasLegacyStructuralHit` / `findLegacyStructuralHits` — consumed by
- *      check-finding-regression-pins.mjs ONLY to decide GRANDFATHER
- *      exemption (an id with no declared @pins tag anywhere, but a legacy
- *      hit somewhere, is exempt from blocking but disclosed as
- *      "grandfathered — unverified" — never silently treated as equivalent
- *      to a declared, AST-verified pin). See that file's module docstring
- *      for the full grandfather-bucket contract.
+ *   1. `hasLegacyStructuralHit` / `findLegacyStructuralHits` — as of
+ *      F-W19-CI-001 (wave 20), NOT consumed by
+ *      check-finding-regression-pins.mjs at all: that gate's grandfather
+ *      bucket now checks membership in a FROZEN, static manifest
+ *      (scripts/grandfathered-pins.json, snapshotted once at commit
+ *      132dc18) rather than re-running this live heuristic on every run. A
+ *      finding minted after that freeze cannot be grandfathered no matter
+ *      what its source text looks like — the exact vintage-boundary gap
+ *      F-W19-CI-001 closed. These two exports now feed ONLY the
+ *      `suggestPinsForRepo` candidate generator below, one further step
+ *      removed from blocking authority than before this fix.
  *   2. `suggestPinsForRepo` / the `--suggest-pins` CLI mode — proposes
  *      `@pins` tag insertions for orphaned ids that have a legacy hit, so a
  *      domain's own agent can VET and land the tag by hand (the
@@ -35,8 +39,11 @@
  *      `tsconfig*.json` even if it wanted to.
  *
  * Neither export can cause check-finding-regression-pins.mjs's `ok` verdict
- * to become true for an id that has no declared tag — only the grandfather
- * bucket (itself disclosed, non-silent) is downstream of this file.
+ * to become true for an id that has no declared tag, no allowlist entry,
+ * and no entry in the frozen grandfather manifest — this file's exports have
+ * ZERO live influence on that verdict any more (see item 1 above); they only
+ * ever produce a candidate suggestion for a human to vet and land as a real
+ * declared tag.
  */
 
 import { readFileSync, writeFileSync } from 'node:fs';

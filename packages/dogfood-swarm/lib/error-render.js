@@ -66,6 +66,14 @@ function deriveHintForCode(e) {
     // without one.
     case 'CONTROL_PLANE_SCHEMA_TOO_NEW':
       return `the on-disk control-plane.db is schema v${e.onDiskVersion ?? '?'} but this build understands v${e.buildVersion ?? '?'} — pull the latest @dogfood-lab/dogfood-swarm so your build SCHEMA_VERSION >= the on-disk version, then re-run. Do NOT hand-edit or delete the DB; its state is the newer build's correctly migrated state, not corruption.`;
+    // F-4b72faf9: CriterionIntentOverflowError now sets its own `.hint` by
+    // default (lib/errors.js) — this derived fallback mirrors
+    // CONTROL_PLANE_SCHEMA_TOO_NEW's dual-coverage pattern immediately above,
+    // covering a CRITERION_INTENT_OVERFLOW that surfaces without one (e.g. a
+    // hand-constructed or JSON-round-tripped error object that kept `.code`
+    // but not the real class's constructor-set `.hint`).
+    case 'CRITERION_INTENT_OVERFLOW':
+      return `criterion ${e.criterionId ?? '<id>'} intent is ${e.headLength ?? '?'} chars over the ${e.maxChars ?? '?'}-char cap — shorten rubric.objective, split the criterion, or trim out_of_scope`;
     case 'RECORD_SCHEMA_INVALID':
       return 'inspect the failing record against packages/schemas/src/json/dogfood-record.schema.json and fix the invalid fields before re-ingesting';
     case 'AGENT_OUTPUT_SCHEMA_INVALID':

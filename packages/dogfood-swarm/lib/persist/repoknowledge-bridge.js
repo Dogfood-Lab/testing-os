@@ -187,3 +187,37 @@ export function buildAuditPayload(exportData) {
 
   return { run: auditRun, findings: auditFindings, metrics };
 }
+
+/**
+ * F-09c4777a: buildAuditPayload's aborted branch (see the F-be8db3ee comment
+ * above) keeps overall_posture inside the fixed
+ * ['healthy','needs_attention','critical'] enum persist.test.js (package
+ * root, out of this domain) already hard-pins, and the downstream
+ * repo-knowledge consumer's own schema expects the same enum — so the abort
+ * signal cannot be smuggled into that field's VALUE (a fourth value was
+ * considered and rejected by the wave-18 fix for exactly this reason).
+ *
+ * The one production consumer that reads overall_status/overall_posture in
+ * ISOLATION — `swarm persist`'s terminal output (commands/persist.js,
+ * outside this domain's owned glob) — was traced end-to-end and found to
+ * hand-format `${status} (${posture})` directly from this payload, with no
+ * access to metrics.run_aborted or run.summary. For an aborted run with zero
+ * open findings that renders a bare "fail (critical)" with nothing telling
+ * the operator a phantom critical did NOT trigger the block.
+ *
+ * This helper is the lib-owned fix for that gap: it folds metrics.run_aborted
+ * into the rendered TEXT (never the enum value), so any renderer that calls
+ * it — instead of hand-formatting the status/posture pair itself — gets the
+ * abort qualifier for free and cannot regress it by forgetting to separately
+ * check run_aborted. Wiring commands/persist.js (report.repoKnowledge +
+ * formatPersist()) to call this is a cross-domain change outside this wave's
+ * owned glob; see this wave's skipped[] entry for F-09c4777a.
+ *
+ * @param {{ run: { overall_status: string, overall_posture: string }, metrics: { run_aborted: boolean } }} auditPayload — the return of buildAuditPayload()
+ * @returns {string} e.g. "pass (healthy)" or "fail (critical) — run aborted before completion"
+ */
+export function formatAuditStatusLine(auditPayload) {
+  const { run, metrics } = auditPayload;
+  const base = `${run.overall_status} (${run.overall_posture})`;
+  return metrics.run_aborted ? `${base} — run aborted before completion` : base;
+}

@@ -161,12 +161,19 @@ export function computeRecordPath(record, repoRoot) {
  * not (and, via the per-prefix flag, does not) touch it.
  *
  * `'operational'` / `'ingest'` / `'unknown'`-class reasons are always
- * `retryable: false` too (see parse-rejection.js). `'operational'`-class
- * reasons are not actually reachable here in production today (F-82429f90
- * and its provenance-fault:/scenario-fetch-fault: siblings THROW instead of
- * persisting a `_rejected` record — see runValidator in verify/index.js), but
- * the flag still fails closed on one defensively, matching this function's
- * existing "any read/parse failure fails closed" discipline below.
+ * `retryable: false` too (see parse-rejection.js). Most `'operational'`-class
+ * reasons are not actually reachable here in production (F-82429f90 and its
+ * provenance-fault:/scenario-fetch-fault: siblings THROW instead of
+ * persisting a `_rejected` record — see runValidator in verify/index.js).
+ * `CONTRACT_SCHEMA_TOO_NEW:` is the documented exception (F-be0deacd, wave
+ * 20): `validators/schema-version.js` RETURNS it as an ordinary rejection
+ * string rather than throwing, so a too-new-major submission genuinely does
+ * persist to `_rejected/` and IS read by this function — `retryable: false`
+ * is still the right answer (only a testing-os upgrade fixes it, never a
+ * submitter resubmission), it just arrives via the normal per-prefix flag
+ * here rather than the "never reachable" case the rest of this paragraph
+ * describes. Either way, the flag still fails closed on a read/parse failure,
+ * matching this function's existing discipline below.
  *
  * Any read/parse failure fails closed (blocking): a corrupted or unreadable
  * evidence file must never silently unblock a path collision.

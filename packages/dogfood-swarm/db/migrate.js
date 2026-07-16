@@ -86,9 +86,14 @@ const LEDGER_DDL = `
  *   - `CREATE [UNIQUE] INDEX [IF NOT EXISTS] <idx> ...` → { kind:'index', name }
  *   - `CREATE TABLE [IF NOT EXISTS] <t> ...`            → { kind:'table', name }
  *
- * Returns null if the shape is unrecognized — in which case we treat the
- * migration as "not detectable as pre-applied" and fall through to running it
- * (the SQL is idempotent: CREATE IF NOT EXISTS / duplicate-column tolerant).
+ * Returns null if the shape is unrecognized. F-a4ced329: a null here used to
+ * be silently read by artifactExists() as "not detectable as pre-applied,
+ * fall through to running it" — an assumption (the SQL is unconditionally
+ * idempotent) that was never actually checked. assertManifestShapesRecognized()
+ * below now refuses to let this module import at all if MIGRATIONS_MANIFEST
+ * contains an entry parseArtifact() cannot classify, so in production this
+ * function only ever returns null for SQL that has already been vetted safe
+ * to fall through — see that function's doc for the failure mode it closes.
  *
  * @param {string} sql
  * @returns {{kind:'column'|'index'|'table', table?:string, name:string}|null}
@@ -109,6 +114,61 @@ function parseArtifact(sql) {
 }
 
 /**
+ * F-a4ced329: fail-closed sweep over the manifest for DDL shapes
+ * parseArtifact() cannot classify — the SAME class of defect
+ * assertManifestVersionInvariant (above) catches for version skew, applied to
+ * shape recognizability instead.
+ *
+ * Why this matters: artifactExists() silently returns `false` for an
+ * unrecognized shape (its own comment there calls this "let the (idempotent)
+ * SQL run"), which is only actually safe when the SQL is unconditionally
+ * idempotent (IF NOT EXISTS / duplicate-tolerant). A migration author who
+ * ships a NON-idempotent unrecognized shape — e.g. `CREATE TRIGGER foo ...`
+ * with no `IF NOT EXISTS` (SQLite supports the clause on CREATE TRIGGER, but
+ * nothing forces an author to remember it — a plausible shape for a future
+ * auto-timestamp migration) — would silently pass artifactExists() as "not
+ * yet applied" even against a legacy DB that already has the trigger via an
+ * out-of-band path. migrateDb would then run the SQL inside a transaction
+ * (see below), which throws `trigger foo already exists`; because the throw
+ * happens BEFORE insertLedger.run(), the migration is never recorded, so
+ * EVERY subsequent openDb() against that DB file re-attempts and re-throws
+ * identically — a permanent block with no operator recourse short of
+ * hand-editing the ledger or the DB.
+ *
+ * Stop the author before the migration ships, not the operator against a
+ * real legacy DB in production: this runs at MODULE LOAD (mirroring
+ * assertManifestVersionInvariant immediately above), so a future manifest
+ * entry with an unrecognized shape fails the instant db/migrate.js is
+ * imported — long before migrateDb ever touches a real DB.
+ *
+ * Exported so the regression test can pin this branch with injected values,
+ * the same reason assertManifestVersionInvariant is exported.
+ *
+ * @param {Array<{id:string, sql:string}>} manifest
+ */
+export function assertManifestShapesRecognized(manifest) {
+  for (const m of manifest) {
+    if (parseArtifact(m.sql) === null) {
+      throw new Error(
+        `db/migrate: migration '${m.id}' uses an SQL shape parseArtifact()/artifactExists() cannot ` +
+        `recognize (recognized shapes: ALTER TABLE ... ADD COLUMN, CREATE [UNIQUE] INDEX, CREATE TABLE). ` +
+        `artifactExists() would silently report "not yet applied" for this shape even on a legacy DB that ` +
+        `already has the artifact, and a non-idempotent statement (no IF NOT EXISTS) would then throw ` +
+        `mid-migration with the ledger row never recorded, permanently blocking openDb() for that DB file. ` +
+        `Either add an IF NOT EXISTS / duplicate-tolerant guard so the SQL is unconditionally safe to re-run, ` +
+        `or extend parseArtifact() in db/migrate.js to recognize this shape.`
+      );
+    }
+  }
+}
+
+// Module-load fail-closed check (second sweep, complementing
+// assertManifestVersionInvariant above): a manifest entry whose SQL shape
+// artifactExists() cannot classify is caught the instant db/migrate.js is
+// imported, not the first time migrateDb runs against a real legacy DB.
+assertManifestShapesRecognized(MIGRATIONS_MANIFEST);
+
+/**
  * Does the artifact this migration adds already exist in the DB?
  * Used to detect already-applied migrations on a pre-existing (legacy,
  * ledger-less) DB so we can seed the ledger WITHOUT re-running.
@@ -117,9 +177,15 @@ function parseArtifact(sql) {
  * @param {string} sql
  * @returns {boolean}
  */
-function artifactExists(db, sql) {
+export function artifactExists(db, sql) {
   const art = parseArtifact(sql);
-  if (!art) return false; // unrecognized shape — let the (idempotent) SQL run
+  // F-a4ced329: this branch is unreachable for any migration that ships in
+  // MIGRATIONS_MANIFEST — assertManifestShapesRecognized() (module-load,
+  // above) already refuses to let db/migrate.js import successfully if any
+  // manifest entry's SQL shape parseArtifact() cannot classify. Kept as an
+  // honest fallback, not a silent assumption, for a caller that ever invokes
+  // artifactExists() directly with SQL that bypassed the manifest sweep.
+  if (!art) return false;
   if (art.kind === 'column') {
     try {
       const cols = db.prepare(`PRAGMA table_info(${art.table})`).all().map((c) => c.name);

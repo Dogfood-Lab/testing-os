@@ -156,6 +156,36 @@ export function posixifyPath(filePath) {
 }
 
 /**
+ * F-a27680f9 (LOW, wave 20): `node --test`'s own default discovery is BROADER
+ * than the `.test.`/`.spec.` dot form below — it also collects `foo-test.js`,
+ * `foo_test.js`, and bare `test.js` (dash/underscore-suffixed or exactly
+ * "test", not just dot-suffixed). Pre-fix, a real, executing test file named
+ * one of those forms was misclassified 'source', making any `@pins` tag
+ * inside it invisible to the regression-pin gate (a false orphan — the SAFE
+ * direction, but still a structural gap between "what node --test collects"
+ * and "what this parser credits as test evidence"). Matches at a path
+ * boundary (`^`, `/`, `-`, or `_` immediately before "test.<ext>") so it does
+ * NOT also swallow the ALREADY-handled dot form (`foo.test.js` has a `.`
+ * immediately before "test.", not one of these four) or an unrelated
+ * substring match (`protest.js` has no separator before "test." at all).
+ * Verified empirically against the live repo tree: zero files match either
+ * the new or the pre-existing forms today, so this is a pure widening with
+ * no observable reclassification of any current file (see the "F-a27680f9"
+ * describe block in parse-regression-pins.test.js).
+ *
+ * Deliberately NOT done here (see the finding's own fix note): narrowing the
+ * `/test/`+`/tests/` path-segment rule below to also require a test-like
+ * filename. That direction trades this gate's current "err toward crediting
+ * too much" posture for "err toward crediting too little," which is a wider,
+ * riskier blast radius than this LOW/zero-live-risk finding warrants without
+ * first auditing every non-test-named file already living under a `test/` or
+ * `tests/` directory repo-wide for a real, now-orphaned pin — left as
+ * optional future hardening if this repo's naming conventions actually
+ * drift, per the finding's own "no action required unless" framing.
+ */
+const NODE_TEST_SUFFIX_PATTERN = /(?:^|[/_-])test\.[mc]?[jt]sx?$/;
+
+/**
  * Classify a path as "test" or "source" by convention. Mirrors how
  * `node --test` and `vitest` discover tests in this repo.
  */
@@ -167,6 +197,7 @@ export function classifyFile(filePath) {
   const normalised = posixifyPath(filePath);
   if (/\.test\.[mc]?[jt]sx?$/.test(normalised)) return 'test';
   if (/\.spec\.[mc]?[jt]sx?$/.test(normalised)) return 'test';
+  if (NODE_TEST_SUFFIX_PATTERN.test(normalised)) return 'test';
   if (normalised.includes('/test/') || normalised.includes('/tests/')) return 'test';
   if (normalised.includes('/__tests__/')) return 'test';
   return 'source';

@@ -13,9 +13,10 @@
  * `class` is one of:
  *   - 'submission-bad' — the submitter must fix and resubmit
  *       (schema / policy / steps / provenance / repo /
- *        submission-contains-verifier-field / CONTRACT_SCHEMA_TOO_NEW /
- *        CONTRACT_SCHEMA_TOO_OLD)
- *   - 'operational'    — the verifier/tooling faulted (VALIDATOR_FAULT_*)
+ *        submission-contains-verifier-field / CONTRACT_SCHEMA_TOO_OLD)
+ *   - 'operational'    — the verifier/tooling faulted (VALIDATOR_FAULT_*,
+ *        CONTRACT_SCHEMA_TOO_NEW — F-be0deacd, wave 20: this build, not the
+ *        submitter, is behind)
  *   - 'ingest'         — ingest-side load fault (scenario-load)
  *   - 'unknown'        — unrecognized prefix
  *
@@ -61,9 +62,12 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
       'submission-bad',
       'submission-contains-verifier-field:',
     ],
+    // operational — F-be0deacd (wave 20): a future-major submission means
+    // THIS BUILD is behind, not the submitter — see the dedicated describe
+    // block below for the full routing-inversion proof.
     [
       'CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 but this build supports v1.0.0',
-      'submission-bad',
+      'operational',
       'CONTRACT_SCHEMA_TOO_NEW:',
     ],
     [
@@ -111,12 +115,29 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
     });
   }
 
-  it('classifies the wave-2 CONTRACT_SCHEMA_TOO_NEW as submission-bad (not operational)', () => {
+  /** @pins F-be0deacd */
+  it('F-be0deacd (wave 20): classifies CONTRACT_SCHEMA_TOO_NEW as operational, NOT submission-bad — flips the wave-2 test this amends', () => {
+    // PROVEN pre-fix (wave-2 through wave-19): this reason classified
+    // 'submission-bad', directly contradicting schema-version.js's own JSDoc
+    // ("operator must upgrade testing-os" — see validators/schema-version.js
+    // lines 17-18) and rendering a self-contradictory CLI --explain block
+    // (see cli.test.js's "F-be0deacd" describe block for the consumer-facing
+    // proof). Only the RECEIVING build's operator can fix a too-new schema
+    // major — no resubmission, corrected or not, changes what `major >
+    // maxMajor` evaluates to.
     const parsed = parseRejectionReason(
       'CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 — upgrade testing-os',
     );
-    assert.equal(parsed.class, 'submission-bad');
+    assert.equal(parsed.class, 'operational');
     assert.equal(parsed.prefix, 'CONTRACT_SCHEMA_TOO_NEW:');
+  });
+
+  it('F-be0deacd: CONTRACT_SCHEMA_TOO_OLD stays submission-bad — the asymmetry is deliberate, not a blanket reclassification', () => {
+    const parsed = parseRejectionReason(
+      'CONTRACT_SCHEMA_TOO_OLD: recordSubmission schema v0.5.0 is below the supported floor',
+    );
+    assert.equal(parsed.class, 'submission-bad');
+    assert.equal(parsed.prefix, 'CONTRACT_SCHEMA_TOO_OLD:');
   });
 
   it('returns the detail with the prefix stripped', () => {
@@ -202,7 +223,6 @@ describe('parseRejectionReason retryable field (F-f8952a50, wave 10)', () => {
     ['policy-config: rule "bad-type": operator "gt" requires a numeric field value', true],
     ['repo:mismatch: submission.repo (a/b) does not match source.run_url repo (c/d)', true],
     ['submission-contains-verifier-field: verification', true],
-    ['CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 but this build supports v1.0.0', true],
     ['CONTRACT_SCHEMA_TOO_OLD: recordSubmission schema v0.9.0 is below the supported floor', true],
     ['unsafe-record-path: record passed schema validation but its path could not be safely computed (repo: ../etc, run_id: r1): unsafe repo segment: ../etc', true],
     ['steps[step-1]: gate accumulation violated', true],
@@ -223,6 +243,16 @@ describe('parseRejectionReason retryable field (F-f8952a50, wave 10)', () => {
     ['VALIDATOR_FAULT_POLICY: merge cycle', false],
     ['scenario-load: not_found scenario-x', false],
     ['gremlins: something weird happened', false],
+
+    // F-be0deacd (wave 20): CONTRACT_SCHEMA_TOO_NEW moved from submission-bad
+    // to operational — and, per the invariant this describe block's header
+    // states ("every operational... reason is retryable: false"), its
+    // retryable value flips WITH it. This is not just formal consistency:
+    // resubmitting under the SAME still-outdated build hits the identical
+    // `major > maxMajor` comparison every time, so no correction the
+    // submitter makes can ever turn this into an acceptance — only a
+    // testing-os upgrade can, which is exactly what 'retryable: false' means.
+    ['CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 but this build supports v1.0.0', false],
   ];
 
   for (const [reason, expectedRetryable] of retryableCases) {

@@ -22,15 +22,20 @@ Five parallel research lanes, retrieval-mandatory. 37 findings returned; the loa
 
 `roleos verify-citations` (role-os v2.10.0) → `prism verify --type citations --provider ollama` (prism v1.6.0; groundedness lens `mistral-small:24b` — ModelFamily `local`, reasoning-stripped, family-different from the `anthropic` synthesizer by construction) + the deterministic arXiv/Crossref existence oracle. 19 parsed citations checked in 36.0s. Ed25519 receipt key `ed25519-c9a7791cd92ade91`.
 
+**Scope of this record — read this first (corrected by the wave-19 docs audit, `F-27fed0f9`).** This table describes **what the runner extracted and checked**, which is *not* the same as full coverage of this dispatch's citations. **The runner's own extraction is incomplete**, and an earlier version of this record presented its numbers as though they were exhaustive. That framing was itself the finding-20 defect (an understated residual), committed by the document that cites finding 20. The corrected position:
+
 | Stage | Result |
 |---|---|
-| **Existence (retrieval oracle)** | **19/19 RESOLVED — 0 FABRICATED, 0 MISATTRIBUTED.** Every DOI/arXiv id resolves to a real paper with the stated identifier. |
-| **Groundedness (different-family lens)** | 4 supported · 15 `not_addressed` → **1 withdrawn** (finding 29, below), 14 oracle-limited. |
-| **Unparsed** | 7 items carry official-doc URLs (ESLint, TS-Compiler-Notes, js-tokens, Codecov, JUnit/Spock, rustc-dev-guide, kernel.org, oxc, and PDF-hosted papers) with no arXiv/DOI id — the documented arXiv/Crossref-tuned-oracle behavior for a docs-heavy dispatch, **not** a fabrication signal. Verified out-of-band by the research lanes' own retrieval. |
+| **Existence (retrieval oracle)** | Of the **19 citations the runner extracted**: **19/19 RESOLVED — 0 FABRICATED, 0 MISATTRIBUTED.** Every id it checked resolves to a real paper with the stated identifier. |
+| **Groundedness (different-family lens)** | 4 supported · 15 `not_addressed` → **1 withdrawn** (finding 29, below), 14 oracle-limited. The per-item groundedness breakdown is the runner's console output; it is **not** structurally corroborated in `pin-matcher-rewrite.citation-receipt.json`. |
+| **NOT extracted — therefore NEVER gated** | At least one DOI-bearing citation was missed by the extractor: **finding 13's second DOI, `10.1109/TSE.2021.3107634`** (Petrović, Ivanković, Fraser & Just 2021) — the extractor takes one identifier per item, so a finding citing two sources gets only its first gated. Independently retrieval-verified out-of-band as real and correctly attributed, but **it did not pass Step 4**, and this document's claim that citations are "gated at Step 4 before any architectural connection" does not hold for it. |
+| **Unparsed** | Items carrying official-doc URLs (ESLint, TS-Compiler-Notes, js-tokens, Codecov, JUnit/Spock, rustc-dev-guide, kernel.org, oxc, StrykerJS/PIT, Sadowski/CACM, Babel, typescript-eslint, and PDF-hosted papers) with no arXiv/DOI id — the documented arXiv/Crossref-tuned-oracle behavior for a docs-heavy dispatch, **not** a fabrication signal. The runner reported 7; **that count is wrong and undercounts the real set** (the runner's own printed list names 8, and more sources carry doc-URLs it never surfaced). Verified out-of-band by the research lanes' retrieval only. |
 
 **Honest boundary on the 14 oracle-limited items:** 12 report *"resolved, but no abstract was available to ground the claim"* — ACM DOIs do not expose abstracts to the oracle, so the lens had nothing to check against. This is a limitation of the retrieval path, not evidence for or against the claims. Their **existence and attribution are verified**; their groundedness is **unverified-by-this-oracle** and rests on the research lanes' retrieval. Stated rather than papered over, per finding 20.
 
-**The gate caught a real defect in this dispatch's own synthesis** — finding 29 overreached its source and was withdrawn. That is the verifier working as designed on our own output.
+**What this record does and does not license.** It licenses: "no cited paper is fabricated or misattributed among those checked, and one overreaching finding was caught and withdrawn." It does **not** license: "every citation in this dispatch passed an external gate." The load-bearing architectural findings (1, 2, 3, 4, 5, 10, 11, 12, 13, 20) were additionally re-verified against live sources by the wave-19 docs audit — all correctly attributed.
+
+**The gate caught two real defects in this dispatch's own synthesis** — finding 29 overreached its source and was withdrawn (below), and this record itself overstated its coverage until the wave-19 audit caught it. Both are the verifier working as designed on our own output, which is the only way it means anything.
 
 ### A. Why inference cannot be the mechanism
 

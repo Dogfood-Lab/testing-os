@@ -27,23 +27,37 @@
  *   2. ALLOWLISTED   — the source mention is a prose cross-reference, not a
  *                      fix pin (regression-pin-allowlist.json — C8: every
  *                      entry now carries reason + owner + revalidate_by).
- *   3. GRANDFATHERED — no declared tag, but the retired heuristic
- *                      (suggest-pins.mjs, demoted to candidate-generator
- *                      only — grants nothing) finds a legacy structural
- *                      hit. EXEMPT from blocking, but DISCLOSED as
- *                      unverified migration debt — never silently treated
- *                      as equivalent to a declared pin. This bucket is what
- *                      makes landing this rewrite safe: without it, EVERY
- *                      pre-existing pin in the repo (migrated by no domain
- *                      yet) would go red on this wave's own commit.
+ *   3. GRANDFATHERED — no declared tag, but the id is a member of the
+ *                      FROZEN migration-debt snapshot
+ *                      (scripts/grandfathered-pins.json — C8: every entry
+ *                      carries owner + revalidate_by). EXEMPT from
+ *                      blocking, but DISCLOSED as unverified migration
+ *                      debt — never silently treated as equivalent to a
+ *                      declared pin. This bucket is what makes landing the
+ *                      wave-18 rewrite safe: without it, EVERY pre-existing
+ *                      pin in the repo (migrated by no domain yet) would go
+ *                      red on that wave's own commit.
  *   4. ORPHAN        — none of the above. BLOCKS the gate.
  *
- * The grandfather bucket is NEVER a static list — it is recomputed fresh
- * every run from whatever legacy evidence still exists. As domains land
- * real `@pins` tags (scripts/suggest-pins.mjs proposes candidates from the
- * SAME legacy evidence), ids move declared-ward and the grandfathered count
- * shrinks, visible in this gate's own output every time it runs (C6). There
- * is no migration checklist to go stale.
+ * F-W19-CI-001 (wave 20 fix): the grandfather bucket IS a static list,
+ * frozen at commit 132dc18 (the wave-18 cutover) into
+ * scripts/grandfathered-pins.json — membership in THAT file is the only
+ * question asked. The retired heuristic (suggest-pins.mjs's
+ * hasLegacyStructuralHit) is NEVER invoked live by this gate any more, for
+ * ANY id. Before this fix the bucket was "recomputed fresh every run from
+ * whatever legacy evidence still exists" — which meant a finding minted
+ * TODAY, decorated with any of the seven historical leak shapes, earned the
+ * exact same exemption as a genuine pre-wave-18 pin: migration debt with no
+ * vintage boundary is not migration debt, it is a standing bypass. A closed,
+ * finite set can only shrink: as domains land real `@pins` tags
+ * (scripts/suggest-pins.mjs still proposes candidates from the same legacy
+ * evidence, unchanged in that one candidate-generator role), ids drain out
+ * of the live grandfathered bucket and the gate reports the shrinking count
+ * on every run (C6) — see formatHuman's "N of M frozen id(s) still
+ * outstanding" line. An id with no entry in the frozen manifest can never
+ * enter this bucket after the fact; there is no live path in, only a fixed
+ * set to drain. (Do not add ids to grandfathered-pins.json to "fix" a new
+ * orphan — see that file's own `$comment` for why.)
  *
  * ALSO BLOCKING (Tier-1, provably-exact — dispatch finding 18: only the
  * provably-exact part of a gate may block):
@@ -60,14 +74,22 @@
  *     findings database lookup).
  *
  * DISCLOSED GAPS (C6 — stated here AND surfaced in this gate's own runtime
- * output every run, never only in a docstring that can drift):
+ * output every run, never only in a docstring that can drift; this
+ * paragraph is kept word-for-word in sync with the DISCLOSED_GAPS array
+ * below it — two descriptions of the same gap disagreeing is exactly the
+ * self-contradiction class F-a544c1c4 found elsewhere in this wave, and
+ * this file does not get to repeat it):
  *   - Tier 2 (mutation proof that a pinned test actually fails without its
  *     fix — dispatch C4) is NOT implemented here; it is wave 19 per the
  *     dispatch's explicit scope decision. A well-formed, correctly-
- *     attached, but semantically vacuous pin (e.g. a test body containing
- *     only `assert.ok(true)`) currently PASSES Tier 1. This is real and
- *     disclosed — and strictly smaller than the retired gate's gap (there,
- *     a bare comment satisfied credit with no test at all).
+ *     attached, but semantically vacuous pin currently PASSES Tier 1 —
+ *     including the worst case (F-21dc98e0): an empty `describe()` with
+ *     zero test children, a `describe()` whose only children are all
+ *     `.skip()`-ed, or a directly `.skip()`-ed test all qualify exactly as
+ *     if they executed a real assertion. "Vacuous" tops out at ZERO test
+ *     registration, not merely a trivial `assert.ok(true)`. This is real
+ *     and disclosed — and strictly smaller than the retired gate's gap
+ *     (there, a bare comment satisfied credit with no test at all).
  *   - The differential cross-check against the independently-coded
  *     reference matcher (dispatch finding 23) runs in
  *     pin-declarations-differential.test.mjs, part of `npm test`/
@@ -78,12 +100,14 @@
  *   - `@pins` tags are only scanned in files `classifyFile()` (the parser
  *     this file still uses for source-side pins) buckets as "test" — a tag
  *     placed in a source file is not evaluated.
- *   - The grandfather bucket inherits every disclosed weak spot of the
- *     retired heuristic (see suggest-pins.mjs's own module docstring) — it
- *     can both over- and under-count legacy evidence. Acceptable BECAUSE
- *     grandfathered status is exemption-with-disclosure, never silent
- *     credit; it never suppresses a genuinely new (post-cutover) orphan
- *     that has zero legacy signal of any kind.
+ *   - The grandfather bucket (scripts/grandfathered-pins.json) is a static
+ *     snapshot frozen at commit 132dc18 — membership only, never a live
+ *     heuristic re-check (F-W19-CI-001). It can still be WRONG at the id
+ *     level (the retired heuristic that produced the original 132dc18
+ *     classification could itself have over- or under-counted), but that
+ *     imprecision is now bounded to a fixed, auditable, shrinking set
+ *     rather than a live, unboundedly-growing surface. Grandfathered
+ *     status is exemption-with-disclosure, never verified credit.
  *
  * Exit codes:
  *   0 — clean (orphans/parseErrors/tagIssues all empty)
@@ -96,6 +120,7 @@
  *   node scripts/check-finding-regression-pins.mjs --write-index docs/regression-pin-index.json
  *   node scripts/check-finding-regression-pins.mjs --root <dir>     # alternate scan root (tests)
  *   node scripts/check-finding-regression-pins.mjs --allowlist <path>
+ *   node scripts/check-finding-regression-pins.mjs --grandfather-manifest <path>
  *
  * Declaring a pin, in a test file:
  *   ```js
@@ -108,26 +133,26 @@
  *
  * Programmatic API:
  *   import { runRegressionPinGate } from './check-finding-regression-pins.mjs';
- *   const result = await runRegressionPinGate({ repoRoot, allowlistPath, writeIndexPath });
+ *   const result = await runRegressionPinGate({ repoRoot, allowlistPath, grandfatherManifestPath, writeIndexPath });
  */
 
 import { readFileSync, writeFileSync, mkdirSync, existsSync } from 'node:fs';
-import { dirname, resolve, relative, basename } from 'node:path';
+import { dirname, resolve, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { parseRegressionPins, toJSON } from '../packages/portfolio/lib/parse-regression-pins.js';
 import { scanRepoForDeclaredPins } from './pin-declarations.mjs';
-import { hasLegacyStructuralHit } from './suggest-pins.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = resolve(here, '..');
 const defaultAllowlistPath = resolve(here, 'regression-pin-allowlist.json');
+const defaultGrandfatherManifestPath = resolve(here, 'grandfathered-pins.json');
 
 const DISCLOSED_GAPS = [
-  'Tier 2 (mutation proof that a pinned test fails without its fix) is not implemented — wave 19 per the dispatch. A well-formed, correctly-attached, but semantically vacuous pin currently passes Tier 1.',
+  'Tier 2 (mutation proof that a pinned test fails without its fix) is not implemented — wave 19 per the dispatch. A well-formed, correctly-attached, but semantically vacuous pin currently passes Tier 1 — including the worst case: an empty describe() with zero test children, a describe() whose only children are all .skip()-ed, or a directly test.skip()-ed call all qualify for a declared tag exactly as if they executed a real assertion (F-21dc98e0). "Vacuous" tops out at zero test registration, not merely a trivial assert.ok(true).',
   "The differential cross-check against the independently-coded reference matcher runs in the test suite (npm test / pin-declarations-differential.test.mjs), not inside this CLI's own live execution.",
   '@pins tags are only scanned in files classifyFile() buckets as "test" — a tag placed in a source file is not evaluated.',
-  'The grandfather bucket (legacy structural hits, via suggest-pins.mjs) inherits every disclosed weak spot of the retired heuristic. Grandfathered status is exemption-with-disclosure, never verified credit.',
+  'The grandfather bucket (scripts/grandfathered-pins.json) is a static snapshot frozen at commit 132dc18 — membership only, never a live heuristic re-check (F-W19-CI-001). It can still be WRONG at the id level (the retired heuristic that produced the original 132dc18 classification could itself have over- or under-counted), but that imprecision is now bounded to a fixed, auditable, shrinking set rather than a live, unboundedly-growing surface. Grandfathered status is exemption-with-disclosure, never verified credit.',
 ];
 
 /**
@@ -176,6 +201,54 @@ export function loadAllowlist(path) {
 }
 
 /**
+ * F-W19-CI-001: load the FROZEN grandfather manifest (scripts/grandfathered-
+ * pins.json) — a closed, enumerated set of ids, snapshotted once at commit
+ * 132dc18, that the gate checks by MEMBERSHIP ONLY. Same C8 discipline as
+ * loadAllowlist: every entry requires { owner, revalidate_by }, and this
+ * throws (never silently defaults) on any malformed or incomplete entry —
+ * a frozen exemption without an evidence trail is exactly what finding 22
+ * warns against. Unlike the allowlist, "reason" is not required per entry:
+ * every entry in this file shares the SAME reason (grandfathered under the
+ * pre-vintage-boundary heuristic at the freeze commit), stated once in the
+ * manifest's own `$comment` rather than duplicated 256 times.
+ *
+ * @param {string} path
+ * @returns {{ grandfathered: Record<string, { owner: string, revalidate_by: string }> }}
+ */
+export function loadGrandfatherManifest(path) {
+  if (!existsSync(path)) return { grandfathered: {} };
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf-8'));
+  } catch (err) {
+    throw new Error(`grandfathered-pins manifest at ${path} is not valid JSON: ${err.message}`);
+  }
+  if (parsed.grandfathered === undefined) {
+    throw new Error(
+      `grandfathered-pins manifest at ${path} missing required "grandfathered" field. Shape: { "grandfathered": { "F-id": { "owner": "...", "revalidate_by": "YYYY-MM-DD" } } }`,
+    );
+  }
+  if (parsed.grandfathered === null || typeof parsed.grandfathered !== 'object' || Array.isArray(parsed.grandfathered)) {
+    throw new Error(
+      `grandfathered-pins manifest at ${path} "grandfathered" must be an object map (got ${Array.isArray(parsed.grandfathered) ? 'array' : typeof parsed.grandfathered}).`,
+    );
+  }
+  const dateRe = /^\d{4}-\d{2}-\d{2}$/;
+  for (const [id, entry] of Object.entries(parsed.grandfathered)) {
+    if (!entry || typeof entry !== 'object') {
+      throw new Error(`grandfathered-pins manifest entry for ${id} must be an object with { owner, revalidate_by }.`);
+    }
+    if (!entry.owner || typeof entry.owner !== 'string') {
+      throw new Error(`grandfathered-pins manifest entry for ${id} missing "owner" string (dispatch C8 — every frozen entry needs a named owner).`);
+    }
+    if (!entry.revalidate_by || typeof entry.revalidate_by !== 'string' || !dateRe.test(entry.revalidate_by)) {
+      throw new Error(`grandfathered-pins manifest entry for ${id} missing or malformed "revalidate_by" (expected "YYYY-MM-DD").`);
+    }
+  }
+  return parsed;
+}
+
+/**
  * @param {string[]} candidateIds - ids not yet resolved by a declared tag.
  * @param {{ allow: Record<string, unknown> }} allowlist
  * @returns {{ remaining: string[], applied: string[], unused: string[] }}
@@ -199,6 +272,28 @@ function explainUnusedAllowEntry(id, sourceIds, declared) {
 }
 
 /**
+ * F-W19-CI-001: partition `candidateIds` by membership in the FROZEN
+ * grandfather manifest — no file reads, no heuristic evaluation. A pure
+ * function (mirrors applyAllowlist) so the precedence rule ("is this id in
+ * the closed set snapshotted at 132dc18") is directly unit-testable without
+ * standing up a full repo tree.
+ *
+ * @param {string[]} candidateIds - ids not yet resolved by declared tag or allowlist.
+ * @param {{ grandfathered: Record<string, unknown> }} manifest
+ * @returns {{ grandfathered: string[], orphans: string[] }}
+ */
+export function applyGrandfatherManifest(candidateIds, manifest) {
+  const frozen = new Set(Object.keys(manifest.grandfathered));
+  const grandfathered = [];
+  const orphans = [];
+  for (const id of candidateIds) {
+    if (frozen.has(id)) grandfathered.push(id);
+    else orphans.push(id);
+  }
+  return { grandfathered, orphans };
+}
+
+/**
  * Classify every source-pinned id into exactly one bucket (declared >
  * allowlisted > grandfathered > orphan), and separately compute
  * dangling-id tag issues — a declared tag whose id has no source pin at
@@ -210,49 +305,27 @@ function explainUnusedAllowEntry(id, sourceIds, declared) {
  * @param {string[]} opts.sourceIds
  * @param {ReturnType<typeof scanRepoForDeclaredPins>} opts.declared
  * @param {{ allow: Record<string, unknown> }} opts.allowlist
- * @param {Record<string, string[]>} opts.testPinsIndex - json.test_pins;
- *   bounds which files the grandfather check re-reads per id.
+ * @param {{ grandfathered: Record<string, unknown> }} [opts.grandfatherManifest] -
+ *   F-W19-CI-001: the FROZEN membership set (scripts/grandfathered-pins.json).
+ *   Defaults to empty so a caller that doesn't care about the grandfather
+ *   bucket (most classifyCoverage unit tests) doesn't have to construct one.
  * @returns {{
  *   declaredIds: string[], allowlistApplied: string[], unusedAllowEntries: string[],
  *   grandfatheredIds: string[], orphans: string[], danglingIdTags: object[],
  * }}
  */
-export function classifyCoverage({ sourceIds, declared, allowlist, testPinsIndex }) {
+export function classifyCoverage({ sourceIds, declared, allowlist, grandfatherManifest = { grandfathered: {} } }) {
   const declaredIds = sourceIds.filter((id) => declared.byId.has(id));
   const remainingAfterDeclared = sourceIds.filter((id) => !declared.byId.has(id));
 
   const { remaining: remainingAfterAllowlist, applied: allowlistApplied, unused: unusedAllowEntries } =
     applyAllowlist(remainingAfterDeclared, allowlist);
 
-  const fileTextCache = new Map();
-  const readCached = (file) => {
-    if (fileTextCache.has(file)) return fileTextCache.get(file);
-    let text = null;
-    try {
-      text = readFileSync(file, 'utf-8');
-    } catch {
-      text = null;
-    }
-    fileTextCache.set(file, text);
-    return text;
-  };
-
-  const grandfatheredIds = [];
-  const orphans = [];
-  for (const id of remainingAfterAllowlist) {
-    const candidateFiles = testPinsIndex[id] ?? [];
-    let hasHit = false;
-    for (const file of candidateFiles) {
-      const text = readCached(file);
-      if (text === null) continue;
-      if (hasLegacyStructuralHit(text, id, basename(file))) {
-        hasHit = true;
-        break;
-      }
-    }
-    if (hasHit) grandfatheredIds.push(id);
-    else orphans.push(id);
-  }
+  // F-W19-CI-001: membership in the FROZEN manifest only — the retired
+  // heuristic (suggest-pins.mjs's hasLegacyStructuralHit) is never invoked
+  // live here. See scripts/grandfathered-pins.json and this file's module
+  // docstring's GRANDFATHERED bucket paragraph.
+  const { grandfathered: grandfatheredIds, orphans } = applyGrandfatherManifest(remainingAfterAllowlist, grandfatherManifest);
 
   const sourceIdSet = new Set(sourceIds);
   const danglingIdTags = [];
@@ -285,25 +358,35 @@ export function classifyCoverage({ sourceIds, declared, allowlist, testPinsIndex
  * @param {object} [opts]
  * @param {string} [opts.repoRoot]
  * @param {string} [opts.allowlistPath]
+ * @param {string} [opts.grandfatherManifestPath] - F-W19-CI-001: the frozen
+ *   membership snapshot (default scripts/grandfathered-pins.json).
  * @param {string} [opts.writeIndexPath]
  * @returns {Promise<{
  *   ok: boolean, json: ReturnType<typeof toJSON>,
  *   orphans: string[], declaredIds: string[], grandfatheredIds: string[],
+ *   grandfatherFrozenTotal: number, grandfatherDrainedCount: number,
+ *   grandfatherDueForRevalidation: { id: string, revalidate_by: string, owner: string }[],
  *   allowlistApplied: string[], unusedAllowEntries: string[], unusedAllowEntryReasons: Record<string,string>,
  *   dueForRevalidation: { id: string, revalidate_by: string, owner: string }[],
  *   parseErrors: object[], tagIssues: object[], disclosedGaps: string[],
  *   indexWritten: string | null,
  * }>}
  */
-export async function runRegressionPinGate({ repoRoot = defaultRepoRoot, allowlistPath = defaultAllowlistPath, writeIndexPath = null } = {}) {
+export async function runRegressionPinGate({
+  repoRoot = defaultRepoRoot,
+  allowlistPath = defaultAllowlistPath,
+  grandfatherManifestPath = defaultGrandfatherManifestPath,
+  writeIndexPath = null,
+} = {}) {
   const parsed = parseRegressionPins(repoRoot);
   const json = toJSON(parsed);
   const sourceIds = Object.keys(json.source_pins);
 
   const declared = scanRepoForDeclaredPins(repoRoot);
   const allowlist = loadAllowlist(allowlistPath);
+  const grandfatherManifest = loadGrandfatherManifest(grandfatherManifestPath);
 
-  const coverage = classifyCoverage({ sourceIds, declared, allowlist, testPinsIndex: json.test_pins });
+  const coverage = classifyCoverage({ sourceIds, declared, allowlist, grandfatherManifest });
 
   const unusedAllowEntryReasons = Object.fromEntries(
     coverage.unusedAllowEntries.map((id) => [id, explainUnusedAllowEntry(id, sourceIds, declared)]),
@@ -312,6 +395,17 @@ export async function runRegressionPinGate({ repoRoot = defaultRepoRoot, allowli
   const today = new Date().toISOString().slice(0, 10);
   const dueForRevalidation = coverage.allowlistApplied
     .map((id) => ({ id, entry: allowlist.allow[id] }))
+    .filter(({ entry }) => entry.revalidate_by < today)
+    .map(({ id, entry }) => ({ id, revalidate_by: entry.revalidate_by, owner: entry.owner }));
+
+  // F-W19-CI-001: the "is the debt draining" signal (C6) — how many of the
+  // ids frozen at 132dc18 have left the live grandfathered bucket (declared,
+  // allowlisted, or their source pin removed) since the freeze, without ever
+  // editing the frozen manifest itself.
+  const grandfatherFrozenIds = Object.keys(grandfatherManifest.grandfathered);
+  const grandfatherDrainedCount = grandfatherFrozenIds.filter((id) => !coverage.grandfatheredIds.includes(id)).length;
+  const grandfatherDueForRevalidation = coverage.grandfatheredIds
+    .map((id) => ({ id, entry: grandfatherManifest.grandfathered[id] }))
     .filter(({ entry }) => entry.revalidate_by < today)
     .map(({ id, entry }) => ({ id, revalidate_by: entry.revalidate_by, owner: entry.owner }));
 
@@ -329,6 +423,8 @@ export async function runRegressionPinGate({ repoRoot = defaultRepoRoot, allowli
         ...json.summary,
         declared_ids: coverage.declaredIds.length,
         grandfathered_ids: coverage.grandfatheredIds,
+        grandfathered_frozen_total: grandfatherFrozenIds.length,
+        grandfathered_drained_count: grandfatherDrainedCount,
         orphan_source_ids: coverage.orphans,
       },
     };
@@ -342,6 +438,9 @@ export async function runRegressionPinGate({ repoRoot = defaultRepoRoot, allowli
     orphans: coverage.orphans,
     declaredIds: coverage.declaredIds,
     grandfatheredIds: coverage.grandfatheredIds,
+    grandfatherFrozenTotal: grandfatherFrozenIds.length,
+    grandfatherDrainedCount,
+    grandfatherDueForRevalidation,
     allowlistApplied: coverage.allowlistApplied,
     unusedAllowEntries: coverage.unusedAllowEntries,
     unusedAllowEntryReasons,
@@ -361,13 +460,26 @@ export function formatHuman(result, repoRoot) {
   const {
     json, orphans, declaredIds, grandfatheredIds, allowlistApplied,
     unusedAllowEntries, unusedAllowEntryReasons = {}, dueForRevalidation = [],
+    grandfatherFrozenTotal = grandfatheredIds.length, grandfatherDrainedCount = 0,
+    grandfatherDueForRevalidation = [],
     parseErrors = [], tagIssues = [], disclosedGaps = [], indexWritten,
   } = result;
 
   lines.push(`[check-finding-regression-pins] ${json.summary.source_ids} source-pinned F-id(s) across ${json.files_scanned} scanned file(s)`);
   lines.push(`  declared (Tier-1 verified, AST-checked @pins tag): ${declaredIds.length}`);
-  if (grandfatheredIds.length > 0) {
-    lines.push(`  grandfathered (legacy signal only, UNVERIFIED — migration debt): ${grandfatheredIds.length}: ${grandfatheredIds.join(', ')}`);
+  if (grandfatheredIds.length > 0 || grandfatherFrozenTotal > 0) {
+    // F-W19-CI-001: report the frozen total alongside the live outstanding
+    // count so the debt visibly DRAINS across waves (C6) rather than reading
+    // as a static, unchanging number.
+    lines.push(
+      `  grandfathered (frozen manifest @ commit 132dc18, UNVERIFIED — migration debt): ` +
+      `${grandfatheredIds.length} of ${grandfatherFrozenTotal} frozen id(s) still outstanding ` +
+      `(${grandfatherDrainedCount} drained — declared, allowlisted, or removed since the freeze): ${grandfatheredIds.join(', ')}`,
+    );
+  }
+  if (grandfatherDueForRevalidation.length > 0) {
+    lines.push('  WARN — grandfathered entries past their revalidate_by date (still exempt; not a block):');
+    for (const e of grandfatherDueForRevalidation) lines.push(`    ${e.id} — was due ${e.revalidate_by} (owner: ${e.owner})`);
   }
   if (allowlistApplied.length > 0) {
     lines.push(`  allowlist applied: ${allowlistApplied.length} (${allowlistApplied.join(', ')})`);
@@ -389,7 +501,19 @@ export function formatHuman(result, repoRoot) {
     for (const i of tagIssues) lines.push(`    ${relative(repoRoot, i.file) || i.file}:${i.line ?? '?'} [${i.kind}] ${i.detail}`);
   }
   if (orphans.length === 0 && parseErrors.length === 0 && tagIssues.length === 0) {
-    lines.push('  OK — every source-pinned F-id is declared, allowlisted, or disclosed-grandfathered (Class #14 invariant holds).');
+    // F-W19-CI-001: the invariant, as this file's own header defines it,
+    // does NOT hold for a grandfathered id — only a declared or allowlisted
+    // one is actually verified. Never claim "invariant holds" while any
+    // grandfathered debt remains outstanding.
+    if (grandfatheredIds.length === 0) {
+      lines.push('  OK — every source-pinned F-id is declared or allowlisted (Class #14 invariant holds).');
+    } else {
+      lines.push(
+        `  OK — Class #14 gate is green: ${declaredIds.length} declared-verified, ` +
+        `${grandfatheredIds.length} grandfathered-unverified (frozen migration debt), ` +
+        `${allowlistApplied.length} allowlisted, 0 orphans.`,
+      );
+    }
   } else if (orphans.length > 0) {
     lines.push(`  FAIL — ${orphans.length} orphan source pin(s): no declared tag, no allowlist entry, no legacy signal at all:`);
     for (const id of orphans) {
@@ -409,7 +533,7 @@ export function formatHuman(result, repoRoot) {
 }
 
 function parseArgs(argv) {
-  const out = { json: false, writeIndexPath: null, root: null, allowlistPath: null };
+  const out = { json: false, writeIndexPath: null, root: null, allowlistPath: null, grandfatherManifestPath: null };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--json') out.json = true;
@@ -422,6 +546,9 @@ function parseArgs(argv) {
     } else if (a === '--allowlist') {
       out.allowlistPath = argv[++i] ?? null;
       if (!out.allowlistPath) throw new Error('--allowlist requires a path argument');
+    } else if (a === '--grandfather-manifest') {
+      out.grandfatherManifestPath = argv[++i] ?? null;
+      if (!out.grandfatherManifestPath) throw new Error('--grandfather-manifest requires a path argument');
     } else if (a === '-h' || a === '--help') {
       out.help = true;
     } else {
@@ -438,9 +565,12 @@ Always-on CI gate for Class #14 (claimed-fixed without verification).
 Grants credit ONLY via a declared, AST-verified /** @pins F-id */ tag
 immediately above a test()/it()/describe() call — see
 docs/pin-matcher-rewrite.dispatch.md and pin-declarations.mjs. Ids with no
-declared tag but a legacy structural hit are GRANDFATHERED (exempt,
-disclosed, unverified) during migration; run \`node scripts/suggest-pins.mjs\`
-to propose insertion points for landing real tags.
+declared tag but present in the FROZEN grandfathered-pins.json manifest
+(snapshotted once at the wave-18 cutover commit, membership-only — never a
+live heuristic re-check) are GRANDFATHERED (exempt, disclosed, unverified)
+during migration; run \`node scripts/suggest-pins.mjs\` to propose insertion
+points for landing real tags. An id with no entry in that frozen manifest
+cannot become grandfathered, no matter what its source text looks like.
 
 The <F-id> inside an @pins tag must match F_ID_PATTERN (from
 packages/portfolio/lib/parse-regression-pins.js — the single source of
@@ -451,12 +581,13 @@ hex chars), or prefixed F-AAA[-AAA...]-NNN (uppercase-alnum segments, dash,
 three digits).
 
 Options:
-  --json                    machine-readable JSON output (parser result + gate)
-  --write-index <path>      after parsing, write the JSON index to <path>
-                            (recommended canonical location: docs/regression-pin-index.json)
-  --root <dir>              scan a directory other than the repo root (tests use this)
-  --allowlist <path>        use a different allowlist file
-  -h, --help                this message
+  --json                         machine-readable JSON output (parser result + gate)
+  --write-index <path>           after parsing, write the JSON index to <path>
+                                  (recommended canonical location: docs/regression-pin-index.json)
+  --root <dir>                   scan a directory other than the repo root (tests use this)
+  --allowlist <path>              use a different allowlist file
+  --grandfather-manifest <path>   use a different frozen grandfather manifest file
+  -h, --help                      this message
 
 Exit codes: 0 (clean) | 1 (orphan/parse-error/tag-issue present) | 2 (internal error)
 `);
@@ -476,10 +607,11 @@ async function main() {
   }
   const repoRoot = args.root ? resolve(args.root) : defaultRepoRoot;
   const allowlistPath = args.allowlistPath ? resolve(args.allowlistPath) : defaultAllowlistPath;
+  const grandfatherManifestPath = args.grandfatherManifestPath ? resolve(args.grandfatherManifestPath) : defaultGrandfatherManifestPath;
 
   let result;
   try {
-    result = await runRegressionPinGate({ repoRoot, allowlistPath, writeIndexPath: args.writeIndexPath });
+    result = await runRegressionPinGate({ repoRoot, allowlistPath, grandfatherManifestPath, writeIndexPath: args.writeIndexPath });
   } catch (err) {
     process.stderr.write(`[check-finding-regression-pins] internal error: ${err.message}\n`);
     process.exit(2);
@@ -491,6 +623,9 @@ async function main() {
       orphans: result.orphans,
       declared_ids: result.declaredIds,
       grandfathered_ids: result.grandfatheredIds,
+      grandfathered_frozen_total: result.grandfatherFrozenTotal,
+      grandfathered_drained_count: result.grandfatherDrainedCount,
+      grandfathered_due_for_revalidation: result.grandfatherDueForRevalidation,
       allowlist_applied: result.allowlistApplied,
       unused_allow_entries: result.unusedAllowEntries,
       unused_allow_entry_reasons: result.unusedAllowEntryReasons,

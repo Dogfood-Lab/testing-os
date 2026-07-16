@@ -20,6 +20,8 @@
  */
 import { test, describe } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { tmpdir } from 'node:os';
+import { resolve } from 'node:path';
 
 import {
   scanFileForDeclaredPins,
@@ -90,6 +92,43 @@ describe('extractDeclaredIds', () => {
     assert.deepEqual(extractDeclaredIds('* @pins F-100000-001'), [{ token: 'F-100000-001', ok: true }]);
     assert.deepEqual(extractDeclaredIds('* @pins F-CI-SELF-DOGFOOD-001'), [{ token: 'F-CI-SELF-DOGFOOD-001', ok: true }]);
   });
+
+  // F-d77ffe1a: a natural, JSDoc-conventional trailing description (the same
+  // `@tag value - description` shape `@param name - description` uses) must
+  // credit the id without also raising one bad-shape issue per word of prose.
+  test('F-d77ffe1a: a trailing free-text description after a valid id does not raise a bad-shape issue per word', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-c1000003 - fixes the escaped quote bug'), [{ token: 'F-c1000003', ok: true }]);
+  });
+
+  test('F-d77ffe1a: a trailing free-text description after a MULTI-id comma list still credits every id and no prose token', () => {
+    assert.deepEqual(
+      extractDeclaredIds('* @pins F-aaaaaaaa, F-bbbbbbbb - covers two findings at once'),
+      [{ token: 'F-aaaaaaaa', ok: true }, { token: 'F-bbbbbbbb', ok: true }],
+    );
+  });
+
+  test('F-d77ffe1a: a genuinely malformed lone token is STILL flagged bad-shape (no valid id precedes it, so this is not "just description")', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins totally-not-an-id'), [{ token: 'totally-not-an-id', ok: false }]);
+  });
+
+  test('F-d77ffe1a: when NO valid id is EVER found on the line, every non-matching token is still flagged (unchanged outside the "free text after a valid id" scope this fix targets)', () => {
+    // Contrast with the trailing-description case above: here nothing on the
+    // line ever satisfies F_ID_PATTERN, so `foundValid` never becomes true —
+    // this is a genuinely malformed tag, not natural prose after a real id,
+    // and must stay loud (C3: a malformed tag is a defect, not a shrug).
+    assert.deepEqual(extractDeclaredIds('* @pins totally-not-an-id and some'), [
+      { token: 'totally-not-an-id', ok: false },
+      { token: 'and', ok: false },
+      { token: 'some', ok: false },
+    ]);
+  });
+
+  /** @pins F-d77ffe1a */
+  test('F-d77ffe1a end-to-end: a @pins tag with a trailing natural-language description produces zero issues and credits the id', () => {
+    const { pins, issues } = scanFileForDeclaredPins('x.test.js', "/** @pins F-c1000003 - fixes the escaped quote bug */\ntest('t', () => { assert.ok(true); });\n");
+    assert.equal(issues.length, 0);
+    assert.deepEqual(pins.map((p) => p.id), ['F-c1000003']);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -132,6 +171,41 @@ describe('isQualifyingTestCall', () => {
   });
 });
 
+// ─────────────────────────────────────────────────────────────────────────
+// F-d9cdcff2: qualifyingCallFromHost host-shape coverage — the array-table
+// case is now credited; IIFE-wrapping and arrow indirection stay
+// deliberately out of scope (see qualifyingCallFromHost's own docstring).
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('F-d9cdcff2: qualifyingCallFromHost host shapes', () => {
+  /** @pins F-d9cdcff2 */
+  test('an array-table entry (tag immediately above a test() call as an array element) is credited, not a false wrong-node orphan', () => {
+    const code = `
+const cases = [
+  /** @pins F-100000-090 */
+  test('array-table case', () => { assert.ok(true); }),
+];
+`;
+    const { pins, issues } = scanFileForDeclaredPins('x.test.js', code);
+    assert.deepEqual(pins.map((p) => p.id), ['F-100000-090']);
+    assert.equal(issues.length, 0, `expected zero issues; got ${JSON.stringify(issues)}`);
+  });
+
+  test('F-d9cdcff2 negative control: an IIFE wrapper stays wrong-node (deliberately out of scope)', () => {
+    const code = "/** @pins F-100000-094 */\n(function () { test('t', () => {}); })();\n";
+    const { pins, issues } = scanFileForDeclaredPins('x.test.js', code);
+    assert.equal(pins.length, 0);
+    assert.equal(issues[0]?.kind, 'wrong-node');
+  });
+
+  test('F-d9cdcff2 negative control: an arrow-function variable indirection stays wrong-node (deliberately out of scope)', () => {
+    const code = "/** @pins F-100000-095 */\nconst wrapper = () => test('t', () => {});\nwrapper();\n";
+    const { pins, issues } = scanFileForDeclaredPins('x.test.js', code);
+    assert.equal(pins.length, 0);
+    assert.equal(issues[0]?.kind, 'wrong-node');
+  });
+});
+
 describe('forEachNode', () => {
   test('visits every node type reachable from a small tree, no crash on cyclic-looking shared refs', () => {
     const shared = { type: 'Identifier', name: 'x' };
@@ -155,6 +229,48 @@ test('C7: an unparseable file surfaces as parseError, never a silent skip', () =
   assert.equal(result.issues.length, 0);
   assert.ok(result.parseError, 'expected a parseError to be populated');
   assert.ok(result.parseError.message.length > 0);
+});
+
+/**
+ * F-d1e38dd0: the readFileSync call sat OUTSIDE scanFileForDeclaredPins' own
+ * try/catch — an unreadable file (deleted between listing and read, a
+ * permissions fault, any I/O error) propagated as an UNCAUGHT throw that took
+ * the whole gate down (no results for ANY file), rather than degrading into
+ * one structured parseErrors entry the same way a parse failure already did.
+ * Reproduced with no textOverride and a path that genuinely does not exist —
+ * the real read path readFileSync(filePath, 'utf-8') is exercised for real
+ * (every other test in this file passes textOverride, which bypasses the
+ * read entirely and could never have caught this).
+ */
+/** @pins F-d1e38dd0 */
+test('F-d1e38dd0: a file that cannot be read (no textOverride, nonexistent path) surfaces as parseError, never an uncaught throw', () => {
+  const missingPath = resolve(tmpdir(), `pin-declarations-does-not-exist-${Date.now()}.test.js`);
+  assert.doesNotThrow(() => scanFileForDeclaredPins(missingPath), 'a read failure must degrade to a structured parseError, never propagate uncaught');
+  const result = scanFileForDeclaredPins(missingPath);
+  assert.equal(result.pins.length, 0);
+  assert.equal(result.issues.length, 0);
+  assert.ok(result.parseError, 'expected a parseError to be populated for an unreadable file');
+  assert.match(result.parseError.message, /failed to read file/i);
+  assert.equal(result.parseError.line, null);
+  assert.equal(result.parseError.column, null);
+});
+
+test('F-d1e38dd0: an explicit null textOverride still falls through to a real read (nullish-coalescing semantics preserved)', () => {
+  // Points textOverride at `null` explicitly rather than omitting it — the
+  // original `textOverride ?? readFileSync(...)` treated null as nullish
+  // (same as undefined), and the rewrite must preserve that exact behavior,
+  // not silently start treating `null` as "the text is the literal value
+  // null" (which would then crash `parse(null, ...)` differently).
+  const missingPath = resolve(tmpdir(), `pin-declarations-null-override-${Date.now()}.test.js`);
+  const result = scanFileForDeclaredPins(missingPath, null);
+  assert.ok(result.parseError);
+  assert.match(result.parseError.message, /failed to read file/i);
+});
+
+test('F-d1e38dd0: an empty-string textOverride is respected (not treated as nullish, matches original ?? semantics)', () => {
+  const result = scanFileForDeclaredPins('empty.test.js', '');
+  assert.equal(result.parseError, null, 'an empty string is a valid (if uninteresting) override — it must parse as an empty program, not fall through to a real file read');
+  assert.deepEqual(result.pins, []);
 });
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -416,7 +532,11 @@ test('scanRepoForDeclaredPins: aggregates pins across files and buckets a broken
   writeFileSync(join(dir, 'pkg', 'a.test.js'), `/** @pins F-11111111 */\ntest('a', () => {});\n`);
   writeFileSync(join(dir, 'pkg', 'b.test.js'), `/** @pins F-22222222 */\ntest('b', () => {});\n`);
   writeFileSync(join(dir, 'pkg', 'broken.test.js'), 'function( { [ ] } (');
-  writeFileSync(join(dir, 'pkg', 'not-a-test.js'), `/** @pins F-33333333 */\ntest('should be ignored, not a test-classified file', () => {});\n`);
+  // Fixture name is load-bearing: `not-a-test.js` ends in `-test.js`, which node --test
+  // genuinely discovers — so classifyFile (widened in wave 20 per F-a27680f9 to match node's
+  // real discovery forms) correctly buckets it as a test. The old name encoded an assumption
+  // node itself does not share, and asserted the opposite of what it tested.
+  writeFileSync(join(dir, 'pkg', 'plain-source.js'), `/** @pins F-33333333 */\ntest('should be ignored, not a test-classified file', () => {});\n`);
 
   const result = scanRepoForDeclaredPins(dir);
   assert.deepEqual([...result.byId.keys()].sort(), ['F-11111111', 'F-22222222']);

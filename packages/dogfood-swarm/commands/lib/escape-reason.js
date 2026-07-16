@@ -62,6 +62,36 @@
  *     (exactly the shape of gap that let wave-18's ESC/\v/\f payloads
  *     through a fix that only named \n \r \t).
  *
+ *   F-35a809f3 (wave 20): wave 18's CLASS widening was itself incomplete —
+ *     it covered every codepoint that changes WHERE text appears (control
+ *     bytes, line/paragraph separators) but not codepoints that change HOW
+ *     already-placed text is displayed. Proven live via a real
+ *     `node cli.js history <wave-id>` subprocess against a scratch DB: a
+ *     reason containing U+202E (RLO) ... U+202C (PDF) renders with the
+ *     wrapped substring visually REVERSED in the terminal, and the same
+ *     bytes survive unescaped into the checked-in, GitHub-rendered
+ *     `wave-N-receipt.md` (commands/receipt.js's exportReceipt), where
+ *     GitHub's own Markdown viewer applies the Unicode bidi algorithm
+ *     unconditionally — a materially more consequential audience than the
+ *     live-terminal-only surfaces the class was previously proven against.
+ *     This is the "Trojan Source" class (Boucher & Anderson, CVE-2021-42574;
+ *     the reason GitHub/GitLab added dedicated bidi-control warnings to
+ *     their diff/blob viewers). Widened CONTROL_CLASS to also cover: the
+ *     bidi embedding/override controls U+202A-U+202E (LRE/RLE/PDF/LRO/RLO),
+ *     the bidi isolate controls U+2066-U+2069 (LRI/RLI/FSI/PDI), the bidi
+ *     marks U+200E-U+200F (LRM/RLM) and U+061C (ALM); the zero-width/
+ *     invisible block U+200B-U+200D (ZWSP/ZWNJ/ZWJ, contiguous with the bidi
+ *     marks above) and U+FEFF (BOM/ZWNBSP); and the Combining Diacritical
+ *     Marks block U+0300-U+036F (unbounded stacking of combining marks —
+ *     "zalgo text" — can visually obliterate adjacent genuine output the
+ *     same way the already-fixed ANSI cursor-erase primitive did, one layer
+ *     up in the Unicode rendering pipeline instead of the terminal's).
+ *     Still a codepoint CLASS via ranges, not an enumerated payload list —
+ *     each new range is pinned both directions (neutralized in every text
+ *     render; `--format=json` stays lossless) in
+ *     wave18-4091637-5127-swarm-cp-pins.test.js, the same proof discipline
+ *     this file's own header has required since wave 18.
+ *
  * `--format=json` output for every verb bypasses this helper entirely and
  * stays the lossless, unescaped canonical form — JSON's own string escaping
  * already makes control bytes safe and machine-parseable losslessly.
@@ -93,12 +123,23 @@ const NAMED_ESCAPES = {
   '\f': '\\f',
 };
 
-// The full escaped class: C0 controls (0x00-0x1F, includes ESC 0x1B — the
-// proven cursor-erase primitive), DEL (0x7F), the C1 control range
-// (0x80-0x9F), and the Unicode line/paragraph separators (U+2028/U+2029).
+// The full escaped class:
+//   - C0 controls (0x00-0x1F, includes ESC 0x1B, the proven cursor-erase
+//     primitive), DEL (0x7F), the C1 control range (0x80-0x9F)
+//   - the Unicode line/paragraph separators (codepoints U+2028/U+2029)
+//   - F-35a809f3 (wave 20), the "Trojan Source" class (CVE-2021-42574):
+//     the zero-width block plus bidi marks (U+200B through U+200F --
+//     ZWSP/ZWNJ/ZWJ/LRM/RLM, one contiguous range), the bidi
+//     embedding/override controls (U+202A through U+202E --
+//     LRE/RLE/PDF/LRO/RLO), the bidi isolate controls (U+2066 through
+//     U+2069 -- LRI/RLI/FSI/PDI), the Arabic Letter Mark (U+061C), and
+//     BOM/ZWNBSP (U+FEFF)
+//   - F-35a809f3 (wave 20): the Combining Diacritical Marks block
+//     (U+0300 through U+036F) -- unbounded stacking ("zalgo text") can
+//     visually obliterate adjacent genuine output
 // Deliberately a byte/codepoint CLASS, not an enumerated list of the
 // payloads a past finding happened to demonstrate — see this file's header.
-const CONTROL_CLASS = /[\x00-\x1f\x7f-\x9f\u2028\u2029]/g;
+const CONTROL_CLASS = /[\x00-\x1f\x7f-\x9f\u2028\u2029\u061c\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff\u0300-\u036f]/g;
 
 /**
  * Escape a free-text reason/label for embedding in a plain-text display

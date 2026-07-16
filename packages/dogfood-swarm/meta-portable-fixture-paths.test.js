@@ -62,12 +62,43 @@
  * below: `import` joins the call-site alternation, with a third self-test
  * fixture pinning the shape so it cannot silently reopen.
  *
+ * A FOURTH gap shipped undocumented too (F-c3034954, wave 20): the call-site
+ * pattern required a quote character immediately (modulo whitespace) after
+ * the call's opening paren, which missed the already-idiomatic composed form
+ * `readFileSync(new URL(<literal>, import.meta.url), 'utf-8')` entirely —
+ * the token immediately after the paren is `new`, not a quote. This is a
+ * real hazard, not just a regex gap: the WHATWG URL spec's Windows-drive-
+ * letter special case silently DISCARDS the import.meta.url base for a
+ * drive-letter-shaped relative reference (confirmed directly against this
+ * repo's own Node runtime: `new URL('E:/AI/testing-os/README.md',
+ * 'file:///.../x.test.js')` resolves to `e:/AI/testing-os/README.md`,
+ * dropping the base entirely) — reproducing the exact machine-specific-
+ * absolute-path hazard this whole file exists to prevent, through a call
+ * shape this file's own header already cites as "portable today." No live
+ * instance existed when this was found — every real `new URL(...)` call
+ * site in this package (meta-amendA-readme-contract.test.js x4) already uses
+ * a genuine relative first argument — so this was a coverage gap in the
+ * guard, not a live defect, matching how F-1c3fc4dd's and F-fc8be6ed's gaps
+ * above were rated. Closed below: the call-site pattern now also matches an
+ * optional `new URL(` immediately before the quoted literal — no new
+ * alternation member needed, since readFileSync/readFile/require/import are
+ * already named — with a self-test fixture pinning the shape and a negative
+ * control proving the safe relative form stays unflagged. NOT extended to
+ * import.meta.resolve(/require.resolve(/path.resolve( — see SCOPE below;
+ * each would need a new, dotted alternation member (a materially bigger
+ * detector change) and is scoped out of this fix as a disclosed residual,
+ * not a silent claim of completeness.
+ *
  * SCOPE, STATED PLAINLY (a narrow, honest guard beats a broad, noisy one):
  *   - Catches: a single-quoted, double-quoted, or backtick-quoted string
  *     literal shaped like a Windows drive-letter path (`X:\` / `X:/`) or a
  *     POSIX-absolute path (`/something`) passed DIRECTLY as the argument
- *     to readFileSync(/readFile(/require(/import(. The last is a dynamic
- *     import() CALL EXPRESSION (`import('...')`), not a static
+ *     to readFileSync(/readFile(/require(/import(, OPTIONALLY wrapped one
+ *     level in `new URL(<literal>, import.meta.url)` (F-c3034954, wave 20)
+ *     — i.e. the literal may sit either immediately after the call's own
+ *     paren, or immediately after a `new URL(` that itself immediately
+ *     follows the call's paren. The last named call is a dynamic import()
+ *     CALL EXPRESSION (`import('...')`), not a static
  *     `import ... from '...'` declaration — a static import never has an
  *     open-paren immediately after the `import` keyword, so it cannot match
  *     this alternation.
@@ -91,6 +122,13 @@
  *     git-tracked. That is a materially heavier check (shelling out to git,
  *     or reimplementing gitignore matching) — scoped OUT of this pass as
  *     not-cheap-enough; see wave-4 swarm-cp-tests output.json.
+ *   - Does NOT catch: an absolute path resolved via import.meta.resolve(,
+ *     require.resolve(, or path.resolve( with an absolute literal argument
+ *     (F-c3034954, wave 20). Each would need its own new, dotted alternation
+ *     member — a materially bigger detector change than the inline
+ *     `new URL(...)` extension this fix made — and was scoped out rather
+ *     than folded in unreviewed. Known residual gap, not a silent claim of
+ *     completeness.
  *   - Deliberately anchored to the CALL SITE (readFileSync(/readFile(/
  *     require(/import(, not just "an absolute-path-shaped literal anywhere
  *     in the file") so ordinary test data that happens to look path-shaped is
@@ -112,6 +150,21 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PKG_ROOT = __dirname;
 
+// F-90ee1ab5 (wave 20, NOT fully closed — cross-domain, see below): this
+// function is byte-for-byte identical to meta-wal-sidecar-teardown-guard.
+// test.js's own walkTestFiles, and near-identical (different extension
+// filter) to reason-escaping-discipline.test.js's walkSync. A fix to this
+// copy's directory-walk logic has no mechanical reason to reach either
+// sibling — mirror any such edit into BOTH. The established fix — extract
+// to test-support/ alongside strip-comments.js (which the sibling
+// meta-wal-sidecar-teardown-guard.test.js already imports) — is NOT done
+// here: packages/dogfood-swarm/test-support/** matches no owned, shared, or
+// bridge glob in this wave's frozen domain map (this domain's own bridge
+// glob, packages/dogfood-swarm/*.test.js, does not cross the test-support/
+// directory boundary), so a new file there would land unassigned and fail
+// this agent's own ownership check. Needs a domain-map amendment before it
+// can be extracted; see this wave's swarm-cp-tests output.json skipped[]
+// entry for the full mechanical proof.
 function walkTestFiles(dir, files = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
     if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'dist') continue;
@@ -143,8 +196,17 @@ function walkTestFiles(dir, files = []) {
 // — so a static `import ... from '...'` declaration (keyword, whitespace,
 // then `{`/an identifier/`*`, never `(`) cannot match this alternation; only
 // the dynamic import(...) CALL EXPRESSION can.
+//
+// The optional `(?:new\s+URL\(\s*)?` group closes F-c3034954 (wave 20): the
+// already-idiomatic composed form `readFileSync(new URL('<abs>',
+// import.meta.url))` has `new`, not a quote, immediately after the call's
+// paren, so without this the quote class below never got a chance to match.
+// No new alternation member needed — the same four named calls already
+// cover this, just with one optional extra hop before the literal. `\s+`/
+// `\s*` here tolerate the same multi-line wrapping the rest of this pattern
+// already does (see above).
 const HARDCODED_ABSOLUTE_PATH_ARG =
-  /\b(?:readFileSync|readFile|require|import)\(\s*[`'"](?:[A-Za-z]:[\\/]|\/[A-Za-z])/g;
+  /\b(?:readFileSync|readFile|require|import)\(\s*(?:new\s+URL\(\s*)?[`'"](?:[A-Za-z]:[\\/]|\/[A-Za-z])/g;
 
 // Extracted so the two self-test fixtures below can exercise the exact
 // detection logic the real sweep uses, without writing throwaway files to
@@ -247,5 +309,35 @@ describe('meta — no hardcoded absolute fixture paths in any test file (closes 
     const staticImport = `import { readFileSync } from 'node:fs';`;
     assert.deepEqual(findHardcodedAbsolutePathOffenders(staticImport), [],
       'a static import declaration must never be flagged, only the dynamic import(...) call expression');
+  });
+
+  it('catches a hardcoded absolute path literal wrapped in new URL(..., import.meta.url), the F-c3034954 gap (idiomatic in this package: meta-amendA-readme-contract.test.js)', () => {
+    // Same "built from parts" reasoning as the fixtures above: `fn` is held
+    // in a variable so this file's own raw source never contains the literal
+    // offending sequence (this file is itself a *.test.js under PKG_ROOT, so
+    // walkTestFiles() visits it too). This is the REAL idiom
+    // (readFileSync(new URL('./README.md', import.meta.url), 'utf-8')) with
+    // only the first URL argument changed from relative to absolute — proven
+    // live-hazardous, not just a regex miss: new URL('E:/...', <base>)
+    // silently discards <base> for a drive-letter-shaped reference (WHATWG
+    // URL's own Windows special case), reproducing the exact
+    // machine-specific-path hazard this file exists to prevent.
+    const fn = 'readFileSync';
+    const q = "'";
+    const offending = `${fn}(new URL(${q}E:/AI/testing-os/README.md${q}, import.meta.url), ${q}utf-8${q})`;
+    const offenders = findHardcodedAbsolutePathOffenders(offending);
+    assert.equal(offenders.length, 1,
+      `a readFileSync(new URL(<absolute literal>, import.meta.url)) call must be caught — the composed ` +
+      `form the old call-site pattern missed entirely because the token immediately after the paren is ` +
+      `'new', not a quote; got ${JSON.stringify(offenders)}`);
+
+    // Negative control alongside the positive: the SAME composed shape with
+    // a genuine RELATIVE first argument — the form all 7 real new URL(...)
+    // call sites in this package actually use today — must stay unflagged,
+    // so this guard cannot regress into flagging the portable idiom its own
+    // header cites as the recommended fix.
+    const safeRelative = `${fn}(new URL(${q}./README.md${q}, import.meta.url), ${q}utf-8${q})`;
+    assert.deepEqual(findHardcodedAbsolutePathOffenders(safeRelative), [],
+      'new URL(...) with a genuine relative first argument must never be flagged — that is the portable, recommended idiom');
   });
 });
