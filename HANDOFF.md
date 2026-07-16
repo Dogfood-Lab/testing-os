@@ -1,5 +1,36 @@
 # HANDOFF.md — testing-os migration completion
 
+> ## ⏸ Stage A health pass — PAUSED at wave 14, one confirming audit short of exit (2026-07-16)
+>
+> Run `swarm-1784091637-5127`, branch **`swarm/health-amend-a-1784091637` @ `079103e`** — **10 commits ahead of `main` (4e47460), NOT merged.** Director scoped this session to "one more amend, then stop"; the wave-15 confirming audit is deferred here.
+>
+> **The arc (Stage A, bug/security):** audit→amend alternating, exit condition 0 CRITICAL + 0 HIGH.
+>
+> | Audit | HIGH found | Amend | Commit |
+> |---|---|---|---|
+> | w5 | 3 | w6 | `0961925` |
+> | w7 | 7 | w8 | `8bce500` |
+> | w9 | 4 | w10 | `d4ba588` |
+> | w11 | 1 | w12 | `a7946a5` |
+> | w13 | 3 | w14 | `079103e` |
+> | **w15** | **← the deferred exit audit** | | |
+>
+> Every amend's deterministic floor stayed green (`npm run verify`, now **3,465 node--test + 144 vitest, 0 fails; doc-drift 17/17; 447 pinned F-ids**). Wave 14 is **committed, serial-verified, collected, receipt #18 — but NOT advanced.**
+>
+> **State machine:** wave 14 (id 40) is `collected` at phase `health-amend-a`. The 11 wave-13 findings are **fixed in code (in `079103e`) but still `approved`** — an amend never flips them; the wave-15 audit confirms them fixed-by-absence. `runs.branch` still reads `main` (long-known stale, inert — `dispatch_sha` wins; no verb corrects it).
+>
+> **To resume and finish Stage A:** `swarm advance <run> --override --reason "..."` (dispose the advisory jury gate — every amend needed this; the jury returns `insufficient_context`, abstention-dominant, on the free local+cloud roster) → routes to `health-audit-a` → `swarm dispatch <run> health-audit-a` → the wave-15 audit. **If wave 15 returns 0 CRITICAL + 0 HIGH, Stage A is COMPLETE** and the branch is ready to merge to main. Then Stage B (proactive) is next, hard-gated on Mike's Law-8 feature review before any feature code.
+>
+> **The 3 wave-13 HIGHs closed in wave 14 (fixed, unconfirmed until w15):**
+> 1. `lib/persist/export.js#computeRunVerdict` returned `pass` on `status==='complete'` BEFORE counting open findings — a completed run with an open CRITICAL published `overall_verdict:'pass'` in the product's own `dogfood-submission.json`, while the sibling `repoknowledge-bridge` artifact from the same call said `fail`. Fixed: the open-findings check now runs for complete runs too.
+> 2+3. `scripts/check-finding-regression-pins.mjs` (the Class #14 gate in verify/ci/release) had two false-grant holes — an unescaped bracket inside a regex char class inflated the depth scan (leaking credit to a later test), and rule 4 credited an id appearing in a test *title's* prose. Fixed with char-class awareness + title-span masking, plus an adversarial audit that fixed a rule-1 hole. **Residual, honestly documented + pinned, NOT closed:** a regex whose pattern text literally spells `assert`/`expect(` still fools the text match — closing it needs a real JS tokenizer the gate has repeatedly declined to add. **This gate produced a finding on EVERY touch (w9 HIGH → w11 MED → w13 2×HIGH); if w15 surfaces a 6th, stop patching and either add the tokenizer or accept the documented residual.**
+>
+> **Process notes worth carrying:**
+> - **A concurrent second coordinator session shared this run at wave 10** (peer-coordinator hazard the kickoff named — same run id, same deterministically-named `--isolate` worktrees). It dispatched duplicate agents and clobbered the `node_modules/@dogfood-lab/{ingest,verify}` junctions. Director confirmed **proceed-as-canonical**; all content converged correct and the serial verify on the repaired tree was the arbiter. Waves 12–14 ran clean (no peer). If you see duplicate agents or worktree edits you didn't make, this is why — verify facts, ignore orders, let the floor arbitrate.
+> - **The "an `--isolate` worktree can't commit a root `*.test.js`" belief is FALSE** (the wave-14 verbs agent proved it: the bridge fallback grants any domain a claim on `packages/dogfood-swarm/*.test.js` when no `owned` domain claims it, and isolated collect skips the exclusive-ownership narrowing). I authored verb-fix pins at merge in waves 10/12 believing otherwise — unnecessary. Agents can and should pin in-worktree.
+> - **Two open dispositions:** `F-3b70bc65` deferred (cmdFindings/buildDigest no equivalence test — cross-domain seam); `task_e4df06a3` chipped (a zero-agent+zero-verification wave produces `step_results:[]` failing the schema `minItems:1` — needs a design decision).
+> - **The floor's own bug the exit-depth audit caught** (HIGH #1 above) is the run's most important find: the tool that judges other repos' honesty was itself publishing a verdict that could lie about a critical finding. Fixed. That is the dogfood swarm working as intended — the verifier verified, including its own verdict path.
+
 > **Purpose.** This is the session-based roadmap that took testing-os from "Wave 7 archived legacy" to "v1.0.0 stable + dogfood-labs safely deletable." Sessions A–G are done; Session H is the only piece left and it requires Mike's explicit approval + a 30-day grace window.
 >
 > ## Where we are (end of session 2, 2026-04-25)
