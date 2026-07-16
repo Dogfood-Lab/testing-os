@@ -137,8 +137,13 @@ describe('classifyFile', () => {
     assert.equal(classifyFile('/repo/packages/schemas/test/validate.test.ts'), 'test');
   });
 
-  it('classifies *.spec.ts paths as test', () => {
-    assert.equal(classifyFile('/repo/lib/foo.spec.ts'), 'test');
+  // F-4fc233fe (wave 26) scoped this: `.spec.` only means 'test' within
+  // packages/schemas, the one package whose own runner is vitest — a bare
+  // `node --test` package never discovers `.spec.` naming. See the
+  // "F-4fc233fe" describe block below for the non-schemas negative case
+  // this test used to (incorrectly) assert for ANY `.spec.` path repo-wide.
+  it('classifies *.spec.ts paths as test within packages/schemas (real vitest discovery)', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/foo.spec.ts'), 'test');
   });
 
   // F-92a8d0bb narrowed this: a plain-named file under /test/ (singular) is
@@ -273,14 +278,59 @@ describe('classifyFile', () => {
 
     it('a suffix/prefix-matching basename under /tests/ or /__tests__/ still classifies test — caught by the upstream checks, untouched by this fix', () => {
       assert.equal(classifyFile('/repo/tests/foo.test.js'), 'test');
-      assert.equal(classifyFile('/repo/__tests__/foo.spec.js'), 'test');
       assert.equal(classifyFile('/repo/tests/foo-test.js'), 'test');
+      // A `.spec.js` example (e.g. '/repo/__tests__/foo.spec.js') used to sit
+      // here as a third "still classifies test" case — F-4fc233fe (wave 26)
+      // scoped the `.spec.` upstream check itself to packages/schemas, so a
+      // non-schemas `.spec.` path is no longer "caught by the upstream
+      // check" the way `.test.`/`-test.` still are here. See the
+      // "F-4fc233fe" describe block below for the corrected assertion.
     });
 
     it('uses POSIX-normalised match logic so Windows backslashes still classify /tests/ and /__tests__/ as source', () => {
       assert.equal(classifyFile('C:\\repo\\tests\\integration\\runner.js'), 'source');
       assert.equal(classifyFile('C:\\repo\\__tests__\\snapshot.js'), 'source');
     });
+  });
+});
+
+/** @pins F-4fc233fe */
+describe('F-4fc233fe: `.spec.` only means "test" within packages/schemas (the vitest package)', () => {
+  it('classifies a *.spec.js file directly under packages/schemas as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/foo.spec.js'), 'test');
+  });
+
+  it('classifies a *.spec.ts file nested under packages/schemas/test as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/test/foo.spec.ts'), 'test');
+  });
+
+  it('does NOT classify a *.spec.ts file outside packages/schemas as test — bare `node --test` never discovers `.spec.` naming', () => {
+    assert.equal(classifyFile('/repo/lib/foo.spec.ts'), 'source');
+    assert.equal(classifyFile('/repo/packages/portfolio/foo.spec.js'), 'source');
+    assert.equal(classifyFile('/repo/packages/verify/sub/foo.spec.js'), 'source');
+  });
+
+  it('does NOT classify a *.spec.js file under /tests/ or /__tests__/ outside packages/schemas as test either — no other rule reaches it', () => {
+    assert.equal(classifyFile('/repo/tests/foo.spec.js'), 'source');
+    assert.equal(classifyFile('/repo/__tests__/foo.spec.js'), 'source');
+  });
+
+  it('still classifies a *.spec.js file under packages/schemas/tests or packages/schemas/__tests__ as test — the schemas SCOPE, not the directory name, is what now matters', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/tests/foo.spec.js'), 'test');
+    assert.equal(classifyFile('/repo/packages/schemas/__tests__/foo.spec.js'), 'test');
+  });
+
+  it('does NOT credit a package merely PREFIXED with "schemas" (e.g. packages/schemasx) — path-boundary match, not substring', () => {
+    assert.equal(classifyFile('/repo/packages/schemasx/foo.spec.js'), 'source');
+  });
+
+  it('control: a sibling *.test.js file in the same non-schemas location is unaffected by this scoping', () => {
+    assert.equal(classifyFile('/repo/packages/portfolio/foo.test.js'), 'test');
+  });
+
+  it('uses POSIX-normalised match logic so Windows backslashes still scope correctly', () => {
+    assert.equal(classifyFile('C:\\repo\\packages\\schemas\\src\\foo.spec.ts'), 'test');
+    assert.equal(classifyFile('C:\\repo\\packages\\portfolio\\foo.spec.js'), 'source');
   });
 });
 

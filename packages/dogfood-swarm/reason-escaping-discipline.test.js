@@ -75,12 +75,16 @@ const ESCAPE_CALL = 'escapeReasonForDisplay(';
 // Leaving wrong text in place is strictly worse than no entry at all.
 //
 // F-6c030425 (wave 24): the SAME dead-entry shape independently resurfaced in
-// TWO more entries after the fix above was applied to only the one instance
-// in front of it — this repo's own most expensive lesson (swarms/PROTOCOL.md
-// "Fixing a class, not an instance"). Both are REMOVED here, not reworded,
-// for the identical reason verify.js's entry was removed rather than
-// corrected: a dead entry a future maintainer might search for prior art is
-// worse than no entry at all.
+// THREE more entries after the fix above was applied to only the one
+// instance in front of it — this repo's own most expensive lesson
+// (swarms/PROTOCOL.md "Fixing a class, not an instance"). All three are
+// REMOVED here, not reworded, for the identical reason verify.js's entry was
+// removed rather than corrected: a dead entry a future maintainer might
+// search for prior art is worse than no entry at all. (F-7214a8aa, wave 26:
+// this passage previously named only resume.js and persist.js and said "TWO
+// more entries" / "Both are REMOVED" — commands/adjudicate.js's entry was
+// also removed in this same commit and was never mentioned here; see the
+// third bullet below.)
 //
 //   - commands/resume.js (was here): independently re-verified —
 //     resume.js:466 calls `escapeReasonForDisplay(a.error)` (a DIFFERENT
@@ -105,6 +109,20 @@ const ESCAPE_CALL = 'escapeReasonForDisplay(';
 //     mischaracterization; `git log --oneline -- <this file>` shows only two
 //     commits ever touched it (132dc18 wave-18 creation, 40e3d47 wave-22's
 //     verify.js removal) — the wrong text was simply never revisited.
+//
+//   - commands/adjudicate.js (was here): independently re-verified — this
+//     same wave's F-0b7ba713 fix gave the file its own, unrelated
+//     escapeReasonForDisplay call (adjudicate.js:60 imports it;
+//     adjudicate.js:302 calls `escapeReasonForDisplay(o.finding)` for the
+//     jury's out_of_brief text), so this file's own
+//     `stripped.includes(ESCAPE_CALL)` check already passes before the
+//     allowlist is ever consulted — the identical dead-before-consultation
+//     shape as the two entries above, just reached by a fix landing in this
+//     SAME commit rather than a prior wave. The removed entry's TEXT was
+//     accurate (the one `reason` occurrence really was literal usage-hint
+//     text inside a help string naming the --reason CLI flag for the
+//     operator to type next, not an interpolated/rendered VALUE) — it was
+//     dead, not wrong, exactly like resume.js's.
 const ALLOWLIST = [
   {
     file: 'commands/collect.js',
@@ -280,11 +298,15 @@ describe('Reason-escaping discipline (mechanical guard against a new unescaped r
 // lib/findings-render.js clean while 7 of its lines were genuinely
 // unescaped. So this gate is scoped PER-LINE, and its allowlist is keyed by
 // a content anchor (a literal substring of the offending line) rather than a
-// line number — the same reason dispatch.lock.json is content-addressed
-// rather than count-addressed (PROTOCOL.md "Fixing a class, not an
-// instance", sub-law 5): a line-number key silently stops matching, or
-// silently keeps "protecting" the wrong line, the moment an unrelated edit
-// shifts the file.
+// line number — the same reason the grandfather-manifest gate is
+// content-addressed via a SHA-256 digest (EXPECTED_GRANDFATHER_MANIFEST_HASH
+// / grandfatherManifestFingerprint, scripts/check-finding-regression-pins.mjs)
+// rather than guarded by a headcount (PROTOCOL.md "Fixing a class, not an
+// instance", sub-law 5; F-2e4c3017, wave 26: this comment previously cited a
+// never-existed `dispatch.lock.json` file — no such file exists anywhere in
+// this repo, tracked or otherwise): a line-number key silently stops
+// matching, or silently keeps "protecting" the wrong line, the moment an
+// unrelated edit shifts the file.
 //
 // Scope, stated plainly (same discipline as REASON_IDENTIFIER's own SCOPE
 // paragraph above):
@@ -308,7 +330,7 @@ describe('Reason-escaping discipline (mechanical guard against a new unescaped r
 //     disposition of every line this scan actually flagged).
 //   - `description` deliberately stays a BARE dotted identifier
 //     (`\.description\b`), not scoped to a specific receiver name, because
-//     the real sibling this sweep found (cli.js:2622, `swarm trends --query
+//     the real sibling this sweep found (cli.js:2636, `swarm trends --query
 //     recurring`) renders finding.description through a receiver named `r`,
 //     not `f` — a receiver allowlist would have silently missed it. The word
 //     also collides with a materially different, lower-privilege field —
@@ -319,7 +341,7 @@ describe('Reason-escaping discipline (mechanical guard against a new unescaped r
 //     (neither renders via template interpolation anywhere in this package,
 //     confirmed by reading both call sites), so no separate receiver
 //     restriction is needed, and one was tried and REMOVED here after it
-//     proved to silently exclude the real cli.js:2622 sibling — the fix
+//     proved to silently exclude the real cli.js:2636 sibling — the fix
 //     traded a false negative for an unneeded guard against a false positive
 //     the `${` check already handled. Left as a disclosed near-miss rather
 //     than silently corrected, per this repo's own "an honest partial beats
@@ -344,17 +366,24 @@ describe('Reason-escaping discipline (mechanical guard against a new unescaped r
 // to be fixing this wave is a genuinely new sibling — see the next
 // paragraph.
 //
-// A sibling this sweep independently found, not previously named by this
-// wave's routed findings: cli.js:2622 (`swarm trends --query recurring`'s
-// formatTrends()) renders `r.description` unescaped — `r` here comes from
-// lib/queries/cross-run-analytics.js's queryRecurringFindings(), whose SQL
-// selects `MAX(f.description) AS description` directly off the `findings`
-// table — the SAME field family, reached via a query path (cross-run trend
-// aggregation) none of this wave's named sites touch. Left un-allowlisted
-// below on purpose: it is a real, currently-unescaped render of
-// audited-controlled content, not a false positive, and allowlisting it
-// would launder a real gap the way F-6c030425's own history warns against.
-// It surfaces as a gate failure until someone escapes it.
+// A sibling this sweep independently found — and this same wave went on to
+// fix, not previously named by this wave's routed findings: `swarm trends
+// --query recurring`'s formatTrends() rendered `r.description` unescaped —
+// `r` here comes from lib/queries/cross-run-analytics.js's
+// queryRecurringFindings(), whose SQL selects `MAX(f.description) AS
+// description` directly off the `findings` table — the SAME field family,
+// reached via a query path (cross-run trend aggregation) none of this
+// wave's other named sites touch. This is the gate catching a real gap on
+// its own first run, not a false positive: cli.js:2636 now reads
+// `escapeReasonForDisplay(r.description)` under an explicit "F-c6f7d8fc
+// (wave 24) sweep" comment. (F-1a36730d, wave 26: this passage, the failure
+// message below, and a mutation-proof test's inline comment all previously
+// described this site as still-open and un-allowlisted "on purpose" — true
+// pre-merge, in this domain's own isolated wave-24 worktree per the
+// parallel-amend note above, but never reconciled after the merge landed
+// the fix in the same commit. See HANDOFF.md's wave-24 entry, which already
+// correctly frames this as "a 9th and 10th site the sweep found beyond the
+// audit's".)
 
 const AUDITED_FIELD_IDENTIFIER = /\.(file_path|line_number|out_of_brief|file|line|symbol|description)\b/;
 
@@ -426,8 +455,13 @@ const FIELD_ESCAPE_MARKERS = [
  * like) — folding it into the reason-family scan would force an unrelated
  * new entry into THAT gate's ALLOWLIST, coupling two independently-working
  * gates for no benefit. Verified before this design was chosen (not
- * assumed): lib/findings-render.js touches zero REASON_IDENTIFIER matches
- * post-strip, so it is safe either way; lib/templates.js is not.
+ * assumed): lib/findings-render.js has exactly ONE REASON_IDENTIFIER match
+ * post-strip (F-2d61dade, wave 26: its own `import { escapeReasonForDisplay,
+ * escapePathForDisplay } from '../commands/lib/escape-reason.js'` line — the
+ * match is the literal substring 'reason' inside the file PATH
+ * `escape-reason.js`, a word boundary created by the hyphen, not any
+ * reason-shaped content in the file) — so it is safe either way regardless;
+ * lib/templates.js is not.
  */
 function fieldFamilyScanTargets() {
   const extra = ['lib/findings-render.js', 'lib/templates.js'].map((rel) => join(PKG_ROOT, rel));
@@ -493,6 +527,83 @@ const FIELD_FAMILY_ALLOWLIST = [
   },
 ];
 
+/**
+ * F-84badba1 (wave 26): four of the six FIELD_FAMILY_ALLOWLIST entries above
+ * justify themselves by naming a SPECIFIC downstream/upstream file + call
+ * that escapes the value on the exempted line's behalf — the exempted line
+ * itself has no escaping call the same-line scan above could ever see (it's
+ * a join/assignment with no `${` of its own, or is in a file that gate
+ * doesn't scan). The "stays honest" test above only re-verifies the
+ * EXEMPTED line's own shape (does `entry.match` still anchor a real,
+ * candidate-shaped line); it never re-derives the cross-file claim the
+ * reason text makes. That gap is not theoretical: mutating either dependency
+ * below in an isolated scratch copy (removing lib/templates.js's
+ * `neutralizeForPrompt(opts.priorContext)` call, or reverting
+ * lib/findings-render.js's row-build to `symbol: f.symbol`) leaves this
+ * whole suite 16/16 GREEN today — the only real protection against either
+ * regression is an unrelated, out-of-domain behavioral test (see the SCOPE
+ * BOUNDARY note below the checks that follow).
+ *
+ * The other two FIELD_FAMILY_ALLOWLIST entries (`pad('Class', widths.cls)`,
+ * `dash(widths.cls)`) are deliberately absent here: their justification is
+ * "this is a column-width INTEGER, not finding-authored content at all", not
+ * "escaped elsewhere" — there is no downstream call to re-verify.
+ *
+ * Each entry names the FIELD_FAMILY_ALLOWLIST entry it backs (by file +
+ * match, so a future edit/removal of that entry is caught as a stale
+ * dependency rather than silently checking a ghost) and the literal,
+ * comment-stripped call(s) its reason text claims exist elsewhere.
+ */
+const CROSS_FILE_ESCAPE_DEPENDENCIES = [
+  {
+    entryFile: 'commands/dispatch.js',
+    entryMatch: '${f.finding_id}: ${f.description} (${f.file_path',
+    dependsOn: [
+      // buildAuditPrompt's only render of opts.priorContext.
+      { file: 'lib/templates.js', call: 'neutralizeForPrompt(opts.priorContext)' },
+    ],
+  },
+  {
+    entryFile: 'lib/findings-render.js',
+    entryMatch: 'pad(r.symbol, widths.symbol)',
+    dependsOn: [
+      // Same file, the row-build line a few lines above the padded render —
+      // the pre-escape this entry's reason text says happens there.
+      { file: 'lib/findings-render.js', call: 'symbol: formatSymbol(f.symbol)' },
+    ],
+  },
+  {
+    entryFile: 'commands/collect.js',
+    entryMatch: 'const violMsg = `Out-of-domain edits:',
+    dependsOn: [
+      // Every reader of agent_runs.error_message this entry names.
+      { file: 'commands/receipt.js', call: 'escapeReasonForDisplay(a.error)' },
+      { file: 'commands/status.js', call: 'escapeReasonForDisplay(a.error)' },
+      { file: 'commands/resume.js', call: 'escapeReasonForDisplay(a.error)' },
+    ],
+  },
+  {
+    entryFile: 'commands/revalidate.js',
+    entryMatch: 'reason: `ownership (reported + git-observed):',
+    dependsOn: [
+      // Same file, the actual render site (revalidate.js:703) this entry
+      // says the join is deferred to.
+      { file: 'commands/revalidate.js', call: 'escapeReasonForDisplay(r.reason)' },
+    ],
+  },
+];
+
+/**
+ * True when `call` literally appears in `strippedSource` (already
+ * comment-stripped by the caller). Pure function over plain text so it can
+ * be mutation-proved directly with literal strings (below), independent of
+ * today's real files — same discipline as fileAlreadySatisfiesEscapeCall /
+ * findFieldFamilyOffenders above.
+ */
+function crossFileEscapeDependencyHolds(strippedSource, call) {
+  return strippedSource.includes(call);
+}
+
 describe('Audited-controlled field-family escaping discipline (file_path/file/line/symbol/out_of_brief/description — coordinator-assigned, wave 24, F-6c030425 umbrella)', () => {
   it('every render line touching an audited-controlled field also calls an escaping helper, unless allowlisted', () => {
     const offenders = [];
@@ -514,8 +625,9 @@ describe('Audited-controlled field-family escaping discipline (file_path/file/li
       `NOTE (wave 24, parallel amend): if this fails against sites swarm-cp-verbs/swarm-cp-core are actively ` +
       `escaping in their own isolated worktrees this wave, that is this gate working as designed — it goes ` +
       `green once the coordinator merges those lanes. A failure naming a site NOT already tracked by this ` +
-      `wave (e.g. cli.js:2622's \`swarm trends\` site — see this file's header comment) is a genuinely new ` +
-      `sibling this sweep found; see swarms/PROTOCOL.md "Fixing a class, not an instance".`);
+      `wave is a genuinely new sibling this sweep found — this is exactly how cli.js:2636's \`swarm trends\` ` +
+      `site was caught and fixed within wave 24 itself (see this file's header comment); see ` +
+      `swarms/PROTOCOL.md "Fixing a class, not an instance".`);
   });
 
   it('the field-family allowlist stays honest: every entry names a real scanned file and still anchors a real candidate line', () => {
@@ -533,6 +645,79 @@ describe('Audited-controlled field-family escaping discipline (file_path/file/li
         `(no audited-field identifier + template interpolation) — it is not suppressing anything real; update or delete it`);
     }
   });
+
+  // No @pins tag by design (F-84badba1): this finding's fix is entirely inside
+  // this gate test file — adding the cross-file escape-dependency re-verification
+  // so an allowlist entry's named downstream/upstream call is checked to still
+  // exist. No production-source F-84badba1 pin exists for a declared tag to
+  // resolve against (same shape as wave-22 F-7d4ac5ce). The test below still runs.
+  it('cross-file escape dependency check: entries that defer to a NAMED downstream/upstream call are re-verified against that call, not just trusted (F-84badba1)', () => {
+    assert.ok(CROSS_FILE_ESCAPE_DEPENDENCIES.length > 0,
+      'CROSS_FILE_ESCAPE_DEPENDENCIES must not be empty — an empty list would make this check vacuously pass, ' +
+      'indistinguishable from "every deferred-escaping claim was verified" (PROTOCOL.md "Proving a gate")');
+
+    const failures = [];
+    for (const dep of CROSS_FILE_ESCAPE_DEPENDENCIES) {
+      const stillReferenced = FIELD_FAMILY_ALLOWLIST.some((e) => e.file === dep.entryFile && e.match === dep.entryMatch);
+      assert.ok(stillReferenced,
+        `CROSS_FILE_ESCAPE_DEPENDENCIES names a FIELD_FAMILY_ALLOWLIST entry ('${dep.entryFile}' / ` +
+        `'${dep.entryMatch}') that no longer exists — update or remove this dependency so it isn't silently ` +
+        `checking a ghost entry`);
+
+      for (const { file, call } of dep.dependsOn) {
+        const stripped = stripComments(readFileSync(join(PKG_ROOT, file), 'utf-8'));
+        if (!crossFileEscapeDependencyHolds(stripped, call)) {
+          failures.push(`${dep.entryFile}'s allowlist entry ('${dep.entryMatch}') defers its escaping to ` +
+            `${file}'s '${call}' call, which no longer appears there`);
+        }
+      }
+    }
+    assert.deepEqual(failures, [],
+      `these FIELD_FAMILY_ALLOWLIST entries rely on a downstream/upstream escaping call that this same-line ` +
+      `scan cannot see on the exempted line itself, and that call has been removed or renamed — so the ` +
+      `deferred escaping the entry's own reason text promises no longer exists:\n  ${failures.join('\n  ')}\n\n` +
+      `Either restore the named call, or if the escaping genuinely moved, update the entry's reason text AND ` +
+      `its CROSS_FILE_ESCAPE_DEPENDENCIES entry to point at the new location (F-84badba1).`);
+  });
+
+  it('mutation proof: crossFileEscapeDependencyHolds goes RED when the named call is absent, GREEN when present', () => {
+    const withCall = 'const priorSection = opts.priorContext ? fenceSafeBlock(neutralizeForPrompt(opts.priorContext)) : \'\';';
+    const withoutCall = 'const priorSection = opts.priorContext ? fenceSafeBlock(opts.priorContext) : \'\';';
+    assert.ok(crossFileEscapeDependencyHolds(withCall, 'neutralizeForPrompt(opts.priorContext)'),
+      'sanity: the call, present verbatim, is recognized');
+    assert.ok(!crossFileEscapeDependencyHolds(withoutCall, 'neutralizeForPrompt(opts.priorContext)'),
+      'sanity: the SAME line with the call stripped back out to raw interpolation is no longer recognized — ' +
+      'this is the RED case a real regression (reverting neutralizeForPrompt to raw opts.priorContext) would ' +
+      'actually produce, and which the field-family gate above cannot see on dispatch.js\'s own exempted line');
+  });
+
+  it('mutation proof: crossFileEscapeDependencyHolds only credits the CALL, not a comment merely mentioning it (F-6c030425 sub-law 3: strip comments before asserting)', () => {
+    const commentOnly = stripComments('// TODO: consider calling neutralizeForPrompt(opts.priorContext) here\nconst priorSection = opts.priorContext;');
+    assert.ok(!crossFileEscapeDependencyHolds(commentOnly, 'neutralizeForPrompt(opts.priorContext)'),
+      'sanity: a comment merely naming the call must not be credited as the call actually existing — the ' +
+      'caller is required to pass already-stripped text, matching this file\'s own strip-before-assert discipline');
+  });
+
+  // SCOPE BOUNDARY, stated plainly (same honesty standard as this file's
+  // other disclosed boundaries): CROSS_FILE_ESCAPE_DEPENDENCIES only covers
+  // the FIELD_FAMILY_ALLOWLIST entries that name a SPECIFIC call in a
+  // SPECIFIC file — it re-derives "does the named call still appear in the
+  // named file", nothing more. It does NOT verify that the call's own
+  // behavior still does what the reason text claims (e.g. that
+  // neutralizeForPrompt hasn't been gutted into a no-op while keeping its
+  // name), and it does NOT discover a dependency this list doesn't already
+  // know about — it is a targeted anchor check, not a general dataflow
+  // analysis (the same "source-text scanning, not a real parser" boundary
+  // this file's header comment already discloses for the sibling gate
+  // above). Independent, real, out-of-domain protection for the underlying
+  // BEHAVIOR of the two production dependencies this check anchors already
+  // exists and predates this wave's check: lib/f-d2d06af3-prompt-invisible-
+  // neutralization.test.js drives lib/templates.js's neutralizeForPrompt
+  // end-to-end, and lib/f-8e414a2b-findings-loc-symbol-escaping.test.js does
+  // the same for lib/findings-render.js's formatSymbol/formatLoc row-build —
+  // this check and those two are complementary, not redundant: this one
+  // catches "the call disappeared from the file"; those catch "the call is
+  // present but broken".
 
   it('sanity: fieldFamilyScanTargets() is non-empty and includes the 3 hard-named wave-24 fix-surface files', () => {
     // The "emptiness" operator this gate's own PROTOCOL.md ("Proving a gate")
@@ -579,10 +764,10 @@ describe('Audited-controlled field-family escaping discipline (file_path/file/li
     assert.equal(offenders.length, 1, 'sanity: same-line co-occurrence still catches this real wave-24 shape (commands/adjudicate.js:290)');
   });
 
-  it('mutation proof: description is receiver-agnostic — a non-`f.` receiver (e.g. `r.description`, the real cli.js:2622 shape) is still caught', () => {
+  it('mutation proof: description is receiver-agnostic — a non-`f.` receiver (e.g. `r.description`, the cli.js:2636 `swarm trends` shape this sweep found and fixed) is still caught', () => {
     const src = 'for (const r of payload) { lines.push(`    ${r.description}`); }';
     const offenders = findFieldFamilyOffenders(stripComments(src));
-    assert.equal(offenders.length, 1, 'sanity: cli.js:2622 renders finding.description through a receiver named `r`, not `f` — the identifier must not be receiver-scoped');
+    assert.equal(offenders.length, 1, 'sanity: cli.js:2636 renders finding.description through a receiver named `r`, not `f` — the identifier must not be receiver-scoped');
   });
 
   it('mutation proof: a plain assignment/object-literal use of `description` with NO template interpolation is not a candidate (the domain.description shape)', () => {

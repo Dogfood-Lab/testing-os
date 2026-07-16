@@ -117,6 +117,36 @@ const MUTANTS = [
     find: 'const PINS_TAG_LINE = /^\\s*\\*?\\s*@pins\\b(.*)$/;',
     replace: 'const PINS_TAG_LINE = /@pins\\b(.*)$/;',
   },
+  {
+    name: 'delete-legacy-near-miss-branch',
+    rationale: 'F-78892d70: all four officially-demonstrated looksLikeIdAttempt near-miss shapes (F-2222222/f-2222222/F2222222/-F-2222222) reduce to the same 7-digit HASH-branch-satisfying body, so deleting the LEGACY branch (digit-hyphen-digit near-misses) entirely survived the pre-fix test suite undetected. This mutant proves the branch-exclusive probes below actually exercise LEGACY, not just re-confirm HASH.',
+    find: `  if (/^\\d+-?\\d+$/.test(body)) {
+    const digitCount = body.replace('-', '').length;
+    if (Math.abs(digitCount - 9) <= 1) return true;
+  }`,
+    replace: '',
+  },
+  {
+    name: 'delete-prefixed-near-miss-branch',
+    rationale: 'F-78892d70: mirrors delete-legacy-near-miss-branch for the PREFIXED branch (uppercase-alnum-plus-suffix near-misses) — proves the branch-exclusive probe below actually exercises PREFIXED, not just HASH/LEGACY.',
+    find: `  if (/^[A-Z][A-Z0-9-]*$/.test(body)) {
+    const suffix = /-?(\\d+)$/.exec(body);
+    if (suffix && Math.abs(suffix[1].length - 3) <= 1) return true;
+  }`,
+    replace: '',
+  },
+  {
+    name: 'remove-dash-confusable-normalization',
+    rationale: 'F-491e2dee: a Unicode dash confusable (e.g. U+2011 non-breaking hyphen) glued to the leading f/F marker must still be read as an id-shape attempt, not silently absorbed as prose because it fails a literal ASCII "-" match — removing the normalization reopens exactly that homoglyph gap.',
+    find: `const normalized = token.replace(DASH_CONFUSABLES, '-');`,
+    replace: `const normalized = token;`,
+  },
+  {
+    name: 'remove-body-case-fold',
+    rationale: 'F-a7d03bd1: the PREFIXED branch\'s character class is upper-only by construction — removing the single up-front case-fold reopens the case-sensitivity gap the HASH branch\'s old branch-local /i flag never covered for PREFIXED (a case-typo\'d real PREFIXED id silently vanishes as prose again).',
+    find: 'const body = m[1].toUpperCase();',
+    replace: 'const body = m[1];',
+  },
 ];
 
 function loadMutant(mutant, index) {
@@ -187,6 +217,35 @@ function buildProbes() {
   probes.push({
     name: 'parse-error-surfaced',
     run: (mod) => mod.scanFileForDeclaredPins('bad.test.js', 'function( { [ ] } (').parseError !== null,
+  });
+  // F-78892d70: branch-exclusive looksLikeIdAttempt probes. F-12345-678 fails
+  // HASH (embedded hyphen) and PREFIXED (leading digit) — only LEGACY credits
+  // it. F-ABC-12 fails HASH (embedded hyphen) and LEGACY (leading letter) —
+  // only PREFIXED credits it. Each is reachable via exactly one branch, so
+  // deleting that branch (see the two MUTANTS above) is caught HERE even
+  // though the pre-existing four-shape corpus never exercised either branch.
+  probes.push({
+    name: 'legacy-near-miss-flagged-bad-shape',
+    run: (mod) => mod.extractDeclaredIds('* @pins F-11111111 F-12345-678').some((t) => t.token === 'F-12345-678' && t.ok === false),
+  });
+  probes.push({
+    name: 'prefixed-near-miss-flagged-bad-shape',
+    run: (mod) => mod.extractDeclaredIds('* @pins F-11111111 F-ABC-12').some((t) => t.token === 'F-ABC-12' && t.ok === false),
+  });
+  // F-491e2dee: a Unicode dash confusable (U+2011 non-breaking hyphen) glued
+  // to the marker must still read as an id attempt after normalization.
+  probes.push({
+    name: 'unicode-dash-confusable-near-miss-flagged-bad-shape',
+    run: (mod) => mod.extractDeclaredIds('* @pins F-11111111 F‑2222222').some((t) => t.token === 'F‑2222222' && t.ok === false),
+  });
+  // F-a7d03bd1: a lowercase PREFIXED-shaped body (letters, not just digits)
+  // must still read as an id attempt after the single up-front case-fold —
+  // deliberately NOT all-digit, unlike the pre-existing f-2222222 HASH probe,
+  // which is a case-fold no-op and so cannot distinguish this branch's fix
+  // from the HASH branch's pre-existing /i flag.
+  probes.push({
+    name: 'case-typo-prefixed-near-miss-flagged-bad-shape',
+    run: (mod) => mod.extractDeclaredIds('* @pins F-11111111 f-abc-123').some((t) => t.token === 'f-abc-123' && t.ok === false),
   });
   return probes;
 }

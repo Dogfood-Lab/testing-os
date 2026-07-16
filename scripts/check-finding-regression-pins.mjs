@@ -126,6 +126,29 @@
  *     imprecision is now bounded to a fixed, auditable, shrinking set
  *     rather than a live, unboundedly-growing surface. Grandfathered
  *     status is exemption-with-disclosure, never verified credit.
+ *   - Honesty note (threat model), mirroring packages/ingest/lib/
+ *     integrity.js's own disclosure for its structurally identical
+ *     content-hash mechanism: EXPECTED_GRANDFATHER_MANIFEST_HASH is
+ *     tamper-EVIDENT against an edit to scripts/grandfathered-pins.json
+ *     ALONE, not tamper-PROOF against a coordinated edit — an actor who
+ *     edits that file AND recomputes EXPECTED_GRANDFATHER_MANIFEST_HASH
+ *     from the edited content, in the SAME commit, produces a manifest
+ *     that verifyGrandfatherManifestIntegrity re-verifies clean,
+ *     mechanically indistinguishable from a lawful drain (that constant's
+ *     own "LAWFUL DRAIN PROCEDURE" doc comment states the lawful case
+ *     positively but never states this inverse — see this file's
+ *     EXPECTED_GRANDFATHER_MANIFEST_HASH doc comment). The actual backstop
+ *     for a coordinated same-commit edit is commit-message and diff
+ *     review — this repo's .github/CODEOWNERS is currently one wildcard
+ *     rule (`* @mcp-tool-shop`), not a split-review boundary between the
+ *     two files — never the hash itself, which cannot see past a
+ *     same-commit recompute by construction. This is a CONTROL-STRENGTH
+ *     gap (the mechanism cannot detect a coordinated edit), distinct from
+ *     the DATA-FIDELITY gap the bullet above discloses (the original
+ *     132dc18 snapshot's content could itself have been wrong) — the two
+ *     were previously conflated as a single disclosure, which left this one
+ *     undisclosed anywhere. (F-7428a68f, re-filed from the wave-24-deferred
+ *     F-b48cb209 once the file stopped being under concurrent edit.)
  *
  * Exit codes:
  *   0 — clean (orphans/parseErrors/tagIssues all empty)
@@ -180,6 +203,7 @@ const DISCLOSED_GAPS = [
   "The differential cross-check against the independently-coded reference matcher runs in the test suite (npm test / pin-declarations-differential.test.mjs), not inside this CLI's own live execution.",
   '@pins tags are only scanned in files classifyFile() buckets as "test" — a tag placed in a source file is not evaluated.',
   'The grandfather bucket (scripts/grandfathered-pins.json) is a static snapshot frozen at commit 132dc18 — membership only, never a live heuristic re-check (F-ca8e7b44). It can still be WRONG at the id level (the retired heuristic that produced the original 132dc18 classification could itself have over- or under-counted), but that imprecision is now bounded to a fixed, auditable, shrinking set rather than a live, unboundedly-growing surface. Grandfathered status is exemption-with-disclosure, never verified credit.',
+  "Honesty note (threat model), mirroring packages/ingest/lib/integrity.js's own disclosure for its structurally identical content-hash mechanism: EXPECTED_GRANDFATHER_MANIFEST_HASH is tamper-evident against an edit to scripts/grandfathered-pins.json alone, not tamper-proof against a coordinated same-commit edit to both that file and this constant — the actual backstop for that case is commit-message/diff review (CODEOWNERS), not the hash, which cannot see past a same-commit recompute by construction.",
 ];
 
 /**

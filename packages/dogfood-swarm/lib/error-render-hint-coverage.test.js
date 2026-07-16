@@ -54,10 +54,13 @@
  *
  * THE FIX: TESTED_CLASSES is gone. `namedErrorTest(className, run)` below is
  * now the ONLY way a class name enters `EXERCISED_CLASSES` — it registers
- * the real it() AND records the name as its first statement (so the record
- * happens even if `run`'s assertion later throws — "exercised" means "a real
- * test attempted this class," independent of whether that test currently
- * passes). There is no longer a freestanding array a future author can edit
+ * the real it() and (AS OF wave 24) recorded the name as its first
+ * statement, so the record happened even if `run`'s assertion later threw
+ * ("exercised" meant "a real test attempted this class," independent of
+ * whether that test currently passed). **F-ba7ad7df (wave 26) changed this
+ * ordering — see below; the record now happens AFTER `run` completes,
+ * gated on observed evidence, not as `run`'s first effect.** What did NOT
+ * change: there is no longer a freestanding array a future author can edit
  * without also writing the corresponding test. Node's test runner executes
  * `describe`/`it` bodies sequentially in declaration order (verified
  * empirically against this Node version, not assumed), so by the time the
@@ -76,6 +79,54 @@
  * outside this one helper. Harder to do by accident, and conspicuous when
  * done deliberately — not unforgeable, but a materially smaller target than
  * the array it replaces.
+ *
+ * F-ba7ad7df (MEDIUM, wave 26): the DISCLOSED RESIDUAL above named the bare
+ * `.add()` bypass but missed a NARROWER, easier-to-hit sibling inside
+ * namedErrorTest ITSELF: registration happened as `run`'s FIRST effect,
+ * BEFORE `run` executed at all — so `namedErrorTest('HintlessFutureError',
+ * () => {})`, an ordinary-looking empty test stub (not the "visibly
+ * anomalous" bare `.add()` the residual above warned about — an incomplete
+ * stub is a common, unremarkable real-world shape), still registered the
+ * class as exercised with zero assertions ever made. PROVEN LIVE (mirroring
+ * F-8f735719's own proof style, direct reproduction, zero repo writes): that
+ * exact call left `computeUncoveredErrorClasses` reporting `[]` for the
+ * synthetic class — identical to genuine coverage.
+ *
+ * THE FIX: registration moved from `run`'s first effect to AFTER `run`
+ * completes, gated on evidence. `runNamedErrorTest` (below) records every
+ * `nextLineFor()` call's result made during `run` (via the module-level
+ * `nextLineForCalls` log) and requires (a) at least one call happened and
+ * (b) at least one produced a genuine, non-empty "Next:" line, before adding
+ * `className` to EXERCISED_CLASSES. An empty-bodied (or Next:-line-free)
+ * `run` now throws instead of silently registering — proven by the
+ * F-ba7ad7df GATE (mutation control) tests alongside the F-8f735719 ones
+ * below.
+ *
+ * This supersedes the OLD registration-before-run ordering's stated reason
+ * for existing (recording "a real test attempted this class" as a signal
+ * independent of that test's assertions later failing). That goal is
+ * superseded by the stronger requirement that "exercised" means genuine
+ * evidence was observed, not merely that `run` was invoked without
+ * throwing. The trade-off is disclosed, not hidden: a namedErrorTest whose
+ * assertions legitimately fail because of a REAL regression in
+ * error-render.js will now ALSO fail the "today" coverage-gate test lower in
+ * this file (the class drops out of EXERCISED_CLASSES along with the red
+ * it()) — two failing tests instead of one for the same root cause, a
+ * noisier but strictly more honest signal than the one it replaces, since
+ * neither test can go green while the class's rendering is actually broken.
+ *
+ * FURTHER DISCLOSED RESIDUAL (narrower than either bypass above): the
+ * tightened gate proves `run` triggered a genuine "Next:" line SOMEWHERE
+ * during its execution — it does not verify that line came from
+ * constructing an actual instance of `className` itself. A `run` body that
+ * calls `nextLineFor` on an unrelated, already-covered class (e.g.
+ * `namedErrorTest('FutureError', () => { nextLineFor(new
+ * IsolationError('x')) })`) would still satisfy it. This is a smaller, more
+ * contrived target than the empty-body case this fix closes — it requires
+ * deliberately referencing a working, unrelated class inside a stub for the
+ * wrong one, which reads oddly in review rather than as an ordinary
+ * incomplete stub — and is disclosed rather than closed here, matching this
+ * file's own standard for the bare-`.add()` residual above.
  */
 
 import { describe, it } from 'node:test';
@@ -98,13 +149,51 @@ import { renderTopLevelError } from './error-render.js';
 // rationale and the disclosed residual.
 const EXERCISED_CLASSES = new Set();
 
+// F-ba7ad7df: every nextLineFor() call's result, in invocation order — lets
+// runNamedErrorTest prove a given `run` genuinely triggered a render (not
+// just that it executed without throwing). See this file's module docstring
+// for the full rationale.
+const nextLineForCalls = [];
+
 /**
- * Registers a per-class positive test AND records `className` as genuinely
- * exercised — the ONLY way a name enters EXERCISED_CLASSES. Recording
- * happens as `run`'s first effect (before its assertions), so a class counts
- * as "exercised" — a real test attempted it — even if that test's assertion
- * later fails; that failure is still surfaced as a normal red it(), a
- * separate and equally real signal from "is this class covered at all."
+ * The gate mechanic behind namedErrorTest, factored out so it can be
+ * exercised directly with assert.throws() (see the GATE (mutation control)
+ * tests below) instead of fighting node:test's synchronous-registration
+ * semantics for a nested it() call.
+ *
+ * F-ba7ad7df: `className` enters EXERCISED_CLASSES only AFTER `run`
+ * completes, and only if `run` is observed (via nextLineForCalls) to have
+ * triggered at least one nextLineFor() call that produced a genuine,
+ * non-empty "Next:" line. An empty-bodied (or Next:-line-free) `run` throws
+ * here instead of silently registering the class — see this file's module
+ * docstring for the full rationale, the disclosed trade-off, and the
+ * narrower residual that remains.
+ *
+ * @param {string} className
+ * @param {() => void} run
+ */
+function runNamedErrorTest(className, run) {
+  const before = nextLineForCalls.length;
+  run();
+  const observedDuringRun = nextLineForCalls.slice(before);
+  assert.ok(
+    observedDuringRun.length > 0,
+    `namedErrorTest('${className}') never called nextLineFor() — a class cannot be marked ` +
+    `exercised without the harness observing at least one rendered error for it`,
+  );
+  assert.ok(
+    observedDuringRun.some((line) => typeof line === 'string' && line.length > 0),
+    `namedErrorTest('${className}') called nextLineFor() but no invocation produced a "Next:" ` +
+    `line — a class cannot be marked exercised without at least one genuine "Next:" hint being observed`,
+  );
+  EXERCISED_CLASSES.add(className);
+}
+
+/**
+ * Registers a per-class positive test whose only path to marking
+ * `className` "exercised" is runNamedErrorTest above — see its docstring and
+ * this file's module docstring for the gate mechanic and F-ba7ad7df's fix
+ * rationale.
  *
  * `title` defaults to `className` (the common case, matching every existing
  * it() title below) but can be overridden for a test that documents more
@@ -117,10 +206,7 @@ const EXERCISED_CLASSES = new Set();
  * @param {string} [title]
  */
 function namedErrorTest(className, run, title = className) {
-  it(title, () => {
-    EXERCISED_CLASSES.add(className);
-    run();
-  });
+  it(title, () => runNamedErrorTest(className, run));
 }
 
 function isErrorClass(v) {
@@ -156,7 +242,12 @@ function nextLineFor(err) {
   } finally {
     console.error = orig;
   }
-  return lines.find((l) => l.trim().startsWith('Next:'));
+  const next = lines.find((l) => l.trim().startsWith('Next:'));
+  // F-ba7ad7df: recorded unconditionally — runNamedErrorTest reads this log
+  // to prove a `run` body genuinely rendered something, not just that it
+  // executed without throwing.
+  nextLineForCalls.push(next);
+  return next;
 }
 
 /** @pins F-4b72faf9 */
@@ -323,5 +414,58 @@ describe('errors.js coverage gate is DYNAMIC, not a hardcoded list (F-7d4ac5ce c
     const uncovered = computeUncoveredErrorClasses(fakeModule, [...EXERCISED_CLASSES]);
     assert.deepEqual(uncovered, ['HintlessFutureError'],
       'the gate must report this class uncovered — there is no way to silence it short of a real namedErrorTest call');
+  });
+
+  // No @pins tag by design (F-ba7ad7df): this finding's fix is entirely inside
+  // this gate test file — tightening namedErrorTest's registration to require
+  // real assertion evidence before a class counts as "exercised." There is no
+  // production-source F-ba7ad7df pin for a declared tag to resolve against, so a
+  // tag here would be dangling by the Class #14 gate's own rule (same shape as
+  // wave-22 F-7d4ac5ce). The mutation-control test below still runs.
+  it('F-ba7ad7df GATE (mutation control): an empty-bodied namedErrorTest run throws and never registers the class', () => {
+    // Reproduces the finding's own reproduction — namedErrorTest
+    // ('HintlessFutureError', () => {}) — directly against runNamedErrorTest:
+    // an empty run body must not silently register the class the way the
+    // pre-fix registration-before-run ordering let it. Placed after the
+    // "pins the exact 7 classes" test above (declaration order — see this
+    // file's module docstring) so this test's own EXERCISED_CLASSES
+    // mutations (there are none — the throw fires before .add()) cannot
+    // retroactively affect that already-executed assertion.
+    assert.throws(
+      () => runNamedErrorTest('EmptyBodyFutureError', () => {}),
+      /never called nextLineFor/,
+    );
+    assert.ok(
+      !EXERCISED_CLASSES.has('EmptyBodyFutureError'),
+      'an empty-bodied run must not register the class into EXERCISED_CLASSES',
+    );
+  });
+
+  it('F-ba7ad7df GATE (mutation control): a run that calls nextLineFor but produces no "Next:" line also throws', () => {
+    // Closes the narrower loophole one level down from the empty-body case:
+    // merely CALLING nextLineFor is not sufficient if it never produces a
+    // genuine "Next:" line — a run body that renders an irrelevant,
+    // hint-less error (the same shape as this file's own top-level negative
+    // control) must not count as coverage either.
+    assert.throws(
+      () => runNamedErrorTest('CallsButNeverRendersFutureError', () => {
+        const e = Object.assign(new Error('msg'), { code: 'NO_HINT_ANYWHERE_TEST_CODE_2' });
+        nextLineFor(e); // called, but produces no "Next:" line
+      }),
+      /no invocation produced a "Next:" line/,
+    );
+    assert.ok(!EXERCISED_CLASSES.has('CallsButNeverRendersFutureError'));
+  });
+
+  it('F-ba7ad7df GATE (mutation control): a run that genuinely renders a "Next:" line still registers normally', () => {
+    // Positive control: proves the tightened gate discriminates rather than
+    // simply always throwing — a run shaped like the real namedErrorTest
+    // calls above (construct + render + observe a genuine line) registers
+    // exactly as before.
+    runNamedErrorTest('GenuinelyExercisedFutureError', () => {
+      const e = new IsolationError('worktree creation failed');
+      assert.ok(nextLineFor(e));
+    });
+    assert.ok(EXERCISED_CLASSES.has('GenuinelyExercisedFutureError'));
   });
 });

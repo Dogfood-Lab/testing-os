@@ -180,6 +180,43 @@
  *     codepoint that survives CONTROL_CLASS unescaped, which is exactly why
  *     it was the only viable interleaving character for this bypass.
  *
+ *   F-046d3756 (wave 26): ZALGO_RUN, even after both prior fixes, still
+ *     matched its mark class as ONE hardcoded Unicode block enumeration
+ *     (U+0300-U+036F, "Combining Diacritical Marks" proper) -- exactly the
+ *     enumerated-list shape F-6540ba3d had already generalized CONTROL_CLASS
+ *     away from, never applied to its neighbor. At least four further
+ *     standard blocks are General_Category=Mn or Me and visually stack onto
+ *     a preceding base exactly like the covered block: Combining Diacritical
+ *     Marks Supplement (U+1DC0-U+1DFF, Mn), Combining Diacritical Marks for
+ *     Symbols (U+20D0-U+20FF -- both Mn, e.g. U+20D3 COMBINING
+ *     ANTICLOCKWISE ARROW ABOVE, and Me, e.g. U+20DD COMBINING ENCLOSING
+ *     CIRCLE), Combining Half Marks (U+FE20-U+FE2F, Mn), and the Combining
+ *     Cyrillic Titlo/Palatalization pair (U+0483-U+0484, Mn) -- proven live
+ *     against the real, unmutated exported functions: a 20x U+20D3 stack on
+ *     one base character, with NO ZWJ or interleaving trick required at all,
+ *     returned completely byte-identical from escapeReasonForDisplay,
+ *     neutralizeInvisibleControls, AND escapePathForDisplay; separately,
+ *     interleaving a classic-range mark with an alternate-range mark on the
+ *     same base (e.g. 0300, 20D3, 0301, 20D3, ...) also returned
+ *     byte-identical, because the OLD class recognized neither range as
+ *     containing the other, so no contiguous run of hardcoded-range
+ *     characters ever reached length 3. Fixed by replacing the hardcoded
+ *     block with a Unicode-property union, `[\p{Mn}\p{Me}]` (nonspacing and
+ *     enclosing marks), mirroring F-6540ba3d's own "property, not enumerated
+ *     list" discipline, so the next combining mark Unicode ever assigns to
+ *     either category is covered automatically instead of needing another
+ *     one-off range patch. `\p{Mc}` (spacing combining marks -- Devanagari/
+ *     Tamil/Thai dependent vowel signs and similar) is deliberately
+ *     EXCLUDED: they carry their own visible advance width and are not the
+ *     invisible-pileup threat this pass targets -- folding them in would
+ *     reopen F-37ba8d85's over-broad NFD-mangling problem in the opposite
+ *     direction (see "Known residual" below escapeReasonForDisplay for the
+ *     resulting, deliberately-accepted boundary this creates). The >=3-mark
+ *     threshold and the ZWJ-interleave counting F-6820e578 built are
+ *     unchanged, and apply identically regardless of which covered block
+ *     each mark in a run comes from, since the class is now a single
+ *     property union rather than a set of disjoint hardcoded ranges.
+ *
  * `--format=json` output for every verb bypasses this helper entirely and
  * stays the lossless, unescaped canonical form -- JSON's own string escaping
  * already makes control bytes safe and machine-parseable losslessly.
@@ -277,7 +314,23 @@ const CONTROL_CLASS = /[\x00-\x1f\x7f-\x9f\u{2028}\u{2029}[\p{Default_Ignorable_
 // isolated 1-2 mark sequence still passes through untouched (interleaved
 // with ZWJ or not), and a trailing ZWJ with nothing following it is never
 // captured at all (the optional-ZWJ branch requires a mark after it).
-const ZALGO_RUN = /[\u0300-\u036f](?:\u200d?[\u0300-\u036f])*/gu;
+// F-046d3756 (wave 26): "a mark" above was, until this wave, the single
+// hardcoded block [\u0300-\u036f] -- so any combining mark from one of the
+// several OTHER standard Unicode blocks that are General_Category=Mn/Me
+// (Combining Diacritical Marks Supplement U+1DC0-U+1DFF, Combining
+// Diacritical Marks for Symbols U+20D0-U+20FF, Combining Half Marks
+// U+FE20-U+FE2F, the Cyrillic Titlo/Palatalization pair U+0483-U+0484, and
+// any future mark Unicode assigns) was invisible to this pattern entirely --
+// not merely under-threshold, but not a "mark" as this regex understood the
+// word at all, so it could neither start nor continue a run, nor be counted
+// by escapeZalgoRun below. Fixed by matching the real Unicode property union
+// `\p{Mn}\p{Me}` (nonspacing and enclosing marks) instead of the one
+// hardcoded block, mirroring CONTROL_CLASS's own Default_Ignorable_Code_Point
+// property adoption (F-6540ba3d) one mechanism over. `\p{Mc}` (spacing
+// combining marks) is deliberately NOT unioned in -- see the F-6540ba3d/
+// F-37ba8d85 entry above for why reusing a spacing-mark property here would
+// reopen the exact over-broad NFD-mangling direction that finding fixed.
+const ZALGO_RUN = /[\p{Mn}\p{Me}](?:\u200d?[\p{Mn}\p{Me}])*/gu;
 
 // Same threshold wave 22 established for a contiguous run -- now enforced by
 // escapeZalgoRun's count rather than the regex's own match length, since a
@@ -336,17 +389,36 @@ function escapeZalgoRun(run) {
  * escape-pair ordering, JSON/CSV-style).
  *
  * Known residual (disclosed, not silently papered over -- see
- * swarms/CLAUDE.md "Honesty is a feature of the artifact"): a ZWJ
- * deliberately interleaved mid-run (mark, mark, ZWJ, mark, mark) is NOT
- * itself escaped (ZWJ is excluded from CONTROL_CLASS, see above) and splits
- * what would otherwise be one 4-mark pathological run into two 2-mark runs,
- * neither reaching ZALGO_RUN's 3-mark threshold. This is a narrower
- * residual than wave 20's over-broad behavior it replaces (it requires an
- * attacker to deliberately construct this exact interleaving, rather than
- * firing on any ordinary NFD text) and is out of scope for F-37ba8d85,
- * which asked for the over-broad/under-broad fix, not a new run-continuity
- * model for a character the finding asked to stop treating as part of the
- * threat class.
+ * swarms/CLAUDE.md "Honesty is a feature of the artifact"; this paragraph
+ * corrected by F-17e594c5, wave 26, which found it contradicting this file's
+ * own already-landed fix): the ZWJ-mid-run case this note used to describe
+ * (mark, mark, ZWJ, mark, mark) is CLOSED, not residual -- F-6820e578 (wave
+ * 24, see "History of the escaping contract" above) made escapeZalgoRun
+ * count marks across the whole matched span, so that exact example now
+ * escapes (proven live against the real exported function: a base letter
+ * followed by U+0300, U+0301, U+200D, U+0300, U+0301 now returns each of
+ * the five codepoints individually escaped, not the byte-identical output
+ * this paragraph used to claim).
+ *
+ * The boundary that actually remains, verified live post-F-046d3756: a run
+ * broken by ANY character that is neither a matched mark nor ZWJ still ends
+ * the match there, by construction -- each ZALGO_RUN match is one contiguous
+ * span, and escapeZalgoRun counts only what that one span captured. `\p{Mc}`
+ * (spacing combining marks), deliberately excluded from the mark class
+ * above, is a concrete instance: alternating short Mn/Me groups with a
+ * single Mc character between each (proven live: 10 repetitions of two
+ * U+0300 marks plus one U+093E DEVANAGARI VOWEL SIGN AA on one base stays
+ * completely byte-identical) never accumulates 3 counted marks in any one
+ * match, however many groups are chained. This is NOT the closed ZWJ case's
+ * severity: every Mc character in the chain renders with its own visible
+ * advance width, so the result is a visually choppy run of small accent
+ * clusters separated by visible glyphs, not one base character vanishing
+ * under an invisible mountain of marks -- the specific harm this file's own
+ * threat model (see above) is scoped to. Whether this boundary warrants its
+ * own fix (an interleaving-aware count across non-mark, non-ZWJ breaks, the
+ * way F-6820e578 built specifically for ZWJ) is left for a future finding,
+ * not folded into F-046d3756's own narrower ask (widen the mark PROPERTY,
+ * not redesign run-continuity around a second character class).
  *
  * @param {string} reason
  * @returns {string}

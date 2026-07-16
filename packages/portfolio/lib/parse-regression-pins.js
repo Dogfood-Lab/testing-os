@@ -235,6 +235,72 @@ export function posixifyPath(filePath) {
 const NODE_TEST_SUFFIX_PATTERN = /(?:^|[/_-])test\.[mc]?[jt]sx?$|(?:^|\/)test-[^/]*\.[mc]?[jt]sx?$/;
 
 /**
+ * F-4fc233fe (MED, wave 26, sibling of F-92a8d0bb two checks below in
+ * classifyFile() — the exact "probe the CLASS boundary" sweep F-92a8d0bb's
+ * own text said it ran, one rule above the code it patched): the blanket
+ * `.spec.` credit classifyFile() used to give ANY `*.spec.{js,mjs,cjs,ts,
+ * tsx,jsx}` file, repo-wide, had zero awareness that this repo runs TWO test
+ * runners across its 6 packages (each package's own `scripts.test`):
+ * packages/schemas runs `vitest run`; the other five (verify, findings,
+ * ingest, report, portfolio) all run bare `node --test`.
+ *
+ * Empirically re-derived from a clean state, not carried over from
+ * F-92a8d0bb's prose (per swarms/PROTOCOL.md's "Fixing a class, not an
+ * instance" — source/reality wins): fixtures written to isolated scratch
+ * dirs, run against a bare `node --test` (v22.22.3, this repo's pinned CI
+ * version), three separate rounds (ESM twice for certainty, CJS once). A
+ * `.spec.{js,cjs}` file was tried at five locations — top level, nested one
+ * dir, under `test/` (singular), under `tests/` (plural), and under
+ * `__tests__/` — alongside a sibling `.test.{js,cjs}` control at the same
+ * locations. Identical result across all three rounds: the `.test.` control
+ * ran every time; the `.spec.`-only file NEVER ran except under `test/`
+ * (singular) — and that one exception is fully explained by the ALREADY-
+ * independent `/test/`-blanket rule below (any basename qualifies there),
+ * not by `.spec.` itself. Separately, real `vitest` (v4.1.9, this repo's
+ * pinned version, invoked with no config file present — pure default
+ * `include`) WAS confirmed to discover a `.spec.js` file at top level and a
+ * `.spec.ts` file nested under an arbitrarily-named subdirectory, no extra
+ * configuration needed — so the credit was not wrong, only unscoped.
+ *
+ * This exact `node --test`/`.spec.` fact already exists, named and fixed, in
+ * a sibling gate: scripts/stageC-check-test-floor.test.mjs's
+ * `NODE_BARE_DISCOVERY_RE` (F-4d5e0db4 / F-113b0115, commit 59af8c7,
+ * 2026-07-02) carries the comment "NOT .ts/.tsx (no transpiler) and NOT
+ * .spec. naming — claiming those covered is the F-4d5e0db4 / F-113b0115
+ * over-claim." That gate and this one independently disagreed about the same
+ * underlying runtime fact for two weeks; this fix generalizes the already-
+ * correct model into classifyFile() rather than a future sweep re-deriving
+ * it a third time.
+ *
+ * Fix shape: SCOPE the credit to packages/schemas rather than dropping it
+ * repo-wide. Dropping it entirely would trade today's live false-grant for a
+ * future false-orphan the first time a schemas contributor reaches for the
+ * Vitest-idiomatic `.spec.` name out of habit — schemas' own test/ dir is
+ * 100% `.test.ts` today, but `.spec.` is real, executing evidence there, and
+ * there is no reason to make the gate blind to it. A named, single-package
+ * exception — same "don't widen without re-deriving the risk" discipline as
+ * DOT_DIR_SCAN_ALLOWLIST above; extend this only if a SECOND package's own
+ * `scripts.test` genuinely adopts a `.spec.`-discovering runner, never as a
+ * general opt-in.
+ *
+ * REACHABILITY: `git ls-files | grep -E '\.spec\.[mc]?[jt]sx?$'` returns
+ * nothing repo-wide, so this is a pure tightening — zero currently-tracked
+ * files reclassify. classifyFile() has exactly one implementation (grepped
+ * the full tree for a second `.spec.`-crediting classifier and separately
+ * for the identifier `classifyFile`; only this file's own module/test files
+ * matched, plus an unrelated domain-OWNERSHIP bucket list in
+ * packages/dogfood-swarm/lib/domains.js that buckets files for swarm
+ * agent-domain routing — a different concern from "did a test runner
+ * execute this file," and out of this domain's glob regardless), imported
+ * (never copied) by scripts/suggest-pins.mjs,
+ * scripts/check-finding-regression-pins.mjs, and scripts/pin-declarations.mjs
+ * — all three default `repoRoot` to this repo's own root with no `--root`
+ * override in any wired-in npm script, so scoping this constant to a
+ * hardcoded testing-os package path is safe for every real call site.
+ */
+const VITEST_PACKAGE_PATH_RE = /(?:^|\/)packages\/schemas\//;
+
+/**
  * Classify a path as "test" or "source" by convention. Mirrors how
  * `node --test` and `vitest` discover tests in this repo.
  */
@@ -245,7 +311,11 @@ export function classifyFile(filePath) {
   // Linux collapses to a no-op split-join, which is why the replace exists.)
   const normalised = posixifyPath(filePath);
   if (/\.test\.[mc]?[jt]sx?$/.test(normalised)) return 'test';
-  if (/\.spec\.[mc]?[jt]sx?$/.test(normalised)) return 'test';
+  // F-4fc233fe: `.spec.` is real test-runner evidence ONLY inside
+  // packages/schemas (the one package whose own scripts.test is `vitest
+  // run`) — see the doc block above VITEST_PACKAGE_PATH_RE for the
+  // empirical node --test / vitest verification behind this scoping.
+  if (/\.spec\.[mc]?[jt]sx?$/.test(normalised) && VITEST_PACKAGE_PATH_RE.test(normalised)) return 'test';
   if (NODE_TEST_SUFFIX_PATTERN.test(normalised)) return 'test';
   // F-92a8d0bb: `/test/` (singular) keeps its blanket, name-agnostic credit
   // because that IS real `node --test` discovery (any basename, any depth,

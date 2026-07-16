@@ -37,6 +37,18 @@
       "owner": "coordinator",
       "revalidate_by": "2026-10-14"
     },
+    "F-113b0115": {
+      "reason": "Cross-reference in packages/portfolio/lib/parse-regression-pins.js's F-4fc233fe fix comment (wave 26), not a fix pin. F-4fc233fe scoped classifyFile's `.spec.` credit to the vitest package (schemas); the comment cites F-113b0115/F-4d5e0db4 as the prior ci-tooling fix (scripts/stageC-check-test-floor.test.mjs) of the SAME node-test-discovery class, to document that the fix existed weeks earlier and never propagated to the portfolio domain — the exact 'fix the class, not the instance' history worth preserving. The fix pin is F-4fc233fe (its own test in parse-regression-pins.test.js); these two are the prose cross-reference to the sibling fix, whose coverage lives in the ci-tooling gate.",
+      "file": "packages/portfolio/lib/parse-regression-pins.js",
+      "owner": "backend",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-4d5e0db4": {
+      "reason": "Cross-reference in packages/portfolio/lib/parse-regression-pins.js's F-4fc233fe fix comment (wave 26), not a fix pin — the sibling of F-113b0115 above. Both name the prior ci-tooling fix of the same .spec./node-test-discovery classifyFile class; the fix pin is F-4fc233fe. Coverage for the cited fix lives in its own ci-tooling gate (scripts/stageC-check-test-floor.test.mjs).",
+      "file": "packages/portfolio/lib/parse-regression-pins.js",
+      "owner": "backend",
+      "revalidate_by": "2026-10-14"
+    },
     "F-W1-CI-001": {
       "reason": "Cross-reference in .github/workflows/pages.yml naming the historical id for the pa11y job-permission-isolation restructure — the same restructure the file elsewhere attributes to F-a52776d5 (both appear independently in prose, not dual-labeled at one site). Real behavioral coverage is scripts/stageC-check-pages-a11y-isolation.test.mjs's F-a52776d5/F-32c517c4 tests, which assert the a11y job is dedicated with `permissions: {}` and that pa11y does NOT run inside the elevated deploy job — the exact property this citation describes.",
       "file": ".github/workflows/pages.yml",
@@ -136,6 +148,12 @@
     "F-a544c1c4": {
       "reason": "Doc-only correction in pin-declarations.mjs's module docstring (CROSS-DOMAIN FOLLOW-UP paragraph): the docstring, written in the same commit (132dc18) that shipped the fix, described a DIFFERENT final decision than the one actually shipped — it claimed the @babel/parser package.json edit had been reverted rather than landed, contradicting that commit's own diff and commit message. No new behavior: @babel/parser resolves identically either way (it was already a real, working dependency, only its DECLARED-vs-transitive status was in question), so there is nothing to test-pin — the fix corrects prose to match a state that was already true at HEAD. Same accepted class as F-eb9fc4aa/F-33ff7b4b/F-e241fa61 (doc-only corrections whose real behavioral coverage predates and is independent of the correction id).",
       "file": "scripts/pin-declarations.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-b48cb209": {
+      "reason": "Cross-reference, not a fix pin. F-b48cb209 is the id this exact gap (the grandfather-manifest hash's undisclosed same-commit-recompute residual) was originally filed under at wave-23 triage, before it was deferred for file contention and re-opened at wave-26 as F-7428a68f once check-finding-regression-pins.mjs stabilized (commit 4ef9c88). The two ids name the SAME gap; only F-7428a68f carries the real fix and its declared regression pin (see the F-7428a68f test in check-finding-regression-pins.test.mjs). F-b48cb209 appears solely in the new DISCLOSED_GAPS docstring bullet's own history note, for audit-trail continuity — there is no separate behavior to pin under the retired id.",
+      "file": "scripts/check-finding-regression-pins.mjs",
       "owner": "ci-tooling",
       "revalidate_by": "2026-10-14"
     }

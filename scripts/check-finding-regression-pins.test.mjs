@@ -350,6 +350,70 @@ test('F-e618b3e7: verifies the disclosed floor against real scanFileForDeclaredP
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// F-7428a68f (re-files the wave-24-deferred F-b48cb209, reopened once
+// check-finding-regression-pins.mjs stopped being under concurrent edit —
+// commit 4ef9c88) — the grandfather-manifest hash's undisclosed
+// same-commit-recompute residual: EXPECTED_GRANDFATHER_MANIFEST_HASH is
+// tamper-evident against an edit to grandfathered-pins.json alone, never
+// tamper-proof against a coordinated same-commit edit to both that file and
+// the pinned hash constant. Mirrors packages/ingest/lib/integrity.js's own
+// "Honesty note (threat model)" disclosure for its structurally identical
+// hash-chain mechanism.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @pins F-7428a68f */
+test('F-7428a68f: the disclosure names the same-commit-recompute boundary explicitly — tamper-evident against grandfathered-pins.json alone, not tamper-proof against a coordinated edit to both it and the pinned hash', async (t) => {
+  const fx = makeFixture(t);
+  const result = await runRegressionPinGate({
+    repoRoot: fx.dir,
+    allowlistPath: fx.writeAllowlist({ allow: {} }),
+    grandfatherManifestPath: fx.writeGrandfatherManifest(EMPTY_GRANDFATHER),
+  });
+  const gap = result.disclosedGaps[4];
+  assert.ok(gap, 'DISCLOSED_GAPS must carry a 5th entry for this finding — if the array was reordered, this index needs updating alongside it');
+  assert.match(gap, /tamper-evident/i, 'the disclosure must name the mechanism as tamper-evident');
+  assert.match(gap, /grandfathered-pins\.json alone/i, 'the disclosure must scope tamper-evidence to an edit of grandfathered-pins.json ALONE');
+  assert.match(gap, /not tamper-proof/i, 'the disclosure must explicitly deny tamper-proof status');
+  assert.match(gap, /coordinated/i, 'the disclosure must name the coordinated-edit attack shape');
+  assert.match(gap, /commit-message|diff review/i, 'the disclosure must name the actual backstop (commit-message/diff review), not imply the hash alone suffices');
+});
+
+/**
+ * Companion behavioral proof (mirrors F-21dc98e0/F-e618b3e7's own "real
+ * behavior, not just prose" tests above): independently reproduces the exact
+ * same-commit-recompute bypass against the real, unmutated
+ * verifyGrandfatherManifestIntegrity — evicting a real frozen id and
+ * inserting a fresh never-frozen one, holding the 256-id count constant.
+ */
+test('F-7428a68f: verifies the same-commit-recompute bypass against real verifyGrandfatherManifestIntegrity — a poisoned manifest throws against the PINNED hash but passes against a hash recomputed from the poisoned content itself', () => {
+  const real = loadGrandfatherManifest(resolve(repoRoot, 'scripts/grandfathered-pins.json'));
+  const realIds = Object.keys(real.grandfathered);
+  assert.ok(realIds.length > 0, 'expected the real frozen manifest to carry at least one entry');
+
+  // Evict one real frozen id, insert a fresh, never-frozen one — same 256-id
+  // headcount, poisoned content.
+  const poisoned = { ...real, grandfathered: { ...real.grandfathered } };
+  delete poisoned.grandfathered[realIds[0]];
+  poisoned.grandfathered['F-deadbeef'] = { owner: 'attacker', revalidate_by: '2099-01-01' };
+  assert.equal(Object.keys(poisoned.grandfathered).length, realIds.length, 'the poisoned manifest must hold the same id COUNT as the real one — a headcount alone cannot catch this swap');
+
+  // Against the REAL pinned constant: throws (the tamper-evident half works).
+  assert.throws(
+    () => verifyGrandfatherManifestIntegrity(poisoned, EXPECTED_GRANDFATHER_MANIFEST_HASH),
+    /content hash mismatch/,
+    'a poisoned manifest must throw against the real, pinned EXPECTED_GRANDFATHER_MANIFEST_HASH',
+  );
+
+  // Against a hash RECOMPUTED from the poisoned content in the same "commit":
+  // passes clean — this is the undisclosed residual F-7428a68f names.
+  const recomputedFromPoisoned = grandfatherManifestFingerprint(poisoned);
+  assert.doesNotThrow(
+    () => verifyGrandfatherManifestIntegrity(poisoned, recomputedFromPoisoned),
+    'a same-commit recompute of the hash from the poisoned content must NOT throw — this is the honest ceiling this finding discloses, not a bug to silently "fix" by making the hash omniscient',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Docstring ↔ DISCLOSED_GAPS sync — the gate's module docstring and its
 // runtime DISCLOSED_GAPS array are two descriptions of the same gaps (the
 // F-a544c1c4 self-contradiction class). The docstring's "kept word-for-word

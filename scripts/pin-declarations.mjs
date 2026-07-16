@@ -165,6 +165,22 @@ function parseOptsFor(filePath) {
 }
 
 /**
+ * Unicode dash confusables that visually or semantically stand in for the
+ * ASCII hyphen in a hand-typed or copy-pasted id (F-491e2dee): editor "smart
+ * punctuation" autocorrect, and copy-pasting an id out of rendered
+ * Markdown/PDF/Word, both commonly substitute one of these for "-". Range
+ * covers U+2010 HYPHEN through U+2015 HORIZONTAL BAR, plus the two
+ * furthest-flung look-alikes actually seen in the wild: U+2212 MINUS SIGN and
+ * the U+FF0D FULLWIDTH HYPHEN-MINUS CJK punctuation input methods produce.
+ * Folding these BEFORE the id-shape grammar runs (see looksLikeIdAttempt
+ * below) is the same "normalize then compare to grammar" principle that
+ * function already applies to the leading f/F marker and a glued/missing
+ * separator (F-d36cd380) — a homoglyph substitution is the same near-miss
+ * class as an ASCII typo, not a different one.
+ */
+const DASH_CONFUSABLES = /[‐-―−－]/g;
+
+/**
  * F-d36cd380: does `token` plausibly READ AS a botched attempt at one of
  * F_ID_PATTERN's three id grammars, as opposed to an ordinary word that
  * happens to start with a capital "F-"? The sole caller is the post-valid-id
@@ -173,36 +189,79 @@ function parseOptsFor(filePath) {
  * replaces.
  *
  * Normalizes THEN compares to grammar, rather than a literal prefix string
- * match: `^-*[fF]-?` strips a hyphen run glued directly to the token's front
- * (the tokenizer only splits on comma/whitespace, so "-F-2222222" arrives as
- * one token), case-folds the leading f/F, and tolerates a missing separator
- * hyphen right after it — so `f-2222222`, `F2222222`, and `-F-2222222` all
- * normalize to the SAME "2222222" body. What follows must then fall within
- * one character of an ACTUAL F_ID_PATTERN body (hex-dense ~8 chars,
- * digit-dense ~9 chars split by one optional hyphen, or an uppercase-alnum
- * run ending in a ~3-digit suffix) — not merely start with the right two
- * characters. The one-character tolerance is deliberately narrow (a single
- * fat-finger typo), not "contains some digits/hex," so a body that is merely
- * short (`16`) or merely alphabetic-but-not-hex (`strings`, `test`) fails
- * every branch and is correctly read as ordinary prose, not an id attempt.
+ * match — and normalizes ONCE, up front, so every branch below sees the same
+ * cleaned-up shape rather than each patching its own corner of the near-miss
+ * space. (F-491e2dee / F-a7d03bd1: two prior gaps in this same function were
+ * each scoped to exactly one grammar branch — a Unicode dash confusable
+ * defeating the outer marker match, and a case-sensitive PREFIXED branch
+ * while HASH alone was case-folded — the same instance-vs-class mistake this
+ * repo keeps paying to relearn. Both are closed here by widening the shared
+ * normalization step, not by patching each branch separately.)
+ *
+ *   1. Unicode dash confusables (F-491e2dee — DASH_CONFUSABLES, above) are
+ *      folded to ASCII "-" across the WHOLE token first, so a homoglyph
+ *      substituted anywhere — glued to the leading f/F marker, or inside a
+ *      LEGACY/PREFIXED body's internal separator — is treated exactly like
+ *      the ASCII typo it visually impersonates, not silently absorbed as
+ *      prose because a byte-for-byte "-" match failed.
+ *   2. `^-*[fF]-?` then strips a hyphen run glued directly to the token's
+ *      front (the tokenizer only splits on comma/whitespace, so
+ *      "-F-2222222" arrives as one token) and tolerates a missing separator
+ *      hyphen right after the marker — so `f-2222222`, `F2222222`, and
+ *      `-F-2222222` all normalize to the SAME "2222222" body.
+ *   3. The extracted body is UPPERCASED once, here, before any grammar
+ *      branch inspects it (F-a7d03bd1 — supersedes the HASH branch's
+ *      formerly-branch-local `/i` flag, which case-folded that one branch
+ *      only and left the PREFIXED branch's `[A-Z]` char class silently
+ *      case-sensitive: a case-typo'd PREFIXED id — e.g. a lowercase typo of
+ *      this repo's own real `F-CI-SELF-DOGFOOD-001` — is the same near-miss
+ *      class as a case-typo'd hash id, not a different one). LEGACY's
+ *      all-digit body is unaffected by case either way; uppercasing it is a
+ *      no-op, not a special case to remember.
+ *
+ * What remains must then fall within one character OF LENGTH of an ACTUAL
+ * F_ID_PATTERN body (hex-dense ~8 chars, digit-dense ~9 chars split by one
+ * optional hyphen, or an uppercase-alnum run ending in a ~3-digit suffix) —
+ * not merely start with the right two characters. "Within one character"
+ * describes LENGTH tolerance only (F-d5e292b2 — not edit-distance-1 across
+ * insert/delete/substitute): every remaining character must still exactly
+ * satisfy the branch's character class. This is deliberately narrow (a
+ * single fat-finger typo on length, e.g. one hex digit dropped or added), so
+ * a body that is merely short (`16`) or merely alphabetic-but-not-hex
+ * (`strings`, `test`) fails every branch and is correctly read as ordinary
+ * prose, not an id attempt — and a body that is the right LENGTH but has a
+ * wrong character (e.g. a 9-char hash-shaped body with one non-hex
+ * character) still fails every branch too, exactly as before this reword.
+ *
+ * F-78892d70: each of the three branches above now carries at least one
+ * branch-EXCLUSIVE near-miss test (a case constructed so only that one
+ * branch can credit it — the four previously-demonstrated shapes above all
+ * happened to reduce to the same HASH-branch-satisfying body, so LEGACY and
+ * PREFIXED were reachable-but-unverified: a mutant deleting either branch
+ * outright passed the whole pre-existing suite undetected) and a matching
+ * branch-deletion mutant in pin-declarations-mutation.test.mjs. See
+ * pin-declarations.test.mjs's F-78892d70 tests for the branch-exclusive
+ * fixtures.
  *
  * @param {string} token
  * @returns {boolean}
  */
 function looksLikeIdAttempt(token) {
-  const m = /^-*[fF]-?(.+)$/.exec(token);
+  const normalized = token.replace(DASH_CONFUSABLES, '-');
+  const m = /^-*[fF]-?(.+)$/.exec(normalized);
   if (!m) return false;
-  const body = m[1];
+  const body = m[1].toUpperCase();
 
   // HASH near-miss (F_ID_PATTERN branch 2: exactly 8 lowercase hex chars).
-  // Case-insensitive: a hex-typo'd hash id is the same class of near-miss as
-  // a case-typo'd prefix, not a different one.
-  if (/^[0-9a-f]+$/i.test(body) && Math.abs(body.length - 8) <= 1) return true;
+  // `body` is already uppercased above, so this class is upper-only — no
+  // per-branch case flag to keep in sync with the other two branches.
+  if (/^[0-9A-F]+$/.test(body) && Math.abs(body.length - 8) <= 1) return true;
 
   // LEGACY near-miss (F_ID_PATTERN branch 1: 6 digits, hyphen, 3 digits).
   // Only the TOTAL digit count is compared against the required 9 — the
   // hyphen may be absent or shifted by a fat-finger without changing which
-  // real id was intended.
+  // real id was intended. Digits have no case, so the uppercasing above is a
+  // no-op here, not a special case.
   if (/^\d+-?\d+$/.test(body)) {
     const digitCount = body.replace('-', '').length;
     if (Math.abs(digitCount - 9) <= 1) return true;

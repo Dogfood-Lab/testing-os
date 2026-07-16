@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 480" role="img" aria-labelledby="verify-title verify-desc" preserveAspectRatio="xMidYMid meet">
   <title id="verify-title">Healthy npm run verify output</title>
-  <desc id="verify-desc">Terminal capture of a successful npm run verify in the testing-os repo. The command sequence runs sync-version:check (clean, README block matches package.json version), check-doc-drift (17 of 17 checks passed), check-regression-pins (every source-pinned F-id has a test pin), build (tsc --build composite project, no errors), test:scripts (all script test files green), and the workspace test fan-out covering schemas, verify, ingest, findings, report, portfolio, and dogfood-swarm packages — every package reports passing tests with no failures and no warnings.</desc>
+  <desc id="verify-desc">Terminal capture of a successful npm run verify in the testing-os repo. The command sequence runs sync-version:check (clean, README block matches package.json version), check-doc-drift (17 of 17 checks passed), check-regression-pins (the Class #14 gate: declared @pins tags verified against a real AST, grandfathered migration debt named, zero orphans), build (tsc --build composite project, no errors), test:scripts (all script test files green), and the workspace test fan-out covering schemas, verify, ingest, findings, report, portfolio, and dogfood-swarm packages — every package reports passing tests with no failures and no warnings.</desc>
 
   <defs>
     <!-- Stage D amend: terminal-mock SVG keeps its dark terminal aesthetic in
@@ -48,7 +48,7 @@
 
     <text x="36" y="170" class="text-info">[check-doc-drift]</text><text x="190" y="170" class="text-ok"> OK — 17 check(s) passed.</text>
 
-    <text x="36" y="192" class="text-info">[check-regression-pins]</text><text x="266" y="192" class="text-ok"> every source-pinned F-id has a test pin.</text>
+    <text x="36" y="192" class="text-info">[check-regression-pins]</text><text x="266" y="192" class="text-ok"> declared @pins tags AST-verified, 0 orphans.</text>
 
     <text x="36" y="216" class="text-dim"># tsc --build (composite refs)</text>
     <text x="36" y="236" class="text-ok">  ✓ packages/schemas → built (all schemas, 0 errors)</text>

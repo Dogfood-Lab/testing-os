@@ -228,6 +228,139 @@ describe('extractDeclaredIds', () => {
     assert.deepEqual(prose.pins.map((p) => p.id), ['F-11111111']);
     assert.equal(prose.issues.length, 0, 'ordinary F-prefixed prose after a valid id must raise zero issues, not one per prose word');
   });
+
+  // F-491e2dee: a Unicode dash confusable substituted for the ASCII hyphen in
+  // a second, mistyped id is the homoglyph version of the F-d36cd380 near-miss
+  // class above — same underlying "2222222" HASH-shaped body, reached via a
+  // dash lookalike instead of an ASCII typo. All three demonstrated in the
+  // finding: U+2011 NON-BREAKING HYPHEN, U+2013 EN DASH, U+FF0D FULLWIDTH
+  // HYPHEN-MINUS.
+  test('F-491e2dee: a Unicode dash confusable (U+2011 non-breaking hyphen) glued to the marker is flagged bad-shape, not silently dropped as prose', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F‑2222222'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F‑2222222', ok: false },
+    ]);
+  });
+
+  test('F-491e2dee: a Unicode dash confusable (U+2013 en dash) glued to the marker is flagged bad-shape, not silently dropped as prose', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F–2222222'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F–2222222', ok: false },
+    ]);
+  });
+
+  test('F-491e2dee: a Unicode dash confusable (U+FF0D fullwidth hyphen-minus) glued to the marker is flagged bad-shape, not silently dropped as prose', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F－2222222'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F－2222222', ok: false },
+    ]);
+  });
+
+  /** @pins F-491e2dee */
+  test('F-491e2dee end-to-end: a Unicode-dash-confusable second id surfaces as a real bad-shape tagIssue, not a silent drop', () => {
+    const result = scanFileForDeclaredPins(
+      'x.test.js',
+      "/** @pins F-11111111 F‑2222222 */\ntest('t', () => { assert.ok(true); });\n",
+    );
+    assert.deepEqual(result.pins.map((p) => p.id), ['F-11111111'], 'the well-formed first id is still credited');
+    assert.equal(result.issues.length, 1, 'the confusable-dash second id must surface as exactly one issue, not zero');
+    assert.equal(result.issues[0].kind, 'bad-shape');
+    assert.equal(result.issues[0].token, 'F‑2222222');
+  });
+
+  // F-a7d03bd1: looksLikeIdAttempt case-folded the leading f/F marker and the
+  // HASH branch's body, but not the PREFIXED branch's body — a case-typo of a
+  // REAL, LIVE PREFIXED-shaped id in this exact repo
+  // (F-CI-SELF-DOGFOOD-001, declared in .github/workflows/self-dogfood.yml)
+  // silently vanished as prose. Uses a synthetic sibling id (…-002, not the
+  // real -001) so this fixture never collides with, or accidentally pins
+  // against, the real tracked id.
+  test('F-a7d03bd1: a lowercase-typo of a real-shaped PREFIXED id (f-ci-self-dogfood-002) is flagged bad-shape, not silently dropped', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 f-ci-self-dogfood-002'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'f-ci-self-dogfood-002', ok: false },
+    ]);
+  });
+
+  test('F-a7d03bd1: a mixed-case typo of the same PREFIXED shape (F-Ci-Self-Dogfood-002) is also flagged bad-shape', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-Ci-Self-Dogfood-002'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F-Ci-Self-Dogfood-002', ok: false },
+    ]);
+  });
+
+  /** @pins F-a7d03bd1 */
+  test('F-a7d03bd1 end-to-end: a case-typo of a PREFIXED-shaped second id surfaces as a real bad-shape tagIssue, not a silent drop', () => {
+    const result = scanFileForDeclaredPins(
+      'x.test.js',
+      "/** @pins F-11111111 f-ci-self-dogfood-002 */\ntest('t', () => { assert.ok(true); });\n",
+    );
+    assert.deepEqual(result.pins.map((p) => p.id), ['F-11111111'], 'the well-formed first id is still credited');
+    assert.equal(result.issues.length, 1, 'the case-typo second id must surface as exactly one issue, not zero');
+    assert.equal(result.issues[0].kind, 'bad-shape');
+    assert.equal(result.issues[0].token, 'f-ci-self-dogfood-002');
+  });
+
+  // F-78892d70: looksLikeIdAttempt implements three grammar branches (HASH,
+  // LEGACY, PREFIXED), but every one of the four officially-demonstrated
+  // near-miss shapes (F-2222222 / f-2222222 / F2222222 / -F-2222222) reduces
+  // to the SAME 7-digit body, which the HASH branch alone already accepts —
+  // proven by mutation: a mutant deleting the LEGACY branch (or the PREFIXED
+  // branch) entirely survived the pre-fix suite undetected. These two cases
+  // are constructed to be reachable via EXACTLY ONE branch each (verified in
+  // this finding's own writeup): F-12345-678 fails HASH (embedded hyphen) and
+  // PREFIXED (leading digit, not a letter), matching LEGACY alone; F-ABC-12
+  // fails HASH (embedded hyphen) and LEGACY (leading letter, not a digit),
+  // matching PREFIXED alone.
+  test('F-78892d70: a LEGACY-shaped near-miss with the digit split in the wrong place (F-12345-678) is flagged bad-shape via the LEGACY branch, not merely by HASH coincidence', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-12345-678'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F-12345-678', ok: false },
+    ]);
+  });
+
+  test('F-78892d70: a PREFIXED-shaped near-miss with a short suffix (F-ABC-12) is flagged bad-shape via the PREFIXED branch, not merely by HASH coincidence', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-ABC-12'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F-ABC-12', ok: false },
+    ]);
+  });
+
+  /** @pins F-78892d70 */
+  test('F-78892d70 end-to-end: LEGACY- and PREFIXED-shaped near-misses each surface as a real bad-shape tagIssue, proving both branches are independently reachable', () => {
+    const legacy = scanFileForDeclaredPins(
+      'x.test.js',
+      "/** @pins F-11111111 F-12345-678 */\ntest('t', () => { assert.ok(true); });\n",
+    );
+    assert.equal(legacy.issues.length, 1);
+    assert.equal(legacy.issues[0].kind, 'bad-shape');
+    assert.equal(legacy.issues[0].token, 'F-12345-678');
+
+    const prefixed = scanFileForDeclaredPins(
+      'x.test.js',
+      "/** @pins F-11111111 F-ABC-12 */\ntest('t', () => { assert.ok(true); });\n",
+    );
+    assert.equal(prefixed.issues.length, 1);
+    assert.equal(prefixed.issues[0].kind, 'bad-shape');
+    assert.equal(prefixed.issues[0].token, 'F-ABC-12');
+  });
+
+  // F-d5e292b2: looksLikeIdAttempt's docstring described its tolerance as
+  // "within one character," which a reader could parse as edit-distance-1
+  // (insert/delete/substitute anywhere). What is actually implemented is
+  // LENGTH tolerance only — every remaining character must still exactly
+  // satisfy the branch's character class. This is the exact reproduction
+  // from the finding's own verification: a body that is the RIGHT LENGTH but
+  // has ONE WRONG CHARACTER is correctly NOT flagged (falls through as
+  // prose), unchanged by the F-491e2dee/F-a7d03bd1 fixes above — this test
+  // locks that boundary down as intentional behavior, not an oversight the
+  // reworded docstring newly claims to close.
+  /** @pins F-d5e292b2 */
+  test('F-d5e292b2: a body that is the right LENGTH but has one character breaking the class (F-abcd1234z) is NOT flagged — the tolerance is length-only, not edit-distance', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-abcd1234z'), [
+      { token: 'F-11111111', ok: true },
+    ]);
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────
