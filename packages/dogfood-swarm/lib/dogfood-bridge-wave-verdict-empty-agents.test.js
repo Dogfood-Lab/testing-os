@@ -53,7 +53,16 @@ describe('F-1f8fd647 — a zero-agent wave is never a vacuous pass', () => {
     const submission = buildDogfoodSubmission(exp, 'partial');
     const scenario = submission.scenario_results[0];
 
-    assert.equal(scenario.step_results.length, 0, 'fixture sanity: this is genuinely zero evidence, not a mislabeled real run');
+    // Fixture sanity: genuinely a zero-evidence wave, not a mislabeled real
+    // run. This originally asserted `step_results.length === 0`, which pinned a
+    // shape the submission contract rejects outright (schema minItems:1 —
+    // buildDogfoodSubmission now synthesizes the one 'dispatch' step that
+    // states nothing ran; see persist-results-schema-conformance.test.js). The
+    // zero-evidence property is now expressed as what it always meant: no step
+    // came from an agent.
+    assert.deepEqual(scenario.step_results.map(s => s.step_id), ['dispatch']);
+    assert.ok(!scenario.step_results.some(s => s.step_id.startsWith('agent-')),
+      'fixture sanity: no agent ran, so no agent-* step may appear');
     assert.notEqual(scenario.verdict, 'pass',
       "pre-fix: [].every(...) is vacuously true, so a 0-agent wave reported 'pass' with step_results: []");
     assert.equal(scenario.verdict, 'blocked');

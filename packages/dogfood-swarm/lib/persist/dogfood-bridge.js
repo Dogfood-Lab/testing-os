@@ -40,6 +40,24 @@ export function buildDogfoodSubmission(exportData, overallVerdict) {
       });
     }
 
+    // No agents and no verification receipt leaves step_results empty, which
+    // both submission gates reject on their own terms — the schema's
+    // minItems:1 and verify/validators/steps.js's own "at least one entry"
+    // check behind the step-results-present rule. Relaxing either one would
+    // still fail at the other, and relaxing both would weaken the contract for
+    // every consumer to accommodate one emitter's edge case. Emit the truth
+    // instead: 'blocked' is the step-status enum's term for did-not-run, so
+    // this records non-execution rather than fabricating a run, and it agrees
+    // with the 'blocked' wave verdict below — steps.js rejects a 'pass' that
+    // carries a blocked step, so the two are only ever emitted together.
+    if (agentSteps.length === 0) {
+      agentSteps.push({
+        step_id: 'dispatch',
+        status: 'blocked',
+        notes: `wave ${w.number} (${w.phase}) dispatched zero agents and recorded no verification receipt`,
+      });
+    }
+
     // Determine wave verdict.
     //
     // F-1f8fd647: `w.agents.every(...)` is vacuously TRUE on an empty array,
