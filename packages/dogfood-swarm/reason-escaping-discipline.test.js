@@ -535,7 +535,7 @@ const FIELD_FAMILY_ALLOWLIST = [
   {
     file: 'commands/dispatch.js',
     match: '${f.finding_id}: ${f.description} (${f.file_path',
-    reason: 'buildPriorMap → priorContext (F-d2d06af3, wave 24): this line joins f.description / f.file_path into the priorContext string RAW, but the whole joined string is neutralized DOWNSTREAM at its only render site — lib/templates.js:514, buildAuditPrompt does `fenceSafeBlock(neutralizeForPrompt(opts.priorContext))` before the prompt reaches the next agent. Because neutralizeInvisibleControls is per-codepoint, neutralizing the joined blob is equivalent to neutralizing each field. Deferred to the render boundary (one neutralization pass at the surface) rather than the join, the same downstream-escaping pattern as the collect.js/revalidate.js entries above.',
+    reason: 'buildPriorMap → priorContext (F-d2d06af3, wave 24): this line joins f.description / f.file_path into the priorContext string RAW, but the whole joined string is neutralized DOWNSTREAM at its only render site — lib/templates.js, renderPriorSection (shared by buildAuditPrompt AND buildFeatureAuditPrompt since F-f86e42eb) does `fenceSafeBlock(neutralizeForPrompt(priorContext))` before the prompt reaches the next agent. Because neutralizeInvisibleControls is per-codepoint, neutralizing the joined blob is equivalent to neutralizing each field. Deferred to the render boundary (one neutralization pass at the surface) rather than the join, the same downstream-escaping pattern as the collect.js/revalidate.js entries above.',
   },
 ];
 
@@ -572,7 +572,10 @@ const CROSS_FILE_ESCAPE_DEPENDENCIES = [
     entryMatch: '${f.finding_id}: ${f.description} (${f.file_path',
     dependsOn: [
       // buildAuditPrompt's only render of opts.priorContext.
-      { file: 'lib/templates.js', call: 'neutralizeForPrompt(opts.priorContext)' },
+      // Wave 39 moved the call inside renderPriorSection (shared by
+      // buildAuditPrompt and buildFeatureAuditPrompt per F-f86e42eb) — the
+      // parameter name changed with it; the neutralization did not.
+      { file: 'lib/templates.js', call: 'neutralizeForPrompt(priorContext)' },
     ],
   },
   {
@@ -630,6 +633,7 @@ function crossFileEscapeDependencyHolds(strippedSource, call) {
   return strippedSource.includes(call);
 }
 
+/** @pins F-6c030425 */
 describe('Audited-controlled field-family escaping discipline (file_path/file/line/symbol/out_of_brief/description — coordinator-assigned, wave 24, F-6c030425 umbrella)', () => {
   it('every render line touching an audited-controlled field also calls an escaping helper, unless allowlisted', () => {
     const offenders = [];

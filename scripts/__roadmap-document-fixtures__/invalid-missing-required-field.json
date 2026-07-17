@@ -1,0 +1,13 @@
+{
+  "run_id": "swarm-fixture-0003",
+  "sequence": 1,
+  "compiled_at": "2026-07-17T00:00:00.000Z",
+  "repo": "dogfood-lab/testing-os",
+  "compiled_from": { "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
+  "open_summary": { "open": 0, "deferred": 0, "approved": 0 },
+  "grandfathered_drain": { "frozen_total": 0, "drained": 0, "outstanding": [] },
+  "recurrence_stats": {},
+  "attention": { "advisory": true, "items": [] },
+  "operator_notes": [],
+  "expired_notes": []
+}

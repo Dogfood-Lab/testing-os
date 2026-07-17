@@ -2,6 +2,22 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The `swarm-1784091637-5127` feature pass — the trajectory layer and the closure verbs, designed against a five-packet study-swarm ([the pass dispatch](docs/trajectory-and-closure.dispatch.md) is the contract, research grounding included).
+
+### Added
+- **`swarm reopen <run-id> --ids … --reason … --evidence … [--apply]`** — the lawful recovery path for wrongly-closed findings the "Three R's" contract never had: `fixed`/`deferred`/`rejected` → `recurring`, dry-run-first, closure provenance reset, acting authority recorded, original closure immutable in `finding_events`.
+- **`swarm close <run-id> --ids … --as fixed --reason … --evidence … --verified-how … [--apply]`** — operator closure for rows structurally unclosable by owning-domain declaration (the unowned-file class); `--as fixed` only (defer/reject remain their own verbs); writes `closure_kind='operator'` and a `finding_events` event mirroring the target status (`event_type='fixed'` today, since `--as` accepts only `fixed`).
+- **`swarm roadmap compile|show`** — the trajectory layer: a compiled-never-authored roadmap artifact (`dogfood/roadmap/`) regenerated from the control-plane DB and git at run close — open/deferred queues, drain queue with per-entry provenance and re-review cadence, recurrence stats, an advisory (never gating) per-file attention heuristic, and at most seven typed operator notes with structural expiry (`invariant` notes must name an existing `enforced_by` gate). Consumed by the next run only through explicit opt-in (`swarm init --seed-from-roadmap`), injected bounded at the top of briefs.
+- **Schema v10 (additive):** `findings.closure_kind` / `findings.verified_how` / `findings.filed_by_domain`, `finding_events.actor`, and the `reopened` / `operator_closed` event-type constants (`operator_closed` ships as a legal `EVENT_TYPES` member; `swarm close` itself writes `event_type` mirroring its target status — `'fixed'` today — never `operator_closed`, per the `swarm close` entry above). `filed_by_domain` closes the file-less-finding routing gap this pass's own dispatch preview proved live (40 feature findings routed to zero agents).
+- **`dogfood-roadmap.schema.json`** in `@dogfood-lab/schemas` (ships via the `./json/*` subpath, envelope-style) + verify-time validation of `dogfood/roadmap/latest.json` and the operator-notes staleness gate.
+- Handbook: [the trajectory layer](site/src/content/docs/handbook/trajectory.md) page; `cli-reference`, `error-codes`, and `state-machines` updated for the three new verbs.
+
+### Fixed
+- `buildFeatureAuditPrompt` now carries the prior-findings/CONFIRM context that `buildAuditPrompt` already carried — feature-audit lanes previously received briefs with no confirmation queue at all (proven by this pass's own wave-38 briefs).
+- The wave-38 audit's corrections to the pass contract itself: a standards-table self-uplift, a miscited study, and a false "no auto-reopen exists anywhere" refusal (the regression-rediscovery path is exactly that, by design — now scoped precisely).
+
 ## [1.9.0] — 2026-07-03
 
 The full-dogfood-swarm release: a four-stage health pass (bug/security → proactive → humanization → visual polish, ~162 verified fixes, every one pinned by a RED-then-GREEN test) followed by an approved feature pass. The suite grew from ~2,106 to ~2,700+ tests.

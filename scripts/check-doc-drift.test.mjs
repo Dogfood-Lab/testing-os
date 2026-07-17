@@ -7,8 +7,11 @@
  * wired in CI right after `npm ci`).
  *
  * Coverage:
- *   1. Each configured check in scripts/doc-drift-patterns.json (currently 17,
- *      after F-41379e68 added the three retired-swarm-artifact tombstone pins)
+ *   1. Each configured check in scripts/doc-drift-patterns.json (the exact
+ *      count drifts as checks are added — see the "at least N checks ran"
+ *      live-tree assertion below rather than a hardcoded figure here; a
+ *      stale count in this comment already went unnoticed across at least
+ *      one prior wave, per this repo's own memory on hardcoded counts)
  *      with a clean fixture and a drift fixture.
  *   2. Live-tree assertion: the actual repo passes all checks. This is the
  *      load-bearing test — it's the contract that the docs agents in wave 19
@@ -234,6 +237,134 @@ test('no-version-specific-narrative check: 9-Phase reference flagged', async (t)
   result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
   assert.equal(result.clean, false);
   assert.match(result.reports[0].message, /stale 9-Phase/);
+});
+
+/** @pins F-cec640b1 */
+test('F-cec640b1: roadmap-artifact-no-absolute-paths check: relative artifact passes, machine-absolute notesPath triggers drift', async (t) => {
+  const fx = makeFixture(t);
+  // Same drive-letter-in-a-JSON-string-value shape PROVEN LIVE in the real
+  // dogfood/roadmap/swarm-1784091637-5127.{1,}.json at authoring time (see
+  // scripts/doc-drift-patterns.json's roadmap-artifact-no-absolute-paths
+  // description) — a real committed shape, not an invented one.
+  fx.write('dogfood/roadmap/latest.json', JSON.stringify({
+    run_id: 'run-1', sequence: 1, path: 'dogfood/roadmap/run-1.1.json',
+  }));
+  fx.write('dogfood/roadmap/run-1.1.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'dogfood/roadmap-notes.json', sections: {},
+  }, null, 2));
+  const cfg = fx.config({
+    checks: [{
+      id: 'roadmap-artifact-no-absolute-paths',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'roadmap-artifact-no-absolute-paths',
+      patterns: [{ regex: '"[A-Za-z]:[\\\\/]', label: 'Windows drive-letter absolute path' }],
+      targets: ['dogfood/roadmap/*.json'],
+    }],
+  });
+  let result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+
+  // Now introduce the exact real-world shape: an absolute Windows path baked
+  // into the committed artifact's notesPath field.
+  fx.write('dogfood/roadmap/run-1.1.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'E:\\AI\\testing-os\\dogfood\\roadmap-notes.json', sections: {},
+  }, null, 2));
+  result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  assert.match(result.reports[0].file, /run-1\.1\.json/);
+  assert.match(result.reports[0].message, /Windows drive-letter absolute path/);
+
+  // Non-vacuity in the OTHER direction: latest.json's own small pointer shape
+  // (run_id/sequence/path, all repo-relative) must never false-positive —
+  // the check globs the whole dogfood/roadmap/*.json directory, so this
+  // guards against the pattern being loose enough to flag the pointer itself.
+  assert.ok(
+    !result.reports.some((r) => /latest\.json/.test(r.file)),
+    'the pointer file must never be flagged — it has no notesPath-shaped field',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-07-17 rescope (F-cec640b1, T5 carve-out): forbidden-pattern-in-targets
+// gained per-file `allowlist` support so the ONE unfixable historical hit —
+// dogfood/roadmap/swarm-1784091637-5127.1.json, immutable per T5 of
+// docs/trajectory-and-closure.dispatch.md ("versions supersede; nothing
+// rewrites") — can be carved out BY NAME without weakening the gate for
+// latest.json or any future artifact. NOT wave-42-tracked: wave 42 cannot
+// repair an immutable historical sequence; this exemption is permanent by
+// design, which is exactly why the stale-entry WARN below matters — it is
+// the only path by which the carve-out ever gets cleaned up.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @pins F-cec640b1 */
+test('rescope 2026-07-17: forbidden-pattern allowlist exempts the named file while still catching every other file, silently while the exemption does work', async (t) => {
+  const fx = makeFixture(t);
+  // The T5-frozen shape: an immutable historical artifact with the leak...
+  fx.write('dogfood/roadmap/run-1.1.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'E:\\AI\\testing-os\\dogfood\\roadmap-notes.json',
+  }, null, 2));
+  // ...and a NEWER artifact that regresses the same leak — must still fail.
+  fx.write('dogfood/roadmap/run-1.2.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'C:\\other\\machine\\roadmap-notes.json',
+  }, null, 2));
+  const cfg = fx.config({
+    checks: [{
+      id: 'roadmap-artifact-no-absolute-paths',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'allowlist semantics probe',
+      patterns: [{ regex: '"[A-Za-z]:[\\\\/]', label: 'Windows drive-letter absolute path' }],
+      targets: ['dogfood/roadmap/*.json'],
+      allowlist: ['dogfood/roadmap/run-1.1.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'the non-allowlisted sibling must still drift');
+  assert.ok(result.reports.some((r) => r.severity === 'drift' && /run-1\.2\.json/.test(r.file)),
+    'the fresh leak is caught');
+  assert.ok(!result.reports.some((r) => /run-1\.1\.json/.test(r.file ?? '') || /run-1\.1\.json/.test(r.message)),
+    'the T5-carved-out file produces NO report of any severity — a live exemption is silent (a warning nobody can act on, forever, is wallpaper, not signal)');
+});
+
+test('rescope 2026-07-17: a STALE forbidden-pattern allowlist entry (file clean, or gone) surfaces as a non-blocking WARN marked safe to delete', async (t) => {
+  const fx = makeFixture(t);
+  // The allowlisted file exists but no longer contains any forbidden pattern.
+  fx.write('dogfood/roadmap/run-1.1.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'dogfood/roadmap-notes.json',
+  }, null, 2));
+  const cfg = fx.config({
+    checks: [{
+      id: 'roadmap-artifact-no-absolute-paths',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'stale allowlist probe',
+      patterns: [{ regex: '"[A-Za-z]:[\\\\/]', label: 'Windows drive-letter absolute path' }],
+      targets: ['dogfood/roadmap/*.json'],
+      allowlist: ['dogfood/roadmap/run-1.1.json', 'dogfood/roadmap/never-existed.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, 'staleness means the gate is now STRICTER than its config claims — never a block');
+  const warns = result.reports.filter((r) => r.severity === 'warn');
+  assert.equal(warns.length, 2, 'one WARN per dead entry — the clean file AND the missing file');
+  for (const w of warns) {
+    assert.match(w.message, /stale allowlist entry/);
+    assert.match(w.message, /safe to delete/);
+  }
+});
+
+test('rescope 2026-07-17: the real no-absolute-paths config carries EXACTLY the one T5-frozen carve-out — silent allowlist growth is a pin failure, not a config tweak', () => {
+  const config = JSON.parse(readFileSync(resolve(repoRoot, 'scripts/doc-drift-patterns.json'), 'utf8'));
+  const entry = config.checks.find((c) => c.id === 'roadmap-artifact-no-absolute-paths');
+  assert.ok(entry, 'expected a roadmap-artifact-no-absolute-paths check entry');
+  // RESCOPE 2026-07-17: this pin is deliberately exact-match, not subset —
+  // every future allowlist addition must edit this assertion in the same
+  // commit and justify itself against the hint's own rule ("do NOT add new
+  // allowlist entries for freshly-leaked artifacts — recompile supersedes
+  // them instead"). Only a T5-immutable historical sequence qualifies.
+  assert.deepEqual(entry.allowlist, ['dogfood/roadmap/swarm-1784091637-5127.1.json']);
+  assert.match(entry.description, /2026-07-17/, 'the carve-out is dated in the description');
+  assert.match(entry.description, /T5/, 'the carve-out cites the T5 immutability rule that makes it permanent');
+  assert.ok(entry.targets.includes('dogfood/roadmap/*.json'),
+    'the targets glob still covers latest.json and every future artifact — the carve-out must never narrow the protected set');
 });
 
 test('self-consistency check: must[] passes when present, fails when missing', async (t) => {
@@ -1467,6 +1598,7 @@ test('framework-self-test: REGISTERED_HANDLERS exposes all handler kinds', () =>
     'forbidden-pattern-in-targets',
     'framework-self-test',
     'helper-adoption-sweep',
+    'roadmap-notes-integrity',
     'schema-conformance',
     'self-consistency',
     'source-of-truth-cross-ref',
@@ -2351,14 +2483,14 @@ test('CLI: the config-not-found hint promises --config, and that flag now exists
 // relative-count claims (sibling = total-1, "the other N" = total-K).
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('FT-g: countCommandMapEntries counts the real cli.js commands map as 28', () => {
+test('FT-g: countCommandMapEntries counts the real cli.js commands map as 31', () => {
   const cliSrc = readFileSync(
     resolve(repoRoot, 'packages/dogfood-swarm/cli.js'),
     'utf8',
   );
   assert.equal(
     countCommandMapEntries(cliSrc, 'commands', 'packages/dogfood-swarm/cli.js'),
-    28,
+    31,
     'The authoritative verb count is the key count of the `commands` dispatch map. ' +
       'If this changed, every prose surface stating the count (and its offsets) must follow.',
   );
@@ -2588,7 +2720,9 @@ test('FT-g LIVE: the real config\'s verbCount resolver uses command-map-count, n
   const claimTargets = sot.claims.map((c) => c.target);
   for (const surface of [
     'site/src/content/docs/handbook/index.md',
-    'site/src/content/docs/handbook/cli-reference.md',
+    // cli-reference.md dropped its literal count in wave 39 (de-literaled by
+    // design; its verbCount claim was deleted with it) — the page can no
+    // longer drift by number, which beats guarding the number.
     'site/src/content/docs/handbook/swarm-history.md',
     'site/src/content/docs/handbook/operating-guide.md',
   ]) {

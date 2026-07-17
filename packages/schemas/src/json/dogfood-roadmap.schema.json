@@ -1,0 +1,281 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/dogfood-lab/testing-os/packages/schemas/src/json/dogfood-roadmap.schema.json",
+  "title": "Dogfood Roadmap (cross-run trajectory layer)",
+  "description": "F-fe05c6d7 (wave 39, Feature Pass T1): the canonical contract for the compiled artifact `swarm roadmap compile <run-id>` writes to dogfood/roadmap/<run-id>.json. Per docs/trajectory-and-closure.dispatch.md T1 ('The roadmap is compiled, never authored'), every section here is a QUERY result executed against the control-plane DB and git at compile time — never hand-edited prose, with the single exception of operator_notes (T3), the one human-authored section. This is a swarm-internal envelope, exactly like agent-output.schema.json and case-file.schema.json before it — NOT one of the eight contract-spine payload schemas registered in allSchemas / validatePayload / SUPPORTED_SCHEMA_VERSIONS (that registry gates the record/recordSubmission/finding/pattern/recommendation/doctrine/policy/scenario family). It resolves via this package's existing \"./json/*\": \"./src/json/*\" subpath export with a LOCAL Ajv instance in the consuming package, mirroring packages/dogfood-swarm/lib/templates.js:73's require.resolve('@dogfood-lab/schemas/json/agent-output.schema.json') precedent — no new export wiring, and no schema_version value gate. Every array/object section below is REQUIRED even when empty (an empty array or a zero-count object is valid) so an absent key can only ever mean 'the compiler did not run this query,' never 'ran it and found nothing' — a reader is never left guessing which. See $defs.latestPointer for the companion micro-shape of dogfood/roadmap/latest.json (T5), a separate file this same schema also shapes via $ref.",
+  "$comment": "WAVE-41 SEAM DECISIONS (F-c7b0f47b; coordinator's binding call for this wave: 'the schema is the contract' — core's lib-compiler and verbs' commands/roadmap.js conform their emitters to this document in their own worktrees this same wave, not the reverse). Four things changed HERE, deliberately, in response to the real committed artifact failing this schema with 16 Ajv errors: (1) `sections` stays UNBLESSED — additionalProperties:false already rejected it before this wave and continues to; what changed is that the rejection is now a stated decision, not an accident nobody had looked at. `sections` wholesale-duplicated compile.js's raw internal shape (findings-with-severity/category, a second, INCOMPATIBLE `attention.top[].factors` shape sitting alongside this schema's own `attention.items[].components`, a two-halves drain_queue with yet another shape) that the sections below already contract for in a considered form. Emitters MUST NOT write `sections` into a committed artifact; any richer per-item detail it carried belongs as optional enrichment of the fields below, never a parallel undifferentiated copy. (2) `notesPath` is now an explicit, OPTIONAL, repo-relative-only property (see its own entry below) — this key's mere presence was previously one of the 16 Ajv errors (a disallowed additionalProperty), and a real compile had already committed it as a machine-absolute Windows path, baking one operator's local checkout into version-controlled history (the finding's own first proven exhibit). (3) `compiled_at`'s description was rewritten for honesty about its DB-derived, not wall-clock, semantics; the field NAME is unchanged (see its own entry below). (4) `content_hash` stays OPTIONAL, not promoted to required, with its self-exclusion hashing semantics now specified (see its own entry below). NOT touched by this wave: open_summary / grandfathered_drain / recurrence_stats / attention / operator_notes / drain_queue keep their existing T1-T6 shapes; conforming emitters to THOSE is core's and verbs' materially larger burden, and out of this package's domain to make or verify — packages/dogfood-swarm's own pinned tests (F-1cd5de59, F-74ba2c79) currently assert a flatter, differently-shaped `drain`/`notes`/`expired` CLI surface than this schema's `drain_queue`/`operator_notes`, which core/verbs must reconcile (by conforming the emitter AND, if those tests are asserting a superseded shape, updating them) as part of landing this wave's fix — not something this package can resolve by editing files outside its own domain. WAVE-43 / AMENDMENT 3 SEAM DECISIONS (A3.2, F-471a06f1 + F-b785b581; docs/trajectory-and-closure.dispatch.md's Amendment 3, wave 42, recorded after one adversarial DO-NOT-SHIP skeptic round and a second SHIP-WITH-CHANGES pass). Amendment 3's own correction record first: the wave-42 claim that 'both implementations model DATES (revalidate_by)' — repeated in scripts/doc-drift-patterns.json's own comment prose, HANDOFF, and the wave-42 kickoff — was FALSE. lib/roadmap/drain.js#compileAuthoredDrainState is a shipped, F-1cd5de59-pinned RUNS-ORDINAL mechanism, not a dates mechanism, and it is DISTINCT from compileGrandfatheredManifestDrain (which reads the 36-entry scripts/regression-pin-allowlist.json, not the 256-entry scripts/grandfathered-pins.json this file's grandfathered_drain section now targets) — two wrong rulings shipped before this one, both caught by adversarial review, not by the author. Two things changed HERE in response: (1) T6's single $defs/drainEntry — never satisfied by any real producer, because no population actually has its {reason(required), added_at, cadence_runs, due_at_run} shape — is RETIRED, split into two per-population shapes matching each population's real authored data: $defs/drainQueueEntry (drain_queue, runs-ordinal, mirrors compileAuthoredDrainState's shipped {id,owner,cadence_runs,runs_since_review,overdue} return exactly) and $defs/grandfatheredManifestEntry (grandfathered_drain.outstanding, date-deadline, mirrors scripts/grandfathered-pins.json's real {owner,revalidate_by}-only per-entry shape — `reason` is optional on both new shapes and per-entry provenance is never invented to fill it; each section's shared rationale is documented at the section level instead, never repeated per entry). drain_queue itself changes shape from a bare array to an object, {entries[], overdue_ids[]}, preserving F-1cd5de59's distinct-listing assertion. (2) expired_notes joins the required (empty-allowed) sections, sharing the new $defs/operatorNote with operator_notes — T3's 'compile drops expired notes loudly... not silently omitted' now has an artifact-level home, settling the open question of whether that loud disclosure lives only in CLI stdout (gone the moment the process exits) or also in the cross-run-readable artifact: the artifact is the cross-run carrier (F-74ba2c79's fail-closed notes-validation pin is the live behavior this section assumes — see expired_notes' own description for why every entry there already satisfies operatorNote's invariant-conditional by construction). NOT touched by this wave, and deliberately so (A3.5 — named residuals, not silent drops, disclosed on the sections that would otherwise look like they should carry them): the allowlist-overdue output (scripts/regression-pin-allowlist.json's 36 entries, compileGrandfatheredManifestDrain's return) and compileUnroutableApprovedDrain's approved-but-unroutable findings surface only via `swarm roadmap show` + the digest, not this persisted artifact, this wave; compileDeferredFindingsDrain's waves-shape stays out of the artifact entirely because findings rows carry no owner column in this pass and an owner is never invented to populate one. Emitter wiring — compiler.js/commands/roadmap.js building grandfathered_drain from a NEW producer over grandfathered-pins.json, and drain_queue from compileAuthoredDrainState instead of the old compileDrainQueue composite — is core/verbs' cross-domain burden, unresolved as of this commit, same posture as the WAVE-41 paragraph above: this package states the contract, it does not and cannot conform the emitter that lives outside packages/schemas/**.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "sequence",
+    "compiled_at",
+    "repo",
+    "compiled_from",
+    "open_summary",
+    "grandfathered_drain",
+    "recurrence_stats",
+    "attention",
+    "operator_notes",
+    "expired_notes",
+    "drain_queue"
+  ],
+  "additionalProperties": false,
+  "properties": {
+
+    "run_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9_-]+$",
+      "description": "The swarm control-plane run id this roadmap was compiled from (e.g. swarm-1784091637-5127) — NOT a dogfood-record run_id, which names a different identifier namespace (a consumer's own CI run). Charset is constrained because run_id becomes a filesystem path segment (dogfood/roadmap/<run_id>.json), mirroring dogfood-record.schema.json's run_id field and its stated rationale exactly."
+    },
+
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "T5: increments on a same-run recompile; never edits a prior version. The first compile for a run is sequence 1. A recompile within the same run supersedes with a new sequence number — history is never rewritten. dogfood/roadmap/latest.json (see $defs.latestPointer) is the one mutable indirection that tracks which sequence is newest."
+    },
+
+    "compiled_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "WAVE-41 HONESTY FIX (F-c7b0f47b): this is deliberately NOT the wall-clock moment `swarm roadmap compile` was invoked — an earlier version of this description mischaracterized it as exactly that, which was false and has been corrected. The value is sourced from the compiled run's own DB row (`runs.created_at`), held fixed for that run's lifetime, so that two separate compile invocations against byte-identical DB state produce a byte-identical artifact — T1's determinism promise, proven cross-process by F-feeaef78 (see commands/roadmap.js's deterministicNow()). Two compiles of the SAME run, issued minutes or days apart, MUST carry the identical value here by construction; a future implementation that instead stamps a live clock read at invocation time is the regression F-feeaef78 exists to catch, not a more accurate timestamp. Distinct from any per-entry timestamp inside the sections below (e.g. grandfathered_drain.outstanding[].revalidate_by, or recurrence_stats.top_recurring[].first_seen/last_seen), which are independently DB- or file-sourced values, not derived from this run-creation stand-in. The GENUINE wall-clock moment this artifact VERSION was actually written is deliberately NOT this field either — it lives one layer outside this document, in the control-plane DB's `roadmap_artifacts.created_at` column (db/schema.js's v10 migration; queryable via lib/roadmap/artifacts.js#latestRoadmapArtifact), precisely so embedding it here would not defeat this field's own byte-identity promise for identical DB state (compile.js's own header names this split explicitly). WAVE-43 / AMENDMENT 3 (A3.3) disclosure: this field's byte-identity promise additionally depends on the compiling process parsing `runs.created_at` — a timezone-unmarked SQLite TEXT value — as UTC; a naive `new Date(...)` parse reads it as local time instead, silently offsetting the value by the host's UTC offset (F-5cfa163c, cross-routed to the verbs domain's commands/roadmap.js — this package cannot fix a call site outside its own globs, only record here that the promise this description makes is conditional on that fix landing)."
+    },
+
+    "repo": {
+      "type": "string",
+      "pattern": "^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$",
+      "description": "Full org/repo the roadmap was compiled for. Same pattern as dogfood-finding.schema.json's repo field."
+    },
+
+    "compiled_from": {
+      "type": "object",
+      "required": ["commit_sha"],
+      "additionalProperties": false,
+      "description": "The git state the compile queries ran against — the 'and git alone' half of T1's 'compiled from the control-plane DB and git alone.'",
+      "properties": {
+        "commit_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "description": "Full 40-hex commit SHA checked out at compile time. Same pattern as dogfood-record.schema.json's ref.commit_sha."
+        }
+      }
+    },
+
+    "open_summary": {
+      "type": "object",
+      "required": ["open", "deferred", "approved"],
+      "additionalProperties": false,
+      "description": "T1: 'Factual sections are queries executed at compile time: open/deferred/approved findings' — those three counts are the ones the pass contract names explicitly, and are required. The three optional siblings (fixed/rejected/recurring) round out the full finding-status vocabulary this build recognizes: packages/dogfood-swarm/lib/finding-status.js's CLOSED_FINDING_STATUSES = ['fixed','rejected','deferred'], with 'open'/'approved'/'recurring' all treated as still-open by that module's isOpenFinding(). additionalProperties:false because this is a closed, known status set, not an open-ended bag.",
+      "properties": {
+        "open": { "type": "integer", "minimum": 0, "description": "Findings with no disposition yet." },
+        "deferred": { "type": "integer", "minimum": 0, "description": "Findings consciously postponed — closed for gate purposes; the deferred ones with provenance/cadence are tracked in drain_queue below." },
+        "approved": { "type": "integer", "minimum": 0, "description": "Findings reviewed and greenlit for an amend wave — the DB-canonical work-order findings a run's lanes build against." },
+        "fixed": { "type": "integer", "minimum": 0, "description": "Findings resolved by an amend." },
+        "rejected": { "type": "integer", "minimum": 0, "description": "Findings triaged away as not-a-defect." },
+        "recurring": { "type": "integer", "minimum": 0, "description": "Findings reopened via the content-match regression-rediscovery path (a closed finding's fingerprint re-reported) or via C1's evidence-bearing operator reopen." }
+      }
+    },
+
+    "grandfathered_drain": {
+      "type": "object",
+      "required": ["frozen_total", "drained", "outstanding"],
+      "additionalProperties": false,
+      "description": "T6 drain state for the frozen grandfathered manifest — scripts/grandfathered-pins.json, the 256-entry migration-debt set frozen at commit 132dc18 (2026-07-16) when the declared-@pins-tag rewrite landed (docs/pin-matcher-rewrite.dispatch.md). WAVE-43 / AMENDMENT 3 (A3.2b) CORRECTION: an earlier revision of this section (and of scripts/doc-drift-patterns.json, HANDOFF, and the wave-42 kickoff) wrongly claimed this section shared a provenance shape with drain_queue below — false, caught by Amendment 3's own adversarial skeptic round. This section targets scripts/grandfathered-pins.json specifically, NOT scripts/regression-pin-allowlist.json (the 36-entry registry drain_queue's own section below is also not built from — see that section's description); the two suppression registries are distinct files with distinct shapes and must not be conflated a third time. frozen_total is the manifest's size at the moment it was frozen (a constant per manifest generation, not recomputed per compile — see that field's own description for why it must never be inferred from the current live count); drained counts entries removed from the manifest by a completed re-review since freeze; outstanding lists what remains, each an $defs/grandfatheredManifestEntry — a shape distinct from drain_queue.entries[] below as of this amendment, because the two are different populations over different files with different authored data, not one shape two sections risk drifting apart from (the pre-amendment framing this replaced was itself the bug: no producer ever satisfied a shared shape). The manifest's SHARED freeze rationale — every F-id the pin-matcher rewrite's own live heuristic classified as grandfathered at the freeze commit, migrating out only via a declared @pins tag, an allowlist entry, or removal as a still-undeclared orphan (scripts/grandfathered-pins.json's own header) — lives here, at the section level, rather than repeated on every entry: the manifest's real per-entry shape carries no individual reason (see $defs/grandfatheredManifestEntry's own `reason` field for why it is optional and never invented to fill it). No producer for this section is wired into the committed artifact as of this wave — A3.2b names it a NEW producer core's domain must build over the manifest file; this schema states the target contract, not the current reality.",
+      "properties": {
+        "frozen_total": { "type": "integer", "minimum": 0, "description": "Size of the grandfathered manifest at the moment it was frozen — display provenance for a human reader, NEVER an integrity guard (swarms/PROTOCOL.md's 'Fixing a class, not an instance' sub-law 5: 'a count is not integrity'). The real integrity guard is content-addressed (EXPECTED_GRANDFATHER_MANIFEST_HASH over the manifest file), independent of this field. Informational relationship, not schema-enforced (JSON Schema cannot cross-check arithmetic across sibling fields): drained = frozen_total minus the manifest's current live entry count." },
+        "drained": { "type": "integer", "minimum": 0, "description": "Entries removed from the manifest by a completed re-review since freeze — frozen_total minus the manifest's current live entry count in scripts/grandfathered-pins.json (informational relationship; see frozen_total's own description)." },
+        "outstanding": {
+          "type": "array",
+          "description": "Remaining grandfathered-manifest entries, one per still-frozen id in scripts/grandfathered-pins.json. Uses $defs/grandfatheredManifestEntry — a distinct shape from drain_queue.entries[] below as of WAVE-43/Amendment 3 (A3.2b).",
+          "items": { "$ref": "#/$defs/grandfatheredManifestEntry" }
+        }
+      }
+    },
+
+    "recurrence_stats": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "T1: 'recurrence stats (swarm trends internals)'. Deliberately left open (additionalProperties:true) rather than frozen here: the query layer this section reflects (packages/dogfood-swarm/lib/queries/cross-run-analytics.js's queryRecurringFindings and its siblings) is owned by the core/dogfood-swarm domain and evolves independently of this schemas-package registration. Freezing every field here would prematurely couple two domains this pass's own DECOMPOSE_BY_SECRETS scoring (docs/trajectory-and-closure.dispatch.md) deliberately keeps separate. The one field named below is grounded directly in that module's existing return shape as a documented-but-not-exhaustive convention, not a closed contract — an undisclosed gap would itself be the defect (swarms/CLAUDE.md, 'Honesty is a feature of the artifact, not a mood').",
+      "properties": {
+        "top_recurring": {
+          "type": "array",
+          "description": "Fingerprints observed across more than one run, most-recurring first. Mirrors queryRecurringFindings()'s actual return shape (packages/dogfood-swarm/lib/queries/cross-run-analytics.js) rather than redefining it independently.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true,
+            "required": ["fingerprint", "run_count", "severity", "first_seen", "last_seen"],
+            "properties": {
+              "fingerprint": { "type": "string", "minLength": 1, "description": "Content-addressed finding fingerprint (packages/dogfood-swarm/lib/fingerprint.js)." },
+              "description": { "type": "string", "description": "A representative description from one of the recurring rows. Not fingerprint-folded — wording may vary run to run; this is a stable pick, not a canonical one." },
+              "run_count": { "type": "integer", "minimum": 2, "description": "Distinct runs this fingerprint was observed in. By construction always greater than 1 — that is what makes it 'recurring'." },
+              "severity": { "type": "string", "enum": ["CRITICAL", "HIGH", "MEDIUM", "LOW"], "description": "The most severe observation across runs (an explicit rank, not an alphabetical MAX — 'MEDIUM' must not beat 'CRITICAL')." },
+              "first_seen": { "type": "string", "format": "date-time", "description": "Earliest run this fingerprint was observed in." },
+              "last_seen": { "type": "string", "format": "date-time", "description": "Most recent run this fingerprint was observed in." }
+            }
+          }
+        }
+      }
+    },
+
+    "attention": {
+      "type": "object",
+      "required": ["advisory", "items"],
+      "additionalProperties": false,
+      "description": "T2: a ranked top-K per-file attention list, consumed ONLY as audit-brief context. `advisory` is a non-optional, const-true sibling of the ranked list — structurally inseparable, so a consumer can never read `items` without also validating the label that governs how it may be used.",
+      "$comment": "T2 is explicit: 'It is never a gate, never a predictor, never auto-blame' (Q3: Lewis et al. 2013, ICSE, research.google/pubs/pub41145 — Google's deployed bug predictor changed no developer behavior; only passive hotspot reports survived. Q3: SZZ-style blame misattributes against developer oracles, Rosa et al. 2021, arXiv:2102.03300). The schema cannot enforce HOW a consumer uses this section — only that the advisory label travels WITH the list and cannot be stripped from an instance without producing a schema violation.",
+      "properties": {
+        "advisory": {
+          "type": "boolean",
+          "const": true,
+          "description": "Always true by construction. A compiler cannot emit an attention section without this marker; a consumer cannot read `items` without also seeing this sibling is present and true (T2: 'never a gate, never a predictor, never auto-blame')."
+        },
+        "items": {
+          "type": "array",
+          "description": "Ranked top-K files by attention score. Empty is valid — no signal this compile.",
+          "items": {
+            "type": "object",
+            "required": ["file", "score", "components"],
+            "additionalProperties": false,
+            "properties": {
+              "file": { "type": "string", "minLength": 1, "description": "Repo-relative file path." },
+              "score": { "type": "number", "minimum": 0, "description": "Combined attention score — the product of the three normalized components below (T2)." },
+              "components": {
+                "type": "object",
+                "required": ["churn", "recency", "fragmentation"],
+                "additionalProperties": false,
+                "description": "The three factors T2 names explicitly, each independently sourced: churn relative to file size (Q3: Nagappan & Ball 2005, ICSE — relative, not absolute, churn discriminates); prior-finding recency/count (Q3: Rahman & Devanbu 2013, ICSE — process metrics beat static code metrics); lane-fragmentation, the count of distinct domains that touched the file (Q3: Bird et al. 2011, ESEC/FSE — ownership fragmentation predicts failures better than churn+complexity+coverage combined).",
+                "properties": {
+                  "churn": { "type": "number", "minimum": 0, "description": "Recent churn normalized relative to file size." },
+                  "recency": { "type": "number", "minimum": 0, "description": "Prior-finding recency/count signal for this file." },
+                  "fragmentation": { "type": "number", "minimum": 0, "description": "Count (or normalized measure) of distinct domains/lanes that have touched this file." }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+
+    "operator_notes": {
+      "type": "array",
+      "maxItems": 7,
+      "description": "T3: the ONLY human-authored section — the ACCEPTED/active subset (lib/roadmap/notes.js#validateOperatorNotes' own `accepted` return). At most 7 entries (Q1: Shinn et al. 2023, Reflexion, arXiv:2303.11366 — bounded lesson buffers beat unbounded). See expired_notes below for the sibling bucket T3's loud-expiry rule feeds; both share $defs/operatorNote so the two buckets cannot drift into two different note shapes.",
+      "items": { "$ref": "#/$defs/operatorNote" }
+    },
+
+    "expired_notes": {
+      "type": "array",
+      "description": "WAVE-43 / AMENDMENT 3 (A3.4, F-74ba2c79): the operator notes T3 requires compile to drop LOUDLY rather than silently omit ('listed in output as EXPIRED, not silently omitted') — renamed from the notes-validation module's internal `expired` key (lib/roadmap/notes.js#validateOperatorNotes) to this artifact-level name. Settles T3's own 'output' ambiguity: the loud disclosure lives in the cross-run artifact itself, not only in a CLI stdout line a later run can no longer see — the artifact is the cross-run carrier (F-74ba2c79's fail-closed notes-validation pin is the live behavior this section assumes). REQUIRED, empty-allowed: absent would mean 'compile did not run this query', which is never true for this section — it is always computed in the same pass as operator_notes (this file's own top-level description states that convention for every section here). Every entry already satisfies $defs/operatorNote's own kind/text/enforced_by shape and invariant-conditional by construction: notes.js's control flow checks those BEFORE checking expiry, so a note only reaches this bucket after already passing them (an invariant note that FAILS the enforced_by check is dropped as invalid, not expired — this section is never where that failure surfaces). Unlike operator_notes, no maxItems cap here — deliberately: T3's 7-note bound polices what an operator may AUTHOR in one compile (validateOperatorNotes' own input, which happens to bound this bucket to at most 7 today as a side effect of that same check, not a rule this schema freezes), not how many historical expired notes a future reader might want visible; a compiler that someday carries forward multiple runs' expired history should not need a schema change to do it.",
+      "items": { "$ref": "#/$defs/operatorNote" }
+    },
+
+    "drain_queue": {
+      "type": "object",
+      "required": ["entries", "overdue_ids"],
+      "additionalProperties": false,
+      "description": "T6 drain state for the AUTHORED, runs-ordinal drain-state file — dogfood/roadmap-drain-state.json, a target-repo-local file an operator hand-maintains (F-1cd5de59 lineage; lib/roadmap/drain.js#compileAuthoredDrainState is the shipped, end-to-end-pinned reader). WAVE-43 / AMENDMENT 3 (A3.2a) CORRECTION: an earlier revision of this section (and of scripts/doc-drift-patterns.json, HANDOFF, and the wave-42 kickoff) wrongly claimed this section shared a provenance shape, and shared a 'both model DATES' character, with grandfathered_drain above — both false, caught by Amendment 3's own adversarial skeptic round. This section is RUNS-ORDINAL (cadence measured in runs on this repo, via a cross-run index over the `runs` table), not date-based, and it is a DIFFERENT population over a DIFFERENT file than either grandfathered_drain (scripts/grandfathered-pins.json) or the allowlist-overdue residual named below (scripts/regression-pin-allowlist.json) — three distinct suppression/drain files exist in this codebase and must not be conflated a fourth time. `entries` preserves F-1cd5de59's distinct-listing assertion; `overdue_ids` is compileAuthoredDrainState's own denormalized convenience subset. NAMED RESIDUALS, NOT SILENT DROPS (A3.5): this section does NOT surface the allowlist-overdue output (scripts/regression-pin-allowlist.json's 36 entries, compileGrandfatheredManifestDrain's return) or compileUnroutableApprovedDrain's approved-but-unroutable findings — both remain advisory-only via `swarm roadmap show` + the digest, not persisted here, this wave. compileDeferredFindingsDrain's waves-shape stays out of the artifact entirely: findings rows carry no owner column in this pass, and an owner is never invented to populate one (T6's own 'never anonymous' provenance discipline, mirrored by $defs/drainQueueEntry.owner below). No producer is wired into the committed artifact from THIS shape as of this wave (core/verbs' cross-domain burden, unresolved as of this commit) — this schema states the target contract; see this file's top-level $comment for the full seam-decision writeup.",
+      "properties": {
+        "entries": {
+          "type": "array",
+          "description": "One entry per id named in dogfood/roadmap-drain-state.json, mirroring compileAuthoredDrainState's shipped return shape exactly (lib/roadmap/drain.js). Uses $defs/drainQueueEntry — a distinct shape from grandfathered_drain.outstanding[] above as of WAVE-43/Amendment 3 (A3.2a).",
+          "items": { "$ref": "#/$defs/drainQueueEntry" }
+        },
+        "overdue_ids": {
+          "type": "array",
+          "description": "Subset of entries[].id where entries[].overdue===true — compileAuthoredDrainState's own denormalized convenience return, so a consumer wanting only the overdue set does not need to filter entries[] itself (T6: 'entries past cadence surface at the top of the next run's digest').",
+          "items": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+
+    "content_hash": {
+      "type": "string",
+      "minLength": 1,
+      "description": "OPTIONAL — WAVE-41 SEAM DECISION (F-c7b0f47b): stays optional, deliberately not promoted to required, even though this wave expects emitters to start populating it. Not part of the locked T1-T6 pass contract (docs/trajectory-and-closure.dispatch.md) — an integrity aid for T5's 'versions supersede, nothing rewrites' discipline, so a consumer can cheaply detect whether a previously-fetched dogfood/roadmap/<run-id>.json has changed, by comparing a freshly computed hash against one it cached earlier. HASHING SEMANTIC (newly specified this wave — the prior text left this undefined, which is why the field was computed by writeRoadmapArtifact but never actually reached the written bytes): if a producer includes this field, it MUST be a hash of the artifact's own serialized bytes computed WITH THIS FIELD ABSENT — hash-then-attach, never hash-including-self, which has no fixed point. Hash algorithm and length remain deliberately unconstrained here: choosing and documenting one is a compiler (core domain) decision, not a schemas-package one. Kept optional rather than required because this schema can only ever enforce the KEY's presence, never the VALUE's correctness — a wrong or stale hash is worse than an absent one, so a producer not yet confident in its self-exclusion computation should omit the field rather than ship a mismatched one. Promoting this to required is a reasonable follow-up once emitters are confirmed to populate it consistently."
+    },
+
+    "notesPath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![/\\\\])(?![A-Za-z]:).+$",
+      "description": "OPTIONAL — WAVE-41 SEAM DECISION (F-c7b0f47b): records which local file compile read the operator-notes seed from. This is compile-ENVIRONMENT provenance, not one of the T1-T6 sections queried from the DB and git themselves — T3 is about note CONTENT, which lives in operator_notes above; this field only says which local file supplied it, and a producer with nothing meaningful to report (e.g. no seed file existed) may omit it entirely. MUST be repo-relative, resolved against the target repo root at read time, never a machine-absolute path baked into a committed artifact. The pattern mechanically enforces this: it rejects a leading `/` or `\\`, and a drive-letter prefix such as `C:` or `E:\\`. This closes the finding's own first proven exhibit — a real compile had committed this field as a machine-absolute Windows path, which resolves on no checkout but the one that produced it. Before this wave the key was not recognized at all (any value, relative or not, was rejected outright as a disallowed additionalProperty); now a relative value is accepted and only an absolute one is refused, and refused specifically for being absolute rather than merely unrecognized."
+    }
+  },
+
+  "$defs": {
+    "grandfatheredManifestEntry": {
+      "type": "object",
+      "required": ["id", "owner", "revalidate_by"],
+      "additionalProperties": false,
+      "description": "WAVE-43 / AMENDMENT 3 (A3.2b): grandfathered_drain.outstanding's per-entry shape, mirroring scripts/grandfathered-pins.json's real per-id shape exactly — {owner, revalidate_by}, keyed by finding id, no third field. Retired the pre-amendment shared $defs/drainEntry (required reason, added_at, cadence_runs, due_at_run), which no producer ever satisfied for this population: the manifest carries a DATE deadline, not a runs-ordinal cadence, and has never carried a per-entry reason or an added_at timestamp.",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "A finding id (F-xxxxxxxx) — one of scripts/grandfathered-pins.json's own keys (e.g. 'F-002109-003'), the id the pin-matcher rewrite's live heuristic classified as grandfathered at the freeze commit. Contrast $defs/drainQueueEntry.id, which lives in a separate, arbitrary authored-file id namespace." },
+        "owner": { "type": "string", "minLength": 1, "description": "Named individual or role accountable for this entry's eventual re-review. Never anonymous — mirrors this repo's NAMED_COMPENSATORS discipline (.claude/rules/workflow-standards.md). Uniformly 'coordinator' in the real manifest today (freezing the list was a coordinator-level architectural decision, not a per-id domain judgment call — scripts/grandfathered-pins.json's own header) but not const-constrained here, since a future manifest generation could assign per-id owners." },
+        "revalidate_by": { "type": "string", "format": "date", "description": "ISO calendar date (YYYY-MM-DD) this entry is due for re-review — scripts/grandfathered-pins.json's own field of the same name, forwarded unchanged. INCLUSIVE boundary (lib/roadmap/drain.js#compileGrandfatheredManifestDrain, the allowlist's sibling reader): an entry whose date is today is already due, not due tomorrow — the opposite boundary convention from $defs/drainQueueEntry.overdue's exclusive one, deliberately, per F-1cd5de59's own pinned distinction between the two populations." },
+        "reason": { "type": "string", "minLength": 1, "description": "Why this specific entry is parked here. OPTIONAL and typically absent: scripts/grandfathered-pins.json's own per-entry shape is {owner, revalidate_by} only — per-entry provenance is never invented to populate this field. The manifest's SHARED rationale (why the whole set was frozen) lives in grandfathered_drain's own section description above, not repeated per entry." }
+      }
+    },
+
+    "drainQueueEntry": {
+      "type": "object",
+      "required": ["id", "owner", "cadence_runs", "runs_since_review", "overdue"],
+      "additionalProperties": false,
+      "description": "WAVE-43 / AMENDMENT 3 (A3.2a): drain_queue's per-entry shape, mirroring lib/roadmap/drain.js#compileAuthoredDrainState's shipped return exactly — {id, owner, cadence_runs, runs_since_review, overdue} + optional reason. Retired the pre-amendment shared $defs/drainEntry (added_at/due_at_run), which no producer ever satisfied: this population's real source (dogfood/roadmap-drain-state.json) carries a RUN-ORDINAL cadence, computed relative to a cross-run index, not an absolute due-at-run number or an added-at timestamp.",
+      "properties": {
+        "id": { "type": "string", "minLength": 1, "description": "The authored drain-state entry's own id (dogfood/roadmap-drain-state.json) — not necessarily a finding id; the authored file's own id namespace (F-1cd5de59). Contrast $defs/grandfatheredManifestEntry.id, which IS always a finding id." },
+        "owner": { "type": "string", "minLength": 1, "description": "Named individual or role accountable for this entry's eventual re-review. Never anonymous — mirrors this repo's NAMED_COMPENSATORS discipline (.claude/rules/workflow-standards.md) applied to drain entries instead of tool calls." },
+        "cadence_runs": { "type": "integer", "minimum": 1, "description": "Re-review cadence, in swarm runs on this repo — the authored source's own `cadence_runs` field, forwarded unchanged." },
+        "runs_since_review": { "type": "integer", "minimum": 0, "description": "Runs elapsed since this entry's last_reviewed_run_ordinal, computed against a cross-run ordinal index over `runs` rows sharing this entry's repo (compileAuthoredDrainState) — NOT a wave count, and not comparable to compileDeferredFindingsDrain's wave-scoped staleness (a residual excluded from this artifact this wave; see drain_queue's own section description)." },
+        "overdue": { "type": "boolean", "description": "True once runs_since_review strictly exceeds cadence_runs (exclusive boundary — an entry exactly AT cadence is not yet overdue; F-1cd5de59 pins this boundary verbatim). Compile surfaces overdue entries at the top of the next run's digest (T6; Q5's Chromium 'no forcing function is the failure' lesson)." },
+        "reason": { "type": "string", "minLength": 1, "description": "Why this entry is parked here. OPTIONAL: compileAuthoredDrainState's shipped shape does not populate this field today, and dogfood/roadmap-drain-state.json's own documented source shape has no reason property either (lib/roadmap/drain.js's own header) — kept optional for forward compatibility with a future authored-source enrichment. Per-entry provenance is never invented to satisfy this schema; omit rather than synthesize." }
+      }
+    },
+
+    "operatorNote": {
+      "type": "object",
+      "required": ["kind", "text", "expires"],
+      "additionalProperties": false,
+      "description": "T3's shared per-note shape, used by both operator_notes (active) and expired_notes (WAVE-43/Amendment 3 A3.4) above — the same shape, two buckets by lifecycle state, not two different note formats.",
+      "properties": {
+        "kind": { "type": "string", "enum": ["theme", "open-question", "invariant"], "description": "T3's three note kinds." },
+        "text": { "type": "string", "minLength": 1, "maxLength": 1000, "description": "The note's content." },
+        "expires": {
+          "description": "When this note stops being surfaced by compile. Either an integer horizon (expires after N further runs on this repo) or an ISO-8601 calendar date. Compile MUST drop expired notes LOUDLY — surfaced in expired_notes, never silently omitted (T3) — but that behavior belongs to the compiler (core domain); this schema only shapes the value, it cannot enforce the drop.",
+          "oneOf": [
+            { "type": "integer", "minimum": 1, "description": "Expires after this many further runs on this repo." },
+            { "type": "string", "format": "date", "description": "Expires on this calendar date (YYYY-MM-DD)." }
+          ]
+        },
+        "enforced_by": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Path to the gate/test that mechanically enforces this note. Required by the conditional below whenever kind='invariant' — 'a lesson without a mechanical verifier is not persisted as a lesson' (Q1: Wang et al. 2023, Voyager, arXiv:2305.16291; Anthropic 2025, Project Vend, anthropic.com/research/project-vend-1 — a long-horizon agent's narrative correction did not hold across days). LIMITATION disclosed up front: this schema can only shape enforced_by as a non-empty string — it cannot verify the referenced gate/test file actually EXISTS on disk. That cross-file existence check belongs to the compiler (core domain), which per this repo's own Class #14 history (scripts/check-finding-regression-pins.mjs's AST-based rebuild after a prose-matching heuristic leaked 7 consecutive audits) should use a real structural check, never a string/regex scan, to confirm enforced_by resolves to something real."
+        }
+      },
+      "allOf": [
+        {
+          "$comment": "T3 invariant-requires-enforced_by conditional — the identical shape to dogfood-finding.schema.json's own proven H4 pattern ('if status===\"rejected\" then review.reject_reason required'), one file over in this same package. A note claiming kind='invariant' with no mechanical enforcement pointer is exactly the Project Vend failure mode (Q1): a narrative correction that does not hold, because nothing mechanical re-checks it. Shared by operator_notes and expired_notes (WAVE-43/Amendment 3 A3.4) via this $defs entry — an expired invariant note must have already satisfied this conditional to have been accepted long enough to expire (see notes.js's control-flow ordering, cited in expired_notes' own description), so this conditional is not redundant there, it is the reason expired_notes never needs a separate one.",
+          "if": {
+            "properties": { "kind": { "const": "invariant" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "required": ["enforced_by"]
+          }
+        }
+      ]
+    },
+
+    "latestPointer": {
+      "type": "object",
+      "required": ["run_id", "sequence", "path"],
+      "additionalProperties": false,
+      "description": "T5 companion micro-shape for dogfood/roadmap/latest.json — the ONE mutable pointer to the newest compiled roadmap version for a run. This is a SEPARATE file's contract from the roadmap document above; a consumer validating latest.json directly references it as dogfood-roadmap.schema.json#/$defs/latestPointer, matching the way F-fe05c6d7's own recommendation named it a 'companion micro-shape' rather than a second top-level schema file.",
+      "properties": {
+        "run_id": { "type": "string", "minLength": 1, "pattern": "^[A-Za-z0-9_-]+$", "description": "Same run_id as the pointed-to roadmap document." },
+        "sequence": { "type": "integer", "minimum": 1, "description": "Same sequence as the pointed-to roadmap document — the newest compiled version for this run." },
+        "path": { "type": "string", "minLength": 1, "description": "Relative path to the versioned roadmap file this pointer resolves to, e.g. dogfood/roadmap/<run_id>.json." }
+      }
+    }
+  }
+}

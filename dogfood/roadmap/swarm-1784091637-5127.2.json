@@ -1,0 +1,96 @@
+{
+  "runId": "swarm-1784091637-5127",
+  "repo": "dogfood-lab/testing-os",
+  "compiled_at": "2026-07-15T09:00:38.000Z",
+  "notes": [],
+  "expired": [],
+  "attention": [
+    {
+      "file": "scripts/check-finding-regression-pins.mjs",
+      "score": 0.0048439675510519795
+    },
+    {
+      "file": "packages/dogfood-swarm/cli.js",
+      "score": 0.001758954886050247
+    },
+    {
+      "file": "packages/dogfood-swarm/reason-escaping-discipline.test.js",
+      "score": 0.0015014905838726098
+    },
+    {
+      "file": "HANDOFF.md",
+      "score": 0.001385800400845957
+    },
+    {
+      "file": "swarms/PROTOCOL.md",
+      "score": 0.001285772476604278
+    },
+    {
+      "file": "scripts/pin-declarations.mjs",
+      "score": 0.0011021912436645675
+    },
+    {
+      "file": "packages/dogfood-swarm/wave23-findings-format.test.js",
+      "score": 0.0008264147256956674
+    },
+    {
+      "file": "swarms/templates/audit.md",
+      "score": 0.0007404303633217994
+    },
+    {
+      "file": "docs/pin-matcher-rewrite.dispatch.md",
+      "score": 0.0007135982075233527
+    },
+    {
+      "file": "packages/dogfood-swarm/lib/templates.js",
+      "score": 0.0006849770118690493
+    },
+    {
+      "file": "packages/dogfood-swarm/persist-results.js",
+      "score": 0.0006392107965380666
+    },
+    {
+      "file": "packages/dogfood-swarm/lib/fingerprint.js",
+      "score": 0.0006114013587891296
+    },
+    {
+      "file": "packages/dogfood-swarm/amend1-tx-discipline.test.js",
+      "score": 0.0006036879595588235
+    },
+    {
+      "file": "packages/dogfood-swarm/commands/lib/escape-reason.js",
+      "score": 0.0005525939542483661
+    },
+    {
+      "file": "site/src/content/docs/handbook/error-codes.md",
+      "score": 0.0005454531605459863
+    },
+    {
+      "file": "packages/dogfood-swarm/stageA-dispatch-phase-precondition.test.js",
+      "score": 0.0005023707646065183
+    },
+    {
+      "file": "packages/dogfood-swarm/wave12-swarm-cp-pins.test.js",
+      "score": 0.0004603580562659846
+    },
+    {
+      "file": "scripts/regression-pin-allowlist.json",
+      "score": 0.000449437587535014
+    },
+    {
+      "file": "CLAUDE.md",
+      "score": 0.0004120710784313726
+    },
+    {
+      "file": "packages/ingest/load-context.js",
+      "score": 0.000399144462415936
+    }
+  ],
+  "drain": {
+    "entries": [],
+    "overdue_ids": []
+  },
+  "notesPath": "dogfood/roadmap-notes.json",
+  "sequence": 2,
+  "content_hash": "04c772d940c10232c3a607ab08e60052563c807a87fce6c2c4ac6401acdd350c"
+}

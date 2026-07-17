@@ -1,6 +1,6 @@
 {
   "$schema": "./doc-drift-patterns.schema.json",
-  "description": "Config for scripts/check-doc-drift.mjs — codifies Class #9 (multi-occurrence sibling-fix sweep) and Class #11 (multi-occurrence fix completeness). Each entry is one drift CHECK. Adding a new check is a config edit, not a code edit: append a new object with { id, kind, title, ... } where the remaining fields are the requiredFields declared by the handler module for that kind. The framework registers seven handler modules — source-vs-target-coverage, forbidden-pattern-in-targets, self-consistency, untagged-fence, helper-adoption-sweep, schema-conformance, framework-self-test — and dispatches each entry to the matching handler. New drift CLASSES (entirely new kinds of comparison) need both a config entry AND a new handler module; new INSTANCES of an existing class are config-only.",
+  "description": "Config for scripts/check-doc-drift.mjs — codifies Class #9 (multi-occurrence sibling-fix sweep) and Class #11 (multi-occurrence fix completeness). Each entry is one drift CHECK. Adding a new check is a config edit, not a code edit: append a new object with { id, kind, title, ... } where the remaining fields are the requiredFields declared by the handler module for that kind. The framework registers nine handler modules — source-vs-target-coverage, forbidden-pattern-in-targets, self-consistency, untagged-fence, helper-adoption-sweep, schema-conformance, roadmap-notes-integrity, framework-self-test, source-of-truth-cross-ref — and dispatches each entry to the matching handler. (This count/list drifted stale at eight handlers for a time — source-of-truth-cross-ref shipped without updating this prose; fixed alongside the F-8f9e3ea0 addition of roadmap-notes-integrity rather than compounding it, per this repo's own Class #11 the hard way.) New drift CLASSES (entirely new kinds of comparison) need both a config entry AND a new handler module; new INSTANCES of an existing class are config-only.",
   "checks": [
     {
       "id": "error-codes",
@@ -23,15 +23,25 @@
         },
         {
           "regex": "this\\.code\\s*=\\s*`STATE_MACHINE_\\$\\{opts\\.kind\\}`",
-          "expand": ["STATE_MACHINE_BLOCKED", "STATE_MACHINE_TERMINAL", "STATE_MACHINE_INVALID"]
+          "expand": [
+            "STATE_MACHINE_BLOCKED",
+            "STATE_MACHINE_TERMINAL",
+            "STATE_MACHINE_INVALID"
+          ]
         },
         {
           "regex": "code:\\s*['\"]FINDING_ID_COLLISION['\"]",
-          "expand": ["FINDING_ID_COLLISION"]
+          "expand": [
+            "FINDING_ID_COLLISION"
+          ]
         },
         {
           "regex": "`VALIDATOR_FAULT_\\$\\{cls\\}",
-          "expand": ["VALIDATOR_FAULT_SCHEMA", "VALIDATOR_FAULT_POLICY", "VALIDATOR_FAULT_STEPS"]
+          "expand": [
+            "VALIDATOR_FAULT_SCHEMA",
+            "VALIDATOR_FAULT_POLICY",
+            "VALIDATOR_FAULT_STEPS"
+          ]
         },
         {
           "regex": "'(DISPATCH_[A-Z_]+)'",
@@ -56,14 +66,24 @@
           "kind": "status-enum-evaluator",
           "module": "packages/dogfood-swarm/db/schema.js",
           "exportName": "STATUS",
-          "skipKeys": ["claim_type", "ownership_class", "severity", "run", "wave", "agent_run"]
+          "skipKeys": [
+            "claim_type",
+            "ownership_class",
+            "severity",
+            "run",
+            "wave",
+            "agent_run"
+          ]
         }
       ],
       "targets": [
         "site/src/content/docs/handbook/state-machines.md"
       ],
       "matchMode": "wholeWord",
-      "allowlist": ["reported", "recurred"],
+      "allowlist": [
+        "reported",
+        "recurred"
+      ],
       "hint": "Mention the missing status in site/src/content/docs/handbook/state-machines.md. The state-machines page documents PUBLIC state vocabularies (record classification, finding review, wave classification). Internal control-plane plumbing (run/wave/agent_run statuses) is exempt via skipKeys in scripts/doc-drift-patterns.json. If a finding-review or wave-classifier state is genuinely internal-only and shouldn't be documented, add it to the allowlist with a comment explaining why."
     },
     {
@@ -134,25 +154,52 @@
         {
           "id": "10-phase-title",
           "must": [
-            { "regex": "10-Phase Play", "min": 1, "label": "title block must reference 10-Phase Play" }
+            {
+              "regex": "10-Phase Play",
+              "min": 1,
+              "label": "title block must reference 10-Phase Play"
+            }
           ],
           "mustNot": [
-            { "regex": "## The 9-Phase Play", "label": "old '9-Phase Play' header" }
+            {
+              "regex": "## The 9-Phase Play",
+              "label": "old '9-Phase Play' header"
+            }
           ]
         },
         {
           "id": "stage-d-defined",
           "must": [
-            { "regex": "Stage D[^-]*[—-][^\\n]*Visual", "min": 1, "label": "Stage D must be defined with 'Visual' lens" },
-            { "regex": "\\*\\*Stage D[^*]+\\*\\*", "min": 1, "label": "Stage D must appear as a bolded entry in the stage list" }
+            {
+              "regex": "Stage D[^-]*[—-][^\\n]*Visual",
+              "min": 1,
+              "label": "Stage D must be defined with 'Visual' lens"
+            },
+            {
+              "regex": "\\*\\*Stage D[^*]+\\*\\*",
+              "min": 1,
+              "label": "Stage D must appear as a bolded entry in the stage list"
+            }
           ]
         },
         {
           "id": "all-stages-mentioned-in-checklist",
           "must": [
-            { "regex": "STAGE A", "min": 1, "label": "Stage A in coordinator checklist" },
-            { "regex": "STAGE B", "min": 1, "label": "Stage B in coordinator checklist" },
-            { "regex": "STAGE C", "min": 1, "label": "Stage C in coordinator checklist" }
+            {
+              "regex": "STAGE A",
+              "min": 1,
+              "label": "Stage A in coordinator checklist"
+            },
+            {
+              "regex": "STAGE B",
+              "min": 1,
+              "label": "Stage B in coordinator checklist"
+            },
+            {
+              "regex": "STAGE C",
+              "min": 1,
+              "label": "Stage C in coordinator checklist"
+            }
           ]
         }
       ],
@@ -168,8 +215,16 @@
         {
           "id": "tombstone-intact",
           "must": [
-            { "regex": "\"\\$comment\":\\s*\"RETIRED \\(2026-07-15\\)", "min": 1, "label": "$comment must open with the RETIRED (2026-07-15) marker" },
-            { "regex": "RETIRED — see \\$comment", "min": 1, "label": "description must carry the 'RETIRED — see $comment' cross-ref" }
+            {
+              "regex": "\"\\$comment\":\\s*\"RETIRED \\(2026-07-15\\)",
+              "min": 1,
+              "label": "$comment must open with the RETIRED (2026-07-15) marker"
+            },
+            {
+              "regex": "RETIRED — see \\$comment",
+              "min": 1,
+              "label": "description must carry the 'RETIRED — see $comment' cross-ref"
+            }
           ]
         }
       ],
@@ -185,8 +240,16 @@
         {
           "id": "banner-intact",
           "must": [
-            { "regex": "^# RETIRED TEMPLATE — do not use \\(deprecated 2026-07-15\\)", "min": 1, "label": "RETIRED banner as the first line" },
-            { "regex": "\\*\\*No code path consumes this file\\.\\*\\*", "min": 1, "label": "bolded no-consumer claim" }
+            {
+              "regex": "^# RETIRED TEMPLATE — do not use \\(deprecated 2026-07-15\\)",
+              "min": 1,
+              "label": "RETIRED banner as the first line"
+            },
+            {
+              "regex": "\\*\\*No code path consumes this file\\.\\*\\*",
+              "min": 1,
+              "label": "bolded no-consumer claim"
+            }
           ]
         }
       ],
@@ -202,14 +265,21 @@
         {
           "id": "banner-intact",
           "must": [
-            { "regex": "^# RETIRED TEMPLATE — do not use \\(deprecated 2026-07-15\\)", "min": 1, "label": "RETIRED banner as the first line" },
-            { "regex": "\\*\\*No code path consumes this file\\.\\*\\*", "min": 1, "label": "bolded no-consumer claim" }
+            {
+              "regex": "^# RETIRED TEMPLATE — do not use \\(deprecated 2026-07-15\\)",
+              "min": 1,
+              "label": "RETIRED banner as the first line"
+            },
+            {
+              "regex": "\\*\\*No code path consumes this file\\.\\*\\*",
+              "min": 1,
+              "label": "bolded no-consumer claim"
+            }
           ]
         }
       ],
       "hint": "swarms/templates/explore.md is a RETIRED template (wave-6 amend F-bd8b4353) — component/domain decomposition lives in the control plane's frozen domain map (`swarm domains`). Keep the '# RETIRED TEMPLATE — do not use (deprecated 2026-07-15)' banner as the file's first line and the '**No code path consumes this file.**' claim intact. If the file is genuinely coming back to life, retire this check in the same commit with the rationale."
     },
-
     {
       "id": "helper-adoption--atomic-write",
       "kind": "helper-adoption-sweep",
@@ -218,7 +288,9 @@
       "helper": "packages/findings/lib/atomic-write.js",
       "exportName": "atomicWriteFileSync",
       "forbiddenPattern": "fs\\.writeFileSync\\(|(?<![\\w.])writeFileSync\\(",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/findings/lib/atomic-write.js",
         "packages/findings/lib/file-lock.js",
@@ -241,7 +313,9 @@
       "helper": "packages/dogfood-swarm/lib/log-stage.js",
       "exportName": "logStage",
       "forbiddenPattern": "(?:function|const|let|var)\\s+logStage\\b",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/dogfood-swarm/lib/log-stage.js"
       ],
@@ -255,7 +329,9 @@
       "helper": "packages/ingest/validate-record.js",
       "exportName": "RecordValidationError",
       "forbiddenPattern": "class\\s+RecordValidationError\\b",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/ingest/validate-record.js"
       ],
@@ -269,7 +345,9 @@
       "helper": "packages/findings/lib/atomic-write.js",
       "exportName": "atomicWriteFileSync",
       "forbiddenPattern": "(?:function|const)\\s+unsafeSegment\\b",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/findings/lib/atomic-write.js",
         "packages/ingest/persist.js"
@@ -284,13 +362,14 @@
       "helper": "packages/dogfood-swarm/lib/errors.js",
       "exportName": "IsolationError",
       "forbiddenPattern": "class\\s+IsolationError\\b",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/dogfood-swarm/lib/errors.js"
       ],
       "wrapperHint": "Import { IsolationError } from the central errors module. New typed errors with .code go into packages/dogfood-swarm/lib/errors.js (or a sibling errors.js if they belong to a different package's lifecycle)."
     },
-
     {
       "id": "agent-output-schema",
       "kind": "schema-conformance",
@@ -301,13 +380,81 @@
         "swarms/__schema-fixtures__/*.json",
         "swarms/swarm-*/wave-*/outputs/*.json"
       ],
-      "allowEmptyGlobs": ["swarms/swarm-*/wave-*/outputs/*.json"],
+      "allowEmptyGlobs": [
+        "swarms/swarm-*/wave-*/outputs/*.json"
+      ],
       "allowlist": [],
       "errorClass": "AgentOutputValidationError",
       "negativeFilenamePattern": "^invalid-",
       "hint": "Match packages/schemas/src/json/agent-output.schema.json. Required at top level: domain, summary. Audit outputs add `findings[]` (with severity ∈ CRITICAL/HIGH/MEDIUM/LOW and category ∈ AUDIT_CATEGORIES); feature outputs add `features[]`; amend outputs add `fixes[]` + `files_changed[]`. Live-run target glob expanded 2026-05-14 (study-swarm Prevention-A): wave-2 amend's coordinator-brief drift (fixes_applied vs fixes) was caught at collect-time after agents had already run — moving the schema-conformance check to CI fires the gate at push time so brief-vs-schema drift surfaces before agents are dispatched. Stage C Wave A2 follow-up: a positive fixture that no longer validates means the schema tightened without updating the fixture (fix one side); a negative fixture that validates means the schema loosened without updating the negative test (fix the schema or the fixture). F-5d126106: the live-run glob (swarms/swarm-*/wave-*/outputs/*.json) is listed in `allowEmptyGlobs` because it is STRUCTURALLY unmatchable in CI — swarms/.gitignore ignores `swarm-*/` wholesale, so no push can ever contain a file under that path. It still matches real files on a dev rig where swarm-*/ working dirs exist on disk, which is where `npm run verify` actually schema-checks live wave outputs; CI's job is limited to the committed swarms/__schema-fixtures__/*.json fixtures, which are NOT in allowEmptyGlobs and must always match at least one file."
     },
-
+    {
+      "id": "roadmap-artifact-schema",
+      "kind": "schema-conformance",
+      "title": "The roadmap latest-pointer (dogfood/roadmap/latest.json) conforms to packages/schemas/src/json/dogfood-roadmap.schema.json#/$defs/latestPointer",
+      "description": "F-7493be3c (wave 39 feature pass, T1 — docs/trajectory-and-closure.dispatch.md): the roadmap is COMPILED, never authored (`swarm roadmap compile <run-id>` writes dogfood/roadmap/<run-id>.json + a latest.json pointer). Without a verify/CI gate, a malformed compile ships a broken artifact that T4's digest-injection (swarm init/dispatch reading latest.json for a new run) would then choke on downstream, with no signal until that unrelated later command fails. Reuses the schema-conformance handler proven on agent-output.schema.json rather than inventing new machinery. CORRECTED after reading the backend domain's real dogfood-roadmap.schema.json (built the same wave, F-fe05c6d7): dogfood/roadmap/latest.json is the SMALL {run_id, sequence, path} pointer shaped by the schema's $defs.latestPointer sub-schema, NOT the full compiled document (that lives at the path the pointer names) — the original brief text ('validate latest.json') was written before the real schema existed and read as 'validate the whole roadmap document'; ground truth corrects that to 'validate the pointer against its own, smaller, dedicated $defs fragment' via the schema-conformance handler's new schemaPointer field (added this same fix). Two design decisions the finding calls out explicitly, both still true post-correction: (1) targets ONLY dogfood/roadmap/latest.json, never a glob over per-run history (dogfood/roadmap/<run-id>.json accumulates one file per run forever — globbing it re-validates the entire archive on every push for no marginal safety, since latest.json is the only artifact anything reads); (2) the target is listed in allowEmptyGlobs so a repo that has never run `swarm roadmap compile` (or is mid-wave-39, pre-merge) reports NOTHING for that glob — not a pass, not a fail, structurally not-applicable — while the committed fixtures below still give the gate something real to validate on every push regardless of compile state.",
+      "schema": "packages/schemas/src/json/dogfood-roadmap.schema.json",
+      "schemaPointer": "#/$defs/latestPointer",
+      "targets": [
+        "scripts/__roadmap-fixtures__/*.json",
+        "dogfood/roadmap/latest.json"
+      ],
+      "allowEmptyGlobs": [
+        "dogfood/roadmap/latest.json"
+      ],
+      "allowlist": [],
+      "errorClass": "RoadmapArtifactValidationError",
+      "negativeFilenamePattern": "^invalid-",
+      "hint": "Match the latestPointer shape ({ run_id, sequence, path }, additionalProperties:false) inside packages/schemas/src/json/dogfood-roadmap.schema.json's $defs (schemas domain, wave 39, F-fe05c6d7). SEAM (disclosed at authoring time, corrected once ground truth existed): this check config was written by the ci-tooling lane in the same parallel wave that built the schema — until that merge lands in THIS worktree, `schema file not found` is the CORRECT, disclosed, pre-merge state of this check, not a bug in this config. scripts/__roadmap-fixtures__/*.json were re-authored against the real $defs.latestPointer shape after reading the backend lane's completed, already-committed schema file directly (not left as an unverified best-effort guess) — see check-doc-drift-roadmap.test.mjs's own stand-in-schema docstring for exactly which fields were confirmed this way. If a fixture still fails post-merge, that means the schemas domain revised latestPointer's shape after this check was authored — a real integration change for the coordinator's serial verify to surface, not a latent bug to paper over."
+    },
+    {
+      "id": "roadmap-artifact-full-document-schema",
+      "kind": "schema-conformance",
+      "title": "The FULL roadmap-document contract (packages/schemas/src/json/dogfood-roadmap.schema.json top level) is enforced against committed fixtures AND the live dogfood/roadmap/swarm-*.json archive (A3.6 widening, wave 43) — 3 pre-conformance historical artifacts exempted by name (T5 immutability; F-feeaef78 sequence-free mirror)",
+      "description": "F-f52fc700 (wave 41 amend, HIGH): roadmap-artifact-schema above only ever validated the small {run_id, sequence, path} latestPointer — the brief's own open question from F-7493be3c ('is the full artifact validated ANYWHERE at verify time') had never actually been closed, only narrowed. PROVEN LIVE at authoring time (direct Ajv2020 compile+run of the real, unmutated schema against the real, unmutated dogfood/roadmap/swarm-1784091637-5127.1.json, zero repo writes, independently reproduced from the finding's own audit): exactly 16 violations — 8 of the schema's 11 required top-level fields (compiled_from, open_summary, grandfathered_drain, recurrence_stats, operator_notes, drain_queue, run_id, compiled_at) missing entirely, 7 of the artifact's actual top-level keys (runId, compiledAt, notes, expired, drain, sections, notesPath) tripping additionalProperties:false, and attention failing type:object because the artifact's attention is a flat [{file,score}] array rather than the schema's {advisory:true, items:[...]} shape. THREE INDEPENDENTLY-AUTHORED VOCABULARIES exist for the same conceptual document today: the schema (snake_case, this package), packages/dogfood-swarm/lib/roadmap/compile.js's internal shape (also snake_case but differently nested), and packages/dogfood-swarm/commands/roadmap.js's CLI-facing envelope actually written to disk (camelCase, flattened attention) — none agree. RECONCILING THOSE THREE IS EXPLICITLY NOT THIS CHECK'S JOB: Amendment 3 (wave 42, docs/trajectory-and-closure.dispatch.md) RULED on the target shapes (A3.1 the required-section envelope; A3.2 two per-population drain shapes — drain_queue={entries[],overdue_ids[]} runs-ordinal per compileAuthoredDrainState, grandfathered_drain.outstanding[] date-shaped {id,owner,revalidate_by}+reason over a NEW producer reading the manifest; A3.4 a required expired_notes section) — but landing that ruling in code is NOT this check's job and has NOT happened in this tree: wave 43's dispatched lanes (read directly: backend.md, swarm-cp-core.md, swarm-cp-verbs.md — none cite Amendment 3 or touch packages/schemas/** / commands/roadmap.js's emitted vocabulary) do not implement it, so the schema on disk and the CLI's emitted shape are both still wave-41-shaped. This check's job is narrower and permanent regardless of which wave lands the reconciliation: WIRE THE GATE so the full document is validated by SOMETHING at verify/CI time, where at wave-40 nothing at all did. Do NOT interpret a red result from this check, on its own, as a ci-tooling regression — cross-reference which domain's fix landed last. A3.6 WIDENING (wave 43, 2026-07-17 — docs/trajectory-and-closure.dispatch.md, 'the gate must not go red on history'; supersedes the wave-41 TRANSITIONAL SUSPENSION design, whose 'expect the coordinator's end-of-wave recompile to be what this check sees green at merge' prediction did not survive contact with wave 41's actual partial merge): `targets` widens to include the live per-run archive directly; the `suspendedTargets` mechanism is RETIRED for this check, not narrowed further — zero WARNs, gate enforcing, history untouched. The 3 artifacts that predate any A3 conformance work are exempted by NAME in `allowlist` instead, permanently and silently (mirroring the roadmap-artifact-no-absolute-paths check's own precedent for the identical T5-immutability argument): dogfood/roadmap/swarm-1784091637-5127.1.json and .2.json — both pre-conformance; T5 ('versions supersede; nothing rewrites') makes them uneditable, so neither can ever be brought into conformance after the fact, only superseded by a fresh, conformant sequence; and the sequence-free mirror dogfood/roadmap/swarm-1784091637-5127.json — F-feeaef78: this file deliberately omits the schema-required `sequence` field to prove byte-identical determinism across compiles, so it can never conform to a schema requiring `sequence`, by design, not by defect (one such mirror-exemption entry is the accepted, bounded, recurring cost of every future run this repo compiles a roadmap for). CORRECTION (A3's own correction record — the prior claim below was false and is replaced here at its origin): the schema's $defs/drainEntry models cadence in RUNS (required: added_at, cadence_runs, due_at_run). The TRUE inventory, read directly from packages/dogfood-swarm/lib/roadmap/drain.js at HEAD: compileAuthoredDrainState is the shipped, end-to-end-pinned (F-1cd5de59) RUNS-ORDINAL mechanism that actually feeds the committed artifact's `drain` field today; compileGrandfatheredManifestDrain is the DATES (revalidate_by) mechanism, but it reads the 36-entry scripts/regression-pin-allowlist.json (its own ALLOWLIST_RELATIVE_PATH constant) — NOT the 256-entry scripts/grandfathered-pins.json manifest, despite its name — and its output is computed every compile and then discarded before reaching the committed artifact (F-875708f9). The prior claim that 'both implementations model DATES' was false: only one of the two live drain mechanisms uses dates, and it is not the one wired to the artifact. A3 CONTRACT FIXTURES — validate green at wave-43 merge (backend's amended schema). Coordinator-directed follow-up, second wave-43 ci-tooling commit, superseding this paragraph's earlier 'fixtures LEFT UNCHANGED' residual: backend's A3.2/A3.4 schema amendment landed in ITS worktree (branch swarm/4091637-5127/w43-backend, commit 06d79ce — $defs/drainQueueEntry {id,owner,cadence_runs,runs_since_review,overdue}+reason?, $defs/grandfatheredManifestEntry {id,owner,revalidate_by}+reason?, drain_queue {entries[],overdue_ids[]}, required expired_notes sharing $defs/operatorNote), invisible to this worktree's copy of the schema until merge. The coordinator therefore lifted the green-in-this-worktree constraint for the fixtures specifically, and scripts/__roadmap-document-fixtures__/ is now authored against that amended contract — verified by direct Ajv2020 execution against backend's actual committed schema file (read cross-worktree, which is permitted; only editing is not): both valid fixtures PASS the amended schema; all six invalid fixtures FAIL it with EXACTLY their claimed violation and nothing else. EXPECTED PRE-MERGE STATE: against THIS worktree's pre-amendment schema the two positive fixtures fail (additionalProperties expired_notes; drain_queue array-vs-object; grandfathered entry shape) — so this check reports drift and `node scripts/check-doc-drift.mjs` exits 1 in this worktree, BY DESIGN, until the merge brings the schema and these fixtures together; every negative fixture still fails the old schema too, so no NEGATIVE_FIXTURE_PASSED fires pre-merge. The coordinator runs the gates bare at merge reconciliation, where this check must be fully green. WHAT THIS CHECK VALIDATES: (1) scripts/__roadmap-document-fixtures__/*.json — hand-authored fixtures matching the AMENDED (A3.2/A3.4) top-level schema. 2 positive: valid-minimal (every required section empty — including the new required-empty-allowed expired_notes and the {entries,overdue_ids} drain_queue), valid-populated (BOTH new per-population entry shapes with and without their optional reason; a populated expired_notes exercising two operatorNote kinds through the shared $defs; attention items[].components {churn,recency,fragmentation}; the F-1cd5de59 exclusive overdue boundary modeled in data — runs_since_review 4>3 overdue true and listed in overdue_ids, 5=5 not overdue). 6 negative, one distinct constraint class each: invalid-missing-required-field (required drain_queue), invalid-extra-top-level-property (additionalProperties — 'sections', the envelope key A3.1 keeps unblessed), invalid-invariant-note-missing-enforced-by (the operatorNote invariant conditional), invalid-absolute-notes-path (the notesPath repo-relative pattern), invalid-drain-queue-entry-missing-owner (required owner on $defs/drainQueueEntry), invalid-grandfathered-entry-missing-owner (required owner on $defs/grandfatheredManifestEntry — the per-population missing-owner pair A3.2 asked for). (2) dogfood/roadmap/swarm-*.json — the REAL committed per-run artifacts — directly in `targets`; the 3 files named above are the only exemptions, via `allowlist`, silent by design (see the schema-conformance handler's own module docstring for the allowlist-vs-suspendedTargets split). A FOURTH or later sequence, or a future run's artifact, that is not by-name allowlisted MUST conform or the gate fails loud — this enforcement is what A3.6 exists to add. WHAT THIS CHECK DELIBERATELY SKIPS: it does not adjudicate WHICH of the three vocabularies is correct (Amendment 3 already ruled on that), does not touch packages/schemas or packages/dogfood-swarm (outside ci-tooling's owned globs: .github/**, scripts/**, tsconfig*.json), and does not retroactively fix already-committed artifacts — the coordinator's sequence-3+ recompile at merge reconciliation is the step that makes the live archive conform (see hint).",
+      "schema": "packages/schemas/src/json/dogfood-roadmap.schema.json",
+      "targets": [
+        "scripts/__roadmap-document-fixtures__/*.json",
+        "dogfood/roadmap/swarm-*.json"
+      ],
+      "allowlist": [
+        "dogfood/roadmap/swarm-1784091637-5127.1.json",
+        "dogfood/roadmap/swarm-1784091637-5127.2.json",
+        "dogfood/roadmap/swarm-1784091637-5127.json"
+      ],
+      "errorClass": "RoadmapDocumentValidationError",
+      "negativeFilenamePattern": "^invalid-",
+      "hint": "This check does not say which of the three vocabularies (schema / compile.js internal shape / roadmap.js CLI envelope) is correct — Amendment 3 (docs/trajectory-and-closure.dispatch.md, A3.1/A3.2/A3.4) already ruled on that. Landing state at wave 43: (1) packages/schemas/src/json/dogfood-roadmap.schema.json adopted A3.2's two drain shapes + A3.4's expired_notes in backend's worktree (commit 06d79ce, merges this wave); (3) scripts/__roadmap-document-fixtures__/*.json are authored against that amended contract (A3 contract fixtures — validate green at wave-43 merge; red against this worktree's pre-amendment schema by design, see this check's description). Still open: (2) packages/dogfood-swarm/commands/roadmap.js + lib/roadmap/compile.js (swarm-cp-verbs/swarm-cp-core domains) wiring the emitter to the schema's vocabulary instead of discarding compile.js's already-computed snake_case sections, and (4) the coordinator's sequence-3+ recompile at merge reconciliation so the live archive actually conforms. If this check is red POST-merge: cross-reference which of (2)/(4) has not landed before treating it as a fixture bug. A fresh by-name allowlist entry is only ever added for a NEW immutable artifact that predates ITS OWN wave's conformance work (T5) — never for a conformant sequence, and never to paper over a recompile that could simply have landed clean."
+    },
+    {
+      "id": "roadmap-notes-integrity",
+      "kind": "roadmap-notes-integrity",
+      "title": "The roadmap document's operator notes stay sound between compiles (resolved via the latest-pointer)",
+      "description": "F-8f9e3ea0 (wave 39 feature pass, T3 — docs/trajectory-and-closure.dispatch.md): T3's two note invariants (an invariant-kind note must carry a resolvable enforced_by; expired notes are dropped loudly) are enforced by the roadmap compiler at COMPILE time only (swarm roadmap compile, which runs occasionally at run-close). Between compiles, a COMMITTED artifact can drift out from under its own notes — an unrelated later change renames/deletes/moves a file an enforced_by pointer names, or a note's expires boundary passes with nobody having recompiled — and nothing at verify/CI time re-checked either condition independent of the next compile. This check is that standing re-check. CORRECTED after reading the backend domain's real dogfood-roadmap.schema.json (F-fe05c6d7, same wave): dogfood/roadmap/latest.json is only the small {run_id, sequence, path} pointer (T5) — operator_notes lives on the FULL document the pointer names, not on latest.json itself. This check therefore resolves in two hops: read the pointer (target/targetPathField), then read notesPath from the document it names. Graceful absence unchanged: if the pointer does not exist (never compiled yet, or this wave's core/schemas lanes have not merged), this check reports nothing at all — not a pass, not a fail. A pointer whose named document does not exist is itself reported as drift (T5's pointer promise broken), not silently skipped. Severity split mirrors the WARN-not-block precedent in check-finding-regression-pins.mjs's dueForRevalidation reporting: a missing/dangling enforced_by (or a broken pointer) is 'drift' (blocks); an expired note is 'warn' (loud, non-blocking — stale advice, not a broken invariant).",
+      "target": "dogfood/roadmap/latest.json",
+      "targetPathField": "path",
+      "notesPath": "operator_notes",
+      "hint": "For an invariant note with no enforced_by: add one (a real gate/test path this repo already has), or change the note's kind to 'theme'/'open-question' if it isn't actually enforced by anything. For a dangling enforced_by: fix the path, or delete the note if the mechanism it named is genuinely gone. For a pointer naming a document that doesn't exist: recompile (`swarm roadmap compile <run-id>`) to regenerate a consistent pointer + document pair. For an expired note (WARN, non-blocking): recompile, which drops expired notes loudly per T3 — this WARN is the between-compiles signal that a recompile is due, not a release blocker on its own."
+    },
+    {
+      "id": "roadmap-artifact-no-absolute-paths",
+      "kind": "forbidden-pattern-in-targets",
+      "title": "Committed roadmap artifacts carry no machine-absolute paths",
+      "description": "F-cec640b1 (wave 41 amend): packages/dogfood-swarm/lib/roadmap/compiler.js's own header docstring promises 'Paths are stored repo-relative ... so a run against a temp SWARM_DB never bakes machine-absolute paths into a committed artifact' — true for the ledger row and the latest.json pointer, false for the compiled DOCUMENT itself. commands/lib/roadmap-notes.js computes `notesPath` via `path.resolve()` (always absolute) whenever the CLI is run without an explicit --notesPath override (the ordinary case), and commands/roadmap.js spreads that value verbatim into the persisted artifact with no relativization. PROVEN LIVE at authoring time: both dogfood/roadmap/swarm-1784091637-5127.1.json and dogfood/roadmap/swarm-1784091637-5127.json carried a top-level notesPath of 'E:\\\\AI\\\\testing-os\\\\dogfood\\\\roadmap-notes.json' — this machine's own drive letter, checked out into a committed, cross-machine-shared artifact. The actual fix (relativize notesPath against repoRoot before it enters the artifact object, or drop the field from the persisted document entirely and surface it only in the CLI's in-memory report) belongs to commands/lib/roadmap-notes.js and commands/roadmap.js — outside ci-tooling's owned globs (.github/**, scripts/**, tsconfig*.json). This check is the gate-side half: it does not know or care WHICH field leaked the path, only that no committed roadmap document may contain a drive-letter-rooted absolute path in any JSON string value. PERMANENT CARVE-OUT (rescoped 2026-07-17, post-wave-41 merge — replaces the original SEQUENCING paragraph, which assumed a recompile would clean both artifacts): the source-side fix DID land at the wave-41 merge and the end-of-wave recompile produced a clean sequence 2 — dogfood/roadmap/swarm-1784091637-5127.2.json, the sequence-free mirror, and latest.json all carry the relativized notesPath and pass this check. But the ORIGINAL leak, dogfood/roadmap/swarm-1784091637-5127.1.json (line 722), can NEVER be fixed: T5 of the pass contract (docs/trajectory-and-closure.dispatch.md) makes historical sequences immutable — 'versions supersede; nothing rewrites' — so a recompile produces .2, it does not repair .1. That one file is therefore allowlisted BY NAME, permanently, as an accepted historical record (the same 'the historical record is the historical record' doctrine the root CLAUDE.md applies to legacy provenance), and the leaked content itself is only this repo's own checkout path — an accepted, disclosed residual, not sensitive data. This is NOT wave-42-tracked: wave 42 cannot and will not change it. The handler keeps the carve-out honest two ways: the exemption is file-exact (any NEW absolute path in any OTHER artifact — including every future sequence — still fails loud), and a stale allowlist entry (the named file gone or clean) surfaces as a non-blocking WARN marked safe to delete, so the exemption cannot outlive its reason silently. SCOPE vs roadmap-artifact-schema's precedent: that check deliberately targets ONLY latest.json (never globs the per-run archive) because Ajv validation is the expensive operation and only the newest artifact is ever actually read by code. Neither justification transfers here — a forbidden-pattern text scan is cheap regardless of archive size, and an absolute-path information-disclosure leak is exactly as real in an old committed artifact as in the newest one — so this check intentionally globs the whole dogfood/roadmap/*.json directory (latest.json included; it is pointer-shaped and will never carry the field, so it never fires) rather than narrowing to the current run only.",
+      "patterns": [
+        {
+          "regex": "\"[A-Za-z]:[\\\\\\\\/]",
+          "label": "Windows drive-letter absolute path in a committed artifact"
+        }
+      ],
+      "targets": [
+        "dogfood/roadmap/*.json"
+      ],
+      "allowlist": [
+        "dogfood/roadmap/swarm-1784091637-5127.1.json"
+      ],
+      "hint": "A drive-letter absolute path reached a committed artifact. The emitter-side guard is packages/dogfood-swarm/commands/roadmap.js + commands/lib/roadmap-notes.js (core/verbs domain — outside ci-tooling's owned globs), which relativizes notesPath against repoRoot as of the wave-41 merge; a NEW hit here means a new field regressed the repo-relative convention. Fix the emitter, then recompile the affected run (`swarm roadmap compile <run-id>`) — the source fix alone does not retroactively clean already-committed files, and per T5 immutability it CANNOT clean a historical sequence: do NOT add new allowlist entries for freshly-leaked artifacts (recompile supersedes them instead); the single existing entry (swarm-1784091637-5127.1.json, carved out 2026-07-17) is the one T5-frozen historical exception."
+    },
     {
       "id": "framework-self-test",
       "kind": "framework-self-test",
@@ -316,7 +463,6 @@
       "configPath": "scripts/doc-drift-patterns.json",
       "hint": "Either register the missing handler module in scripts/check-doc-drift.mjs (HANDLERS map), or remove the orphaned check from scripts/doc-drift-patterns.json. Required fields are declared on each handler module."
     },
-
     {
       "id": "source-of-truth-cross-ref",
       "kind": "source-of-truth-cross-ref",
@@ -352,15 +498,6 @@
           "captureGroup": 1,
           "resolver": "verbCount",
           "hint": "Update site/src/content/docs/handbook/index.md's 'per-verb quick reference for all N `swarm` verbs' to the current registered-verb count (keys of the `commands` map in packages/dogfood-swarm/cli.js)."
-        },
-        {
-          "id": "handbook-cli-reference-verb-count",
-          "title": "handbook cli-reference 'all N verbs' matches the cli.js commands map (total)",
-          "target": "site/src/content/docs/handbook/cli-reference.md",
-          "pattern": "scan all (\\d+) verbs",
-          "captureGroup": 1,
-          "resolver": "verbCount",
-          "hint": "Update site/src/content/docs/handbook/cli-reference.md's 'scan all N verbs' to the current registered-verb count (keys of the `commands` map in packages/dogfood-swarm/cli.js)."
         },
         {
           "id": "handbook-swarm-history-sibling-count",

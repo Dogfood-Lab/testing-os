@@ -309,6 +309,34 @@ swarm reject <run-id> --ids F-001,F-002 --reason "false positive — the guard i
 
 `defer` and `reject` are deliberately targeted: there is no `--all`, and a non-empty `--reason` is mandatory. The reason lands in the append-only `finding_events` log in the same transaction as the status flip, so a finding closed without a fix always carries the operator's justification. Both are idempotent — an already-closed finding is skipped rather than re-evented.
 
+### Reopening a wrongly-closed finding — `swarm reopen`
+
+`approve`/`defer`/`reject` only ever move an *open* finding to a closed status — none of them can undo a mistaken closure. `swarm reopen` is the lawful undo: it moves a `fixed`, `deferred`, or `rejected` finding back to `recurring` (open, amendable again). Like the recovery verbs below, it is dry-run by default; `--apply` is required to mutate, and it previews exactly which findings are eligible before you consent:
+
+```bash
+# Preview only
+swarm reopen <run-id> --ids F-001,F-002 --reason "the fix regressed" --evidence "repro script attached, fails again on main"
+
+# Apply
+swarm reopen <run-id> --ids F-001,F-002 --reason "the fix regressed" --evidence "repro script attached, fails again on main" --apply
+```
+
+Both `--reason` and `--evidence` are mandatory (a reason without evidence is not enough to reopen settled history). There is no `--all` — reopening a run's entire closed history in one keystroke is out of scope. The prior closure's `finding_events` row is never touched; reopening writes a new, additional `reopened` event, so the full history — closed once, reopened, why — stays intact.
+
+### Operator-closing a finding — `swarm close`
+
+Some findings are structurally unclosable by the normal amend path — an unowned file no domain's globs cover, or a Director-directed disposal. `swarm close` is the operator-closure verb for exactly that case. It only supports `--as fixed` (deferring/rejecting stay the standalone `swarm defer`/`swarm reject` verbs above — `close` does not duplicate them), and it requires `--verified-how` naming how the fix was actually verified:
+
+```bash
+swarm close <run-id> --ids F-001,F-002 \
+  --reason "file is unowned by any domain; fixed out-of-band" \
+  --evidence "PR #42 on the upstream repo" \
+  --verified-how independent \
+  --apply
+```
+
+`--verified-how` is one of `independent` (someone other than the fixer verified it), `self_attested` (the fixer's own claim, unverified by anyone else), or `operator_evidence` (the Director's own direct evidence) — it is mandatory, not optional, since it is the field that predicts whether a closure holds or reopens later.
+
 ## Control plane
 
 SQLite-backed. Each swarm run gets `swarms/<run-id>/control-plane.db`:
@@ -323,6 +351,25 @@ SQLite-backed. Each swarm run gets `swarms/<run-id>/control-plane.db`:
 | `domain_events` | Domain-map mutation audit log (unfreeze / edit / freeze), plus the restorable `file_claims_cleaned` audit rows written by `swarm clean-claims --apply` |
 
 Read via `swarm status`, `swarm history`, `swarm receipt`. Never via raw SQL in scripts — the state-machine helpers are the supported interface and the audit chain depends on going through them.
+
+## Trajectory layer — `swarm roadmap`
+
+A single run's findings/receipts are durable, but nothing carried *forward*: a second swarm run against the same repo started cold, re-discovering the same hotspots the last run already found. `swarm roadmap` closes that gap with a **compiled, never authored** artifact — every section is a query against the control-plane DB and git, run fresh at compile time, plus a small, bounded set of human-authored operator notes.
+
+```bash
+# Compile the trajectory artifact for a completed run
+swarm roadmap compile <run-id>
+
+# Read the latest (or a specific --version) compiled roadmap
+swarm roadmap show <run-id>
+swarm roadmap show <run-id> --version=2
+```
+
+What gets compiled: open/deferred/approved findings, the grandfathered/deferred-findings drain queue, recurrence stats, and a per-file **attention list** — labeled `ADVISORY — NOT A GATE` in every render, because it is a transparent heuristic (recent churn × prior-finding recency × cross-domain fragmentation) meant to focus a *human's* attention, never to gate, predict, or auto-blame a wave or a domain.
+
+Operator notes are the only hand-authored part: at most 7, each a `theme`, an `open-question`, or an `invariant`. An `invariant` note must name an `enforced_by` gate or test file that actually exists on disk — a lesson with no mechanical verifier behind it is refused at compile time rather than silently accepted as an unenforced promise. Notes past their `expires` date are dropped from the compile, but listed as `EXPIRED` in the output — never silently disappeared.
+
+Each `compile` is versioned; recompiling a run supersedes with a new sequence number rather than overwriting history.
 
 ## Environment variables
 

@@ -32,7 +32,14 @@ import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { getActualTouchedFiles, diffReportedVsActual, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { normalizeFilePathForGlobMatch } from '../lib/normalize-path.js';
 import { pluralize } from './lib/pluralize.js';
+// F-ab4fbab0 (the class lib/phases.js's own header names as F-274e7ac5,
+// "DISCLOSED EXCEPTION": this file's private copy, specifically): importing
+// the single ordered source of truth instead of a hand-typed literal that
+// can desync from it. See commands/revalidate.js's identical fix (this same
+// wave) for the sibling copy in this domain.
+import { AUDIT_PHASES, AMEND_PHASES } from '../lib/phases.js';
 
 /**
  * The deterministic per-domain output filename the dispatch layout promises an
@@ -231,9 +238,6 @@ function tryTransition(db, agentRunId, to, reason, domainHint) {
   }
 }
 
-const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
-const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
-
 /**
  * Narrow each agent's `confirmed` declaration to the findings its OWN domain
  * owns. Shared with revalidate.js, whose full-coverage branch builds the
@@ -282,17 +286,74 @@ const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'sta
  * frozen map rather than reading the comment. The conclusion survived; the
  * citation did not.
  *
+ * F-8a15be4c (CRITICAL, wave 41): the file-less-finding fallback below was
+ * missing entirely until this wave. `pathById.get(id) == null` cannot
+ * distinguish "no such finding_id in this run" (a typo'd/hallucinated id —
+ * correctly dropped) from "a real row whose file_path column is genuinely
+ * NULL" (Map#get returns undefined for a miss and the column's real null
+ * value for a hit, indistinguishably) — so EVERY file-less finding's
+ * confirmed[] declaration was silently dropped, identically to a
+ * hallucinated id. Proven live at pass scale against this run's own
+ * control-plane DB: all 40 status='approved' findings had file_path IS
+ * NULL, and every one of them came back unvouchable regardless of how
+ * correctly a domain declared it. lib/findings-filter.js#findingsForDomain
+ * already got the C3 filed_by_domain fallback for ROUTING a file-less
+ * finding to a domain; this function never got the matching fallback for
+ * VOUCHING — exactly the gap this docstring's own "routing and vouching had
+ * better answer to one rule" already named. isVouchableByDomain, below,
+ * mirrors findingsForDomain's rule byte-for-byte: a finding with a real
+ * file_path is vouchable by whichever domain's globs match it (unchanged);
+ * a file-less finding is vouchable by precisely its filing domain
+ * (findings.filed_by_domain); a file-less finding with no recorded filer
+ * (filed_by_domain IS NULL — every pre-v10 row) stays unvouchable, same as
+ * before — the honest answer, not a guess.
+ *
  * @param {import('better-sqlite3').Database} db
  * @param {string} runId
  * @param {Array<{name: string, globs: string[]}>} domains — the frozen map
  * @param {Array<{domain: string, confirmed?: string[]}>} agents — COMPLETE agents only
  * @returns {string[]} the ids whose declaring agent actually owns them
  */
+
+/**
+ * F-8a15be4c: whether `row` is vouchable BY `domainName` — the identical
+ * rule lib/findings-filter.js#findingsForDomain already applies when
+ * ROUTING a file-less finding to a domain, mirrored here for VOUCHING (see
+ * scopeConfirmedToOwningDomain's own docstring, above, for why the two must
+ * answer to one rule). Kept LOCAL to this file rather than imported from
+ * lib/findings-filter.js: a genuinely shared export would need to live in
+ * `lib/` (swarm-cp-core's exclusive glob this wave), so parity is enforced
+ * by this comment plus a same-fixture contract test
+ * (wave41-4091637-5127-swarm-cp-pins.test.js) rather than a shared import —
+ * flagged in this wave's output notes as a candidate for a real shared
+ * helper once a lane owns both files at once.
+ *
+ * F-f347d858 (carried forward, unchanged): the has-a-file_path branch
+ * normalizes BEFORE matching — the raw `file_path` column can carry a
+ * leading './', a doubled/trailing slash, a backslash separator, or a case
+ * variant of the identical file, none of which matchesAnyGlob's minimatch
+ * call recognizes as equal to the canonical spelling a domain's own glob is
+ * authored in. normalizeFilePathForGlobMatch is the shared, exported
+ * lib/normalize-path.js helper both this file and lib/fingerprint.js import
+ * (F-c4d70660: no longer a private per-file fork of each other).
+ *
+ * @param {{file_path: string|null, filed_by_domain: string|null}} row
+ * @param {string} domainName
+ * @param {string[]} domainGlobs
+ * @returns {boolean}
+ */
+function isVouchableByDomain(row, domainName, domainGlobs) {
+  if (row.file_path != null) {
+    return matchesAnyGlob(normalizeFilePathForGlobMatch(row.file_path), domainGlobs);
+  }
+  return row.filed_by_domain != null && row.filed_by_domain === domainName;
+}
+
 export function scopeConfirmedToOwningDomain(db, runId, domains, agents) {
-  const pathById = new Map(
-    db.prepare('SELECT finding_id, file_path FROM findings WHERE run_id = ?')
+  const rowById = new Map(
+    db.prepare('SELECT finding_id, file_path, filed_by_domain FROM findings WHERE run_id = ?')
       .all(runId)
-      .map(f => [String(f.finding_id).toUpperCase(), f.file_path]),
+      .map(f => [String(f.finding_id).toUpperCase(), f]),
   );
   const domainByName = new Map(domains.map(d => [d.name, d]));
 
@@ -304,24 +365,12 @@ export function scopeConfirmedToOwningDomain(db, runId, domains, agents) {
       // An id naming no finding in this run declares nothing. Dropping it is
       // not merely tidiness: a typo'd or hallucinated id must never be able to
       // vacuously "close" anything, and it cannot be owned by definition.
-      const filePath = pathById.get(String(id).toUpperCase());
-      if (filePath == null) continue;
-      // F-f347d858: normalize BEFORE matching. The raw `file_path` column can
-      // carry a leading './', a doubled/trailing slash (a path-join artifact),
-      // a backslash separator, or a case variant of the identical file — none
-      // of which matchesAnyGlob's minimatch call recognizes as equal to the
-      // canonical spelling a domain's own glob is authored in. Fails CLOSED
-      // today (an unmatched path stays unclosable, never wrongly closed), but
-      // still a reliability gap in the one function now trusted to VOUCH for
-      // closing a finding, not merely route it. Mirrors lib/fingerprint.js's
-      // own (private, unexported) normalizePath byte-for-byte; duplicated
-      // rather than imported because that helper isn't exported and this fix
-      // is scoped to this file's owned glob only — lib/fingerprint.js's
-      // honorReusedFindingIds carries the identical shape at its own
-      // matchesAnyGlob(priorFile, ...) call site, closed independently the
-      // same wave. A third copy would be the signal to promote this to a
-      // shared, exported helper instead of forking again.
-      if (matchesAnyGlob(normalizeFilePathForGlobMatch(filePath), domain.globs)) scoped.push(id);
+      // F-8a15be4c: `.get()` returning undefined is the ONLY drop signal now
+      // (a real row is always a truthy object, even with file_path NULL) —
+      // see isVouchableByDomain, above, for the rule applied to a real row.
+      const row = rowById.get(String(id).toUpperCase());
+      if (!row) continue;
+      if (isVouchableByDomain(row, agent.domain, domain.globs)) scoped.push(id);
     }
   }
   return scoped;
@@ -339,15 +388,9 @@ export function scopeConfirmedToOwningDomain(db, runId, domains, agents) {
  * @param {string} filePath
  * @returns {string}
  */
-function normalizeFilePathForGlobMatch(filePath) {
-  if (!filePath) return '';
-  return filePath
-    .replace(/\\/g, '/')
-    .replace(/\/{2,}/g, '/')
-    .replace(/^\.\//, '')
-    .replace(/\/$/, '')
-    .toLowerCase();
-}
+// The wave-37 local copy of this normalizer moved to the shared leaf
+// lib/normalize-path.js at the wave-39 merge (the byte-identical duplicate
+// F-d656acc4 tracked); collect.js now consumes the one definition.
 
 /**
  * F-67ddcd02: the shared file_claims reconciliation step BOTH collect() (this

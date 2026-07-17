@@ -332,7 +332,17 @@ export function resume(opts) {
       // Same domain-glob filter as dispatch — see lib/findings-filter.js.
       // The previous code unconditionally sent every approved finding to
       // every redispatched agent (F-742440-003).
-      const findings = findingsForDomain(db, opts.runId, { globs });
+      //
+      // F-7793276e: `name` is REQUIRED alongside `globs` — findingsForDomain's
+      // own JSDoc says a bare `{ globs }` (no name) "degrades silently to the
+      // pre-fallback behavior for file-less findings only", i.e. every
+      // file-less approved finding filed by/for this domain (C3's
+      // filed_by_domain fallback) becomes invisible to the redispatched
+      // agent's rebuilt prompt, with no error or log line marking the gap.
+      // `ar.domain_name` is already in scope two lines below (`domain:
+      // ar.domain_name`) — this was an unwired parameter, not a missing-data
+      // problem.
+      const findings = findingsForDomain(db, opts.runId, { name: ar.domain_name, globs });
       prompt = buildAmendPrompt({ ...promptOpts, findings });
       if (skipVerify) prompt += SKIP_VERIFY_DIRECTIVE;
     } else {

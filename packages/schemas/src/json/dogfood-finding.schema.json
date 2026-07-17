@@ -221,7 +221,7 @@
               "doc",
               "rejection"
             ],
-            "description": "Type of evidence supporting this finding."
+            "description": "Type of evidence supporting this finding. F-936c83f4 (wave 39, feature-pass integration finding): this is one of three structurally-similar-but-distinct 'how do we know this claim is true' enums in this repo, deliberately NOT unified — (1) HERE — what evidence backs a distilled cross-repo lesson; (2) packages/verify/validators/provenance.js's --provenance=stub|github (see that file's own cross-reference note) — whether a submitted CI run really happened; (3) the swarm control-plane's incoming verified_how (independent|self_attested|operator_evidence, docs/trajectory-and-closure.dispatch.md's C2 `swarm close` verb) — how a finding closure was verified. Each answers a genuinely different axis; this note exists so a reader of any of the three can find the other two without rediscovering the pattern from scratch."
           },
           "record_id": {
             "type": "string",

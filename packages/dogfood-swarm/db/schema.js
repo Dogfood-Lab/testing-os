@@ -4,12 +4,14 @@
  * Core 10 tables: runs, waves, domains, agent_runs, file_claims,
  * artifacts, findings, finding_events, verification_receipts, kv.
  * Later versions add: agent_state_events, domain_events, wave_state_events,
- * wave_receipts, promotions, migrations_ledger, and adjudications (v9 — the
+ * wave_receipts, promotions, migrations_ledger, adjudications (v9 — the
  * wave-gated cross-family jury verdict; see lib/adjudication-store.js and the
- * checkAdjudication gate in lib/advance.js).
+ * checkAdjudication gate in lib/advance.js), and roadmap_artifacts (v10 — the
+ * compiled cross-run roadmap ledger; see lib/roadmap/compile.js and
+ * docs/trajectory-and-closure.dispatch.md's T1/T5).
  */
 
-export const SCHEMA_VERSION = 9;
+export const SCHEMA_VERSION = 10;
 
 export const SCHEMA_SQL = `
 -- ───────────────────────────────────────────
@@ -162,6 +164,40 @@ CREATE TABLE IF NOT EXISTS findings (
   cross_ref              TEXT,    -- JSON object: { file, symbol, line }
   coordinator_resolved   INTEGER NOT NULL DEFAULT 0,
   verified_via_evidence  TEXT,
+  -- v10 (C3, docs/trajectory-and-closure.dispatch.md): closure_kind classifies
+  -- HOW a closed row was closed — 'declared' (an amend agent's own landed fix,
+  -- reached via the ordinary classifyFindings/upsertFindings 'fixed' path),
+  -- 'operator' (the 'swarm close' verb forced disposal — unowned files, the
+  -- F-6a5eb347 class, or a Director-directed disposal), or 'absence' (closed
+  -- by a full-coverage wave's silence — see upsertFindings' "closed by
+  -- absence" event note). NULL = pre-v10 row, disposition unknown, NOT a 4th
+  -- enum value (F-ad2d6318) — see STATUS.closure_kind below; every reader
+  -- must bucket a NULL row under an explicit 'unknown / pre-migration' label,
+  -- never omit it from a report or silently default it to one of the three
+  -- real values.
+  closure_kind           TEXT,
+  -- v10 (C3): verified_how records HOW a closure was verified — 'independent'
+  -- (a different agent/lane confirmed it), 'self_attested' (the same agent
+  -- that fixed it also verified it), or 'operator_evidence' (an operator
+  -- supplied --evidence via 'swarm close'). Load-bearing, not decoration —
+  -- Zimmermann et al. (ICSE-SEIP 2012) found verification mode predicts
+  -- reopen risk. NULL = pre-v10, disposition unknown, NOT a 4th enum value —
+  -- identical NULL-handling obligation as closure_kind immediately above
+  -- (F-ad2d6318): a report bucketing by verified_how renders NULL rows under
+  -- an explicit 'unknown / pre-migration' label rather than dropping them.
+  verified_how           TEXT,
+  -- v10 (C3 amendment): the domain that FILED this finding, stamped at
+  -- upsert time (lib/fingerprint.js#upsertFindings) from the collect-time
+  -- '_declaringDomain' attribution already threaded through collect/
+  -- revalidate for the CONFIRM-queue/ownership gates. Exists because
+  -- findingsForDomain's file_path-only glob match routes every file-less
+  -- finding to ZERO agents (the F-aa32371b class, proven at pass scale by
+  -- this wave's own dispatch preview: 40 file-less feature findings routed
+  -- nowhere) — lib/findings-filter.js#findingsForDomain falls back to
+  -- filed_by_domain when file_path IS NULL. NULL on every pre-v10 row and on
+  -- any row upserted by a caller that has not threaded _declaringDomain
+  -- through; never a guessed routing for those, just absent.
+  filed_by_domain        TEXT,
   UNIQUE(run_id, fingerprint)
 );
 
@@ -175,6 +211,18 @@ CREATE TABLE IF NOT EXISTS finding_events (
   wave_id       INTEGER REFERENCES waves(id),
   agent_run_id  INTEGER REFERENCES agent_runs(id),
   notes         TEXT,
+  -- v10 (C3 amendment, F-a3c2337d): the acting AUTHORITY for this event —
+  -- e.g. 'operator' for a 'swarm reopen'/'swarm close' call, or a domain name
+  -- for an agent-driven event. Distinct from agent_run_id (identifies a
+  -- dispatched agent's ROW, not a human/operator actor) and orthogonal to
+  -- notes (free text) — this is the structured home the WebKit
+  -- distinct-authorities citation asked for, rather than an unparseable
+  -- prefix convention inside notes. NULL for every event predating v10, and
+  -- for any event type with no distinct actor beyond the wave's own
+  -- agent_run_id (e.g. 'reported'/'recurred', which are system-observed, not
+  -- operator-asserted). Read as 'unknown / pre-migration or not-applicable',
+  -- never defaulted to a guessed actor.
+  actor         TEXT,
   created_at    TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -348,6 +396,32 @@ CREATE TABLE IF NOT EXISTS migrations_ledger (
   applied_at     TEXT    NOT NULL,
   status         TEXT    NOT NULL
 );
+
+-- ───────────────────────────────────────────
+-- v10: Compiled cross-run roadmap artifacts (T1/T5,
+-- docs/trajectory-and-closure.dispatch.md). One row per 'swarm roadmap
+-- compile' invocation that actually wrote a new artifact — append-only (T5:
+-- "versions supersede; nothing rewrites"). 'latest' is derived as
+-- MAX(sequence_number) per run_id rather than a second mutable pointer
+-- column, so this table stays append-only like every other event-shaped
+-- table in this schema; the on-disk latest.json is a generated projection
+-- of that MAX query, never a second source of truth. content_hash mirrors
+-- lib/persist/export.js's existing sha256-truncated-hex convention
+-- (export.js:194,198). See lib/roadmap/compile.js (the pure read that
+-- produces the artifact body) and lib/roadmap/artifacts.js (the sequencing +
+-- insert helper a CLI verb calls to record one).
+-- ───────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS roadmap_artifacts (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id           TEXT    NOT NULL REFERENCES runs(id),
+  sequence_number  INTEGER NOT NULL,
+  path             TEXT    NOT NULL,
+  content_hash     TEXT    NOT NULL,
+  created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_id, sequence_number)
+);
+
+CREATE INDEX IF NOT EXISTS idx_roadmap_artifacts_run ON roadmap_artifacts(run_id);
 `;
 
 /**
@@ -431,6 +505,32 @@ export const MIGRATIONS_SQL = [
   )`,
   "CREATE INDEX IF NOT EXISTS idx_adjudications_wave ON adjudications(wave_id)",
   "CREATE INDEX IF NOT EXISTS idx_adjudications_run ON adjudications(run_id)",
+  // v10 (C3, docs/trajectory-and-closure.dispatch.md): findings gains
+  // closure_kind / verified_how / filed_by_domain. All three nullable, no
+  // DEFAULT — matching the existing cross_ref/verified_via_evidence columns'
+  // own nullable-TEXT convention rather than inventing a NOT NULL DEFAULT
+  // that would falsely assert a value for every pre-v10 row (F-ad2d6318).
+  "ALTER TABLE findings ADD COLUMN closure_kind TEXT",
+  "ALTER TABLE findings ADD COLUMN verified_how TEXT",
+  "ALTER TABLE findings ADD COLUMN filed_by_domain TEXT",
+  // v10 (C3 amendment, F-a3c2337d): finding_events gains the structured actor
+  // column the WebKit distinct-authorities citation needs. Nullable — every
+  // pre-v10 event and every event with no distinct actor reads as NULL, not a
+  // guessed value.
+  "ALTER TABLE finding_events ADD COLUMN actor TEXT",
+  // v10 (T1/T5): roadmap_artifacts table + its run_id index. CREATE IF NOT
+  // EXISTS so an existing v9 DB picks the table up on next openDb; SCHEMA_SQL
+  // already covers fresh DBs.
+  `CREATE TABLE IF NOT EXISTS roadmap_artifacts (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id           TEXT    NOT NULL REFERENCES runs(id),
+    sequence_number  INTEGER NOT NULL,
+    path             TEXT    NOT NULL,
+    content_hash     TEXT    NOT NULL,
+    created_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(run_id, sequence_number)
+  )`,
+  "CREATE INDEX IF NOT EXISTS idx_roadmap_artifacts_run ON roadmap_artifacts(run_id)",
 ];
 
 /**
@@ -485,6 +585,14 @@ export const MIGRATIONS_MANIFEST = [
   { id: 'v9-adjudications-table',            target_version: 9, sql: MIGRATIONS_SQL[15] },
   { id: 'v9-adjudications-wave-index',       target_version: 9, sql: MIGRATIONS_SQL[16] },
   { id: 'v9-adjudications-run-index',        target_version: 9, sql: MIGRATIONS_SQL[17] },
+  // v10 (C3): findings closure_kind/verified_how/filed_by_domain,
+  // finding_events.actor, roadmap_artifacts table + index (T1/T5).
+  { id: 'v10-findings-closure-kind',         target_version: 10, sql: MIGRATIONS_SQL[18] },
+  { id: 'v10-findings-verified-how',         target_version: 10, sql: MIGRATIONS_SQL[19] },
+  { id: 'v10-findings-filed-by-domain',      target_version: 10, sql: MIGRATIONS_SQL[20] },
+  { id: 'v10-finding-events-actor',          target_version: 10, sql: MIGRATIONS_SQL[21] },
+  { id: 'v10-roadmap-artifacts-table',       target_version: 10, sql: MIGRATIONS_SQL[22] },
+  { id: 'v10-roadmap-artifacts-run-index',   target_version: 10, sql: MIGRATIONS_SQL[23] },
 ];
 
 /**
@@ -497,6 +605,32 @@ export const MIGRATIONS_MANIFEST = [
 // drift (sibling to wave-1 F-742440-012). Adding 'stage-d-audit' and
 // 'stage-d-amend' (introduced in v1.1.0 per CHANGELOG) closes that gap.
 // F-375053-005.
+/**
+ * F-c0b12add: `finding_events.event_type` has never been enforced by a CHECK
+ * constraint or a runtime validator (grepped: no EVENT_TYPES/KNOWN_EVENT_TYPES
+ * export existed before this, and every call site — cmdDefer/cmdReject in
+ * cli.js, collect.js's absence-closure path, revalidate.js, adjudicate.js —
+ * wrote its own literal/variable into the column independently). That is the
+ * exact drift class lib/finding-status.js's own docstring documents already
+ * happened once for the sibling `status` column (the advance/receipt/status
+ * three-way disagreement over which statuses count as closed). This frozen
+ * array is the single source of truth: STATUS.finding_event below is THIS
+ * array (same reference, not a second copy), so the two can never diverge the
+ * way an independently-typed duplicate could. v10 (C3) adds 'reopened' (the
+ * operator-asserted fixed|deferred|rejected -> recurring transition, `swarm
+ * reopen`) and 'operator_closed' — RESERVED, never written: cmdClose's
+ * event_type mirrors its --as value ('fixed'), with closure_kind='operator'
+ * carrying the operator provenance (the wave-41 amendment to the C3 contract
+ * records this as the shipped design; docs/trajectory-and-closure.dispatch.md).
+ * The member stays in the enum so historical contract references stay legal
+ * and f-c0b12add's enum pin holds. Both additions are pure JS constants;
+ * neither requires a schema migration.
+ */
+export const EVENT_TYPES = Object.freeze([
+  'reported', 'approved', 'fixed', 'unverified', 'deferred', 'rejected', 'recurred',
+  'reopened', 'operator_closed',
+]);
+
 export const STATUS = {
   run: ['initializing', 'health-audit-a', 'health-audit-b', 'health-audit-c',
         'health-amend-a', 'health-amend-b', 'health-amend-c',
@@ -506,8 +640,17 @@ export const STATUS = {
   agent_run: ['pending', 'dispatched', 'running', 'complete', 'failed',
               'timed_out', 'invalid_output', 'ownership_violation', 'aborted_for_rewind'],
   finding: ['new', 'recurring', 'approved', 'fixed', 'unverified', 'deferred', 'rejected'],
-  finding_event: ['reported', 'approved', 'fixed', 'unverified', 'deferred', 'rejected', 'recurred'],
+  finding_event: EVENT_TYPES,
   ownership_class: ['owned', 'shared', 'bridge'],
   claim_type: ['edit', 'create', 'delete'],
   severity: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],
+  // v10 (C3): documentation/call-site parity constants — deliberately NOT SQL
+  // CHECK constraints, to stay consistent with every other enum in this file
+  // (severity/status/ownership_class/claim_type are all unenforced TEXT).
+  // NULL is a valid, distinct 4th state for both columns on pre-v10 rows
+  // ("unknown / pre-migration") — see the column comments on `findings` above
+  // — so neither array should be read as exhaustive over what the COLUMN can
+  // hold, only over what a NEW row's non-null value must be.
+  closure_kind: ['declared', 'operator', 'absence'],
+  verified_how: ['independent', 'self_attested', 'operator_evidence'],
 };

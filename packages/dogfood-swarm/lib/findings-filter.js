@@ -17,7 +17,8 @@
  *
  * Glob semantics match `lib/domains.js#checkOwnership`: `minimatch` with
  * `dot: true`, any-match across the domain's glob list. A finding with no
- * `file_path` is excluded — there is no domain to assign it to.
+ * `file_path` falls back to `filed_by_domain` (v10, C3 amendment) instead of
+ * being excluded outright — see findingsForDomain's own doc for why.
  */
 
 import { minimatch } from 'minimatch';
@@ -38,9 +39,33 @@ export function matchesAnyGlob(filePath, globs) {
  * matches the given domain's globs. If 0 match, return an empty array —
  * that is the correct answer (this domain has no work this wave).
  *
+ * F-874c0683 / F-aa32371b (C3 amendment): a finding with no `file_path` at
+ * all (a repo-level / file-less finding — proven at pass scale by this
+ * wave's own dispatch preview: 40 file-less feature findings routed to ZERO
+ * agents) has no glob to match against, so the file_path branch below can
+ * never select it for ANY domain. Before this fallback that meant an
+ * approved file-less finding was permanently unroutable — see dispatch.js's
+ * own F-aa32371b comment, which surfaces exactly this class as a loud
+ * dispatch-time warning because nothing could ever fix it. The fallback
+ * routes a file-less finding to whichever domain FILED it
+ * (`findings.filed_by_domain`, stamped once at upsert from the collect-time
+ * `_declaringDomain` attribution — see lib/fingerprint.js#upsertFindings).
+ * `filed_by_domain` is NULL for every pre-v10 row and for any finding
+ * upserted before a caller threaded `_declaringDomain` through; those rows
+ * still fall through to "routes to no domain" here — the honest answer,
+ * since there is no recorded filer to route to, not a guess.
+ *
  * @param {import('better-sqlite3').Database} db
  * @param {string} runId
- * @param {{globs: string[]}} domain — domain row with globs already parsed to array
+ * @param {{globs: string[], name?: string}} domain — domain row with globs
+ *   already parsed to array. `name` is required for the file-less fallback to
+ *   have any effect — a caller that passes a bare `{ globs }` (no `name`)
+ *   degrades silently to the pre-fallback behavior for file-less findings
+ *   only (never a false match: `filed_by_domain === undefined` is never true
+ *   for a real filed_by_domain string). F-762d2b9b: this omission is now
+ *   diagnosed loudly (see below) rather than only disclosed in this
+ *   docstring — a documented risk nobody reads is the same as an
+ *   undocumented one.
  * @returns {object[]} findings rows
  */
 export function findingsForDomain(db, runId, domain) {
@@ -48,5 +73,32 @@ export function findingsForDomain(db, runId, domain) {
     "SELECT * FROM findings WHERE run_id = ? AND status = 'approved'"
   ).all(runId);
 
-  return approved.filter(f => matchesAnyGlob(f.file_path, domain.globs));
+  // F-762d2b9b: `domain.globs` present but `domain.name` missing is never a
+  // legitimate, intentional caller shape (per this function's own docstring
+  // above) — it silently drops every file-less approved finding this domain
+  // filed, with no signal at all. The live instance was
+  // commands/resume.js:335 (swarm-cp-verbs' fix), passing a bare `{ globs }`
+  // on the redispatch path; that call site is being corrected this same
+  // wave, but the LIBRARY must stop trusting a caller-supplied shape it has
+  // already identified as fragile, so a FUTURE resume.js-shaped omission
+  // fails visibly instead of silently reproducing this exact class. A
+  // console.warn (not a throw) is deliberate: this runs on a recovery path
+  // (dispatch/resume after a timeout or crash), and turning a silent
+  // under-delivery into a hard crash there would make the recovery path
+  // itself less safe than the bug it replaces. The warning only fires when
+  // it could actually matter — a name-less domain with zero file-less
+  // approved findings this run has nothing to lose from the omission.
+  if (!domain.name && approved.some(f => !f.file_path)) {
+    console.warn(
+      `findings-filter: domain object has globs but no name, and ${runId} has approved file-less ` +
+      `findings — every file-less finding this domain may have filed will be silently excluded from ` +
+      `its result set (the filed_by_domain fallback requires domain.name). Pass the full domain row ` +
+      `(including name), not a bare { globs } shape.`
+    );
+  }
+
+  return approved.filter(f => {
+    if (f.file_path) return matchesAnyGlob(f.file_path, domain.globs);
+    return f.filed_by_domain != null && f.filed_by_domain === domain.name;
+  });
 }

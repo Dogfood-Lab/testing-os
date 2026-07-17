@@ -62,9 +62,16 @@ import { getActualTouchedFiles, resolveWorktreeBaseRef } from '../lib/git-touche
 // doc comment there for the full rationale.
 import { reconcileFileClaims, scopeConfirmedToOwningDomain } from './collect.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
-
-const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
-const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
+// F-ab4fbab0 (the class lib/phases.js's own header names, F-274e7ac5): this
+// file carried a private, hand-typed COPY of the phase lists rather than
+// importing the single ordered source of truth — dispatch.js already
+// imports from here; this file and collect.js (the sibling private copy in
+// this same domain) did not. Both copies matched lib/phases.js byte-for-byte
+// at the time of this fix (no live behavioral bug), but "matches today" is
+// not "cannot drift" — two independently-typed literals CAN desync on a
+// future edit to either. Importing removes the desync surface entirely
+// instead of re-verifying byte-equality by hand.
+import { AUDIT_PHASES, AMEND_PHASES } from '../lib/phases.js';
 
 function mintCorrelationId() {
   const ts = Date.now().toString(36);

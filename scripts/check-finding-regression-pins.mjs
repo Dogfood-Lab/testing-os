@@ -192,6 +192,12 @@ import { scanRepoForDeclaredPins } from './pin-declarations.mjs';
 // that module's F-755d0f3f note). One canonicalizer, not two that could
 // silently drift on what "stable" means.
 import { canonicalize } from '../packages/ingest/lib/integrity.js';
+// F-875708f9: the cadence/overdue comparison this file used to compute
+// inline, twice (once per bucket below) — extracted so the roadmap
+// compiler's T6 drain-queue section (core domain) has one definition to
+// import instead of a choice between copy-paste and a package-boundary
+// reach. See that module's docstring for the full rationale.
+import { selectDueForRevalidation, defaultToday } from './lib/revalidation-cadence.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const defaultRepoRoot = resolve(here, '..');
@@ -546,11 +552,8 @@ export async function runRegressionPinGate({
     coverage.unusedAllowEntries.map((id) => [id, explainUnusedAllowEntry(id, sourceIds, declared)]),
   );
 
-  const today = new Date().toISOString().slice(0, 10);
-  const dueForRevalidation = coverage.allowlistApplied
-    .map((id) => ({ id, entry: allowlist.allow[id] }))
-    .filter(({ entry }) => entry.revalidate_by < today)
-    .map(({ id, entry }) => ({ id, revalidate_by: entry.revalidate_by, owner: entry.owner }));
+  const today = defaultToday();
+  const dueForRevalidation = selectDueForRevalidation(coverage.allowlistApplied, allowlist.allow, today);
 
   // F-ca8e7b44: the "is the debt draining" signal (C6) — how many of the
   // ids frozen at 132dc18 have left the live grandfathered bucket (declared,
@@ -558,10 +561,7 @@ export async function runRegressionPinGate({
   // editing the frozen manifest itself.
   const grandfatherFrozenIds = Object.keys(grandfatherManifest.grandfathered);
   const grandfatherDrainedCount = grandfatherFrozenIds.filter((id) => !coverage.grandfatheredIds.includes(id)).length;
-  const grandfatherDueForRevalidation = coverage.grandfatheredIds
-    .map((id) => ({ id, entry: grandfatherManifest.grandfathered[id] }))
-    .filter(({ entry }) => entry.revalidate_by < today)
-    .map(({ id, entry }) => ({ id, revalidate_by: entry.revalidate_by, owner: entry.owner }));
+  const grandfatherDueForRevalidation = selectDueForRevalidation(coverage.grandfatheredIds, grandfatherManifest.grandfathered, today);
 
   const tagIssues = [...declared.issues, ...coverage.danglingIdTags];
 

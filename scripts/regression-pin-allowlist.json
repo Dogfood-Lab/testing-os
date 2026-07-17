@@ -180,6 +180,42 @@
       "file": "packages/dogfood-swarm/commands/collect.js",
       "owner": "coordinator",
       "revalidate_by": "2026-10-17"
+    },
+    "F-271b4661": {
+      "reason": "The fix IS a comment: F-271b4661 asked for a vocabulary cross-reference mapping the public finding-contract reopen grammar (REQUIRES_CLOSED / REASON_REQUIRED / lineage.superseded_by) onto the control-plane C1/C2 verbs, explicitly with NO behavior change (wave-38 backend filing; wave-39 backend fix). A prose-only fix has no test to pin without a tautology — the F-35304e50 comment-only precedent, again.",
+      "file": "packages/findings/review/transitions.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-936c83f4": {
+      "reason": "Same comment-only class as F-271b4661, same wave: cross-reference comments at the three how-do-we-know enums (--provenance, evidence_kind, verified_how) so a future unifier can find all three. No behavior change anywhere; no non-tautological test exists for a comment.",
+      "file": "packages/verify/validators/provenance.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-274e7ac5": {
+      "reason": "The citation sits at the consolidated phase-constant definition whose duplication F-274e7ac5 tracked. The fix is structural de-duplication (one definition); collect.js adopting the import is the disclosed queued follow-up from the wave-39 merge (swarm-cp-core cross_domain_notes). When the adoption lands with its test, this entry should convert to a real @pins tag.",
+      "file": "packages/dogfood-swarm/lib/phases.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-ad2d6318": {
+      "reason": "Documentation-of-semantics comment: pre-v10 rows read closure_kind/verified_how as unknown/pre-migration, never silently defaulted. swarm-cp-core disclosed in its wave-39 output that NO consumer query exists yet to exercise the bucketing — a test today would be the vacuous shape the ethos forbids. Becomes a fix pin when the first consumer lands (expected: the wave-40+ read surfaces).",
+      "file": "packages/dogfood-swarm/db/schema.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-c7b0f47b": {
+      "reason": "Cross-reference, not a fix pin: lib/roadmap/compile.js documents the schema-vs-emitter vocabulary decision (still in flight, wave-42) and the compile.js-is-not-dead-code refutation by citing the canonical wave-40 finding id. The fix for F-c7b0f47b itself is backend's schema amendment with its own vitest suite; this mention exists so the next reader does not re-investigate.",
+      "file": "packages/dogfood-swarm/lib/roadmap/compile.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-a50d8106": {
+      "reason": "Wave-41 backend rider provenance cross-reference, not a fix pin: originally the backend lane's wave-40 LOCAL label B40-002, whose report was fingerprint-swallowed at collect (fused into F-f86e42eb — see that finding's close event) and so had no DB row. Canonicalized to F-a50d8106 (DB-verified: status approved, filed_by_domain ci-tooling, first_seen wave 42) at the wave-43 merge; the key rename landed atomically with the two source citations (packages/findings/review/transitions.js, packages/findings/review/review.test.js) per F-a50d8106's own fix — the allowlist matches by exact source-text string, so key and citations must always move together. The comment corrects transitions.js's false reopen-reason-symmetry claim; comment-only, no behavior change, no non-tautological test exists for a comment.",
+      "file": "packages/findings/review/transitions.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
     }
   }
 }

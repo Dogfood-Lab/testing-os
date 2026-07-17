@@ -130,15 +130,25 @@ The classifier (`packages/dogfood-swarm/lib/fingerprint.js`) compares each wave'
                                             [ unverified ]
                                             (carries fwd)
 
-   coordinator terminal states:
+   coordinator disposition states (closed for the gate):
      [ deferred ]   [ rejected ]
+
+   operator recovery verbs (evidence-bearing, dry-run-first):
+     swarm reopen:  fixed | deferred | rejected --> recurring
+     swarm close:   any OPEN state --> fixed
+                    (closure_kind = 'operator')
 ```
 
 - **`new`** — first time this fingerprint appears.
-- **`recurring`** — same fingerprint seen in a prior wave AND in current.
+- **`recurring`** — same fingerprint seen in a prior wave AND in current. A re-report matches either by content fingerprint or by the CONFIRM queue's declared id + exact file (owner-gated), and a regression re-report of a `fixed` finding reopens it through this same state.
 - **`fixed`** — fingerprint was in prior, NOT in current, AND the current wave's scope covered the finding's path. Requires positive evidence that the agent actually looked.
 - **`unverified`** — fingerprint was in prior, NOT in current, BUT the current wave's scope did NOT cover the finding's path. We do not know whether the defect was fixed or simply not looked at. Carried into the next wave's prior map for re-evaluation.
-- **`deferred` / `rejected`** — coordinator-assigned terminal states.
+- **`deferred` / `rejected`** — coordinator-assigned disposition states. No longer strictly terminal: `swarm reopen` moves a wrongly-closed `fixed`/`deferred`/`rejected` row back to `recurring` with mandatory reason + evidence and the acting authority recorded; the original closure survives immutably in `finding_events`. `swarm close --as fixed` is the operator's counterpart for rows that cannot close by owning-domain declaration (the unowned-file class). Each verb undoes the other; every transition is an append-only event — `swarm reopen` writes `event_type='reopened'`; `swarm close` writes `event_type` mirroring its `--as` target status (`'fixed'` today, the only value `--as` accepts), never a distinct `operator_closed` event type.
+
+Two closure-provenance vocabularies ride the same rows since schema v10, both nullable on pre-v10 history (read as *unknown/pre-migration*, never silently defaulted):
+
+- **`closure_kind`** — `operator` (`swarm close`; the only value with a live writer as of this wave) plus two schema-legal values with no writer anywhere in the codebase today: `declared` (specced for the owning-domain `confirmed[]` path) and `absence` (specced for a full-coverage audit's by-absence closure, intended to be recorded by the classifier only). Both are v10-migration design, not yet wired — grep `packages/dogfood-swarm/lib/fingerprint.js` and `commands/**` for `closure_kind` and the only hits are the column/enum definition itself. *(Flagged for the coordinator's next merge/confirm pass: a verbs-domain vouching fix landing this same wave may wire a real `declared` writer — re-check this bullet against `lib/fingerprint.js` before trusting the taxonomy is still two-thirds aspirational.)*
+- **`verified_how`** — `independent`, `self_attested`, or `operator_evidence`: *how* the closure was verified. Load-bearing, not decoration — independently-verified fixes demonstrably reopen less than self-attested ones.
 
 `unverified` is the wave-classifier's safe default: when no scope is supplied, all not-rediscovered prior findings are classified `unverified` rather than silently invented `fixed` verdicts. This is what shows up in your `swarm collect` digest as `unverified: <n>`.
 

@@ -23,13 +23,22 @@ import { resolve, basename } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { openDb } from '../db/connection.js';
 import { detectDomains, saveDomainDraft } from '../lib/domains.js';
+import { resolveRoadmapSeed, stampRoadmapSeedLineage } from './lib/roadmap-seed.js';
 
 /**
  * @param {object} opts
  * @param {string} opts.repoPath — path to local repo
  * @param {string} [opts.repo] — org/repo name (auto-detected if omitted)
  * @param {string} opts.dbPath — path to control-plane.db
- * @returns {object} — { runId, domains, unmatched, savePointTag }
+ * @param {string|true} [opts.seedFromRoadmap] — T4 (F-d110f547):
+ *   `--seed-from-roadmap[=<run-id>|latest]`. `true` (bare flag) or the
+ *   literal `'latest'` seed from whatever this checkout's
+ *   dogfood/roadmap/latest.json currently names; any other string names an
+ *   explicit prior run id. Absent (undefined) by default — lineage is
+ *   opt-in, never inferred (T4: "seeding a new run from a prior roadmap is
+ *   an explicit flag"). Resolved and schema-validated BEFORE any DB write
+ *   so a bad/missing seed fails fast without leaving a half-initialized run.
+ * @returns {object} — { runId, domains, unmatched, savePointTag, roadmapSeed }
  */
 export function init(opts) {
   const repoPath = resolve(opts.repoPath);
@@ -78,8 +87,15 @@ export function init(opts) {
   // compensator per the workflow-standards rule (Sagas, Garcia-Molina &
   // Salem 1987): undo the tag, THEN re-throw the original failure untouched
   // — the operator must see the real error, not a masked compensator result.
-  let domains, unmatched, runId;
+  let domains, unmatched, runId, roadmapSeed = null;
   try {
+    // T4/F-d110f547: resolve + validate BEFORE any DB work — the fastest
+    // possible fail-fast for a bad/missing seed, and it means a doomed init
+    // never even reaches detectDomains' filesystem walk.
+    if (opts.seedFromRoadmap) {
+      roadmapSeed = resolveRoadmapSeed(repoPath, opts.seedFromRoadmap);
+    }
+
     ({ domains, unmatched } = detectDomains(repoPath));
 
     const hex = randomBytes(2).toString('hex');
@@ -97,6 +113,14 @@ export function init(opts) {
       globs: d.globs,
       ownership_class: d.ownership_class,
     })));
+
+    // T4/F-d110f547: records this NEW run's lineage durably (the `kv` table
+    // — no schema migration; see commands/lib/roadmap-seed.js's header).
+    // dispatch.js reads this back to decide the first-audit-wave
+    // auto-injection gate.
+    if (roadmapSeed) {
+      stampRoadmapSeedLineage(db, runId, roadmapSeed);
+    }
   } catch (err) {
     compensateOrphanedSavePointTag(repoPath, savePointTag);
     throw err;
@@ -116,6 +140,9 @@ export function init(opts) {
       globs: d.globs,
     })),
     unmatched,
+    roadmapSeed: roadmapSeed
+      ? { sourceRunId: roadmapSeed.sourceRunId, sequence: roadmapSeed.sequence, path: roadmapSeed.relPath }
+      : null,
   };
 }
 

@@ -1,0 +1,44 @@
+{
+  "run_id": "swarm-fixture-0002",
+  "sequence": 3,
+  "compiled_at": "2026-07-17T09:00:38.000Z",
+  "repo": "dogfood-lab/testing-os",
+  "compiled_from": { "commit_sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" },
+  "open_summary": { "open": 2, "deferred": 12, "approved": 40, "fixed": 900, "rejected": 5, "recurring": 0 },
+  "grandfathered_drain": {
+    "frozen_total": 256,
+    "drained": 2,
+    "outstanding": [
+      { "id": "F-002109-003", "owner": "coordinator", "revalidate_by": "2026-10-14" },
+      { "id": "F-002109-016", "owner": "coordinator", "revalidate_by": "2026-10-14", "reason": "exercises the optional-reason branch of $defs/grandfatheredManifestEntry" }
+    ]
+  },
+  "recurrence_stats": {
+    "top_recurring": [
+      { "fingerprint": "abc123", "description": "d", "run_count": 3, "severity": "HIGH", "first_seen": "2026-01-01T00:00:00.000Z", "last_seen": "2026-07-01T00:00:00.000Z" }
+    ]
+  },
+  "attention": {
+    "advisory": true,
+    "items": [
+      { "file": "scripts/check-finding-regression-pins.mjs", "score": 0.004, "components": { "churn": 4.6, "recency": 17, "fragmentation": 1 } }
+    ]
+  },
+  "operator_notes": [
+    { "kind": "theme", "text": "t", "expires": 5 },
+    { "kind": "invariant", "text": "t2", "expires": "2026-12-31", "enforced_by": "scripts/check-finding-regression-pins.mjs" }
+  ],
+  "expired_notes": [
+    { "kind": "theme", "text": "expired theme note — dropped loudly per T3, carried in the artifact per A3.4 / the F-74ba2c79 pin", "expires": 1 },
+    { "kind": "open-question", "text": "expired open-question note — second operatorNote kind through the shared $defs/operatorNote", "expires": "2026-07-01" }
+  ],
+  "drain_queue": {
+    "entries": [
+      { "id": "drain-0001", "owner": "coordinator", "cadence_runs": 3, "runs_since_review": 4, "overdue": true, "reason": "exercises the optional-reason branch of $defs/drainQueueEntry; runs_since_review (4) strictly exceeds cadence_runs (3), so overdue is true and the id appears in overdue_ids" },
+      { "id": "drain-0002", "owner": "ci-tooling", "cadence_runs": 5, "runs_since_review": 5, "overdue": false }
+    ],
+    "overdue_ids": ["drain-0001"]
+  },
+  "notesPath": "dogfood/roadmap-notes.json",
+  "content_hash": "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+}

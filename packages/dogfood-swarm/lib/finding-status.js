@@ -18,6 +18,19 @@
  */
 
 /**
+ * F-c0b12add: re-exported (not re-defined) from db/schema.js, which is the
+ * ACTUAL single source of truth for finding_events.event_type's known
+ * vocabulary (db/schema.js's own header comment: "This frozen array is the
+ * single source of truth: STATUS.finding_event below is THIS array"). This
+ * module is the established home for finding-LIFECYCLE vocabulary
+ * (CLOSED_FINDING_STATUSES above already lives here), so callers/tests
+ * reasonably look here first — re-exporting means there is still only ONE
+ * array in memory (Object.freeze'd once, in schema.js), never a second,
+ * independently-driftable copy.
+ */
+export { EVENT_TYPES } from '../db/schema.js';
+
+/**
  * Finding statuses that are CLOSED for gate purposes: a finding in any of these
  * states does not block advancement, regardless of severity.
  *

@@ -7,8 +7,25 @@
  * the ten phases in a DIFFERENT order — so which sequence an operator read
  * depended on which command printed it. dispatch.js's own AUDIT_PHASES /
  * AMEND_PHASES validation arrays were a fourth private copy. This module owns
- * the ordered enumeration; every render site and the validation gate consume
- * it, so the enumeration and order provably cannot drift.
+ * the ordered enumeration; dispatch.js imports it directly (see its own
+ * `import { AUDIT_PHASES, AMEND_PHASES, ... } from '../lib/phases.js'`), so
+ * that render site and the validation gate it drives provably cannot drift.
+ *
+ * RESOLVED (F-274e7ac5 → F-ab4fbab0 → wave-43 merge): this module is now
+ * the SOLE declaration of the phase enumeration. The history, kept because
+ * two audits paid for it: commands/collect.js and commands/revalidate.js
+ * each carried a private byte-identical `AUDIT_PHASES`/`AMEND_PHASES`
+ * literal pair — collect.js's was the disclosed exception (F-274e7ac5),
+ * revalidate.js's was the undisclosed sibling the wave-42 confirming audit
+ * caught (F-ab4fbab0). At the wave-43 merge the verbs lane deleted BOTH
+ * local copies and imported this module (a class fix, going further than
+ * the disclosed-exception compromise this paragraph once documented), and
+ * lib/phases.test.js's parity gate now enforces the either-imports-or-
+ * byte-identical invariant on both files so a future re-introduction of a
+ * private copy is caught, not re-disclosed. Sweep result at merge: exactly
+ * ONE file in packages/dogfood-swarm declares these literal arrays — this
+ * one. "Provably cannot drift" is now true of every phase-consuming call
+ * site in the package, not only the dispatch.js import path.
  *
  * Order: all AUDIT phases first, then all AMEND phases — the grouping the
  * help block, README, and error-render hint already agreed on. (This is NOT

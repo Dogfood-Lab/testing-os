@@ -83,21 +83,45 @@ export class CollectUpsertError extends Error {
  * stable .code so consumers can pattern-match without substring grep on
  * .message, mirroring IsolationError / StateMachineRejectionError.
  *
- * Codes:
- *   DISPATCH_RUN_NOT_FOUND       — `runs.id` does not exist
- *   DISPATCH_DOMAINS_NOT_FROZEN  — domains still draft, no --auto-freeze
- *   DISPATCH_NO_DOMAINS          — frozen but the domain set is empty
- *   DISPATCH_INVALID_PHASE       — phase not in AUDIT_PHASES ∪ AMEND_PHASES
- *                                  (d5-swarm-cli-001: caught BEFORE buildWave
- *                                  mutates the control plane, replacing the
- *                                  post-commit untyped `Unknown audit phase`
- *                                  throw from lib/templates.js)
+ * Codes (wave 43 correction — this list previously named only 4 of the 7
+ * live call sites in commands/dispatch.js, source-verified by direct grep
+ * this wave; the same doc-vs-runtime-drift-inside-a-comment class as
+ * F-2f7dd0ce/F-ab4fbab0):
+ *   DISPATCH_RUN_NOT_FOUND         — `runs.id` does not exist
+ *   DISPATCH_DOMAINS_NOT_FROZEN    — domains still draft, no --auto-freeze
+ *   DISPATCH_NO_DOMAINS            — frozen but the domain set is empty
+ *   DISPATCH_INVALID_PHASE         — phase not in AUDIT_PHASES ∪ AMEND_PHASES
+ *                                    (d5-swarm-cli-001: caught BEFORE buildWave
+ *                                    mutates the control plane, replacing the
+ *                                    post-commit untyped `Unknown audit phase`
+ *                                    throw from lib/templates.js)
+ *   DISPATCH_NO_AGENT_DOMAINS      — every domain in the frozen map is class
+ *                                    'shared' (a zone, not an agent) — zero
+ *                                    agent_runs would be created and the wave
+ *                                    would permanently block future dispatch
+ *                                    on DISPATCH_WAVE_IN_FLIGHT below, since a
+ *                                    zero-agent wave can never collect
+ *   DISPATCH_WAVE_IN_FLIGHT        — an older wave of this run is still
+ *                                    'dispatched'/'collecting'; collect/
+ *                                    resume/advance only operate on the
+ *                                    LATEST wave, so a second dispatch would
+ *                                    strand it (F-cf8b7a6c)
+ *   DISPATCH_ROADMAP_DIGEST_NOT_FOUND — T4's `--seed-from-roadmap` opt-in
+ *                                    (docs/trajectory-and-closure.dispatch.md)
+ *                                    names a run with no compiled roadmap
+ *                                    artifact to seed the digest from. Lands
+ *                                    from swarm-cp-verbs' wave-43 worktree
+ *                                    (parallel to this fix, invisible in this
+ *                                    domain's own tree before merge) — cited
+ *                                    here per this wave's cross-domain
+ *                                    coordination so this list is accurate at
+ *                                    the merged commit, not merely today's.
  */
 export class DispatchPreconditionError extends Error {
   /**
    * @param {string} message
    * @param {object} opts
-   * @param {'DISPATCH_RUN_NOT_FOUND' | 'DISPATCH_DOMAINS_NOT_FROZEN' | 'DISPATCH_NO_DOMAINS' | 'DISPATCH_INVALID_PHASE'} opts.code
+   * @param {'DISPATCH_RUN_NOT_FOUND' | 'DISPATCH_DOMAINS_NOT_FROZEN' | 'DISPATCH_NO_DOMAINS' | 'DISPATCH_INVALID_PHASE' | 'DISPATCH_NO_AGENT_DOMAINS' | 'DISPATCH_WAVE_IN_FLIGHT' | 'DISPATCH_ROADMAP_DIGEST_NOT_FOUND'} opts.code
    * @param {string} [opts.runId]
    * @param {string} [opts.phase]
    * @param {string} [opts.hint]

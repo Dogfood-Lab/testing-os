@@ -1,0 +1,40 @@
+{
+  "run_id": "swarm-1784091637-5127",
+  "sequence": 1,
+  "compiled_at": "2026-07-17T18:00:00Z",
+  "repo": "dogfood-lab/testing-os",
+  "compiled_from": {
+    "commit_sha": "0406b989434956f8c8a89d93c008204aa1bd6edd"
+  },
+  "open_summary": {
+    "open": 0,
+    "deferred": 1,
+    "approved": 0
+  },
+  "grandfathered_drain": {
+    "frozen_total": 0,
+    "drained": 0,
+    "outstanding": []
+  },
+  "recurrence_stats": {},
+  "attention": {
+    "advisory": true,
+    "items": []
+  },
+  "operator_notes": [],
+  "expired_notes": [],
+  "drain_queue": {
+    "entries": [
+      {
+        "id": "dfind-testing-os-deferred-002",
+        "cadence_runs": 5,
+        "runs_since_review": 6,
+        "overdue": true,
+        "reason": "Deferred to next feature pass."
+      }
+    ],
+    "overdue_ids": [
+      "dfind-testing-os-deferred-002"
+    ]
+  }
+}
