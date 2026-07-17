@@ -8,5 +8,6 @@
   "grandfathered_drain": { "frozen_total": 0, "drained": 0, "outstanding": [] },
   "recurrence_stats": {},
   "attention": { "advisory": true, "items": [] },
-  "operator_notes": []
+  "operator_notes": [],
+  "expired_notes": []
 }

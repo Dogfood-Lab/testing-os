@@ -1,5 +1,5 @@
 {
-  "run_id": "swarm-fixture-0001",
+  "run_id": "swarm-fixture-0007",
   "sequence": 1,
   "compiled_at": "2026-07-17T00:00:00.000Z",
   "repo": "dogfood-lab/testing-os",
@@ -10,5 +10,10 @@
   "attention": { "advisory": true, "items": [] },
   "operator_notes": [],
   "expired_notes": [],
-  "drain_queue": { "entries": [], "overdue_ids": [] }
+  "drain_queue": {
+    "entries": [
+      { "id": "drain-0001", "cadence_runs": 3, "runs_since_review": 4, "overdue": true }
+    ],
+    "overdue_ids": ["drain-0001"]
+  }
 }

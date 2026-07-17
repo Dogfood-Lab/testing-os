@@ -9,6 +9,7 @@
   "recurrence_stats": {},
   "attention": { "advisory": true, "items": [] },
   "operator_notes": [],
-  "drain_queue": [],
+  "expired_notes": [],
+  "drain_queue": { "entries": [], "overdue_ids": [] },
   "sections": {}
 }
