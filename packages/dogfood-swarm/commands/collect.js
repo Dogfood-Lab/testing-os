@@ -257,14 +257,29 @@ const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'sta
  * better answer to one rule.
  *
  * DISCLOSED, not silently assumed away: a finding whose `file_path` no
- * agent-bearing domain matches — a file-less repo-level finding, or one under a
- * `shared` domain, which dispatch never gives an agent — becomes unclosable by
- * declaration and stays open (`unverified`) until a coordinator disposes of it
- * via defer/reject. That is not new and not this rule's doing: F-6a5eb347
- * (root package.json, `shared`) already behaves exactly this way, correctly —
- * no agent checked it because no agent COULD. Failing closed there is the whole
- * point; the alternative is letting an unrelated domain vouch for a file nobody
- * owns, which is the defect being fixed.
+ * agent-bearing domain matches becomes unclosable by declaration and stays open
+ * (`unverified`) until a coordinator disposes of it via defer/reject. Two ways
+ * to land there, and they are NOT the same gap:
+ *   - the path matches a `shared` domain, which dispatch never gives an agent
+ *     (root `package.json` — F-3af2f9c8's home);
+ *   - the path matches NO domain at all, not even `shared`, because `shared`'s
+ *     globs are root-level (`package.json`, `*.json`) and minimatch does not
+ *     cross a path separator without a globstar — so a nested
+ *     `packages/<name>/package.json` belongs to nobody (F-6a5eb347's home).
+ *     (Spelling that glob literally here would end this comment: the star-slash
+ *     closes the block. The suite went 161-red on exactly that.)
+ * That is not new and not this rule's doing: F-6a5eb347 went `unverified` on
+ * wave 32, ~14 minutes BEFORE this rule was committed, correctly — no agent
+ * checked it because no agent COULD. Failing closed is the whole point; the
+ * alternative is letting an unrelated domain vouch for a file nobody owns,
+ * which is the defect being fixed.
+ *
+ * An earlier revision of this paragraph cited F-6a5eb347 as "root package.json,
+ * `shared`" — wrong on both halves (it is `packages/dogfood-swarm/package.json`,
+ * and it matches zero domains), conflating it with F-3af2f9c8. Three separate
+ * lanes caught it independently, each by running minimatch against the real
+ * frozen map rather than reading the comment. The conclusion survived; the
+ * citation did not.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {string} runId
