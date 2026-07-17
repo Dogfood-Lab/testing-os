@@ -14,6 +14,24 @@
  * `source.provider`, so the provider enum, the run_url parsers
  * (validators/repo-binding.js), and the adapters here stay in lockstep —
  * coverage tests fail CI if any of the three drifts.
+ *
+ * F-936c83f4 (wave 39, feature-pass integration finding): this module's
+ * `--provenance=stub|github` (the flag both packages/verify/cli.js and
+ * packages/ingest/run.js parse, both delegating to the adapters here) answers
+ * ONE of three structurally-similar-but-distinct 'how do we know this claim is
+ * true' questions living in this repo: (1) THIS module — does a submitted CI
+ * run really exist and match its claims; (2) dogfood-finding.schema.json's
+ * `evidence[].evidence_kind` enum — what evidence backs a distilled cross-repo
+ * lesson (see that property's own cross-reference note); (3) the swarm
+ * control-plane's incoming `verified_how`
+ * (independent|self_attested|operator_evidence,
+ * docs/trajectory-and-closure.dispatch.md's C2 `swarm close` verb) — how a
+ * finding CLOSURE was verified. This is NOT a request to unify the three
+ * enums — CI-run provenance, cross-repo-lesson evidence, and
+ * closure-verification-method are genuinely different axes, and forcing one
+ * shared enum would misrepresent that. The pointer exists only so the next
+ * reader of any of the three doesn't rediscover the pattern from scratch a
+ * fourth time.
  */
 
 /**
