@@ -106,6 +106,55 @@ function defaultSleep(ms) {
 }
 
 /**
+ * F-2a5ddafa: emit ONE structured NDJSON warn line to stderr each time a
+ * retry is about to happen, so an operator tailing CI logs sees a degrading
+ * provider BEFORE the retry budget exhausts and throws. Pre-fix, every
+ * `await sleep(...); continue;` branch in both adapters below was completely
+ * silent — a submission that succeeded only after 1-2 retries against a
+ * degrading GitHub/GitLab API was byte-for-byte indistinguishable in the log
+ * from one that succeeded on the first try. The eventual exhausted-retry
+ * failure is already loud (an operational throw); this closes the gap on
+ * the way there, which is exactly the window an operator could act in
+ * (e.g. correlate a slow ingest with a known provider incident).
+ *
+ * Deliberately NOT named `logStage` and NOT importing
+ * `@dogfood-lab/dogfood-swarm/lib/log-stage.js`: packages/verify depends on
+ * nothing but `@dogfood-lab/schemas` + `js-yaml` today (see package.json),
+ * and the accepted workspace cycle (root CLAUDE.md, "Workspace dependency
+ * graph") is `findings -> ingest -> dogfood-swarm -> findings`. `ingest`
+ * ALSO depends on `verify`, so a NEW `verify -> dogfood-swarm` edge would
+ * not reuse that cycle — it would close a SECOND, larger one:
+ * `verify -> dogfood-swarm -> findings -> ingest -> verify`. This mirrors
+ * the repo's existing precedent for exactly this constraint —
+ * `packages/ingest/lib/sleep-sync.js` duplicates
+ * `packages/findings/lib/file-lock.js`'s private `sleepSync` verbatim,
+ * per that file's own header, rather than take a disallowed cross-edge —
+ * so this emits the same NDJSON stage-line SHAPE independently instead of
+ * importing the shared helper.
+ * `packages/ingest/wave22-log-stage-discipline.test.js` (Class #9 sweep)
+ * enforces that no file under `packages/**` defines its OWN `logStage`
+ * without delegating to the shared helper; this helper uses a distinct
+ * name for exactly that reason and is not a competing definition of that
+ * convention.
+ *
+ * Injectable via `opts.onRetryWarn` (mirrors the already-injectable
+ * `opts.fetchImpl` / `opts.sleepImpl` on this file) so tests assert the
+ * exact fields without scraping stderr.
+ *
+ * @param {{ kind: string, provider: string, attempt: number, status_or_reason: string|number, next_backoff_ms: number }} fields
+ */
+function defaultOnRetryWarn(fields) {
+  const line = { ts: new Date().toISOString(), component: 'verify', stage: 'warn', ...fields };
+  try {
+    console.error(JSON.stringify(line));
+  } catch {
+    // The logger must never throw and mask a real retry — same last-resort
+    // discipline as the shared dogfood-swarm helper (log-stage.js).
+    console.error('{"stage":"warn","kind":"log_serialization_failed"}');
+  }
+}
+
+/**
  * Stub provenance adapter. Always confirms.
  * Use in tests and local development.
  */
@@ -139,6 +188,7 @@ export function githubProvenance(token, opts = {}) {
   const retries = opts.retries ?? PROVENANCE_RETRIES;
   const backoffMs = opts.backoffMs ?? PROVENANCE_BACKOFF_MS;
   const sleep = opts.sleepImpl ?? defaultSleep;
+  const onRetryWarn = opts.onRetryWarn ?? defaultOnRetryWarn;
   return {
     /**
      * @param {object} source - submission.source (provider-scoped run claim)
@@ -204,7 +254,11 @@ export function githubProvenance(token, opts = {}) {
             // transport-reject branch below (mirrors the scenario fetcher's
             // retryable-timeout discipline), then throw on exhaustion.
             if (attempt < retries) {
-              await sleep(nextBackoffMs(null, attempt + 1, backoffMs));
+              const waitMs = nextBackoffMs(null, attempt + 1, backoffMs);
+              // F-2a5ddafa: visibility BEFORE the budget exhausts (see
+              // defaultOnRetryWarn's doc above for why this is 'warn').
+              onRetryWarn({ kind: 'provenance_retry', provider: 'github', attempt: attempt + 1, status_or_reason: 'timeout', next_backoff_ms: waitMs });
+              await sleep(waitMs);
               continue;
             }
             throw new Error(`provenance: GitHub API timeout after ${timeoutMs}ms`);
@@ -218,7 +272,9 @@ export function githubProvenance(token, opts = {}) {
           // and the duplicate guard then blocked a clean resubmission under the
           // same run_id. `return false` is reserved for HTTP 404 (mirrors GitLab).
           if (attempt < retries) {
-            await sleep(nextBackoffMs(null, attempt + 1, backoffMs));
+            const waitMs = nextBackoffMs(null, attempt + 1, backoffMs);
+            onRetryWarn({ kind: 'provenance_retry', provider: 'github', attempt: attempt + 1, status_or_reason: err && err.message ? err.message : 'network_error', next_backoff_ms: waitMs });
+            await sleep(waitMs);
             continue;
           }
           throw new Error(`provenance: network error: ${err.message}`);
@@ -238,7 +294,9 @@ export function githubProvenance(token, opts = {}) {
         // last 429/5xx throws so a real outage still surfaces (operational).
         if (resp.status === 404) return false;
         if (isRetryableStatus(resp.status) && attempt < retries) {
-          await sleep(nextBackoffMs(resp, attempt + 1, backoffMs));
+          const waitMs = nextBackoffMs(resp, attempt + 1, backoffMs);
+          onRetryWarn({ kind: 'provenance_retry', provider: 'github', attempt: attempt + 1, status_or_reason: resp.status, next_backoff_ms: waitMs });
+          await sleep(waitMs);
           continue;
         }
         throw new Error(`provenance: GitHub API returned ${resp.status}`);
@@ -312,6 +370,7 @@ export function gitlabProvenance(token, opts = {}) {
   const retries = opts.retries ?? PROVENANCE_RETRIES;
   const backoffMs = opts.backoffMs ?? PROVENANCE_BACKOFF_MS;
   const sleep = opts.sleepImpl ?? defaultSleep;
+  const onRetryWarn = opts.onRetryWarn ?? defaultOnRetryWarn;
   return {
     /**
      * @param {object} source - submission.source (provider-scoped run claim)
@@ -382,7 +441,9 @@ export function gitlabProvenance(token, opts = {}) {
             // F-8e72d0de: retry timeouts within the shared budget — peer
             // discipline with githubProvenance (see that adapter's note).
             if (attempt < retries) {
-              await sleep(nextBackoffMs(null, attempt + 1, backoffMs));
+              const waitMs = nextBackoffMs(null, attempt + 1, backoffMs);
+              onRetryWarn({ kind: 'provenance_retry', provider: 'gitlab', attempt: attempt + 1, status_or_reason: 'timeout', next_backoff_ms: waitMs });
+              await sleep(waitMs);
               continue;
             }
             throw new Error(`provenance: GitLab API timeout after ${timeoutMs}ms`);
@@ -390,7 +451,9 @@ export function gitlabProvenance(token, opts = {}) {
           // F-dac7e08c: transport reject = operational, retried then thrown —
           // mirrors githubProvenance exactly. `return false` is 404-only.
           if (attempt < retries) {
-            await sleep(nextBackoffMs(null, attempt + 1, backoffMs));
+            const waitMs = nextBackoffMs(null, attempt + 1, backoffMs);
+            onRetryWarn({ kind: 'provenance_retry', provider: 'gitlab', attempt: attempt + 1, status_or_reason: err && err.message ? err.message : 'network_error', next_backoff_ms: waitMs });
+            await sleep(waitMs);
             continue;
           }
           throw new Error(`provenance: network error: ${err.message}`);
@@ -408,7 +471,9 @@ export function gitlabProvenance(token, opts = {}) {
         // budget. 401/403 = non-transient operational, throw immediately.
         if (resp.status === 404) return false;
         if (isRetryableStatus(resp.status) && attempt < retries) {
-          await sleep(nextBackoffMs(resp, attempt + 1, backoffMs));
+          const waitMs = nextBackoffMs(resp, attempt + 1, backoffMs);
+          onRetryWarn({ kind: 'provenance_retry', provider: 'gitlab', attempt: attempt + 1, status_or_reason: resp.status, next_backoff_ms: waitMs });
+          await sleep(waitMs);
           continue;
         }
         throw new Error(`provenance: GitLab API returned ${resp.status}`);

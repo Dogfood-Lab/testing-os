@@ -413,10 +413,46 @@ describe('cli-r-002: main() extraction keeps the help + usage contract intact', 
     assert.match(r.stdout, /Phases:/);
   });
 
-  it('an unknown command exits 1 and still prints the help banner', () => {
+  // CONTRACT CHANGED — wave 29, F-554bcd68 (Stage C humanization).
+  //
+  // This subtest previously read "an unknown command exits 1 and still prints
+  // the help banner" and asserted /Commands:/ on stdout. That was a
+  // REFACTOR-SAFETY snapshot, not a designed contract: cli-r-002 was a pure
+  // main() extraction whose own stated claim was "behavior is identical", so
+  // this block captured the status quo to prove the extraction changed
+  // nothing. It never argued that dumping the manual at a typo was RIGHT.
+  //
+  // F-554bcd68 changed it deliberately. The exit-1 half is unchanged and is
+  // still pinned below — only the banner assertion is replaced, by three
+  // stricter ones. Why the banner had to go:
+  //
+  //   1. STREAM DISCIPLINE. The banner went to stdout via console.log, so the
+  //      diagnostic was not on the error stream: `swarm dispach 2>/dev/null`
+  //      printed ~240 happy-looking lines, and `swarm dispach >/dev/null`
+  //      printed NOTHING AT ALL. A diagnostic that disappears under
+  //      stderr-only capture is not a diagnostic.
+  //   2. NO SIGNAL. A typo produced output byte-identical to a successful
+  //      `--help`. Nothing anywhere named the token that was wrong — grepping
+  //      the full pre-fix output for /unknown|not found|did you mean/ matched
+  //      zero times.
+  //   3. CONVENTION, verified rather than asserted: on this rig `git dispach`
+  //      prints exactly one line ("git: 'dispach' is not a git command. See
+  //      'git --help'.") and exits 1 — it does not dump the manual. The
+  //      finding's own fix text sanctions this shape explicitly ("without
+  //      necessarily dumping the entire reference").
+  //
+  // Discoverability is not lost: the one-line message names the nearest real
+  // verb AND points at `swarm --help`, which is one keystroke and strictly
+  // more targeted than 240 lines the operator must scroll.
+  it('an unknown command exits 1, names the token on stderr, and does not dump the reference', () => {
     const r = runCli(['definitely-not-a-command']);
     assert.equal(r.status, 1, `unknown command must exit 1; got ${r.status}`);
-    assert.match(r.stdout, /Commands:/);
+    assert.match(r.stderr, /Unknown command: 'definitely-not-a-command'/,
+      'the diagnostic must name the offending token, and must be on stderr (see 1 + 2 above)');
+    assert.match(r.stderr, /swarm --help/,
+      'and must still route the operator to the full command list');
+    assert.doesNotMatch(r.stdout, /Commands:/,
+      'a typo must NOT be answered with output indistinguishable from a successful --help');
   });
 
   it('verify with no run-id exits 1 with its Usage line (guard unchanged by exit-code fix)', () => {

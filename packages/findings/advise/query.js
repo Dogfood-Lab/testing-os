@@ -113,6 +113,26 @@ export function queryRecommendations(rootDir, scope = {}) {
 
 /**
  * Query accepted doctrine by scope.
+ *
+ * F-d022c023: the surface-scoping filter below used to end in a bare `true`
+ * — since doctrine.transfer_scope is a closed 3-value enum
+ * (packages/schemas/src/json/dogfood-doctrine.schema.json: org_wide,
+ * execution_mode, surface_archetype) and the first two branches already
+ * matched two of the three values explicitly, the trailing `true` made the
+ * WHOLE expression unconditionally true for every doctrine record — a
+ * structural no-op covering 100% of the enum, not a rare edge case.
+ * Replacing that `true` with a third literal `transfer_scope ===
+ * 'surface_archetype'` comparison would be an equally-complete no-op (the
+ * three literal branches would still exhaust the closed enum and always be
+ * true) — so it does NOT satisfy this fix; it would just move the dead code
+ * one line over. doctrine itself carries NO per-record surface field to
+ * compare against (the schema's `additionalProperties: false` rules one out
+ * without a schema/version bump), so a REAL surface_archetype check has to
+ * reach through `based_on_pattern_ids` to the patterns' own
+ * `dimensions.product_surfaces` — the same signal `queryPatterns` above
+ * already uses, and the literal thing this function's own (correct) comment
+ * about org_wide/execution_mode always says: "surface_archetype applies if
+ * pattern surfaces match."
  */
 export function queryDoctrine(rootDir, scope = {}) {
   const all = loadDoctrines(rootDir);
@@ -121,13 +141,22 @@ export function queryDoctrine(rootDir, scope = {}) {
   let results = all.filter(d => d.status === 'accepted');
 
   if (scope.surface) {
-    // Doctrine applies if its scope is broad enough or matches the surface
-    // org_wide always applies; surface_archetype applies if pattern surfaces match
-    results = results.filter(d =>
-      d.transfer_scope === 'org_wide' ||
-      d.transfer_scope === 'execution_mode' ||
-      true // surface_archetype applies broadly — patterns already scoped it
+    // org_wide and execution_mode are surface-agnostic BY DEFINITION (their
+    // whole point is applying beyond any single surface), so they always
+    // pass once ANY surface is requested — that part of the original intent
+    // was correct and is unchanged. surface_archetype is the one scope tied
+    // to a specific surface lineage: does the requested surface appear in
+    // the dimensions.product_surfaces of AT LEAST ONE pattern this doctrine
+    // is based_on_pattern_ids-derived from?
+    const patternSurfacesById = new Map(
+      loadPatterns(rootDir).map(p => [p.pattern_id, p.dimensions?.product_surfaces || []])
     );
+    results = results.filter(d => {
+      if (d.transfer_scope === 'org_wide' || d.transfer_scope === 'execution_mode') return true;
+      return (d.based_on_pattern_ids || []).some(
+        pid => patternSurfacesById.get(pid)?.includes(scope.surface)
+      );
+    });
   }
 
   results.sort((a, b) => {

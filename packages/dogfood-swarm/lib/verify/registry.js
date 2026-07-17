@@ -77,7 +77,20 @@ export function selectAdapter(repoPath, override) {
   if (override) {
     const adapter = ADAPTERS.get(override);
     if (!adapter) throw new Error(`Unknown adapter: "${override}". Available: ${[...ADAPTERS.keys()].join(', ')}`);
-    const probe = adapter.probe(repoPath);
+    // F-6a1138b4: mirror probeAll's try/catch (three lines above) here too.
+    // The two call sites share the identical adapter.probe(repoPath) contract
+    // but had asymmetric fault tolerance — a throwing probe degraded to a
+    // clean {score:0, reason} via the auto-detect path (probeAll) yet
+    // propagated raw and uncaught the moment an operator passed
+    // --adapter=<name> instead. All three shipped adapters already guard
+    // their one throwing operation internally, so this is not reachable
+    // today; it closes the gap for the next adapter that doesn't.
+    let probe;
+    try {
+      probe = adapter.probe(repoPath);
+    } catch (e) {
+      throw new Error(`Adapter '${override}' probe failed: ${e.message}`);
+    }
     return { name: override, adapter, probe };
   }
 

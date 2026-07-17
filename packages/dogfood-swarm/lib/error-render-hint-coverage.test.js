@@ -127,6 +127,35 @@
  * wrong one, which reads oddly in review rather than as an ordinary
  * incomplete stub — and is disclosed rather than closed here, matching this
  * file's own standard for the bare-`.add()` residual above.
+ *
+ * F-c50978e7 (LOW, wave 29): F-ba7ad7df's tightening above is a genuinely
+ * closed class-fix for every SYNCHRONOUS run body, but runNamedErrorTest
+ * called `run()` without checking its return value at all. A future
+ * namedErrorTest body written as an async function (or returning any other
+ * thenable) that calls nextLineFor only after its first `await` deferred
+ * that call past the point where THIS function's own synchronous assert.ok
+ * checks already ran — PROVEN LIVE (independent driver script in an isolated
+ * scratch copy, against the real production errors.js/error-render.js, zero
+ * repo writes): such a body made runNamedErrorTest throw immediately with
+ * the misleading 'never called nextLineFor()' message, blaming the class
+ * under test for a timing gap in the harness itself. Today's file uses zero
+ * async run bodies (verified: every namedErrorTest call above is a plain
+ * synchronous arrow function), so this was disclosure and future-proofing,
+ * not a live false grant — sync-only was already this harness's only
+ * exercised shape, never declared as an intentional constraint anywhere.
+ *
+ * THE FIX: runNamedErrorTest now inspects `run()`'s return value immediately
+ * and throws a distinct, actionable error — "run bodies must be
+ * synchronous" — the moment it sees a thenable, before the misleading
+ * nextLineFor assertion ever runs. This is deliberately NOT "make
+ * runNamedErrorTest async-aware and await the result": that alternative
+ * (also viable, see the finding text) would require every direct caller of
+ * runNamedErrorTest — including the GATE (mutation control) tests below that
+ * currently use synchronous assert.throws() — to switch to assert.rejects()
+ * and an async it() callback, a materially wider diff for a LOW,
+ * currently-unexploited gap whose entire value today is a clearer failure
+ * message. Sync-only remains this harness's supported shape; the fix makes
+ * that constraint legible instead of silently mysterious.
  */
 
 import { describe, it } from 'node:test';
@@ -169,12 +198,29 @@ const nextLineForCalls = [];
  * docstring for the full rationale, the disclosed trade-off, and the
  * narrower residual that remains.
  *
+ * F-c50978e7: `run` is invoked synchronously and never awaited — a run body
+ * that returns a thenable (an async function, or anything else promise-like)
+ * gets a clear, actionable refusal here instead of silently reaching the
+ * assert.ok checks below before its deferred nextLineFor() call has landed,
+ * which previously produced the misleading "never called nextLineFor()"
+ * message for a class that WOULD have rendered correctly moments later. See
+ * this file's module docstring for the full rationale and disclosed residual
+ * (namedErrorTest itself stays synchronous-only by design; a genuinely-async
+ * render is out of scope for this harness, not silently mishandled by it).
+ *
  * @param {string} className
  * @param {() => void} run
  */
 function runNamedErrorTest(className, run) {
   const before = nextLineForCalls.length;
-  run();
+  const result = run();
+  if (result && typeof result.then === 'function') {
+    throw new Error(
+      `namedErrorTest('${className}') run body returned a thenable (looks async) — namedErrorTest run ` +
+      `bodies must be synchronous. runNamedErrorTest does not await a returned promise, so a nextLineFor() ` +
+      `call made after the first 'await' would not be observed before these checks run (F-c50978e7).`,
+    );
+  }
   const observedDuringRun = nextLineForCalls.slice(before);
   assert.ok(
     observedDuringRun.length > 0,
@@ -467,5 +513,51 @@ describe('errors.js coverage gate is DYNAMIC, not a hardcoded list (F-7d4ac5ce c
       assert.ok(nextLineFor(e));
     });
     assert.ok(EXERCISED_CLASSES.has('GenuinelyExercisedFutureError'));
+  });
+
+  it('F-c50978e7 GATE (mutation control): an async run body that awaits BEFORE calling nextLineFor gets the clear "must be synchronous" refusal, not the misleading "never called nextLineFor"', () => {
+    // Reproduces the finding's own reproduction: a run body that is an async
+    // function and defers its nextLineFor() call past its first `await`.
+    // Pre-fix, runNamedErrorTest called run() and immediately read
+    // nextLineForCalls synchronously — nothing had been pushed yet, so the
+    // failure blamed "never called nextLineFor()", indistinguishable from a
+    // genuinely broken render. Post-fix, the thenable return is caught
+    // BEFORE that misleading assertion ever runs.
+    assert.throws(
+      () => runNamedErrorTest('AsyncFutureError', async () => {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        nextLineFor(new IsolationError('worktree creation failed'));
+      }),
+      /run bodies must be synchronous/,
+    );
+    assert.ok(
+      !EXERCISED_CLASSES.has('AsyncFutureError'),
+      'a thenable-returning run must not register the class into EXERCISED_CLASSES',
+    );
+  });
+
+  it('F-c50978e7 GATE (mutation control): a run body returning a plain, non-thenable value is UNAFFECTED by the new check (it must not over-fire on any truthy return)', () => {
+    // Proves the check is specifically thenable-shaped, not "any return value
+    // fails" — a run body that happens to return a number/object with no
+    // `.then` (nothing in the real namedErrorTest calls above does this, but
+    // nothing forbids it either) must register exactly as before.
+    runNamedErrorTest('PlainReturnValueFutureError', () => {
+      const e = new IsolationError('worktree creation failed');
+      assert.ok(nextLineFor(e));
+      return { ok: true }; // truthy, object-shaped, but no .then — not a thenable
+    });
+    assert.ok(EXERCISED_CLASSES.has('PlainReturnValueFutureError'));
+  });
+
+  it('F-c50978e7 GATE (mutation control): a duck-typed thenable (not a real Promise) is caught the same way a real async function is', () => {
+    // The check is `typeof result.then === 'function'`, not
+    // `result instanceof Promise` — a thenable from a different Promise
+    // implementation (or a hand-rolled one) must be refused identically,
+    // since runNamedErrorTest never actually awaits it either way.
+    assert.throws(
+      () => runNamedErrorTest('DuckTypedThenableFutureError', () => ({ then() {} })),
+      /run bodies must be synchronous/,
+    );
+    assert.ok(!EXERCISED_CLASSES.has('DuckTypedThenableFutureError'));
   });
 });

@@ -329,6 +329,160 @@ test('apply-finding-migration: a manifest whose F-id is present applies and exit
   }
 });
 
+// ── F-3401d9b6: exit-code classification is typed (instanceof), not a ───────
+// message-substring match against freely-editable error text ───────────────
+//
+// The documented exit-code contract (module docstring) is "0 applied/no-op |
+// 1 read/parse/DB/missing-finding error | 2 manifest validation failed
+// (schema mismatch)". Pre-fix, the top-level `.catch()` classified via
+// `e.message.includes('schema mismatch')` — only the literal schema-tag-
+// mismatch message happened to contain that substring, so loadManifest's
+// OTHER three manifest-SHAPE validation throws (missing run_id, missing
+// cross_ref_migrations[], missing coordinator_resolved_migrations[]) fell
+// through to exit 1, lumped in with a genuine I/O/DB error. All four are
+// equally "the manifest doesn't conform to what this tool expects." The fix
+// exports ManifestValidationError from loadManifest and classifies via
+// `instanceof` in the catch — see that class's own docstring.
+//
+// writeRawManifest (unlike writeManifest above) accepts an ARBITRARY object
+// so a fixture can omit exactly one required field, reproducing the four
+// loadManifest validation branches individually.
+
+function writeRawManifest(dir, obj, name = 'manifest.json') {
+  const manifestPath = join(dir, name);
+  writeFileSync(manifestPath, JSON.stringify(obj), 'utf8');
+  return manifestPath;
+}
+
+test('apply-finding-migration: a manifest missing run_id now exits 2 (manifest validation), not 1 (F-3401d9b6)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afm-classify-runid-'));
+  try {
+    const runId = 'swarm-test-classify-0001';
+    const dbPath = await seedDb(dir, { runId, seedFindingId: 'F-present-01' });
+    const manifestPath = writeRawManifest(dir, {
+      schema: MIGRATION_SCHEMA,
+      cross_ref_migrations: [],
+      coordinator_resolved_migrations: [],
+    });
+
+    const result = runMigration(['--db', dbPath, manifestPath], dir);
+
+    assert.equal(
+      result.status,
+      2,
+      `a manifest missing run_id is a manifest-SHAPE validation failure and must exit 2, matching the schema-mismatch case, not 1 (F-3401d9b6).\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+    );
+    assert.match(result.stderr, /missing run_id/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('apply-finding-migration: a manifest missing cross_ref_migrations[] now exits 2, not 1 (F-3401d9b6)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afm-classify-xref-'));
+  try {
+    const runId = 'swarm-test-classify-0002';
+    const dbPath = await seedDb(dir, { runId, seedFindingId: 'F-present-01' });
+    const manifestPath = writeRawManifest(dir, {
+      schema: MIGRATION_SCHEMA,
+      run_id: runId,
+      coordinator_resolved_migrations: [],
+    });
+
+    const result = runMigration(['--db', dbPath, manifestPath], dir);
+
+    assert.equal(
+      result.status,
+      2,
+      `a manifest missing cross_ref_migrations[] is a manifest-SHAPE validation failure and must exit 2, not 1 (F-3401d9b6).\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+    );
+    assert.match(result.stderr, /missing cross_ref_migrations/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('apply-finding-migration: a manifest missing coordinator_resolved_migrations[] now exits 2, not 1 (F-3401d9b6 — the previously wholly-untested 4th branch)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afm-classify-coord-'));
+  try {
+    const runId = 'swarm-test-classify-0003';
+    const dbPath = await seedDb(dir, { runId, seedFindingId: 'F-present-01' });
+    const manifestPath = writeRawManifest(dir, {
+      schema: MIGRATION_SCHEMA,
+      run_id: runId,
+      cross_ref_migrations: [],
+    });
+
+    const result = runMigration(['--db', dbPath, manifestPath], dir);
+
+    assert.equal(
+      result.status,
+      2,
+      `a manifest missing coordinator_resolved_migrations[] is a manifest-SHAPE validation failure and must exit 2, not 1 (F-3401d9b6).\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+    );
+    assert.match(result.stderr, /missing coordinator_resolved_migrations/i);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+/** @pins F-3401d9b6 */
+test('apply-finding-migration: a wrong schema tag still exits 2 (regression control — must not move), and I/O-shaped failures stay at exit 1 (F-3401d9b6)', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'afm-classify-control-'));
+  try {
+    const runId = 'swarm-test-classify-0004';
+    const dbPath = await seedDb(dir, { runId, seedFindingId: 'F-present-01' });
+
+    // Control 1: wrong schema tag — the ONE case that already exited 2
+    // pre-fix; must stay exit 2 post-fix (a validation failure, correctly
+    // classified before and after).
+    const schemaMismatchPath = writeRawManifest(dir, {
+      schema: 'wrong-schema-tag',
+      run_id: runId,
+      cross_ref_migrations: [],
+      coordinator_resolved_migrations: [],
+    }, 'schema-mismatch.json');
+    const schemaMismatchResult = runMigration(['--db', dbPath, schemaMismatchPath], dir);
+    assert.equal(schemaMismatchResult.status, 2, 'schema mismatch must remain exit 2 (regression control)');
+
+    // Control 2: manifest file does not exist at all — a read error, NOT a
+    // manifest-shape validation failure. Must stay exit 1 (documented
+    // contract: "1 — manifest read/parse/DB/missing-finding error").
+    const missingResult = runMigration(['--db', dbPath, join(dir, 'does-not-exist.json')], dir);
+    assert.equal(missingResult.status, 1, 'a missing manifest FILE is a read error, not a validation error — must stay exit 1');
+
+    // Control 3: manifest file exists but is unparseable JSON — also a
+    // read/parse error, not a manifest-shape validation failure. Must stay
+    // exit 1; this fix only reclassifies loadManifest's four POST-parse
+    // shape checks, never the JSON.parse itself.
+    const malformedPath = join(dir, 'malformed.json');
+    writeFileSync(malformedPath, '{ not valid json,,, }', 'utf8');
+    const malformedResult = runMigration(['--db', dbPath, malformedPath], dir);
+    assert.equal(malformedResult.status, 1, 'unparseable manifest JSON is a read/parse error, not a validation error — must stay exit 1');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('apply-finding-migration: exit-code classification uses `instanceof ManifestValidationError`, not a message-substring match (F-3401d9b6 structural pin)', () => {
+  const src = readFileSync(targetScript, 'utf8');
+  assert.match(
+    src,
+    /export class ManifestValidationError extends Error/,
+    'expected an exported ManifestValidationError class (F-3401d9b6), mirroring sync-version.mjs\'s DriftError',
+  );
+  assert.match(
+    src,
+    /process\.exit\(\s*e\s+instanceof\s+ManifestValidationError\s*\?\s*2\s*:\s*1\s*\)/,
+    'the top-level catch must classify via `e instanceof ManifestValidationError`, not `e.message.includes(...)` (F-3401d9b6) — a future error-message wording tweak must not be able to silently reclassify the exit code',
+  );
+  assert.doesNotMatch(
+    src,
+    /e\.message\.includes\(\s*['"]schema mismatch['"]\s*\)/,
+    'the substring-match classification this finding closed must not reappear (F-3401d9b6)',
+  );
+});
+
 // ── F-bc3ea257: `--help`/`-h` must print the documented Usage block, exit 0 ──
 //
 // The script's Usage block lived only in the header comment; `--help` reached

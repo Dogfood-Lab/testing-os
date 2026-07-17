@@ -156,6 +156,27 @@ export function queryPerRepoRunHistory(db, repoPattern) {
  * }}
  */
 export function queryFindingRecurrenceRate(db, windowDays) {
+  // F-36327af8: validate BEFORE windowDays reaches the SQL date-modifier
+  // string below. Number(windowDays) on a malformed value (the realistic
+  // operator typo '30days', or 'abc') is NaN, and SQLite's datetime() returns
+  // NULL for an unparseable modifier like '-NaN days' rather than throwing —
+  // so the WHERE clause silently matched zero rows and this function
+  // returned the SAME clean, all-zero shape a genuinely empty run population
+  // produces, with no error and no warning. Not reachable via the shipped
+  // `swarm trends` CLI (cli.js already validates --window-days against a
+  // strict ^\d+$ regex before calling here) but IS reachable via this
+  // package's documented public surface (package.json's "./lib/*" export) —
+  // mirrors this package's own established discipline elsewhere of not
+  // trusting a single call site to be the only guard for a shared, exported
+  // function (see lib/verify/runner.js's readEnvMaxBufferBytes, which
+  // validates with the same Number.isFinite check rather than trusting its
+  // one caller).
+  if (windowDays !== undefined && windowDays !== null && !Number.isFinite(Number(windowDays))) {
+    throw new Error(
+      `queryFindingRecurrenceRate: windowDays must be a finite number, or omitted/null for "all runs" — got ${JSON.stringify(windowDays)}`,
+    );
+  }
+
   // Resolve the in-window run id set. Without a window, all runs are in scope.
   let runIds;
   if (windowDays === undefined || windowDays === null) {

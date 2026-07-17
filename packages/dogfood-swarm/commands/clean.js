@@ -45,10 +45,22 @@
  *           extra flag. worktreeDisposition already computed both flags for
  *           the dry-run preview (below) — (b) is the missing "and act on
  *           it" half.
+ *
+ *   - F-78a13f53 (wave 29): this file called logStage() zero times anywhere,
+ *     unlike every sibling recovery verb (clean-claims/collect/dispatch/
+ *     redrive/resume/revalidate/rewind/verify*) — a successful --force
+ *     removal of a DIRTY/UNMERGED worktree (permanent, unrecoverable once it
+ *     happens; no compensator can undo it after the fact) left no durable
+ *     trace anywhere once the operator's terminal scrollback was gone. The
+ *     --apply loop now emits `worktree_force_cleaned` (component, runId,
+ *     worktreePath, branch, dirty, unmerged, force) for every entry actually
+ *     removed, so "did anyone force-clean this run, which worktrees, and did
+ *     it override a dirty/unmerged guard" is answerable by grep.
  */
 
 import { openDb } from '../db/connection.js';
 import { listWorktrees, removeWorktree, runShortOf, worktreeDisposition } from '../lib/worktree.js';
+import { logStage } from '../lib/log-stage.js';
 
 /**
  * @param {object} opts
@@ -182,8 +194,34 @@ export function clean(opts) {
       const outcome = removeWorktree(run.local_path, entry.path, entry.branch);
       entry.removed = outcome.removed;
       entry.stranded = outcome.stranded;
-      if (outcome.stranded) report.stranded++;
-      else report.removed++;
+      if (outcome.stranded) {
+        report.stranded++;
+      } else {
+        report.removed++;
+        // F-78a13f53 (Stage C): clean is the single most destructive verb in
+        // this package (module header above) — a --force removal of a DIRTY
+        // or UNMERGED worktree is permanent, unrecoverable loss of real
+        // work, and no compensator can exist after the fact (unlike
+        // defer/reject, which can undo a disposition). Yet this file called
+        // logStage() zero times anywhere (confirmed by grep), unlike every
+        // sibling recovery verb (clean-claims/collect/dispatch/redrive/
+        // resume/revalidate/rewind/verify*). The dry-run preview above does
+        // warn the operator before the fact — this is a forensic-trail gap
+        // AFTER informed consent, not a silent-corruption defect — but a
+        // durable record of the act itself is the only mitigation available
+        // once a worktree is gone. One line per entry actually removed, so
+        // "did anyone force-clean this run's worktrees, which ones, and did
+        // it override a dirty/unmerged guard" has a greppable answer.
+        logStage('worktree_force_cleaned', {
+          component: 'dogfood-swarm',
+          runId: opts.runId,
+          worktreePath: entry.path,
+          branch: entry.branch,
+          dirty: entry.dirty,
+          unmerged: entry.unmerged,
+          force: !!force,
+        });
+      }
     }
   }
   // Dry-run: nothing is touched; per-entry removed/stranded stay false and

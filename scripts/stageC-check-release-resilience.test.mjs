@@ -192,3 +192,46 @@ test('F-c0348ff6: the npm-OIDC sandbox install pins an EXACT npm version with --
     'the sandbox install must pin an EXACT npm version (npm@X.Y.Z) with --ignore-scripts on the SAME line (F-c0348ff6)',
   );
 });
+
+/** @pins F-d7fb76ae */
+test('F-d7fb76ae: the OIDC-sandbox npm install retries with backoff on transient failure, mirroring the publish loop below it', () => {
+  const text = readFileSync(releasePath, 'utf8');
+  // This was the ONE network call in this file (and its sibling workflows —
+  // ci.yml's lockfile-drift gate, pages.yml's deploy-verify/pa11y loops) with
+  // zero resilience discipline: a hard prerequisite for the entire publish,
+  // first step in the job, no retry. Scope the assertions to this step's own
+  // block so a retry loop added to some OTHER step doesn't false-pass this.
+  const stepIdx = text.indexOf('Install npm >=11.5 in sandbox for OIDC trusted publishing');
+  assert.ok(stepIdx > 0, 'expected to find the OIDC-sandbox npm install step');
+  const nextStepIdx = text.indexOf('\n      - name:', stepIdx + 1);
+  const stepBlock = text.slice(stepIdx, nextStepIdx > 0 ? nextStepIdx : text.length);
+
+  assert.match(
+    stepBlock,
+    /for attempt in 1 2 3/,
+    'the OIDC-sandbox npm install must retry across 3 attempts (F-d7fb76ae), mirroring the publish loop a few steps below (PB-CI-001).',
+  );
+  assert.match(
+    stepBlock,
+    /sleep\s/,
+    'the OIDC-sandbox install retry must back off (sleep) between attempts (F-d7fb76ae).',
+  );
+  assert.match(
+    stepBlock,
+    /::warning::/,
+    'a failed attempt must annotate with ::warning:: so an operator can see WHICH attempt failed, not just a final pass/fail (F-d7fb76ae).',
+  );
+  assert.match(
+    stepBlock,
+    /::error::/,
+    'exhausting all 3 attempts must annotate with ::error:: naming that nothing has published yet (F-d7fb76ae).',
+  );
+  // The retry wrap must not have loosened the F-c0348ff6 exact-version /
+  // --ignore-scripts discipline — same assertion as the test above, scoped
+  // to inside the retry loop specifically.
+  assert.match(
+    stepBlock,
+    /npm install[^\n]*--ignore-scripts npm@\d+\.\d+\.\d+/,
+    'the retried install must still pin an EXACT npm version with --ignore-scripts (F-c0348ff6 must survive the F-d7fb76ae retry wrap).',
+  );
+});

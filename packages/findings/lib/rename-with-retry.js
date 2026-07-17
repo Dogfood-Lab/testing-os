@@ -35,19 +35,44 @@ import { renameSync } from 'node:fs';
 /**
  * Sleep synchronously for `ms` milliseconds via `Atomics.wait` on a tiny
  * SharedArrayBuffer. Yields the thread (does not spin). Mirrors the
- * `sleepSync` in `file-lock.js:286` — the contract is identical; the
+ * `sleepSync` in `file-lock.js` — the contract is identical; the
  * helper is duplicated here because rename-with-retry must not import the
  * larger file-lock module (cyclic-import risk: atomic-write imports
  * rename-with-retry, and file-lock imports atomic-write transitively
  * through the lock-event write path).
  *
+ * F-3a7c4d67 (sibling sweep): this file's own `ms <= 0` guard does NOT
+ * catch `ms = NaN` — every comparison with NaN is `false` in JS, so
+ * `NaN <= 0` is `false` and execution falls through to
+ * `Atomics.wait(view, 0, 0, NaN)`, independently confirmed (isolated
+ * one-liner, no repo writes) to hang the calling thread indefinitely, no
+ * bound, no error, no log line — the same defect class F-3a7c4d67 named in
+ * file-lock.js's sibling `sleepSync`, found here via that finding's own
+ * "sweep for every sibling" discipline, not named in the finding's own
+ * text. Reachable via `renameWithRetry(tmp, dest, { baseMs: NaN })` or
+ * `{ maxMs: NaN }` — `Math.min(NaN * 2**i, maxMs)` and
+ * `Math.min(baseMs * 2**i, NaN)` both evaluate to NaN, and the only current
+ * production caller (`atomic-write.js`) calls with zero options today, so
+ * this is latent-but-real against the function's own public option surface,
+ * not a live bug. Widened to the same `Number.isFinite` check
+ * `packages/ingest/lib/sleep-sync.js` already carries.
+ *
  * @param {number} ms
  */
 function sleepSync(ms) {
-  if (ms <= 0) return;
+  if (!Number.isFinite(ms) || ms <= 0) return;
   const sab = new SharedArrayBuffer(4);
   const view = new Int32Array(sab);
   Atomics.wait(view, 0, 0, ms);
+}
+
+/**
+ * Test-only: exercise the private `sleepSync` guard directly, without
+ * forcing a real EPERM/EBUSY filesystem race through `renameWithRetry`.
+ * Mirrors `file-lock.js`'s own `isLocked` test-only export precedent.
+ */
+export function __testSleepSync(ms) {
+  return sleepSync(ms);
 }
 
 export function renameWithRetry(tmp, dest, { retries = 10, baseMs = 15, maxMs = 200 } = {}) {

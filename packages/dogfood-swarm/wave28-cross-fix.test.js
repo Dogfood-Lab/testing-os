@@ -27,11 +27,12 @@
  *                banners after the verdict + identity fields.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { tmpdir } from 'node:os';
 
 import {
   validateAgentOutput,
@@ -41,6 +42,10 @@ import { AUDIT_CATEGORIES, validateAuditOutput } from './lib/output-schema.js';
 import { formatHumanBanner } from './lib/log-stage.js';
 import { renderTopLevelError } from './lib/error-render.js';
 import { stripComments } from './test-support/strip-comments.js';
+import { openDb, closeDb } from './db/connection.js';
+import { saveDomainDraft, freezeDomains } from './lib/domains.js';
+import { dispatch } from './commands/dispatch.js';
+import { collect } from './commands/collect.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -302,22 +307,127 @@ describe('W2-BACK-003 — atomic-write helper adopted by 6 in-scope callers', ()
 // ═══════════════════════════════════════════
 
 describe('W2-BACK-006 — coordination logStage callsites mint a correlation_id', () => {
-  it('collect.js source emits correlation_id at upsert_findings_failed', () => {
-    const src = readFileSync(join(__dirname, 'commands/collect.js'), 'utf-8');
-    // The stage name and the field name must both appear inside the same
-    // logStage call. Use a focused match instead of a free-text search.
-    const match = src.match(/logStage\('upsert_findings_failed',\s*\{([\s\S]*?)\}\)/);
-    assert.ok(match, 'logStage upsert_findings_failed call not found');
-    assert.match(match[1], /correlation_id/,
-      'upsert_findings_failed logStage must include correlation_id');
+  // F-be3a3bf5 (wave 29): the two tests immediately below replace a pair that
+  // regex-extracted the logStage() call's object-literal TEXT from the raw
+  // source and asserted only /correlation_id/.test(capturedBody) -- true for
+  // the KEY NAME appearing anywhere in the literal, so `correlation_id:
+  // undefined`, `correlation_id: 'PLACEHOLDER-NOT-UNIQUE'` (every failure
+  // logging the identical fake id), or even a ReferenceError from a deleted
+  // `mintCorrelationId()` call all passed the old test unchanged, because it
+  // never executed anything. These now drive a REAL collect() upsert-findings
+  // failure and a REAL dispatch() --isolate failure (mirroring the established
+  // ds-proac-03-collect-lifecycle.test.js pattern: hook the real NDJSON
+  // stderr output of the real exported functions, never a reimplementation)
+  // and assert the captured correlation_id matches the real
+  // coord-<base36-ts>-<4-hex> shape (lib/correlation-id.js) AND differs
+  // between two independent failures -- the exact two properties a hardcoded
+  // placeholder cannot satisfy.
+  let tmp, dbPath;
+
+  beforeEach(() => {
+    tmp = mkdtempSync(join(tmpdir(), 'w28-corr-'));
+    dbPath = join(tmp, 'control-plane.db');
   });
 
-  it('dispatch.js source emits correlation_id at isolate_failed', () => {
-    const src = readFileSync(join(__dirname, 'commands/dispatch.js'), 'utf-8');
-    const match = src.match(/logStage\('isolate_failed',\s*\{([\s\S]*?)\}\)/);
-    assert.ok(match, 'logStage isolate_failed call not found');
-    assert.match(match[1], /correlation_id/,
-      'isolate_failed logStage must include correlation_id');
+  afterEach(() => {
+    closeDb(dbPath);
+    rmSync(tmp, { recursive: true, force: true });
+  });
+
+  const CORRELATION_ID_SHAPE = /^coord-[0-9a-z]+-[0-9a-f]{4}$/;
+
+  function setupRun(db, runId, localPath) {
+    db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, branch, status)
+      VALUES (?, ?, ?, ?, 'main', 'pending')`)
+      .run(runId, 'org/repo', localPath, 'a'.repeat(40));
+    saveDomainDraft(db, runId, [
+      { name: 'backend', globs: ['packages/backend/**'], ownership_class: 'owned' },
+    ]);
+    freezeDomains(db, runId);
+  }
+
+  function captureStderr(fn) {
+    const orig = console.error;
+    const lines = [];
+    console.error = (...a) => lines.push(a.map(String).join(' '));
+    let thrown;
+    try { fn(); } catch (e) { thrown = e; } finally { console.error = orig; }
+    return { thrown, lines };
+  }
+
+  function findNdjsonEvent(lines, stage) {
+    for (const ln of lines) {
+      try {
+        const obj = JSON.parse(ln);
+        if (obj && obj.stage === stage) return obj;
+      } catch { /* not an NDJSON line -- ignore */ }
+    }
+    return null;
+  }
+
+  it('collect.js emits a genuine, freshly-minted correlation_id at upsert_findings_failed when upsertFindings really throws (F-be3a3bf5)', () => {
+    const db = openDb(dbPath);
+    setupRun(db, 'r-corr-collect-1', tmp);
+    setupRun(db, 'r-corr-collect-2', tmp);
+    // Forces upsertFindings' inner INSERT INTO finding_events to throw --
+    // the established F-693631-002 recipe (wave12-observability.test.js),
+    // reused here rather than reinvented.
+    db.exec('DROP TABLE finding_events');
+
+    const emitOne = (runId) => {
+      dispatch({ runId, phase: 'health-audit-a', dbPath, outputDir: tmp });
+      const outputPath = join(tmp, `${runId}.json`);
+      writeFileSync(outputPath, JSON.stringify({
+        domain: 'backend',
+        stage: 'A',
+        summary: 'one finding',
+        findings: [{
+          id: 'F-CORR-1', severity: 'HIGH', category: 'bug',
+          file: 'packages/backend/x.js', line: 10, symbol: 'fooFn',
+          description: 'forces upsertFindings to run',
+        }],
+      }), 'utf-8');
+
+      const { thrown, lines } = captureStderr(() =>
+        collect({ runId, dbPath, outputs: { backend: outputPath } }));
+      assert.ok(thrown, `collect must throw for ${runId} once finding_events is gone`);
+      const event = findNdjsonEvent(lines, 'upsert_findings_failed');
+      assert.ok(event, `expected a real upsert_findings_failed NDJSON event for ${runId}; got:\n${lines.join('\n')}`);
+      return event.correlation_id;
+    };
+
+    const id1 = emitOne('r-corr-collect-1');
+    const id2 = emitOne('r-corr-collect-2');
+
+    assert.match(id1, CORRELATION_ID_SHAPE, `correlation_id must match coord-<base36-ts>-<4-hex>, got "${id1}"`);
+    assert.match(id2, CORRELATION_ID_SHAPE, `correlation_id must match coord-<base36-ts>-<4-hex>, got "${id2}"`);
+    assert.notEqual(id1, id2,
+      'two independent failures must mint two DIFFERENT correlation_ids -- a hardcoded placeholder ' +
+      '(the exact F-be3a3bf5 mutation) would make every failure report the identical id, defeating ' +
+      'the entire point of correlating distinct incidents');
+  });
+
+  it('dispatch.js emits a genuine, freshly-minted correlation_id at isolate_failed when --isolate worktree creation really throws (F-be3a3bf5)', () => {
+    const db = openDb(dbPath);
+    setupRun(db, 'r-corr-isolate-1', join(tmp, 'does-not-exist-1'));
+    setupRun(db, 'r-corr-isolate-2', join(tmp, 'does-not-exist-2'));
+
+    const emitOne = (runId) => {
+      const { thrown, lines } = captureStderr(() =>
+        dispatch({ runId, phase: 'health-audit-a', dbPath, outputDir: tmp, isolate: true }));
+      assert.ok(thrown, `dispatch must throw for ${runId} -- local_path does not exist`);
+      const event = findNdjsonEvent(lines, 'isolate_failed');
+      assert.ok(event, `expected a real isolate_failed NDJSON event for ${runId}; got:\n${lines.join('\n')}`);
+      return event.correlation_id;
+    };
+
+    const id1 = emitOne('r-corr-isolate-1');
+    const id2 = emitOne('r-corr-isolate-2');
+
+    assert.match(id1, CORRELATION_ID_SHAPE, `correlation_id must match coord-<base36-ts>-<4-hex>, got "${id1}"`);
+    assert.match(id2, CORRELATION_ID_SHAPE, `correlation_id must match coord-<base36-ts>-<4-hex>, got "${id2}"`);
+    assert.notEqual(id1, id2,
+      'two independent failures must mint two DIFFERENT correlation_ids, not a hardcoded placeholder shared across every failure');
   });
 
   it('the shared mintCorrelationId helper produces coord-<base36-ts>-<hex4> ids, and the coordination commands import it (not inline copies)', () => {

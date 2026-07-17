@@ -301,6 +301,39 @@ const NODE_TEST_SUFFIX_PATTERN = /(?:^|[/_-])test\.[mc]?[jt]sx?$|(?:^|\/)test-[^
 const VITEST_PACKAGE_PATH_RE = /(?:^|\/)packages\/schemas\//;
 
 /**
+ * F-dbcabec2 (MED, wave 29, confirming audit of F-4fc233fe): F-4fc233fe's own
+ * text said it ran the "probe the CLASS boundary" sweep (swarms/PROTOCOL.md
+ * → "Fixing a class, not an instance") against the `.spec.` rule, but never
+ * asked the identical question of NODE_TEST_SUFFIX_PATTERN or the `/test/`-
+ * singular blanket credit two lines below it — both are, by their OWN
+ * docstrings, justified purely as "this IS real node --test discovery,"
+ * which is true in general and WRONG for packages/schemas specifically
+ * (its own scripts.test is `vitest run` only; vitest's default `include` is
+ * `**\/*.{test,spec}.{js,mjs,cjs,ts,mts,cts,jsx,tsx}` — a plain-named file
+ * under a `test/` directory, or a `foo-test.js`/`foo_test.js`/bare `test.js`
+ * shape, is invisible to it regardless of directory name).
+ *
+ * Re-derived from scratch, not carried over from F-4fc233fe's prose: called
+ * the real, unmutated classifyFile() against packages/schemas/src/test-foo.js
+ * and the sibling foo-test.js/foo_test.js/bare-test.js shapes (all 'test' —
+ * the false-grant), and against packages/schemas/test/helpers.ts — the
+ * LITERAL path this file's own pre-existing tests (parse-regression-pins.
+ * test.js, previously lines ~154-156 and ~268-271) cited as proof of "real
+ * node --test discovery," which real vitest does not collect.
+ *
+ * Fix shape: identical to F-4fc233fe's, mirrored rather than duplicated —
+ * both node-test-specific rules below now gate on
+ * `!VITEST_PACKAGE_PATH_RE.test(normalised)` so they apply only OUTSIDE
+ * packages/schemas, the same named single-package exception discipline
+ * DOT_DIR_SCAN_ALLOWLIST and VITEST_PACKAGE_PATH_RE's `.spec.` scoping
+ * already use. REACHABILITY today: zero live instances (same live-tree
+ * grep as F-4fc233fe — every tracked file under packages/schemas/test/ is
+ * already `.test.ts`, and no schemas src/ file matches either shape), so
+ * this is a pure tightening with no observable reclassification of any
+ * currently-tracked file.
+ */
+
+/**
  * Classify a path as "test" or "source" by convention. Mirrors how
  * `node --test` and `vitest` discover tests in this repo.
  */
@@ -316,7 +349,12 @@ export function classifyFile(filePath) {
   // run`) — see the doc block above VITEST_PACKAGE_PATH_RE for the
   // empirical node --test / vitest verification behind this scoping.
   if (/\.spec\.[mc]?[jt]sx?$/.test(normalised) && VITEST_PACKAGE_PATH_RE.test(normalised)) return 'test';
-  if (NODE_TEST_SUFFIX_PATTERN.test(normalised)) return 'test';
+  // F-dbcabec2: this is node --test-specific discovery (dash/underscore
+  // suffix, dash prefix, bare "test.js") — packages/schemas runs vitest, not
+  // node --test, and vitest's default include does not collect any of these
+  // shapes. Scoped OUT of packages/schemas, the mirror image of the `.spec.`
+  // scoping one line above (see the F-dbcabec2 doc block above this function).
+  if (NODE_TEST_SUFFIX_PATTERN.test(normalised) && !VITEST_PACKAGE_PATH_RE.test(normalised)) return 'test';
   // F-92a8d0bb: `/test/` (singular) keeps its blanket, name-agnostic credit
   // because that IS real `node --test` discovery (any basename, any depth,
   // under a directory literally named `test` — see the F-92a8d0bb doc above
@@ -325,7 +363,12 @@ export function classifyFile(filePath) {
   // directory name regardless of basename, so a file reaching this line
   // whose name didn't already match one of the suffix/prefix checks above is
   // 'source' by both of this repo's own test runners' actual rules.
-  if (normalised.includes('/test/')) return 'test';
+  //
+  // F-dbcabec2: same node --test-only caveat as NODE_TEST_SUFFIX_PATTERN
+  // above — packages/schemas runs vitest, which does not auto-collect a
+  // plain-named file under any `test/` directory. Scoped OUT of
+  // packages/schemas for the same reason.
+  if (normalised.includes('/test/') && !VITEST_PACKAGE_PATH_RE.test(normalised)) return 'test';
   return 'source';
 }
 

@@ -99,7 +99,33 @@ export async function runDriftChecks({ repoRoot, configPath, checkId }) {
     };
   }
 
-  const config = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  // F-016e7a8c: this parse was unguarded — a hand-edit JSON syntax error
+  // (this file's own docstring invites exactly this: "Adding a new check is
+  // a config edit") propagated as an uncaught SyntaxError out of this async
+  // function (a rejected promise), bypassing the documented Programmatic API
+  // contract (`{ clean, reports, checksRun, checksTotal }`) this function's
+  // own JSDoc promises — every OTHER failure path in this function (config
+  // not found, above; unknown checkId, below) already degrades to that
+  // shape instead of throwing. Mirrors the schema-conformance handler's
+  // identical try/catch a few hundred lines down, which already proves the
+  // codebase knows this pattern; it just wasn't applied to this function's
+  // own top-level config load.
+  let config;
+  try {
+    config = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  } catch (err) {
+    return {
+      clean: false,
+      reports: [{
+        checkId: '<config>',
+        severity: 'config-error',
+        message: `[check-doc-drift] config file is not valid JSON: ${relative(repoRoot, cfgPath)} — ${err.message}`,
+        hint: 'Check the config file for a JSON syntax error (trailing comma, unclosed bracket).',
+      }],
+      checksRun: 0,
+      checksTotal: 0,
+    };
+  }
   const allChecks = config.checks ?? [];
   const checks = checkId ? allChecks.filter((c) => c.id === checkId) : allChecks;
 
@@ -784,7 +810,28 @@ const frameworkSelfTestHandler = {
         message: `[${check.id}] config file not found: ${cfgPath}`,
       }];
     }
-    const config = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    // F-016e7a8c: the same unguarded JSON.parse(readFileSync(...)) pattern
+    // fixed in runDriftChecks above, repeated here — this handler re-reads
+    // the config file to self-validate the framework, and a malformed file
+    // threw uncaught out of this run() rather than the structured
+    // DriftReport[] this handler's own return type promises. (The generic
+    // per-handler try/catch in runDriftChecks' own dispatch loop happens to
+    // already convert this specific throw into SOME config-error report
+    // today, but with a generic "handler threw" message and a misleading
+    // "misconfigured source/target path" hint — not the JSON-syntax-specific
+    // guidance this failure actually needs, and any future direct caller of
+    // this handler's run() would not get that safety net at all.)
+    let config;
+    try {
+      config = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    } catch (err) {
+      return [{
+        checkId: check.id,
+        severity: 'config-error',
+        message: `[${check.id}] config file is not valid JSON: ${cfgPath} — ${err.message}`,
+        hint: 'Check the config file for a JSON syntax error (trailing comma, unclosed bracket).',
+      }];
+    }
     const reports = [];
     for (const entry of config.checks ?? []) {
       // Skip self — framework-self-test asserting its own required fields is

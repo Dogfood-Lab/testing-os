@@ -32,8 +32,14 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { escapeReasonForDisplay } from './commands/lib/escape-reason.js';
+import { stripComments } from './test-support/strip-comments.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // Representative codepoints for each gap F-6540ba3d names, all confirmed
 // Default_Ignorable_Code_Point members by direct probe against Node's real
@@ -105,5 +111,73 @@ describe('F-6540ba3d -- CONTROL_CLASS adopts the real Default_Ignorable_Code_Poi
     assert.equal(escapeReasonForDisplay(String.fromCharCode(0x63, 0x61, 0x66, 0xe9)), String.fromCharCode(0x63, 0x61, 0x66, 0xe9)); // precomposed "cafe" + U+00E9
     assert.equal(escapeReasonForDisplay('日本語'), '日本語'); // CJK
     assert.equal(escapeReasonForDisplay('\u{1f389}\u{1f680}'), '\u{1f389}\u{1f680}'); // plain emoji, no ZWJ
+  });
+
+  // Sibling-sweep fix (wave 29, same class as F-1c634b2f, discovered while
+  // fixing that finding's ZALGO_RUN sibling in this same package): every test
+  // above is a sampling test -- it proves specific codepoints round-trip
+  // correctly, but a regex hardcoding a bigger enumerated list covering
+  // exactly those samples would pass every one of them identically to the
+  // real \p{Default_Ignorable_Code_Point}-based fix. Proven by direct
+  // construction (scratch copy, zero repo writes): a mutant hardcoding the 8
+  // NEWLY_COVERED codepoints as a literal char class fools every test above,
+  // 8/8 green, while remaining structurally the exact "enumerated list, not a
+  // property" disease this file's own header says F-6540ba3d was fixing (the
+  // SAME disease F-046d3756/F-1c634b2f later repeated for ZALGO_RUN, one
+  // function away). This section pins the MECHANISM directly, mirroring
+  // f-046d3756-zalgo-mark-property-widening.test.js's own F-1c634b2f fix.
+  //
+  // No @pins tag on the test below: no production-source finding exists for
+  // this sibling-sweep addition to resolve against — commands/lib/
+  // escape-reason.js's CONTROL_CLASS was already correct and is unchanged by
+  // this wave (same "test-internal fix, no source pin" shape as F-84badba1 /
+  // F-7d4ac5ce). The existing `@pins F-6540ba3d` on the outer describe above
+  // already credits that finding; this section extends its coverage.
+  describe('structural pin (not sampling): CONTROL_CLASS\'s declared regex source is provably property-based', () => {
+    it('the real CONTROL_CLASS declaration in commands/lib/escape-reason.js literally references \\p{Default_Ignorable_Code_Point}, not a re-enumerated block list', () => {
+      // CONTROL_CLASS is module-private (not exported) -- reading the source
+      // text directly is the mechanism-level pin available without a
+      // cross-domain export change to commands/lib/escape-reason.js (owned by
+      // swarm-cp-verbs, out of this domain's scope).
+      const escapeReasonSrc = stripComments(
+        readFileSync(join(__dirname, 'commands/lib/escape-reason.js'), 'utf-8')
+      );
+      const declarationLine = escapeReasonSrc
+        .split('\n')
+        .find((line) => line.trim().startsWith('const CONTROL_CLASS ='));
+
+      assert.ok(declarationLine,
+        'sanity: could not find the `const CONTROL_CLASS = ...` declaration in commands/lib/escape-reason.js -- ' +
+        'this pin\'s anchor text needs updating if the declaration moved or was renamed');
+      assert.ok(declarationLine.includes('\\p{Default_Ignorable_Code_Point}'),
+        `CONTROL_CLASS's declaration must literally reference the \\p{Default_Ignorable_Code_Point} Unicode ` +
+        `property, not a hardcoded range/codepoint union -- got: ${declarationLine}`);
+    });
+
+    it('mutation proof: an 8-codepoint hardcoded-enumeration mutant (covers every codepoint the sampling tests above check) fails this structural pin', () => {
+      // Reconstructs the exact class of mutant the sibling F-1c634b2f finding
+      // describes for ZALGO_RUN, applied here to CONTROL_CLASS: a char class
+      // hardcoding precisely the 8 codepoints NEWLY_COVERED samples, rather
+      // than \p{Default_Ignorable_Code_Point}. Scratch STRING only, never
+      // written to disk or to the real source file.
+      const mutantLine =
+        "const CONTROL_CLASS = /[\\x00-\\x1f\\x7f-\\x9f\\u{2028}\\u{2029}" +
+        "\\u{E0041}\\u{FE0F}\\u{E0100}\\u{2060}\\u{2061}\\u{206A}\\u{180B}\\u{180E}]/gv;";
+
+      const mutantPassesStructuralPin = mutantLine.includes('\\p{Default_Ignorable_Code_Point}');
+      assert.equal(mutantPassesStructuralPin, false,
+        'the 8-codepoint hardcoded mutant must fail the structural pin -- if this assertion fails, the pin ' +
+        'is not actually distinguishing a property fix from a bigger enumerated list');
+
+      // Confirm the mutant is a FAITHFUL stand-in: it must still match every
+      // codepoint the existing sampling test (NEWLY_COVERED) checks.
+      const mutantRegex = /[\x00-\x1f\x7f-\x9f\u{2028}\u{2029}\u{E0041}\u{FE0F}\u{E0100}\u{2060}\u{2061}\u{206A}\u{180B}\u{180E}]/gv;
+      for (const { label, cp } of NEWLY_COVERED) {
+        mutantRegex.lastIndex = 0;
+        assert.ok(mutantRegex.test(String.fromCodePoint(cp)),
+          `sanity: the reconstructed mutant must still match ${label} -- otherwise it is not the faithful ` +
+          `stand-in this proof requires`);
+      }
+    });
   });
 });

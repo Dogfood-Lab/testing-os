@@ -115,6 +115,88 @@ test('clean: every TS package referenced → missing[] empty (gate passes)', (t)
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// (a2) F-af5e8919 — reverse-direction drift: a root reference whose
+//     packages/<name>/tsconfig.json no longer exists (package rename/removal).
+//     Pre-fix, findTsconfigReferenceDrift only computed the forward direction
+//     (missing[]); this direction reported zero drift even with a fully dead
+//     reference in root tsconfig.json. `tsc --build` itself still catches a
+//     dead reference (TS5083, non-zero exit — no false green), so this was a
+//     diagnostic-QUALITY gap, not a silent-failure one: the dedicated gate
+//     this file exists to give better guidance than raw tsc output never
+//     fired for this direction.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @pins F-af5e8919 */
+test('F-af5e8919: a root reference to a package with no tsconfig.json (removed/renamed) is reported in stale[]', (t) => {
+  const fx = makeFixture(t);
+  fx.addPackage('schemas'); // real TS package, correctly referenced
+  fx.writeRootTsconfig(['packages/schemas', 'packages/retired-pkg']); // retired-pkg never created
+
+  const { missing, stale } = findTsconfigReferenceDrift({
+    packagesDir: fx.packagesDir,
+    rootTsconfigPath: fx.rootTsconfigPath,
+  });
+
+  assert.deepEqual(missing, [], 'the real package is referenced — no forward-direction drift');
+  assert.deepEqual(stale, ['packages/retired-pkg'], 'a reference to a nonexistent package must surface in stale[]');
+});
+
+test('F-af5e8919: clean fixture (every reference matches a real TS package) reports stale[] empty', (t) => {
+  const fx = makeFixture(t);
+  fx.addPackage('schemas');
+  fx.addPackage('analytics');
+  fx.writeRootTsconfig(['packages/schemas', 'packages/analytics']);
+
+  const { stale } = findTsconfigReferenceDrift({
+    packagesDir: fx.packagesDir,
+    rootTsconfigPath: fx.rootTsconfigPath,
+  });
+
+  assert.deepEqual(stale, [], 'no reverse-direction drift when every reference matches a real TS package');
+});
+
+test('F-af5e8919: a JS-only package (package.json but no tsconfig.json) referenced from root is reported stale, not silently accepted', (t) => {
+  const fx = makeFixture(t);
+  fx.addPackage('schemas');
+  fx.addPackage('findings', { withTsconfig: false }); // JS-only — never a valid tsconfig reference target
+  fx.writeRootTsconfig(['packages/schemas', 'packages/findings']);
+
+  const { stale } = findTsconfigReferenceDrift({
+    packagesDir: fx.packagesDir,
+    rootTsconfigPath: fx.rootTsconfigPath,
+  });
+
+  assert.deepEqual(stale, ['packages/findings'], 'referencing a JS-only package from tsconfig.json is exactly as stale as referencing a fully-removed one — neither has a tsconfig.json to build');
+});
+
+test('F-af5e8919: a normalized reference spelling (./packages/x or packages/x/) is NOT double-flagged as stale when the package is real', (t) => {
+  const fx = makeFixture(t);
+  fx.addPackage('schemas');
+  fx.writeRootTsconfig(['./packages/schemas']); // leading-dot form, same normalizeRef path missing[] already used
+
+  const { missing, stale } = findTsconfigReferenceDrift({
+    packagesDir: fx.packagesDir,
+    rootTsconfigPath: fx.rootTsconfigPath,
+  });
+
+  assert.deepEqual(missing, []);
+  assert.deepEqual(stale, [], 'stale[] must reuse the same normalizeRef comparison missing[] uses, not a byte-literal one');
+});
+
+test('F-af5e8919: a reference outside packages/ entirely is never reported as stale (out of this gate\'s authority)', (t) => {
+  const fx = makeFixture(t);
+  fx.addPackage('schemas');
+  fx.writeRootTsconfig(['packages/schemas', 'some/other/project']);
+
+  const { stale } = findTsconfigReferenceDrift({
+    packagesDir: fx.packagesDir,
+    rootTsconfigPath: fx.rootTsconfigPath,
+  });
+
+  assert.deepEqual(stale, [], 'a non-packages/ reference is not this gate\'s concern and must not false-positive as stale');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // (b) Normalization fixture: a reference written as './packages/x' or
 //     'packages/x/' (trailing dot/slash) must still match the discovered
 //     'packages/x'. Probes the posix.normalize() comparison on BOTH sides.
@@ -264,6 +346,49 @@ test('F-b27d6c0c: an execSync failure on `tsc --build` prints the structured mes
     combined,
     /at ChildProcess|internal\/child_process/,
     `a raw Node internal stack trace leaked through — the catch block should have swallowed it\n${combined}`,
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-016e7a8c sibling (found sweeping this domain's unguarded-JSON.parse class,
+// not a separately-named finding — see this wave's ci-tooling output.json):
+// findTsconfigReferenceDrift's own JSON.parse(readFileSync(rootTsconfigPath,
+// ...)) was unguarded, and the CLI entry called it with no try/catch either —
+// a malformed root tsconfig.json (an ordinary hand-edit slip; this exact file
+// already anticipates fs-level oddities via isReadableDirectory) crashed
+// `npm run build` with a raw, uncaught SyntaxError stack instead of the
+// structured '[testing-os build] ...' message every other failure path here
+// already gives. Same shape, same fixture style, as the F-b27d6c0c test above.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @pins F-016e7a8c */
+test('F-016e7a8c sibling: a malformed root tsconfig.json prints a structured message and exits 1, no raw stack', (t) => {
+  const fixtureRoot = makeCliFixture(t);
+  // Overwrite the fixture's (valid) root tsconfig.json with malformed JSON —
+  // a trailing comma, an ordinary hand-edit slip.
+  writeFileSync(resolve(fixtureRoot, 'tsconfig.json'), '{ "files": [], "references": [ { "path": "packages/foo" }, ] }');
+
+  const res = spawnSync(process.execPath, [resolve(fixtureRoot, 'scripts/build.mjs')], {
+    cwd: fixtureRoot,
+    encoding: 'utf8',
+  });
+  const combined = `${res.stdout}\n${res.stderr}`;
+
+  assert.notEqual(res.status, 0, `build.mjs must exit non-zero on a malformed root tsconfig.json\n${combined}`);
+  assert.match(
+    combined,
+    /\[testing-os build\] failed to read\/parse root tsconfig\.json/,
+    `expected the structured '[testing-os build] failed to read/parse root tsconfig.json' message\n${combined}`,
+  );
+  // The pre-fix behavior: an uncaught JSON.parse throw inside
+  // findTsconfigReferenceDrift propagated all the way to a top-level,
+  // uncaught synchronous exception — Node's default "SyntaxError: ... is not
+  // valid JSON" plus internal module-loader stack frames. Neither should
+  // appear once the throw is caught at the CLI entry and reworded.
+  assert.doesNotMatch(
+    combined,
+    /at JSON\.parse|at findTsconfigReferenceDrift|ModuleJob\.run/,
+    `a raw Node/JSON.parse stack trace leaked through — the catch block should have swallowed it\n${combined}`,
   );
 });
 

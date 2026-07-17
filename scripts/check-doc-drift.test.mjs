@@ -334,6 +334,28 @@ test('missing config file reports config-error', async (t) => {
   assert.match(result.reports[0].message, /config file not found/);
 });
 
+/** @pins F-016e7a8c */
+test('F-016e7a8c: a malformed (unparseable) config file degrades to the documented { clean, reports } contract, never an uncaught throw', async (t) => {
+  const fx = makeFixture(t);
+  // Deliberately malformed JSON (trailing comma) — an ordinary hand-edit
+  // slip this file's own docstring invites ("Adding a new check is a config
+  // edit"). Written directly (not via fx.config, which only accepts a valid
+  // JS object) so the bytes on disk are genuinely unparseable.
+  fx.write('scripts/doc-drift-patterns.json', '{ "checks": [ { "id": "x", } ] }');
+
+  await assert.doesNotReject(
+    () => runDriftChecks({ repoRoot: fx.dir }),
+    'runDriftChecks must never reject/throw on malformed config JSON — every other failure path in this function (config not found, unknown checkId) already returns the structured { clean, reports } shape instead of throwing (F-016e7a8c)',
+  );
+
+  const result = await runDriftChecks({ repoRoot: fx.dir });
+  assert.equal(result.clean, false);
+  assert.equal(result.reports[0].severity, 'config-error');
+  assert.match(result.reports[0].message, /not valid JSON/i);
+  assert.equal(result.checksRun, 0);
+  assert.equal(result.checksTotal, 0);
+});
+
 test('expandGlobs: exact path returns single file, glob expands directory', async (t) => {
   const fx = makeFixture(t);
   fx.write('docs/a.md', 'a');
@@ -1401,6 +1423,40 @@ test('framework-self-test: missing required field in config entry triggers drift
   assert.ok(
     fields.some((m) => m.includes('helper')),
     `Expected a report mentioning missing 'helper' field. Got: ${fields.join('; ')}`,
+  );
+});
+
+/** @pins F-016e7a8c */
+test('F-016e7a8c: framework-self-test degrades to a DEDICATED config-error (not the generic "handler threw" fallback) when its OWN re-read configPath is malformed JSON', async (t) => {
+  const fx = makeFixture(t);
+  // The MAIN config (parseable) that runDriftChecks itself reads and dispatches.
+  const cfg = fx.config({
+    checks: [
+      {
+        id: 'self',
+        kind: 'framework-self-test',
+        title: 'self',
+        configPath: 'scripts/broken-config.json', // points at the malformed file below
+      },
+    ],
+  });
+  // The file framework-self-test's OWN handler re-reads to self-validate the
+  // framework — deliberately malformed JSON (a trailing comma), reproducing
+  // an ordinary hand-edit slip.
+  fx.write('scripts/broken-config.json', '{ "checks": [ { "id": "x", } ] }');
+
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg, checkId: 'self' });
+  assert.equal(result.clean, false);
+  assert.equal(result.reports[0].severity, 'config-error');
+  assert.match(
+    result.reports[0].message,
+    /\[self\] config file is not valid JSON/,
+    `expected framework-self-test's OWN try/catch to produce the dedicated config-error message, not runDriftChecks' generic loop-level "handler for '...' threw" fallback (F-016e7a8c). Got: ${result.reports[0].message}`,
+  );
+  assert.doesNotMatch(
+    result.reports[0].message,
+    /handler for 'self' threw/,
+    "must not fall through to the generic per-handler catch in runDriftChecks' own dispatch loop — the handler's OWN try/catch must intercept the malformed-JSON re-read first, with a JSON-syntax-specific hint instead of the generic 'misconfigured source/target path' one (F-016e7a8c)",
   );
 });
 

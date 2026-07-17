@@ -176,3 +176,83 @@ describe('dogfood-report cli (FT-i)', () => {
     });
   });
 });
+
+// F-e0bcbc47 (sibling sweep, Stage C humanization) — `parseArgs`'s own
+// docstring already CLAIMED "Throws a {code, message, hint} usage error for
+// unknown flags", but the implementation accepted ANY `--flag`-shaped token
+// unconditionally: a REQUIRED flag typo (--reop instead of --repo) was
+// already caught downstream by the "missing required flag" check, but an
+// OPTIONAL flag typo (--nots instead of --notes) silently built a submission
+// missing the intended field, with zero error or warning. This is the SAME
+// "unrecognized argument silently absorbed" class F-e0bcbc47
+// (packages/ingest/run.js) and F-418f507c (packages/portfolio/generate.js)
+// fix in this same wave — found here via those findings' own "sweep for
+// every sibling" discipline, not named by either finding's own text.
+// packages/report/init.js already rejects an unknown flag correctly (see
+// init.test.js's own "--bogus" coverage) — this brings cli.js in line with
+// that sibling.
+/** @pins F-e0bcbc47 */
+describe('F-e0bcbc47 (sibling): cli.js rejects an unrecognized flag instead of silently absorbing it', () => {
+  it('a bogus flag exits 2 with the structured ERROR envelope naming it', () => {
+    const { code, stderr } = runCli(['--bogus-flag', 'x']);
+    assert.equal(code, 2, `stderr=${stderr}`);
+    assert.match(stderr, /^ERROR \[BAD_ARGS\]:/m);
+    assert.match(stderr, /unknown flag "--bogus-flag"/);
+  });
+
+  it('a typo of an OPTIONAL flag (--nots instead of --notes) is now rejected, not silently building a submission missing the note', () => {
+    withScenarioFile(VALID_SCENARIO_RESULTS, (file) => {
+      const { code, stdout, stderr } = runCli([...baseArgs(file), '--nots', 'hello']);
+      assert.equal(code, 2, `a typo of an optional flag must now fail loud, not silently drop the value; stdout=${stdout} stderr=${stderr}`);
+      assert.match(stderr, /unknown flag "--nots"/);
+    });
+  });
+
+  it('control: every documented flag in baseArgs()/--output/--no-precheck/--help is still accepted (the allowlist is not under-inclusive)', () => {
+    withScenarioFile(VALID_SCENARIO_RESULTS, (file) => {
+      const { code, stderr } = runCli([...baseArgs(file), '--no-precheck']);
+      assert.equal(code, 0, `a fully-valid, documented flag set must still work; stderr=${stderr}`);
+    });
+  });
+
+  // Enumeration-drift guard. The `valueFlags`/`booleans` sets in parseArgs are
+  // an ENUMERATION of flag names, and this repo has now been bitten four
+  // separate times by an enumeration drifting from the population it claims to
+  // cover (CONTROL_CLASS, ZALGO_RUN, DASH_CONFUSABLES, and wave 29's own
+  // arg-parse catch-all). Unlike ingest/run.js — where the known-flag set is
+  // DERIVED from the parse chain via flagIs() and cannot desync — this parser
+  // genuinely needs the sets up front (they decide whether a token consumes the
+  // next one), so the enumeration is load-bearing and cannot be removed.
+  //
+  // Instead of trusting it, this derives the documented population
+  // INDEPENDENTLY — by scraping the real `--help` output, the same list an
+  // operator reads — and diffs it against what the parser actually accepts.
+  // Behaviour-only: no source scanning, so no "prose is not code" exposure.
+  // Drift in the dangerous direction (a flag documented but missing from the
+  // sets → rejected as unknown at first use) goes RED here.
+  it('every flag --help documents is actually accepted by parseArgs (independent population diff, not a re-read of the same list)', () => {
+    const { stdout } = runCli(['--help']);
+    const documented = [...new Set(
+      stdout.split('\n')
+        .map((l) => /^\s+(?:-h,\s*)?(--[a-z][a-z-]*)/.exec(l)?.[1])
+        .filter(Boolean)
+    )];
+
+    assert.ok(documented.length >= 20,
+      `sanity: expected --help to document 20+ flags, found ${documented.length} — ` +
+      'if this fired, the scrape broke, not the parser');
+
+    const rejectedAsUnknown = documented.filter((flag) => {
+      // Pass a dummy value so a value-flag is well-formed. A boolean flag will
+      // instead complain about the stray positional — a DIFFERENT error, which
+      // is fine: this asserts only that no documented flag is called "unknown".
+      const { stderr } = runCli([flag, 'x']);
+      return /unknown flag/.test(stderr);
+    });
+
+    assert.deepEqual(rejectedAsUnknown, [],
+      'these flags are documented in --help but parseArgs rejects them as unknown ' +
+      '— the valueFlags/booleans enumeration has drifted from the documented population:\n' +
+      rejectedAsUnknown.map((f) => `  ${f}`).join('\n'));
+  });
+});

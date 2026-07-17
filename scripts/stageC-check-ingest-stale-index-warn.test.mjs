@@ -124,6 +124,50 @@ test("F-703e5eac: the badge/trends regen step ALSO fires when the result JSON wa
   );
 });
 
+/** @pins F-e03646c0 */
+test("F-e03646c0: the badge/trends regen step ALSO fires on either ingestion leg's deferred pipeline fault, matching the Commit step's condition byte-for-byte", () => {
+  const text = readFileSync(ingestPath, 'utf8');
+  // F-42e57a77 added the two `fault` disjuncts to the 'Commit records and
+  // indexes' step (a run.js exit>=2 fault can fire AFTER a record was
+  // already persisted to the runner working tree) but never propagated them
+  // to the 'Regenerate served badges + trends' step above it — the same
+  // incomplete-propagation shape F-703e5eac closed for parse_failed. Net
+  // effect pre-fix: a deferred fault after a persist still committed the
+  // record correctly, but silently skipped badges/trends regeneration with
+  // none of the ::warning::/$GITHUB_STEP_SUMMARY signal the parse_failed
+  // sibling branch gets.
+  const badgeStepIdx = text.indexOf('Regenerate served badges + trends');
+  const commitStepIdx = text.indexOf('Commit records and indexes');
+  assert.ok(badgeStepIdx > 0 && commitStepIdx > badgeStepIdx, 'expected the badge regen step to precede the commit step in ingest.yml');
+  const badgeStepBlock = text.slice(badgeStepIdx, commitStepIdx);
+
+  const nextStepAfterCommit = text.indexOf('\n      - name:', commitStepIdx + 1);
+  const commitStepBlock = text.slice(commitStepIdx, nextStepAfterCommit > 0 ? nextStepAfterCommit : text.length);
+
+  assert.match(
+    badgeStepBlock,
+    /if:\s*steps\.result\.outputs\.written\s*==\s*'true'\s*\|\|\s*steps\.result\.outputs\.parse_failed\s*==\s*'true'\s*\|\|\s*steps\.ingest_rd\.outputs\.fault\s*!=\s*''\s*\|\|\s*steps\.ingest_wd\.outputs\.fault\s*!=\s*''/,
+    "ingest.yml's 'Regenerate served badges + trends' step must fire on either ingestion leg's deferred fault (steps.ingest_rd.outputs.fault / steps.ingest_wd.outputs.fault) in addition to written/parse_failed (F-e03646c0), matching the 'Commit records and indexes' step's condition.",
+  );
+
+  // The two conditions must be an EXACT match, not merely both "contain" the
+  // four disjuncts — a hand-typed variant that reorders or subtly changes
+  // one side is exactly how the F-703e5eac / F-e03646c0 asymmetry started in
+  // the first place, and a future edit to just one side should fail loud here.
+  const extractIf = (block) => {
+    const m = /^\s*if:\s*(.+)$/m.exec(block);
+    return m ? m[1].trim() : null;
+  };
+  const badgeIf = extractIf(badgeStepBlock);
+  const commitIf = extractIf(commitStepBlock);
+  assert.ok(badgeIf && commitIf, 'expected both steps to have an `if:` condition');
+  assert.equal(
+    badgeIf,
+    commitIf,
+    "the badge-regen step's `if:` condition must be BYTE-IDENTICAL to the Commit step's condition (F-e03646c0) — any future drift between them silently reintroduces the propagation gap this fix closed.",
+  );
+});
+
 test('F-W1-CI-008: the checkout step keeps fetch-depth: 0 (full clone) so the push-retry rebase works against arbitrary history', () => {
   // The push-with-retry loop downstream does `git pull --rebase` on failure;
   // a shallow clone cannot rebase against history that diverged by more than

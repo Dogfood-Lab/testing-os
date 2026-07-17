@@ -128,9 +128,9 @@ const MUTANTS = [
   },
   {
     name: 'delete-prefixed-near-miss-branch',
-    rationale: 'F-78892d70: mirrors delete-legacy-near-miss-branch for the PREFIXED branch (uppercase-alnum-plus-suffix near-misses) — proves the branch-exclusive probe below actually exercises PREFIXED, not just HASH/LEGACY.',
+    rationale: 'F-78892d70: mirrors delete-legacy-near-miss-branch for the PREFIXED branch (uppercase-alnum-plus-suffix near-misses) — proves the branch-exclusive probe below actually exercises PREFIXED, not just HASH/LEGACY. F-d1412824 updated the branch\'s suffix regex from `-?(\\d+)$` to `-(\\d+)$` (require the suffix separator hyphen, closing an over-catch on bare English words ending in digits) — this mutant\'s find string is updated to match verbatim; the branch-deletion intent is unchanged.',
     find: `  if (/^[A-Z][A-Z0-9-]*$/.test(body)) {
-    const suffix = /-?(\\d+)$/.exec(body);
+    const suffix = /-(\\d+)$/.exec(body);
     if (suffix && Math.abs(suffix[1].length - 3) <= 1) return true;
   }`,
     replace: '',

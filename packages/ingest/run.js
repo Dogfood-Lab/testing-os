@@ -937,9 +937,38 @@ if (isMain) {
     const hasValue = inlineValue !== null || nextIsValue;
     const takeValue = () => (inlineValue !== null ? inlineValue : args[++i]);
 
-    if (arg === '--provenance' && hasValue) {
+    // F-e0bcbc47 (amended wave 29, after the first attempt regressed
+    // F-INGEST-003): `flagIs(name)` both TESTS the token and RECORDS that
+    // `name` is a flag this chain knows about, so the catch-all below can tell
+    // "unknown flag" (no branch knows this name) apart from "known flag, no
+    // value" (a branch knows the name but its `&& hasValue` guard failed —
+    // exactly what F-INGEST-003 causes for `--anchor-network --anchor-compute`).
+    // The first attempt at this fix had a bare `else if (arg.startsWith('--'))`
+    // catch-all that could not distinguish the two and so reported a KNOWN flag
+    // as "unknown argument: --anchor-network" — a claim wider than what it
+    // actually checked, which is the exact class this repo keeps paying for.
+    //
+    // `knownFlagName` is DERIVED from the chain itself rather than duplicated
+    // into a second list of flag names: the only way a name enters the known
+    // set is for the chain to literally test for it one line below. A parallel
+    // `KNOWN_FLAGS` enumeration would be a second population to keep in sync
+    // (the same enumeration-vs-property class as CONTROL_CLASS / ZALGO_RUN /
+    // DASH_CONFUSABLES), and it would drift the first time someone adds a flag
+    // and forgets the list. Adding a branch here cannot desync it — the branch
+    // IS the registration. The one residual shape is a future branch written as
+    // a bare `arg === '--new'` instead of `flagIs('--new')`; that would make the
+    // new flag report as unknown when dangling, and is guarded by
+    // f-e0bcbc47-unknown-flag-rejection.test.js's chain-shape assertion.
+    let knownFlagName = false;
+    const flagIs = (name) => {
+      if (arg !== name) return false;
+      knownFlagName = true;
+      return true;
+    };
+
+    if (flagIs('--provenance') && hasValue) {
       provenanceMode = takeValue();
-    } else if (arg === '--file' && hasValue) {
+    } else if (flagIs('--file') && hasValue) {
       const { readFileSync } = await import('node:fs');
       // D1B-001 family (operator-legibility): a --file read failure
       // (ENOENT/EACCES) routes through the structured error event and exits 2
@@ -959,53 +988,103 @@ if (isMain) {
         });
         process.exit(2);
       }
-    } else if (arg === '--payload' && hasValue) {
+    } else if (flagIs('--payload') && hasValue) {
       submissionJson = takeValue();
-    } else if (arg === '--verify-only') {
+    } else if (flagIs('--verify-only')) {
       // F-252714-058: dry-run the pipeline without writing or rebuilding
       // indexes. CI / operators preview what WOULD have been persisted.
       verifyOnlyFlag = true;
-    } else if (arg === '--verify-chain') {
+    } else if (flagIs('--verify-chain')) {
       // Integrity chain v1: verify the append-only tamper-evident ledger at
       // indexes/integrity/chain.jsonl, fully offline. No submission, no stdin,
       // no provenance — a standalone audit command.
       verifyChainFlag = true;
-    } else if (arg === '--reconcile') {
+    } else if (flagIs('--reconcile')) {
       // Modifier for --verify-chain: also reconcile on-disk records against the
       // ledger and fail on any orphan (INGEST-PROACT-001).
       reconcileFlag = true;
-    } else if (arg === '--all') {
+    } else if (flagIs('--all')) {
       // Modifier for --verify-chain: report every per-record-independent break
       // instead of stopping at the first (INGEST-PROACT-004).
       allBreaksFlag = true;
-    } else if (arg === '--anchor-compute') {
+    } else if (flagIs('--anchor-compute')) {
       // Optional XRPL anchor: compute + write the next anchor manifest. Offline.
       anchorComputeFlag = true;
-    } else if (arg === '--anchor-post') {
+    } else if (flagIs('--anchor-post')) {
       // Optional XRPL anchor: compute if needed + post to XRPL. Needs the
       // optional xrpl package (lazily loaded) and XRPL_SEED.
       anchorPostFlag = true;
-    } else if (arg === '--anchor-verify') {
+    } else if (flagIs('--anchor-verify')) {
       // Optional XRPL anchor: verify local manifests + run the truncation check.
       // Offline reports honest NOT-verified for the on-chain leg.
       anchorVerifyFlag = true;
-    } else if (arg === '--anchor-all') {
+    } else if (flagIs('--anchor-all')) {
       // Genesis snapshot mode for compute/post (covers the whole chain).
       anchorMode = 'all';
-    } else if (arg === '--anchor-algo' && hasValue) {
+    } else if (flagIs('--anchor-algo') && hasValue) {
       anchorAlgo = takeValue();
-    } else if (arg === '--anchor-network' && hasValue) {
+    } else if (flagIs('--anchor-network') && hasValue) {
       anchorNetwork = takeValue();
-    } else if (arg === '--anchor-tx' && hasValue) {
+    } else if (flagIs('--anchor-tx') && hasValue) {
       // Path to a JSON file containing a fetched XRPL tx (with Memos) for the
       // on-chain leg of --anchor-verify. Offline-honest: omit it to run the
       // truncation check only.
       anchorTxFile = takeValue();
-    } else if (arg === '--anchor-trusted' && hasValue) {
+    } else if (flagIs('--anchor-trusted') && hasValue) {
       // Comma-separated trusted anchor accounts (UNIONed with the bundled list).
       anchorTrustedAccounts = takeValue().split(',').map((s) => s.trim()).filter(Boolean);
-    } else if (arg === '-h' || arg === '--help' || arg === '--usage') {
+    } else if (flagIs('-h') || flagIs('--help') || flagIs('--usage')) {
       helpFlag = true;
+    } else if (arg.startsWith('--') && knownFlagName) {
+      // F-e0bcbc47 / F-INGEST-003 boundary: a KNOWN flag whose `&& hasValue`
+      // guard failed — i.e. a value flag given no value, because the next
+      // token was itself a flag (`--anchor-network --anchor-compute`) or it
+      // ended argv. F-INGEST-003 pins that the FOLLOWING flag is still parsed
+      // on its own rather than swallowed as this one's value, so this token
+      // keeps its historical path (fall through to positionalArgs, continue)
+      // and `--anchor-compute` runs. Rejecting here instead would break that
+      // pinned contract.
+      //
+      // RESIDUAL, STATED (not fixed here): the dangling flag is still
+      // IGNORED — `--anchor-network` with no value does not set the network
+      // and does not fail the run. That is pre-existing behavior and this
+      // amend does not change it. What changes is that it is no longer
+      // SILENT: an operator gets a structured warn naming the flag instead of
+      // the value vanishing with no trace. Making it a hard error is a real
+      // contract change (it would stop `--anchor-compute` from running and
+      // rewrite F-INGEST-003's pin), which is a bigger claim than a Stage C
+      // humanization amend should make unilaterally — filed as a follow-up
+      // rather than landed here.
+      logStage('warn', {
+        kind: 'cli_flag_missing_value',
+        flag: arg,
+        correlation_id: synthCorrelationId(),
+        message: `${arg} was given no value and is being ignored (the next token is a flag, not a value)`
+      });
+      positionalArgs.push(args[i]);
+    } else if (arg.startsWith('--')) {
+      // F-e0bcbc47 (Stage C humanization): a genuinely unrecognized `--flag`
+      // — no branch above knows this name at all. It used to fall through to
+      // the dead `positionalArgs` sink (declared, pushed to, and never read
+      // anywhere else in this file — confirmed by grep) and the CLI proceeded
+      // to read stdin, hit EOF, and crashed with a raw 'Unexpected end of
+      // JSON input' stack that misattributed the failure to the submission
+      // payload rather than the misspelled flag (live-proven trigger:
+      // `--provenance=stub --fiel <path>`, a one-character typo of --file).
+      // Reject at the point of the typo instead — matches the sibling pattern
+      // already correct in this same domain (packages/verify/cli.js:
+      // `unknown argument: --version` -> exit 2, no stack, no fallthrough).
+      // Scoped to `--`-prefixed tokens only (a bare positional stays in the
+      // historical positionalArgs sink) because that is exactly the shape a
+      // mistyped flag takes, and it is the shape the reachable repro above
+      // hits BEFORE any value token is even read.
+      emitCliErrorEvent({
+        failedStage: 'cli_parse_args',
+        correlationId: synthCorrelationId(),
+        err: new Error(`unknown argument: ${arg}`),
+        humanPrefix: 'invalid CLI invocation'
+      });
+      process.exit(2);
     } else {
       positionalArgs.push(args[i]);
     }

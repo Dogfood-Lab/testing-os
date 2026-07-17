@@ -162,6 +162,12 @@
       "file": "packages/dogfood-swarm/lib/templates.js",
       "owner": "swarm-cp-core",
       "revalidate_by": "2026-10-16"
+    },
+    "F-35304e50": {
+      "reason": "Cross-reference, not a fix pin — the finding's own text says no code fix is needed. F-35304e50 (wave 28, LOW) asked only that escape-reason.js's 'Known residual' section record two things the wave-27 audit had closed live: that the \\p{Mc}-interleave generalizes across 14 codepoints rather than being a one-codepoint quirk, and that no INVISIBLE codepoint can reach the same trick (every mechanical run-breaker is visible by Unicode's own design intent, per TR44). The wave-29 amend is comment-only: verified by diffing the lane's worktree — 56 insertions, every one inside a comment block, zero non-comment lines changed. There is no behavior change to assert, so a declared @pins tag would be a dangling tag on a test that could only restate the docstring. The escaper's ACTUAL behavior for this class is already pinned by F-046d3756's property-widening tests (f-046d3756-zalgo-mark-property-widening.test.js), which wave 29 additionally strengthened from block-sampling to a structural \\p{Mn}/\\p{Me} assertion under F-1c634b2f.",
+      "file": "packages/dogfood-swarm/commands/lib/escape-reason.js",
+      "owner": "swarm-cp-verbs",
+      "revalidate_by": "2026-10-17"
     }
   }
 }

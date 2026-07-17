@@ -231,7 +231,20 @@ jobs:
         # (see its `if:` a few lines down). Without this disjunct the record
         # still commits but the served badge/trends endpoints silently go
         # stale with no operator-visible signal.
-        if: steps.result.outputs.written == 'true' || steps.result.outputs.parse_failed == 'true'
+        # F-e03646c0: also fires on either ingestion leg's deferred pipeline
+        # fault (steps.ingest_rd.outputs.fault / steps.ingest_wd.outputs.fault
+        # != ''). F-42e57a77 added these two disjuncts to the 'Commit records
+        # and indexes' step below (a run.js exit>=2 fault can fire AFTER a
+        # record was already persisted to the runner working tree) but never
+        # propagated them here — the same incomplete-propagation shape
+        # F-703e5eac closed for parse_failed, one line above. Without this,
+        # a deferred fault after a persist still committed the record
+        # correctly (the Commit step's condition already covered it) but
+        # silently skipped badges/trends regeneration with none of the
+        # ::warning::/$GITHUB_STEP_SUMMARY signal the parse_failed sibling
+        # gets. This condition must stay byte-identical to the Commit step's
+        # (pinned in scripts/stageC-check-ingest-stale-index-warn.test.mjs).
+        if: steps.result.outputs.written == 'true' || steps.result.outputs.parse_failed == 'true' || steps.ingest_rd.outputs.fault != '' || steps.ingest_wd.outputs.fault != ''
         run: |
           # F-f05363e2: on the non-fatal fallback, the inline ::warning:: is the
           # only signal — an operator scanning the run SUMMARY page (not the step

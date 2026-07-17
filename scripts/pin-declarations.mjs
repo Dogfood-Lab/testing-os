@@ -168,17 +168,63 @@ function parseOptsFor(filePath) {
  * Unicode dash confusables that visually or semantically stand in for the
  * ASCII hyphen in a hand-typed or copy-pasted id (F-491e2dee): editor "smart
  * punctuation" autocorrect, and copy-pasting an id out of rendered
- * Markdown/PDF/Word, both commonly substitute one of these for "-". Range
- * covers U+2010 HYPHEN through U+2015 HORIZONTAL BAR, plus the two
- * furthest-flung look-alikes actually seen in the wild: U+2212 MINUS SIGN and
- * the U+FF0D FULLWIDTH HYPHEN-MINUS CJK punctuation input methods produce.
- * Folding these BEFORE the id-shape grammar runs (see looksLikeIdAttempt
- * below) is the same "normalize then compare to grammar" principle that
- * function already applies to the leading f/F marker and a glued/missing
- * separator (F-d36cd380) — a homoglyph substitution is the same near-miss
- * class as an ASCII typo, not a different one.
+ * Markdown/PDF/Word, both commonly substitute one of these for "-". Folding
+ * these BEFORE the id-shape grammar runs (see looksLikeIdAttempt below) is
+ * the same "normalize then compare to grammar" principle that function
+ * already applies to the leading f/F marker and a glued/missing separator
+ * (F-d36cd380) — a homoglyph substitution is the same near-miss class as an
+ * ASCII typo, not a different one.
+ *
+ * Written as \uXXXX escapes rather than the literal glyphs the original
+ * version embedded directly in the regex (F-23866242): the whole POINT of
+ * this set is codepoints a human cannot reliably eyeball-distinguish from an
+ * ASCII hyphen (one, U+00AD, is genuinely INVISIBLE) — embedding them as
+ * literal source characters means auditing this exact line has the same
+ * "nothing to notice even on close inspection" problem the confusable itself
+ * causes in an id. An escape is greppable and diffable; a literal glyph is not.
+ *
+ * F-23866242 DISCLOSED BOUNDARY: this is a CURATED enumeration of dash/hyphen
+ * lookalikes, not a generalized Unicode-confusables mapping (contrast NFKC
+ * normalization or a maintained UTS #39 confusables table, either of which
+ * would close this class structurally instead of by list). Widened here to
+ * the ten codepoints below after this run's own wave-27 audit named two
+ * (U+2043, U+FE58) that were missing; a parallel sweep against every
+ * dash-shaped codepoint in the General Punctuation, Dingbats, and Small Form
+ * Variants blocks surfaced three more (U+2796, U+FE63, U+00AD) sharing the
+ * exact same silent-vanish failure shape. A yet-uncovered dash lookalike
+ * (there is no bound on how many a font/input-method vendor might mint) would
+ * still silently vanish as free text today — this widening closes the five
+ * NAMED gaps, not the property "any Unicode dash," and the next one found
+ * should widen this same list rather than fork a second one (F-046d3756,
+ * ZALGO_RUN in packages/dogfood-swarm/commands/lib/escape-reason.js, is the
+ * sibling fix that instead adopted a structural `\p{Mn}\p{Me}` property
+ * union for its own analogous problem — a real option here too, left as a
+ * follow-up rather than folded into this fix, since a property union changes
+ * the FALSE-POSITIVE surface (which prose characters get silently
+ * hyphen-folded) in a way that deserves its own dedicated verification pass,
+ * not a one-line swap under a MEDIUM ci-tooling finding).
+ *
+ * NOT covered by this function, at all, today (disclosed per this same
+ * finding — "Honesty is a feature of the artifact, not a mood",
+ * swarms/CLAUDE.md): homoglyph LETTER substitution (e.g. Cyrillic а/е/о/с for
+ * Latin a/e/o/c) and fullwidth digit/letter substitution (U+FF10-FF19,
+ * U+FF21-FF3A) inside the id BODY, as opposed to the marker/separator this
+ * set normalizes. Only the marker/separator gets any confusable protection;
+ * the id body's letters and digits do not. NFKC alone would fold the
+ * fullwidth forms but not the Cyrillic homoglyphs, so closing this properly
+ * is a larger design question left for its own dispatch rather than folded
+ * into this fix.
+ *
+ * Codepoints, named (all ten, in ascending order):
+ *   U+2010 HYPHEN                        U+2011 NON-BREAKING HYPHEN
+ *   U+2012 FIGURE DASH                   U+2013 EN DASH
+ *   U+2014 EM DASH                       U+2015 HORIZONTAL BAR
+ *   U+2043 HYPHEN BULLET                 U+00AD SOFT HYPHEN
+ *   U+2212 MINUS SIGN                    U+2796 HEAVY MINUS SIGN
+ *   U+FE58 SMALL EM DASH                 U+FE63 SMALL HYPHEN-MINUS
+ *   U+FF0D FULLWIDTH HYPHEN-MINUS
  */
-const DASH_CONFUSABLES = /[‐-―−－]/g;
+const DASH_CONFUSABLES = /[\u2010-\u2015\u2212\uFF0D\u00AD\u2043\u2796\uFE58\uFE63]/g;
 
 /**
  * F-d36cd380: does `token` plausibly READ AS a botched attempt at one of
@@ -270,8 +316,31 @@ function looksLikeIdAttempt(token) {
   // PREFIXED near-miss (F_ID_PATTERN branch 3: uppercase-alnum segment(s)
   // ending in a 3-digit suffix) — tolerate the suffix run being one digit
   // short or long.
+  //
+  // F-d1412824: the suffix separator hyphen is now REQUIRED (`-(\d+)$`, not
+  // the prior `-?(\d+)$`), not merely tolerated as absent. F-a7d03bd1
+  // case-folded `body` upstream of every branch, which means ANY plain
+  // English word ending in a 2-4 digit run (fixture42, file123, from2020,
+  // fix12) already satisfies `[A-Z][A-Z0-9-]*` on its own once uppercased —
+  // the digit-suffix-length check was the PREFIXED branch's only remaining
+  // discriminator, and a bare word trivially passes it too. Every real
+  // PREFIXED id (F_ID_PATTERN's own grammar: `[A-Z][A-Z0-9]*(?:-[A-Z0-9]+)*-
+  // \d{3}`) has a MANDATORY hyphen immediately before its 3-digit suffix —
+  // F-CI-SELF-DOGFOOD-001, F-BACKEND-003, F-B-001 all do — so requiring that
+  // exact hyphen restores the one signal that distinguishes a segmented id
+  // near-miss from ordinary prose, without narrowing the digit-length
+  // tolerance this branch exists to provide (F-ABC-12's short suffix, or a
+  // case-typo'd F-CI-SELF-DOGFOOD-001, still match — see this file's test
+  // suite). The example deliberately names a REAL id: an invented one
+  // (`…-002`) is itself an orphan source pin, because this gate cannot tell an
+  // illustrative id in prose from a fix pin — which is the whole reason it
+  // stopped reading prose. Caught by the gate on this wave's own merge. A hyphenated compound word that itself ends in a glued digit run
+  // (e.g. "well-known2020") is not caught by this either, matching the same
+  // digit-glued-to-letters shape a bare word has — disclosed, not silently
+  // assumed away: this branch's signal is "a real suffix separator is
+  // present," not "the token contains a hyphen somewhere."
   if (/^[A-Z][A-Z0-9-]*$/.test(body)) {
-    const suffix = /-?(\d+)$/.exec(body);
+    const suffix = /-(\d+)$/.exec(body);
     if (suffix && Math.abs(suffix[1].length - 3) <= 1) return true;
   }
 

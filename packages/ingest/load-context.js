@@ -531,7 +531,22 @@ export function githubScenarioFetcher(token, repoSlug, commitSha, opts = {}) {
     for (let i = 0; i < attempts; i++) {
       last = await attemptOnce(scenarioId);
       if (last.scenario || !last.retryable || i === attempts - 1) break;
-      await sleep(Math.min(RETRY_BASE_MS * (1 << i), RETRY_MAX_MS));
+      const waitMs = Math.min(RETRY_BASE_MS * (1 << i), RETRY_MAX_MS);
+      // F-2a5ddafa: this loop was completely silent on every retry but the
+      // last — an operator had zero early-warning signal that the source
+      // repo's API was degrading until the retry budget fully exhausted and
+      // threw (see the sibling fix in
+      // packages/verify/validators/provenance.js's confirm() loops, same
+      // finding). 'warn' (not 'error') since the fetch may still succeed on
+      // the next attempt.
+      logStage('warn', {
+        kind: 'scenario_fetch_retry',
+        scenario_id: scenarioId,
+        attempt: i + 1,
+        status_or_reason: last.reason || (last.fault ? last.fault.message : 'unknown'),
+        next_backoff_ms: waitMs,
+      });
+      await sleep(waitMs);
     }
     // V2-CROSS-BO-001: a transient fault that survived every retry is an
     // outage — throw the classified operational error instead of returning a

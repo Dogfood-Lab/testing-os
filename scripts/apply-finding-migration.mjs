@@ -100,6 +100,31 @@ Options:
 Exit codes: 0 (applied / idempotent no-op) | 1 (read/DB/missing-finding error) | 2 (manifest validation error)
 `;
 
+/**
+ * F-3401d9b6: sentinel so the top-level `.catch()` can classify a manifest-
+ * SHAPE failure (exit 2, "manifest validation failed" per the documented
+ * exit-code contract above) via `instanceof`, not a substring match against
+ * freely-editable error-message TEXT (the pre-fix `e.message.includes('schema
+ * mismatch')`, which only the literal schema-tag-mismatch message happened
+ * to satisfy — every other loadManifest validation throw fell through to
+ * exit 1, lumped in with a genuine I/O/DB error). Mirrors
+ * scripts/sync-version.mjs's DriftError, the sibling pattern this file's own
+ * comments already point at (`err instanceof DriftError ? 1 : 2`).
+ *
+ * Thrown for all FOUR of loadManifest's manifest-SHAPE validation failures
+ * (schema mismatch, missing run_id, missing cross_ref_migrations[], missing
+ * coordinator_resolved_migrations[]) — deliberately NOT for a missing file or
+ * unparseable JSON, both of which stay plain Error/SyntaxError and fall
+ * through to exit 1 ("read/parse error"), matching the documented contract's
+ * own read/parse-vs-validation distinction exactly.
+ */
+export class ManifestValidationError extends Error {
+  constructor(message) {
+    super(message);
+    this.name = 'ManifestValidationError';
+  }
+}
+
 function loadManifest(path) {
   if (!existsSync(path)) {
     throw new Error(`Manifest not found: ${path}`);
@@ -107,16 +132,16 @@ function loadManifest(path) {
   const text = readFileSync(path, 'utf-8');
   const json = JSON.parse(text);
   if (json.schema !== 'finding-migration/v1') {
-    throw new Error(
+    throw new ManifestValidationError(
       `Manifest schema mismatch — expected 'finding-migration/v1', got '${json.schema}'`
     );
   }
-  if (!json.run_id) throw new Error('Manifest missing run_id');
+  if (!json.run_id) throw new ManifestValidationError('Manifest missing run_id');
   if (!Array.isArray(json.cross_ref_migrations)) {
-    throw new Error('Manifest missing cross_ref_migrations[]');
+    throw new ManifestValidationError('Manifest missing cross_ref_migrations[]');
   }
   if (!Array.isArray(json.coordinator_resolved_migrations)) {
-    throw new Error('Manifest missing coordinator_resolved_migrations[]');
+    throw new ManifestValidationError('Manifest missing coordinator_resolved_migrations[]');
   }
   return json;
 }
@@ -313,7 +338,9 @@ function main() {
     })
     .catch((e) => {
       console.error(`[apply-finding-migration] ERROR: ${e.message}`);
-      process.exit(e.message.includes('schema mismatch') ? 2 : 1);
+      // F-3401d9b6: classify via instanceof, not a message-substring match —
+      // see ManifestValidationError's own docstring above loadManifest().
+      process.exit(e instanceof ManifestValidationError ? 2 : 1);
     });
 }
 

@@ -424,6 +424,20 @@ describe('Promotion records', () => {
     assert.equal(p.to_phase, 'health-audit-b');
     assert.equal(p.authorized_by, 'coordinator');
     assert.ok(Array.isArray(p.gates_checked));
+    // F-db2ed146: a bare Array.isArray check is satisfied equally by an empty
+    // array or a truncated one -- lib/advance.js's own module comment
+    // (lines 109-113) documents that this exact field previously suffered
+    // exactly that failure mode as a real, fixed defect (the "permanently-
+    // incomplete gates_checked audit trail"). checkGates() always assembles
+    // a fixed 6-entry gate set unconditionally (lib/advance.js:129), so
+    // pinning the full, sorted name set is a real, always-true invariant --
+    // matching the precise pattern rewind.test.js / redrive.test.js already
+    // use for their own `design_calls_surfaced` arrays.
+    const gateNames = p.gates_checked.map(g => g.name).sort();
+    assert.deepEqual(gateNames, [
+      'adjudication', 'agent_completion', 'finding_severity',
+      'ownership', 'verification', 'wave_status',
+    ], `checkGates() always assembles exactly these 6 gates (F-feb78e7b) -- got: ${gateNames.join(', ')}`);
     assert.ok(p.finding_snapshot);
     assert.equal(p.finding_snapshot.total, 0);
     db.close();

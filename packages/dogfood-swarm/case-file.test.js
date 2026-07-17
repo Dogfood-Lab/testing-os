@@ -252,6 +252,12 @@ describe('case-file handoff (fail-closed transform → neutral jury request)', (
   it('assertCaseFileClean returns warning-only findings on an ok case-file, throws on an error one', () => {
     const warnings = assertCaseFileClean(loadFixture('lint/thin-grounding.json'));
     assert.ok(Array.isArray(warnings));
+    // F-dc577139: an empty array satisfies Array.isArray + .every() equally
+    // vacuously as a genuinely-populated one -- the exact count (1, for this
+    // fixture's single thin-grounding warning) is asserted BEFORE .every(),
+    // matching this same file's own correct pattern two tests earlier
+    // (line ~238: `assert.ok(err.findings.length >= 1)` before its .every()).
+    assert.equal(warnings.length, 1, `expected exactly 1 warning finding for lint/thin-grounding.json, got: ${JSON.stringify(warnings)}`);
     assert.ok(warnings.every(f => f.severity === 'warning'));
 
     assert.throws(

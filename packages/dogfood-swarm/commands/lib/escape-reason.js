@@ -217,6 +217,47 @@
  *     each mark in a run comes from, since the class is now a single
  *     property union rather than a set of disjoint hardcoded ranges.
  *
+ *   F-35304e50 (wave 29): the "Known residual" boundary below (the `\p{Mc}`
+ *     interleave, disclosed since F-046d3756) had two open questions: was it
+ *     a one-codepoint quirk, and could some OTHER codepoint reach the same
+ *     trick INVISIBLY rather than visibly (a materially worse defect than
+ *     "looks choppy"). Both closed live, not asserted. (1) GENERALIZED: the
+ *     identical interleave (alternating 2-mark Mn groups with one interleaved
+ *     spacing mark) stays byte-identical for 14 `\p{Mc}` codepoints across 14
+ *     scripts (Devanagari U+093E, Bengali U+09BE, Gurmukhi U+0A3E, Gujarati
+ *     U+0ABE, Oriya U+0B3E, Tamil U+0BBE, Telugu U+0C41, Kannada U+0CBE,
+ *     Malayalam U+0D3E, Sinhala U+0D83, Tibetan U+0F3E, Myanmar U+102B, Khmer
+ *     U+17B6, Limbu U+1923), at both a single occurrence and 20x repetition --
+ *     it is the general Mn/Mc boundary, not an artifact of the one U+093E
+ *     example the shipped test drives. (2) CLOSED: exhaustive enumeration of
+ *     the ENTIRE Unicode codespace (0..0x10FFFF) found exactly 32
+ *     Cf-not-Default_Ignorable and 17 Zs-not-Default_Ignorable codepoints
+ *     capable of ending a ZALGO_RUN match while surviving CONTROL_CLASS
+ *     unescaped -- no more, no fewer -- and Unicode's own TR44 derivation
+ *     formula (live-fetched) subtracts every one of them from
+ *     Default_Ignorable_Code_Point BY NAME with the explicit rationale
+ *     "(Exceptional format characters that should be visible)": the 17 Zs are
+ *     literal visible-width spaces (U+0020, U+00A0, U+1680, U+2000-200A,
+ *     U+202F, U+205F, U+3000); the 32 Cf resolve to exactly three named
+ *     sub-groups -- U+FFF9-FFFB (already adjudicated visible by F-6540ba3d,
+ *     above), the Egyptian Hieroglyph format controls (U+13430-1343F), and
+ *     the Prepended_Concatenation_Mark property (U+0600-0605/U+06DD/U+070F/
+ *     U+0890-0891/U+08E2/U+110BD/U+110CD). Separately, Mn and Mc are proven
+ *     mutually exclusive General_Category assignments across the entire
+ *     codespace (0 codepoints are both), so "a `\p{Mc}` mark that renders
+ *     with near-zero width" (the shape this boundary would need to be worse
+ *     than display-quality) is a structural impossibility, not merely
+ *     unobserved. The invisible-pileup class is CLOSED: every mechanical
+ *     run-breaker that exists is, by Unicode's own stated design intent,
+ *     visible. One boundary stays honestly open, not newly introduced:
+ *     Private Use Area codepoints (137,468 of them) have Unicode-UNDEFINED
+ *     rendering (a private font/producer agreement, not a Unicode guarantee)
+ *     -- equally true of CONTROL_CLASS's own Default_Ignorable_Code_Point
+ *     basis above, so not new risk this finding introduced or left. No code
+ *     change: the residual stays display-quality-only, matching this file's
+ *     own severity framing, now cited rather than inferred. See "Known
+ *     residual" below escapeReasonForDisplay for the updated conclusion.
+ *
  * `--format=json` output for every verb bypasses this helper entirely and
  * stays the lossless, unescaped canonical form -- JSON's own string escaping
  * already makes control bytes safe and machine-parseable losslessly.
@@ -419,6 +460,21 @@ function escapeZalgoRun(run) {
  * way F-6820e578 built specifically for ZWJ) is left for a future finding,
  * not folded into F-046d3756's own narrower ask (widen the mark PROPERTY,
  * not redesign run-continuity around a second character class).
+ *
+ * F-35304e50 (wave 29): this boundary is confirmed GENERAL -- 14 `\p{Mc}`
+ * codepoints across 14 scripts, not just the one Devanagari example above,
+ * at both a single occurrence and 20x repetition -- and the stronger open
+ * question (can some OTHER codepoint reach the same trick INVISIBLY rather
+ * than visibly) is CLOSED: every codepoint in the entire Unicode codespace
+ * capable of ending a ZALGO_RUN match while surviving CONTROL_CLASS
+ * unescaped (32 Cf + 17 Zs, exhaustively enumerated -- no more, no fewer) is,
+ * by Unicode's own live-fetched TR44 derivation, visible by explicit design
+ * intent -- and Mn/Mc are proven mutually exclusive General_Category
+ * assignments codespace-wide, so a near-zero-width `\p{Mc}` mark is a
+ * structural impossibility, not an unobserved case. See this file's header
+ * "History of the escaping contract" for the full citation trail. Still no
+ * code fix: the residual stays display-quality-only, unchanged from the
+ * conclusion above, now proven rather than argued.
  *
  * @param {string} reason
  * @returns {string}

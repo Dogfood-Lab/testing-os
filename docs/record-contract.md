@@ -18,6 +18,7 @@ The submission is what the source repo emits. The persisted record is what the v
 ## Trust Boundary
 
 Source repos author:
+- `schema_version` — **required, and the first field the verifier reads** (see [Compatibility](#compatibility) below)
 - `run_id`, `repo`, `ref`, `source`, `timing`
 - `ci_checks[]` (machine-evaluated)
 - `scenario_results[]` with `step_results[]` (dogfood evidence)
@@ -31,6 +32,17 @@ The verifier authors:
 - `overall_verdict.downgraded` and `downgrade_reasons`
 
 A source submission that includes verifier-owned fields is rejected.
+
+## Compatibility
+
+`schema_version` is **major-version gated**, so a submission that is otherwise perfect is still rejected if its major sits outside the range this build accepts. `SUPPORTED_SCHEMA_VERSIONS` (`packages/schemas/src/schema-versions.ts`) is the single source of truth for that range, per contract; the verifier compares the declared major against it and the two failure directions are deliberately distinct, because **they name different people to act**:
+
+| Condition | Code | Who fixes it |
+|-----------|------|--------------|
+| major **above** the ceiling | `CONTRACT_SCHEMA_TOO_NEW` | The **operator** of this build — the submission is from the future; upgrade `testing-os`. |
+| major **below** the floor | `CONTRACT_SCHEMA_TOO_OLD` | The **submitter** — regenerate against a supported schema. |
+
+Both codes carry the declared version and the supported range in the message, so the rejection tells you which way to move rather than just that you failed. Full matrix and per-contract ranges: [handbook → Schema versioning & compatibility matrix](https://dogfood-lab.github.io/testing-os/handbook/contracts/#schema-versioning--compatibility-matrix).
 
 ## Verdict Rules
 

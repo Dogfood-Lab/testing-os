@@ -40,8 +40,12 @@ Out of scope:
 | Forged evidence submissions | Schema validation + signed dispatches via `gh api` (token-gated by repo permissions) |
 | Tampered findings | Git history is the audit log; all writes go through PRs or repository_dispatch |
 | Privilege escalation in CI | Workflows are paths-gated and run on `ubuntu-latest`; no self-hosted runners |
+| **Evidence forgery via `workflow_run` from a fork** | A `workflow_run` job runs in the **base** repo's privilege context even when the triggering PR came from a fork, so an external contributor with no write access could otherwise cause a false evidence record *about this repo* to be committed to `main`. `self-dogfood.yml` gates on `github.event.workflow_run.head_repository.full_name == github.repository`, rejecting any fork-originated run. |
+| **Supply-chain install inside a privileged job** | The publish job is the only one holding `id-token: write` (npm OIDC trusted publishing) alongside `contents: write`. An unpinned `npm install -g npm@latest` there resolves whatever tree is newest at install time — no lockfile, no integrity pin — so any package in it could run lifecycle scripts in a job that can mint an OIDC token and push. `release.yml` installs an **exact pinned version** with `--ignore-scripts`, mirroring the `pa11y@9.1.1` pin in `pages.yml`. |
 | Credential leakage | No secrets in code; all tokens are GitHub-managed |
 | Denial via evidence flood | Rate-limited at the dispatcher tier (GitHub API quotas apply) |
+
+The two bolded rows are not hypotheticals: both are HIGH-severity classes this repo's own audits **found and fixed**, and both are absent from the five rows above them because those were written from what we anticipated in advance. A threat model that only lists the attacks you predicted is a threat model that hasn't learned anything. The mitigations are live — verify them at `.github/workflows/self-dogfood.yml` (the `head_repository` check) and `.github/workflows/release.yml` (the pinned sandbox install), not from this table.
 
 ## Disclosure
 

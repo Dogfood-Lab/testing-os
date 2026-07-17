@@ -204,6 +204,21 @@ describe('clean — CLI surface', () => {
       assert.equal(parsed.removed, 0, 'json dry-run reports nothing removed');
       assert.equal(parsed.dryRun, true);
       assert.ok(Array.isArray(parsed.worktrees));
+      // Sibling of F-dc577139/F-db2ed146 (sweep-discovered, same wave): a bare
+      // Array.isArray check is satisfied equally by an empty `worktrees` array
+      // as by the real, populated one -- even with parsed.total already
+      // pinned to 2 above, a --format=json serialization bug could silently
+      // drop the array's own contents while leaving `total` correct (they are
+      // two independently-serialized fields). Cross-check length against the
+      // already-asserted total, and against the JS-level report shape this
+      // same file proves elsewhere (line ~119: report.worktrees.length === 2;
+      // line ~141: report.worktrees[0].branch).
+      assert.equal(parsed.worktrees.length, parsed.total,
+        'worktrees[] length must agree with the total field the JSON also reports');
+      assert.equal(parsed.worktrees.length, 2);
+      for (const w of parsed.worktrees) {
+        assert.equal(typeof w.branch, 'string', `each JSON worktree entry must carry a branch string, got: ${JSON.stringify(w)}`);
+      }
     } finally {
       teardown(fx.repo);
     }

@@ -426,6 +426,24 @@ function main() {
       );
       process.exit(0);
     }
+    // F-418f507c (Stage C humanization): this loop had no trailing `else` —
+    // ANY unrecognized token (a typo, a flag copied from a different
+    // subcommand, or literally `--version`) was silently ignored and the
+    // tool proceeded to run its FULL default action, including writing to
+    // disk (the portfolio report, indexes/trends.json, indexes/badges/*.json
+    // — all three are real writes, not scratch output; the latter two are
+    // explicitly committed "served artifacts" per this repo's own .gitignore
+    // comment). Live-proven: `--no-trend` (missing the trailing 's') printed
+    // "Trends written: ..." with zero warning that the operator's stated
+    // intent to skip the write was silently overridden. Matches the sibling
+    // pattern already correct in this same domain (verify/cli.js,
+    // findings/cli.js): reject any unrecognized argument and point at --help,
+    // rather than silently falling through to the default action.
+    else {
+      console.error(`Unknown argument: ${args[i]}`);
+      console.error('Run with --help for usage.');
+      process.exit(2);
+    }
   }
 
   if (!existsSync(INDEX_PATH)) {

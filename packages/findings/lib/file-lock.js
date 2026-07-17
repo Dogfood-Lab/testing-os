@@ -134,10 +134,11 @@ function atomicCreateLock(lockPath) {
 }
 
 /**
- * Attempt to acquire an exclusive file-lock on `lockPath`. Returns true if
- * the lock was acquired; false if it is held by another live process OR
- * by a process whose lock file is unreadable / pid-empty (treated as live
- * with bounded mtime patience — see below).
+ * Attempt to acquire an exclusive file-lock on `lockPath`. Returns
+ * `{ acquired: true }` if the lock was acquired; `{ acquired: false, reason }`
+ * if it is held by another live process OR by a process whose lock file is
+ * unreadable / pid-empty (treated as live with bounded mtime patience — see
+ * below).
  *
  * Stale recovery: a holder's PID file remains until its release `unlink`
  * runs. If the holder PROCESS is gone (process.kill ESRCH), the lock is
@@ -149,14 +150,23 @@ function atomicCreateLock(lockPath) {
  * safer guard: we only reclaim if the lock file is ALSO older than
  * `staleAfterMs`, the same boundary `proper-lockfile` uses.
  *
+ * F-3a7c4d67: `reason` is threaded all the way out to `withFileLock`'s
+ * ELOCKTIMEOUT error message (the `lastErrCtx` variable there was declared
+ * and read but never assigned anywhere — confirmed by grep before this fix:
+ * exactly two occurrences of the identifier in the whole file, declaration +
+ * the dead read). Every real lock-timeout previously rendered the bare
+ * "timed out after Nms waiting for X" with the promised "(last error: ...)"
+ * clause permanently absent.
+ *
  * @param {string} lockPath
  * @param {{ staleAfterMs?: number }} opts
- * @returns {boolean}
+ * @returns {{ acquired: boolean, reason?: string }} `reason` is present only
+ *   when `acquired` is false.
  */
 function tryAcquire(lockPath, opts = {}) {
   const { staleAfterMs = DEFAULT_STALE_AFTER_MS } = opts;
 
-  if (atomicCreateLock(lockPath)) return true;
+  if (atomicCreateLock(lockPath)) return { acquired: true };
 
   // Lock exists — test for staleness.
   let pidRaw = null;
@@ -175,7 +185,9 @@ function tryAcquire(lockPath, opts = {}) {
   // PID-known case: trust process.kill to decide alive-vs-dead. This is the
   // common case and gives fast crash recovery (sub-100ms typical).
   if (pidRaw && pidRaw !== '') {
-    if (isProcessAlive(pidRaw)) return false;
+    if (isProcessAlive(pidRaw)) {
+      return { acquired: false, reason: `held by live process pid=${pidRaw}` };
+    }
 
     // PID-dead reclaim via "rename to graveyard" — atomic claim that exactly
     // one reclaimer wins. Without this, a sequence like:
@@ -208,7 +220,10 @@ function tryAcquire(lockPath, opts = {}) {
   }
 
   // Treat as live; the holder owns the lock and will release it.
-  return false;
+  return {
+    acquired: false,
+    reason: `lock file present with no readable pid; age below staleAfterMs=${staleAfterMs}ms`,
+  };
 }
 
 /**
@@ -232,7 +247,10 @@ function release(lockPath) {
  *
  * @param {string} lockPath
  * @param {string} expectedDeadPid - The PID we observed and confirmed dead.
- * @returns {boolean}
+ * @returns {{ acquired: boolean, reason?: string }} F-3a7c4d67: mirrors
+ *   tryAcquire's return shape so the caller can thread a real cause into
+ *   withFileLock's ELOCKTIMEOUT message instead of a permanently-null
+ *   lastErrCtx.
  */
 function reclaimViaGraveyard(lockPath, expectedDeadPid) {
   const graveyardPath = `${lockPath}.gy.${process.pid}.${randomBytes(4).toString('hex')}`;
@@ -240,7 +258,7 @@ function reclaimViaGraveyard(lockPath, expectedDeadPid) {
     renameSync(lockPath, graveyardPath);
   } catch (err) {
     // Another reclaimer beat us — let the retry loop sort it out.
-    return false;
+    return { acquired: false, reason: `stale-reclaim raced: another process already renamed ${lockPath} first` };
   }
 
   // We won the rename. Verify content.
@@ -262,7 +280,7 @@ function reclaimViaGraveyard(lockPath, expectedDeadPid) {
     } catch {
       try { unlinkSync(graveyardPath); } catch { /* drop */ }
     }
-    return false;
+    return { acquired: false, reason: `stale-reclaim raced: lock was freshly re-acquired by pid=${actualPid} during reclaim` };
   }
 
   if (process.env.FILE_LOCK_DEBUG) {
@@ -270,7 +288,9 @@ function reclaimViaGraveyard(lockPath, expectedDeadPid) {
   }
 
   try { unlinkSync(graveyardPath); } catch { /* drop */ }
-  return atomicCreateLock(lockPath);
+  return atomicCreateLock(lockPath)
+    ? { acquired: true }
+    : { acquired: false, reason: 'stale-reclaim raced: a fresh lock was created immediately after graveyard cleanup' };
 }
 
 /**
@@ -281,9 +301,23 @@ function reclaimViaGraveyard(lockPath, expectedDeadPid) {
  * cascade through six callers and break the back-compat contract on
  * `appendEvent` that review-engine relies on.
  *
+ * F-3a7c4d67: guards its documented sibling `packages/ingest/lib/sleep-
+ * sync.js` already carries ("we don't trust caller arithmetic to never
+ * produce negative deltas if a system clock skews") were missing HERE.
+ * Independently re-confirmed empirically (isolated Node one-liner, no
+ * repo writes): `Atomics.wait(view, 0, 0, NaN)` never returns — it hangs
+ * the calling thread indefinitely, with no bound, no error, no log line,
+ * the worst possible outcome for a bounded-retry primitive. A negative
+ * value, by contrast, correctly clamps to an instant 'timed-out'. Reachable
+ * via `withFileLock(path, fn, { retryIntervalMs: NaN })` — e.g. a config
+ * value computed as `x / y` with `y === 0`, or `Number(process.env.X)` on
+ * an unset var — because the destructuring default on `retryIntervalMs`
+ * below only applies when the option is `undefined`, never when it is NaN.
+ *
  * @param {number} ms
  */
 function sleepSync(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
   const sab = new SharedArrayBuffer(4);
   const view = new Int32Array(sab);
   Atomics.wait(view, 0, 0, ms);
@@ -326,10 +360,15 @@ export function withFileLock(targetPath, fn, options = {}) {
   let lastErrCtx = null;
 
   while (Date.now() < deadline) {
-    if (tryAcquire(lockPath, { staleAfterMs })) {
+    // F-3a7c4d67: tryAcquire now returns { acquired, reason } instead of a
+    // bare boolean specifically so lastErrCtx below stops being permanently
+    // null — see tryAcquire's own doc block for the full defect history.
+    const attempt = tryAcquire(lockPath, { staleAfterMs });
+    if (attempt.acquired) {
       acquired = true;
       break;
     }
+    if (attempt.reason) lastErrCtx = attempt.reason;
     sleepSync(retryIntervalMs);
   }
 

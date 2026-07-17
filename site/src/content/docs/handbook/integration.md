@@ -53,6 +53,12 @@ Combined with the enforcement tier from the policy YAML:
 - `warn-only` — warn but exit 0
 - `exempt` — skip evaluation, exit 0
 
+### Read-after-write timing (expected, not a defect)
+
+`raw.githubusercontent.com` caches for 3–5 minutes. Your ingest lands on `main` immediately, but Gate F reads through the CDN — so **for up to 5 minutes after a fresh ingestion, Gate F may still see the previous state**. A verification run that reports `fail` seconds after a successful ingest is almost always this, not a real violation.
+
+This is operational behaviour, not a product defect. **Wait 3–5 minutes and retry.** Do not cache-bust the URL and do not switch transports to work around it — the CDN is the supported read path, and both workarounds trade a 5-minute wait for a permanent inconsistency. See [enforcement tiers → operator note](https://github.com/dogfood-lab/testing-os/blob/main/docs/enforcement-tiers.md) for the full timing seam.
+
 ## repo-knowledge Read Model
 
 The `sync-dogfood` command reads the index and policy files, then upserts structured facts into the `repo_facts` table:

@@ -141,10 +141,22 @@ const ALLOWLIST = [
  * ESCAPE_CALL)) continue;` short-circuit in the main gate below fires
  * first, before `allowlistEntryFor` is ever called for that file).
  *
- * F-6c030425 (wave 24): three ALLOWLIST entries independently went dead this
- * way, discovered one at a time across three separate waves (18's original
- * authoring left one dead from the start; F-7ef099e3 in wave 22 caught a
- * second; this finding caught a third and a fourth). This predicate is the
+ * F-6c030425 (wave 24): dead ALLOWLIST entries were found across two waves,
+ * not three, and this passage previously undercounted BOTH the wave-count and
+ * F-6c030425's own haul: 1 entry (commands/verify.js) was already dead from
+ * its wave-18 authoring and was caught and removed at wave 22 (F-7ef099e3);
+ * 3 more entries (commands/resume.js, commands/persist.js,
+ * commands/adjudicate.js) independently went dead the same way and were all
+ * caught and removed together at wave 24 (F-6c030425) — 4 dead entries ever
+ * found and removed in total, not the "third and a fourth" (two) this
+ * passage's own parenthetical previously attributed to F-6c030425 alone.
+ * (F-96efe483, wave 29: this passage's topic sentence said "three... went
+ * dead" while its own body enumerated four, and separately undercounted
+ * F-6c030425's real three-entry haul by one — the same class of miscount
+ * F-7214a8aa corrected two paragraphs above via `git show 702df2f`, left
+ * untouched here because it lives in a sibling function's docstring. Comment
+ * accuracy only; fileAlreadySatisfiesEscapeCall's own behavior is unaffected
+ * and correct, per the mutation-proof test below.) This predicate is the
  * standing mechanical check the finding asked for, so a newly-dead entry is
  * caught the next time this suite runs instead of waiting for the next
  * confirming audit to notice by hand.
@@ -569,7 +581,21 @@ const CROSS_FILE_ESCAPE_DEPENDENCIES = [
     dependsOn: [
       // Same file, the row-build line a few lines above the padded render —
       // the pre-escape this entry's reason text says happens there.
+      //
+      // F-e0f76c7d (wave 29): the entry's own reason text names THREE
+      // pre-escaped fields — loc via formatLoc(), symbol via formatSymbol(),
+      // evidence via truncate() — but until this fix only the symbol call was
+      // ever re-verified here. loc and evidence were asserted in prose and
+      // never re-derived, the exact gap this mechanism exists to close.
+      // Mutation-proven (scratch copy, zero repo writes): reverting either
+      // `loc: formatLoc(f.file, f.line)` to the same-shaped
+      // `loc: f.file + ':' + f.line`, or `evidence: truncate(f.evidence, 140)`
+      // to raw `evidence: f.evidence`, left the whole suite green before this
+      // fix — only reverting `symbol: formatSymbol(f.symbol)` tripped the
+      // gate. All three dependencies now carry equal weight.
       { file: 'lib/findings-render.js', call: 'symbol: formatSymbol(f.symbol)' },
+      { file: 'lib/findings-render.js', call: 'loc: formatLoc(f.file, f.line)' },
+      { file: 'lib/findings-render.js', call: 'evidence: truncate(f.evidence, 140)' },
     ],
   },
   {

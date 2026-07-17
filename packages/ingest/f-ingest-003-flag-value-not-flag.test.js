@@ -52,6 +52,18 @@ function runCli(args) {
 const ANCHOR_COMPUTE_RAN = /anchor-compute:/;
 const MISSING_PROVENANCE = /--provenance flag is required/;
 
+/**
+ * @pins F-INGEST-003
+ *
+ * Declares what this test already proved. The tag is new, the coverage is not:
+ * wave 29's F-e0bcbc47 amend added the first SOURCE mention of F-INGEST-003
+ * (run.js's flagIs() chain cites it as the contract it must not break), and an
+ * F-id in source with no declared tag is an orphan by the Class #14 gate's
+ * rule — so the mention surfaced a pin this file had owed since it was written.
+ * Not a laundered grant: the assertion below drives the real CLI and was RED
+ * pre-fix (the value flag absorbed `--anchor-compute`, so the verb never
+ * fired), which is exactly the behavior the tag claims.
+ */
 test('a value flag does not swallow the following flag as its value', () => {
   // `--anchor-network` is a space-form value flag. Pre-fix it absorbed
   // `--anchor-compute` as its network value, so the anchor-compute verb never

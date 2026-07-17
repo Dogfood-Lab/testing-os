@@ -50,23 +50,37 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   escapeReasonForDisplay,
   neutralizeInvisibleControls,
   escapePathForDisplay,
 } from './commands/lib/escape-reason.js';
+import { stripComments } from './test-support/strip-comments.js';
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 // The four further standard blocks the finding names, plus a representative
 // codepoint from each -- one Mn member and one Me member from the same block
 // (Combining Diacritical Marks for Symbols is the one block in this set that
 // contains both categories).
+//
+// F-1c634b2f (wave 29, defense in depth): Hebrew POINT SHEVA added -- a major
+// script (Hebrew) this fix's own wave-26 commit message never named, verified
+// directly against Node's real \p{Mn} engine (Mn=true, Me=false, Mc=false)
+// rather than assumed, so a future narrowing of the mark class has to
+// specifically re-cover named scripts, not just re-enumerate the 5 blocks the
+// original author happened to sample.
 const NEW_BLOCK_MARKS = [
   { label: 'Combining Diacritical Marks Supplement (Mn)', cp: 0x1dc0, category: 'Mn' },
   { label: 'Combining Diacritical Marks for Symbols (Mn, COMBINING ANTICLOCKWISE ARROW ABOVE)', cp: 0x20d3, category: 'Mn' },
   { label: 'Combining Diacritical Marks for Symbols (Me, COMBINING ENCLOSING CIRCLE)', cp: 0x20dd, category: 'Me' },
   { label: 'Combining Half Marks (Mn)', cp: 0xfe20, category: 'Mn' },
   { label: 'Combining Cyrillic Titlo (Mn)', cp: 0x0483, category: 'Mn' },
+  { label: 'Hebrew POINT SHEVA (Mn)', cp: 0x05b0, category: 'Mn' },
 ];
 
 const CLASSIC_GRAVE = String.fromCodePoint(0x0300); // the one block the old hardcoded class DID cover
@@ -121,6 +135,88 @@ describe('F-046d3756 -- ZALGO_RUN matches the real Unicode Mn/Me mark property, 
         if (m.index === preFix.lastIndex) preFix.lastIndex++;
       }
       assert.ok(longestRun < 3, `sanity: the OLD hardcoded-range regex must never see a run >= 3 marks long in this interleaved payload -- longest was ${longestRun}`);
+    });
+  });
+
+  // F-1c634b2f (wave 29): the section above -- and "the proven bypass payloads
+  // are now escaped" below -- are BOTH sampling tests: they prove specific
+  // codepoints round-trip correctly, but a regex that hardcodes a bigger
+  // enumerated list covering exactly those samples would pass every one of
+  // them identically to the real \p{Mn}\p{Me} property-based fix. Proven by
+  // direct construction (scratch copy, zero repo writes): a mutant hardcoding
+  // the union of the 5 sampled blocks fools every test in both describe
+  // blocks above and below, 18/18 green, while remaining structurally the
+  // exact "enumerated list, not a property" disease this file's own header
+  // says F-046d3756 was fixing. This section pins the MECHANISM directly
+  // (source-text, analogous to this repo's declared-pin AST check) rather
+  // than more sampled outputs of it -- PROTOCOL.md "Proving a gate" applied to
+  // the TEST's own verification, not just the code it protects.
+  //
+  // No @pins tag on the test below: this fix is entirely inside this test
+  // file (a new assertion reading ZALGO_RUN's own declaration text) with no
+  // corresponding production-source change -- commands/lib/escape-reason.js's
+  // ZALGO_RUN was already correct and is unchanged by this wave. No
+  // production-source F-1c634b2f pin exists for a declared tag to resolve
+  // against (same shape as wave-22 F-7d4ac5ce, reason-escaping-discipline.
+  // test.js's F-84badba1). The existing `@pins F-046d3756` on the outer
+  // describe above already credits that finding; this section extends its
+  // coverage rather than opening a second one.
+  describe('structural pin (not sampling): ZALGO_RUN\'s declared regex source is provably property-based', () => {
+    it('the real ZALGO_RUN declaration in commands/lib/escape-reason.js literally references \\p{Mn} and \\p{Me}, not a re-enumerated block list', () => {
+      // ZALGO_RUN is module-private (not exported) -- reading the source text
+      // directly is the mechanism-level pin available without a cross-domain
+      // export change to commands/lib/escape-reason.js (owned by
+      // swarm-cp-verbs, out of this domain's scope).
+      const escapeReasonSrc = stripComments(
+        readFileSync(join(__dirname, 'commands/lib/escape-reason.js'), 'utf-8')
+      );
+      const declarationLine = escapeReasonSrc
+        .split('\n')
+        .find((line) => line.trim().startsWith('const ZALGO_RUN ='));
+
+      assert.ok(declarationLine,
+        'sanity: could not find the `const ZALGO_RUN = ...` declaration in commands/lib/escape-reason.js -- ' +
+        'this pin\'s anchor text needs updating if the declaration moved or was renamed');
+      assert.ok(declarationLine.includes('\\p{Mn}'),
+        `ZALGO_RUN's declaration must literally reference the \\p{Mn} Unicode property, not a hardcoded ` +
+        `range union -- got: ${declarationLine}`);
+      assert.ok(declarationLine.includes('\\p{Me}'),
+        `ZALGO_RUN's declaration must literally reference the \\p{Me} Unicode property -- got: ${declarationLine}`);
+    });
+
+    it('mutation proof: a 5-block hardcoded-enumeration mutant (deliberately generous -- covers every codepoint the sampling tests above check) fails this structural pin', () => {
+      // Reconstructs the exact class of mutant the finding describes: a
+      // regex covering precisely the 5 sampled blocks NEW_BLOCK_MARKS checks,
+      // widened generously, but built from hardcoded ranges rather than
+      // \p{Mn}\p{Me}. This is a scratch STRING, never written to disk or to
+      // the real source file.
+      const mutantLine =
+        "const ZALGO_RUN = /[\\u0300-\\u036f\\u0480-\\u0489\\u1dc0-\\u1dff\\u20d0-\\u20ff\\ufe20-\\ufe2f]" +
+        "(?:\\u200d?[\\u0300-\\u036f\\u0480-\\u0489\\u1dc0-\\u1dff\\u20d0-\\u20ff\\ufe20-\\ufe2f])*/gu;";
+
+      assert.ok(!mutantLine.includes('\\p{Mn}') || !mutantLine.includes('\\p{Me}'),
+        'sanity: the reconstructed mutant must NOT carry the property escapes (it is meant to fail the pin)');
+
+      // The same check the real test above runs, applied to the mutant line.
+      const mutantPassesStructuralPin = mutantLine.includes('\\p{Mn}') && mutantLine.includes('\\p{Me}');
+      assert.equal(mutantPassesStructuralPin, false,
+        'the 5-block hardcoded mutant must fail the structural pin -- if this assertion fails, the pin ' +
+        'is not actually distinguishing a property fix from a bigger enumerated list');
+
+      // And confirm the mutant is a FAITHFUL stand-in, not a strawman: it
+      // must still match every codepoint the existing sampling tests check
+      // (i.e., it would fool those tests exactly as the finding proved).
+      const mutantRegex = new RegExp(
+        '[\\u0300-\\u036f\\u0480-\\u0489\\u1dc0-\\u1dff\\u20d0-\\u20ff\\ufe20-\\ufe2f]' +
+        '(?:\\u200d?[\\u0300-\\u036f\\u0480-\\u0489\\u1dc0-\\u1dff\\u20d0-\\u20ff\\ufe20-\\ufe2f])*',
+        'gu'
+      );
+      for (const { label, cp } of NEW_BLOCK_MARKS.filter((m) => m.cp !== 0x05b0)) {
+        mutantRegex.lastIndex = 0;
+        assert.ok(mutantRegex.test(stackedPayload(cp, 3)),
+          `sanity: the reconstructed mutant must still match U+${cp.toString(16)} (${label}) -- ` +
+          `otherwise it is not the faithful stand-in the finding describes`);
+      }
     });
   });
 

@@ -151,8 +151,17 @@ describe('classifyFile', () => {
   // /__tests__/ no longer get the same blanket credit — see the
   // "F-92a8d0bb" describe block below for why, and for the reclassified
   // /tests/ and /__tests__/ cases this test used to (incorrectly) assert.
+  //
+  // F-dbcabec2: this example used to be `/repo/packages/schemas/test/
+  // helpers.ts` — WRONG, because packages/schemas runs vitest, not
+  // node --test, and vitest never auto-collects a plain-named file. That
+  // was the exact false-grant F-dbcabec2 fixed; see the "F-dbcabec2"
+  // describe block below for the corrected (now 'source') assertion on
+  // that same path. This test's actual claim — real node --test discovery
+  // credits ANY plain-named file under /test/ — is still true outside
+  // packages/schemas, which is what this now asserts.
   it('classifies a plain-named file under /test/ (singular) as test', () => {
-    assert.equal(classifyFile('/repo/packages/schemas/test/helpers.ts'), 'test');
+    assert.equal(classifyFile('/repo/packages/report/test/helpers.ts'), 'test');
   });
 
   it('classifies plain source files as source', () => {
@@ -163,7 +172,10 @@ describe('classifyFile', () => {
 
   it('uses POSIX-normalised match logic so Windows backslashes still classify', () => {
     assert.equal(classifyFile('C:\\repo\\packages\\report\\report.test.js'), 'test');
-    assert.equal(classifyFile('C:\\repo\\packages\\schemas\\test\\helpers.ts'), 'test');
+    // F-dbcabec2: was `packages\\schemas\\test\\helpers.ts` asserting 'test' —
+    // wrong (see the F-dbcabec2 describe block below). A non-schemas /test/
+    // path still correctly classifies 'test' on Windows separators.
+    assert.equal(classifyFile('C:\\repo\\packages\\report\\test\\helpers.ts'), 'test');
   });
 
   /** @pins F-a27680f9 */
@@ -266,7 +278,13 @@ describe('classifyFile', () => {
     });
 
     it('still classifies a plain-named file under /test/ (singular) as test, at any nesting depth — this IS real node --test discovery, unchanged by this fix', () => {
-      assert.equal(classifyFile('/repo/packages/schemas/test/helpers.ts'), 'test');
+      // F-dbcabec2: the first assertion here used to be
+      // `/repo/packages/schemas/test/helpers.ts` — WRONG, because
+      // packages/schemas runs vitest, which this blanket credit is NOT
+      // real evidence for (see the "F-dbcabec2" describe block below).
+      // The other two paths are outside packages/schemas, where the
+      // blanket credit IS real node --test discovery and is genuinely
+      // "unchanged by this fix" as the test name says.
       assert.equal(classifyFile('/repo/lib/deep/nested/test/helpers.ts'), 'test');
       assert.equal(classifyFile('/repo/test/deeper/helpers.ts'), 'test');
     });
@@ -331,6 +349,50 @@ describe('F-4fc233fe: `.spec.` only means "test" within packages/schemas (the vi
   it('uses POSIX-normalised match logic so Windows backslashes still scope correctly', () => {
     assert.equal(classifyFile('C:\\repo\\packages\\schemas\\src\\foo.spec.ts'), 'test');
     assert.equal(classifyFile('C:\\repo\\packages\\portfolio\\foo.spec.js'), 'source');
+  });
+});
+
+/** @pins F-dbcabec2 */
+describe('F-dbcabec2: node --test-only discovery rules (NODE_TEST_SUFFIX_PATTERN + /test/-singular) also scope OUT of packages/schemas', () => {
+  // Confirming-audit sibling of the F-4fc233fe block above: that fix scoped
+  // `.spec.` credit INTO packages/schemas; this fix scopes the two
+  // node-test-SPECIFIC rules (NODE_TEST_SUFFIX_PATTERN, /test/-singular)
+  // OUT of packages/schemas, since vitest (that package's real runner)
+  // collects neither shape regardless of directory.
+
+  it('does NOT classify a plain-named file under packages/schemas/test/ as test — vitest does not auto-collect it (was the false grant; this path was previously cited, wrongly, as proof of "real node --test discovery")', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/test/helpers.ts'), 'source');
+  });
+
+  it('does NOT classify packages/schemas/src/test-foo.js (dash-prefix node-test shape) as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/test-foo.js'), 'source');
+  });
+
+  it('does NOT classify packages/schemas/src/foo-test.js (dash-suffix node-test shape) as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/foo-test.js'), 'source');
+  });
+
+  it('does NOT classify packages/schemas/src/foo_test.js (underscore-suffix node-test shape) as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/foo_test.js'), 'source');
+  });
+
+  it('does NOT classify a bare packages/schemas/src/test.js as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/test.js'), 'source');
+  });
+
+  it('control: the SAME node-test shapes still classify test OUTSIDE packages/schemas — this fix narrows, it does not remove, the rule', () => {
+    assert.equal(classifyFile('/repo/packages/report/src/test-foo.js'), 'test');
+    assert.equal(classifyFile('/repo/packages/report/src/foo-test.js'), 'test');
+    assert.equal(classifyFile('/repo/packages/report/test/helpers.ts'), 'test');
+  });
+
+  it('control: a real packages/schemas/*.test.ts file (the dot-form, unscoped) still classifies test — only the node-test-SPECIFIC rules are scoped, not the dot-test-form every runner shares', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/test/helpers.test.ts'), 'test');
+  });
+
+  it('uses POSIX-normalised match logic so Windows backslashes still scope both rules out of packages/schemas', () => {
+    assert.equal(classifyFile('C:\\repo\\packages\\schemas\\test\\helpers.ts'), 'source');
+    assert.equal(classifyFile('C:\\repo\\packages\\schemas\\src\\test-foo.js'), 'source');
   });
 });
 

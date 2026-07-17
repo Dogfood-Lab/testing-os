@@ -268,6 +268,90 @@ describe('extractDeclaredIds', () => {
     assert.equal(result.issues[0].token, 'F‑2222222');
   });
 
+  // F-23866242: DASH_CONFUSABLES (the wave-26 fix for F-491e2dee, above) was
+  // itself a second hardcoded enumeration that missed five real dash-
+  // lookalike codepoints — including the two this run's own wave-27 audit
+  // named as probes (U+2043 HYPHEN BULLET, U+FE58 SMALL EM DASH) plus three
+  // more found by sweeping the rest of the Unicode dash/hyphen family
+  // (U+2796 HEAVY MINUS SIGN, U+FE63 SMALL HYPHEN-MINUS, U+00AD SOFT HYPHEN —
+  // the last of which is a genuinely INVISIBLE character). Same failure
+  // shape as every F-491e2dee case above: the confusable glues to the marker
+  // and silently vanishes as free text instead of surfacing bad-shape.
+  // Built via String.fromCodePoint (not pasted glyphs) so the exact codepoint
+  // under test is unambiguous in a diff, matching DASH_CONFUSABLES' own
+  // \uXXXX-escape convention rather than this file's older literal-glyph style.
+  test('F-23866242: U+2043 HYPHEN BULLET glued to the marker is flagged bad-shape, not silently dropped as prose', () => {
+    const hyphenBullet = String.fromCodePoint(0x2043);
+    const token = `F${hyphenBullet}2222222`;
+    assert.deepEqual(extractDeclaredIds(`* @pins F-11111111 ${token}`), [
+      { token: 'F-11111111', ok: true },
+      { token, ok: false },
+    ]);
+  });
+
+  test('F-23866242: U+2796 HEAVY MINUS SIGN glued to the marker is flagged bad-shape, not silently dropped as prose', () => {
+    const heavyMinus = String.fromCodePoint(0x2796);
+    const token = `F${heavyMinus}2222222`;
+    assert.deepEqual(extractDeclaredIds(`* @pins F-11111111 ${token}`), [
+      { token: 'F-11111111', ok: true },
+      { token, ok: false },
+    ]);
+  });
+
+  test('F-23866242: U+FE58 SMALL EM DASH glued to the marker is flagged bad-shape, not silently dropped as prose', () => {
+    const smallEmDash = String.fromCodePoint(0xfe58);
+    const token = `F${smallEmDash}2222222`;
+    assert.deepEqual(extractDeclaredIds(`* @pins F-11111111 ${token}`), [
+      { token: 'F-11111111', ok: true },
+      { token, ok: false },
+    ]);
+  });
+
+  test('F-23866242: U+FE63 SMALL HYPHEN-MINUS glued to the marker is flagged bad-shape, not silently dropped as prose', () => {
+    const smallHyphenMinus = String.fromCodePoint(0xfe63);
+    const token = `F${smallHyphenMinus}2222222`;
+    assert.deepEqual(extractDeclaredIds(`* @pins F-11111111 ${token}`), [
+      { token: 'F-11111111', ok: true },
+      { token, ok: false },
+    ]);
+  });
+
+  test('F-23866242: U+00AD SOFT HYPHEN (a genuinely INVISIBLE character) glued to the marker is flagged bad-shape, not silently dropped as prose', () => {
+    const softHyphen = String.fromCodePoint(0x00ad);
+    const token = `F${softHyphen}2222222`;
+    assert.deepEqual(extractDeclaredIds(`* @pins F-11111111 ${token}`), [
+      { token: 'F-11111111', ok: true },
+      { token, ok: false },
+    ]);
+  });
+
+  /** @pins F-23866242 */
+  test('F-23866242 end-to-end: a previously-uncovered dash confusable (U+00AD SOFT HYPHEN) surfaces as a real bad-shape tagIssue, not a silent drop', () => {
+    const softHyphen = String.fromCodePoint(0x00ad);
+    const result = scanFileForDeclaredPins(
+      'x.test.js',
+      `/** @pins F-11111111 F${softHyphen}2222222 */\ntest('t', () => { assert.ok(true); });\n`,
+    );
+    assert.deepEqual(result.pins.map((p) => p.id), ['F-11111111'], 'the well-formed first id is still credited');
+    assert.equal(result.issues.length, 1, 'the confusable-dash second id must surface as exactly one issue, not zero');
+    assert.equal(result.issues[0].kind, 'bad-shape');
+  });
+
+  test('F-23866242 DISCLOSED BOUNDARY: a letter homoglyph (Cyrillic CAPITAL ES substituted for Latin C) inside a PREFIXED id body is NOT detected — this fix widens the DASH set only and does not add id-body letter/digit homoglyph protection (see DASH_CONFUSABLES\' own docstring)', () => {
+    // Locks in the CURRENT, intentionally-still-open behavior as a documented
+    // boundary rather than an accidental gap a future reader might assume is
+    // covered. A regression here (this test starting to fail) would mean
+    // someone added id-body homoglyph protection — a real improvement, but
+    // one that deserves its own dispatch and its own test suite, not a
+    // silent side effect of a dash-confusable widening.
+    const cyrillicCapitalEs = String.fromCodePoint(0x0421); // looks identical to Latin "C"
+    assert.deepEqual(
+      extractDeclaredIds(`* @pins F-11111111 F-${cyrillicCapitalEs}I-SELF-DOGFOOD-002`),
+      [{ token: 'F-11111111', ok: true }],
+      'a letter homoglyph inside the id body silently reads as free text today — disclosed, not fixed, by F-23866242',
+    );
+  });
+
   // F-a7d03bd1: looksLikeIdAttempt case-folded the leading f/F marker and the
   // HASH branch's body, but not the PREFIXED branch's body — a case-typo of a
   // REAL, LIVE PREFIXED-shaped id in this exact repo
@@ -299,6 +383,71 @@ describe('extractDeclaredIds', () => {
     assert.equal(result.issues.length, 1, 'the case-typo second id must surface as exactly one issue, not zero');
     assert.equal(result.issues[0].kind, 'bad-shape');
     assert.equal(result.issues[0].token, 'f-ci-self-dogfood-002');
+  });
+
+  // F-d1412824: F-a7d03bd1's own fix (case-folding `body` upstream of every
+  // branch) introduced a new, broader over-catch it was never tested
+  // against. Because the fold runs BEFORE the PREFIXED branch's character
+  // class test, an ORDINARY ENGLISH WORD ending in a 2-4 digit run (no
+  // hyphen anywhere) already satisfies `[A-Z][A-Z0-9-]*` once uppercased —
+  // the branch's only remaining discriminator was the suffix-digit-length
+  // tolerance, which a bare word also passes. No real PREFIXED id
+  // (F_ID_PATTERN's own grammar) lacks a hyphen immediately before its digit
+  // suffix, so requiring that hyphen closes the over-catch without narrowing
+  // the branch's real near-miss coverage — see the two "does not regress"
+  // cases below and looksLikeIdAttempt's own updated docstring.
+  test('F-d1412824: an ordinary word with a 3-digit trailing suffix and no hyphen (features123) is NOT flagged bad-shape', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-00c35ce7 features123 is unrelated'), [
+      { token: 'F-00c35ce7', ok: true },
+    ]);
+  });
+
+  test('F-d1412824: an ordinary word with a 2-digit trailing suffix and no hyphen (fixture42) is NOT flagged bad-shape', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-00c35ce7 fixture42 is unrelated'), [
+      { token: 'F-00c35ce7', ok: true },
+    ]);
+  });
+
+  test('F-d1412824: an ordinary word with a 4-digit trailing suffix and no hyphen (from2020) is NOT flagged bad-shape', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-00c35ce7 from2020 is unrelated'), [
+      { token: 'F-00c35ce7', ok: true },
+    ]);
+  });
+
+  test('F-d1412824: a short ordinary word with a 2-digit trailing suffix and no hyphen (fix12) is NOT flagged bad-shape', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-00c35ce7 fix12 is unrelated'), [
+      { token: 'F-00c35ce7', ok: true },
+    ]);
+  });
+
+  test('F-d1412824: a 1-digit trailing suffix (flag2) was already safe before this fix and stays safe (control — not the demonstrated over-catch shape)', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-00c35ce7 flag2 is unrelated'), [
+      { token: 'F-00c35ce7', ok: true },
+    ]);
+  });
+
+  test('F-d1412824: does not regress F-a7d03bd1\'s own case-typo fixture — a REAL PREFIXED near-miss that has an actual suffix hyphen stays flagged', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 f-ci-self-dogfood-002'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'f-ci-self-dogfood-002', ok: false },
+    ]);
+  });
+
+  test('F-d1412824: does not regress F-78892d70\'s short-suffix fixture (F-ABC-12) — the suffix-length tolerance is unchanged, only the hyphen requirement is new', () => {
+    assert.deepEqual(extractDeclaredIds('* @pins F-11111111 F-ABC-12'), [
+      { token: 'F-11111111', ok: true },
+      { token: 'F-ABC-12', ok: false },
+    ]);
+  });
+
+  /** @pins F-d1412824 */
+  test('F-d1412824 end-to-end: an ordinary word with a trailing digit run and no hyphen produces zero issues, not a false bad-shape tagIssue', () => {
+    const result = scanFileForDeclaredPins(
+      'x.test.js',
+      "/** @pins F-00c35ce7 features123 is unrelated */\ntest('t', () => { assert.ok(true); });\n",
+    );
+    assert.deepEqual(result.pins.map((p) => p.id), ['F-00c35ce7'], 'the well-formed id is still credited');
+    assert.equal(result.issues.length, 0, `an ordinary word ending in digits must not raise a false bad-shape issue; got ${JSON.stringify(result.issues)}`);
   });
 
   // F-78892d70: looksLikeIdAttempt implements three grammar branches (HASH,

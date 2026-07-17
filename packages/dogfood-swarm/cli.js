@@ -827,10 +827,31 @@ function cmdCollect(args) {
  * environment is usable, just sub-ideal), so warns exit 0. No run-id required:
  * doctor probes the environment + the control-plane DB path (getDbPath()),
  * which exist independent of any specific run.
+ *
+ * F-c1a49594 (Stage C): every sibling gate-shaped verb (status/runs/history/
+ * verify-*) routes `--format` through the shared parseFormatFlag helper,
+ * which enum-validates and throws CLI_INVALID_FORMAT on a bad value instead
+ * of silently ignoring it. doctor used to take `_args` (leading underscore:
+ * intentionally unused) and discard EVERY flag, including `--format=json` —
+ * runDoctor()'s own return value is already a clean, fully JSON-shaped
+ * {checks, overallStatus, exitCode} object built from structured {id,
+ * status, message, hint} check records, so the CLI wiring was the only thing
+ * missing (proven live: `--format=json` printed the identical plain-ASCII
+ * report, and a bogus `--format=yaml` was silently accepted too).
+ * `--format=json` now emits that object verbatim — the same identity-
+ * projection seam the status/runs/history sites use — and an invalid
+ * `--format` value throws the same CLI_INVALID_FORMAT the sibling verbs
+ * throw. The exit-code contract (non-zero ONLY on a hard FAIL) is unchanged
+ * in either format.
  */
-function cmdDoctor(_args) {
+function cmdDoctor(args) {
+  const format = parseFormatFlag(args);
   const report = runDoctor({ dbPath: getDbPath() });
-  console.log(formatDoctor(report));
+  if (format === 'json') {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(formatDoctor(report));
+  }
   if (report.exitCode !== 0) process.exit(report.exitCode);
 }
 
@@ -2718,20 +2739,104 @@ function isDirectExecution() {
 }
 
 /**
+ * Standard iterative Levenshtein edit distance (insert/delete/substitute,
+ * unit cost). Only used for the "did you mean" nudge on an unknown verb
+ * (F-554bcd68, below) — never on a hot path, so the O(len(a)*len(b)) DP
+ * table is fine at CLI-verb string lengths (every registered command name is
+ * under 20 chars).
+ */
+function levenshteinDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,        // deletion
+        curr[j - 1] + 1,    // insertion
+        prev[j - 1] + cost, // substitution
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+/**
+ * Nearest registered verb to an unrecognized command, for the "did you mean"
+ * nudge. Returns undefined when nothing is close enough to plausibly be a
+ * typo of `command` (avoids suggesting e.g. "init" for "smoke", which shares
+ * no real shape with anything registered).
+ *
+ * @param {string} command — the unrecognized argv[2] token
+ * @param {string[]} commandNames — Object.keys(commands)
+ * @returns {string | undefined}
+ */
+function nearestCommand(command, commandNames) {
+  let best;
+  let bestDistance = Infinity;
+  for (const name of commandNames) {
+    const d = levenshteinDistance(command, name);
+    if (d < bestDistance) {
+      bestDistance = d;
+      best = name;
+    }
+  }
+  // Half-length threshold (rounded up, floor 1) — generous enough to catch a
+  // single-typo/transposition miss ('dispach' -> 'dispatch', distance 1)
+  // without suggesting an unrelated verb for a wildly different string.
+  const threshold = Math.max(1, Math.ceil(command.length / 2));
+  return bestDistance <= threshold ? best : undefined;
+}
+
+/**
  * cli-r-002: the argv dispatch body lives in main() rather than inline under
  * `if (isDirectExecution())`. The previous inline form left the help-text
  * console.log + trailing process.exit indented one level shallower than their
- * enclosing `if (!command || !commands[command])` body. Hoisting the body into
- * a named function lets every statement sit at one consistent indentation
- * level without a deep-nesting re-indent, and reads as a normal entry point.
- * Behavior is identical: main() is invoked only when cli.js is the process
- * entry point (the subprocess smoke tests still spawn `node cli.js`).
+ * enclosing guard body. Hoisting the body into a named function lets every
+ * statement sit at one consistent indentation level without a deep-nesting
+ * re-indent, and reads as a normal entry point. Behavior is identical: main()
+ * is invoked only when cli.js is the process entry point (the subprocess
+ * smoke tests still spawn `node cli.js`). See F-554bcd68 below for the
+ * three-way split (bare / explicit-help / unknown-command) the top-level
+ * guard now makes.
  */
 function main() {
   const command = process.argv[2];
   const commandArgs = process.argv.slice(3);
 
-  if (!command || !commands[command]) {
+  // F-554bcd68 (Stage C): the old single guard `if (!command ||
+  // !commands[command])` conflated three operator intents that deserve
+  // different treatment: bare invocation (orientation, not an error), an
+  // explicit --help/-h/help request (GNU/POSIX convention: universally exit
+  // 0 — the same convention this file's own per-verb --help branches, e.g.
+  // `swarm history --help`, already follow), and a genuinely unknown/
+  // mistyped verb (an error, but not one that should look identical to a
+  // successful help request, and not one that needs the entire ~240-line
+  // reference dumped with zero acknowledgment of what was actually wrong).
+  // All three used to print the byte-identical full command reference and
+  // exit `command ? 1 : 0` — so a wrapper using the conventional
+  // `swarm --help && echo ok` idiom incorrectly reported the tool
+  // unavailable, and a typo'd verb (28 similarly-named siblings —
+  // dispatch/collect/revalidate/rewind/redrive, verify/verify-fixed/
+  // verify-recurring/verify-unverified/verify-approved) got no "unknown
+  // command" framing anywhere in ~240 lines of output.
+  const isExplicitHelp = command === '--help' || command === '-h' || command === 'help';
+
+  if (command && !isExplicitHelp && !commands[command]) {
+    const suggestion = nearestCommand(command, Object.keys(commands));
+    const hint = suggestion ? ` Did you mean \`${suggestion}\`?` : '';
+    console.error(`Unknown command: '${command}'.${hint} Run \`swarm --help\` for the full command list.`);
+    process.exit(1);
+  }
+
+  if (!command || isExplicitHelp) {
     console.log(`swarm — Truthful swarm control plane for repo work
 
 Commands:
@@ -2772,13 +2877,16 @@ Commands:
                              warning; collect proceeds with the present ones.
                              --all and --domain are mutually exclusive (an
                              explicit --domain overrides --all).
-  doctor                     Preflight environment checks (read-only). Verifies
+  doctor [--format=text|json]
+                             Preflight environment checks (read-only). Verifies
                              Node >= 22, the control-plane dir is writable +
                              hardlink-capable (the file-lock CAS needs link(2);
                              exFAT/FAT32 fail), and the on-disk control-plane.db
                              schema is not newer than this build. Structured
                              pass/warn/fail report; exits non-zero only on a
                              hard FAIL (warns exit 0). No run-id required.
+                             --format=json emits the {checks,overallStatus,
+                             exitCode} object verbatim; default is text.
   revalidate <run-id> [opts] Lawful recovery for blocked agent_runs
                              (invalid_output / ownership_violation).
                              Usage: swarm revalidate <run-id> [flags]
@@ -2966,7 +3074,7 @@ Domain commands:
 
 Phases:
 ${renderPhaseColumns('  ')}`);
-    process.exit(command ? 1 : 0);
+    process.exit(0);
   }
 
   try {

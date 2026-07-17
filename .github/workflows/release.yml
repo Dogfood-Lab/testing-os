@@ -99,11 +99,44 @@ jobs:
           # npm >=11.5 for OIDC; 11.5.1 is the first patch release on that
           # floor. Bump in lockstep with Dependabot github-actions / npm
           # sweeps (same maintenance convention as the pa11y pin).
+          #
+          # F-d7fb76ae: this is the FIRST network-dependent step in the
+          # release job and a hard prerequisite for the entire publish — OIDC
+          # trusted publishing cannot proceed without it — but pre-fix it had
+          # zero retry logic, unlike every other network call in this exact
+          # file (the npm-publish loop below retries 3x with 10s/20s backoff;
+          # the GitHub Release step tolerates a lost create-race) and its
+          # sibling workflows (ci.yml's lockfile-drift gate classifies
+          # ETIMEDOUT/ECONNRESET/etc. as non-blocking; pages.yml's
+          # deploy-verify curl loop retries 5x and its pa11y step retries
+          # 3x). A transient registry hiccup on this ONE step failed the
+          # entire release workflow at its very first step. Bounded impact
+          # either way — nothing irreversible has happened yet at this point
+          # (no packages published, no release created), so a bare re-run
+          # was always a safe recovery; this just makes the retry automatic
+          # instead of requiring an operator to notice and re-fire.
           SANDBOX="$HOME/.npm-cli-sandbox"
           mkdir -p "$SANDBOX"
           pushd "$SANDBOX" >/dev/null
           echo '{"name":"npm-cli-sandbox","version":"0.0.0","private":true}' > package.json
-          npm install --no-save --no-audit --no-fund --silent --ignore-scripts npm@11.5.1
+
+          ok=0
+          for attempt in 1 2 3; do
+            if npm install --no-save --no-audit --no-fund --silent --ignore-scripts npm@11.5.1; then
+              ok=1
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              wait_s=$((attempt * 10))
+              echo "::warning::npm@11.5.1 OIDC-sandbox install attempt ${attempt} failed — sleeping ${wait_s}s before retry (transient registry/network issue; nothing has published yet, so a retry here is always safe)."
+              sleep "$wait_s"
+            fi
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Failed to install npm@11.5.1 into the OIDC sandbox after 3 attempts. Nothing has been published yet (this is the first step of the job) — re-run the workflow once the registry/network issue clears."
+            exit 1
+          fi
+
           popd >/dev/null
           echo "$SANDBOX/node_modules/.bin" >> "$GITHUB_PATH"
           "$SANDBOX/node_modules/.bin/npm" --version
