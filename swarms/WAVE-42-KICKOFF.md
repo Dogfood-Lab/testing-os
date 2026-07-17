@@ -39,6 +39,22 @@ gh run list --branch swarm/health-amend-a-1784091637 --limit 3
 
 ---
 
+## Director direction (recorded 2026-07-17, this session's messages — rely on it; re-confirm only if changing its scope)
+
+The Director approved the publish path and wants it executed **without re-asking at each step**, conditions inline:
+
+1. **Wave 42** confirming audit → close the pass (if it comes back dirty, amend as usual — a dirty audit is the one thing that pauses this grant).
+2. Resolve **the vocabulary decision** (runs-vs-dates) so the suspended full-document gate un-suspends — publishing with a shipped schema no artifact satisfies is the named blocker.
+3. **Phase 9** final test → **merge the swarm branch to `main`** (granted as part of this path; watch the self-dogfood/ingest loop close).
+4. Re-run `npx @mcptoolshop/shipcheck audit` at the release tree.
+5. **Full Treatment / Phase 10 → v1.10.0** (CHANGELOG Unreleased is written): lockstep bump, **translations BEFORE `npm publish` and `gh release create`** (the release-ordering rule), tag → OIDC publish → GitHub release.
+
+**The Director's specific staleness mandate:** the handbook page(s) and the READMEs are stale — fold a real docs refresh into the treatment, not a token pass. Check at minimum: README status block vs live gate output, the handbook pages against the three new verbs' shipped flags (cli-reference was audited but the Director's impression is staleness — re-verify page-by-page), the version badge, and every translated README regenerated after the source README settles.
+
+**And the frame:** v1.10.0 is a waypoint, not an end state — dogfooding this repo continues after publish. Do not wrap the run, do not archive anything, do not treat the release as closure.
+
+---
+
 ## Your task: Wave 42 — the confirming audit that can finally close the pass
 
 Dispatch `feature-audit`. The briefs' CONFIRM queue will carry **65 open findings** (26 approved + 39 unverified) — and for the first time in this run's history, **owning-domain `confirmed[]` declarations can lawfully close file-less findings**. This is the first live exercise of the wave-41 vouching fallback: watch the collect's classification like a hawk.
@@ -82,8 +98,8 @@ Confirm-queue routing note: the 39 unverified route by `filed_by_domain` = the F
 
 ## Ask the Director before
 
-- Entering Phase 9 (final test) / Phase 10 (full treatment) or cutting **v1.10.0** (CHANGELOG Unreleased is written).
+Phase 9 / Phase 10 / v1.10.0 / the `main` merge are **now granted** via the recorded direction above — proceed through them when their inline conditions hold; pause the grant only if wave 42 comes back dirty or the scope changes. Still explicitly gated on the Director:
+
 - Any raw DB write (the lawful verbs + backfill module cover the known cases).
-- Merging the swarm branch to `main` (the pass boundary).
 - Deleting the legacy `mcp-tool-shop-org/dogfood-labs` repo (still explicitly gated on Mike).
 - Authoring the first operator notes (`dogfood/roadmap-notes.json` still does not exist — it is the Director's voice; offer, never author).
