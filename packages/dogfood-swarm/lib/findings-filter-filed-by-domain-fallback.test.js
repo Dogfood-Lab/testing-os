@@ -73,6 +73,62 @@ describe('findingsForDomain — file-less approved findings fall back to filed_b
     assert.equal(routed.length, 0, 'undefined domain.name must never equal a real filed_by_domain string');
   });
 
+  /** @pins F-762d2b9b */
+  it('a name-less domain call warns loudly when file-less approved findings exist for the run — the omission is no longer silent', () => {
+    const db = openMemoryDb();
+    const runId = seedRun(db);
+    seedFinding(db, runId, { findingId: 'F-fileless', fingerprint: 'fp-fileless', filePath: null, filedByDomain: 'docs' });
+
+    const originalWarn = console.warn;
+    const warnings = [];
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      findingsForDomain(db, runId, { globs: ['**/*'] });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 1, 'exactly one diagnostic must fire for the dangerous name-less-with-fileless-findings shape');
+    assert.match(warnings[0], /globs but no name/);
+  });
+
+  it('a name-less domain call does NOT warn when the run has no file-less approved findings — nothing is actually at risk of being dropped', () => {
+    const db = openMemoryDb();
+    const runId = seedRun(db);
+    seedFinding(db, runId, {
+      findingId: 'F-has-file', fingerprint: 'fp-has-file-2',
+      filePath: 'packages/dogfood-swarm/lib/foo.js', filedByDomain: 'docs',
+    });
+
+    const originalWarn = console.warn;
+    const warnings = [];
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      findingsForDomain(db, runId, { globs: ['packages/dogfood-swarm/lib/**'] });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 0, 'a name-less domain with nothing file-less to lose must stay quiet — no noise without signal');
+  });
+
+  it('a domain WITH a name never warns, regardless of file-less findings', () => {
+    const db = openMemoryDb();
+    const runId = seedRun(db);
+    seedFinding(db, runId, { findingId: 'F-fileless', fingerprint: 'fp-fileless', filePath: null, filedByDomain: 'docs' });
+
+    const originalWarn = console.warn;
+    const warnings = [];
+    console.warn = (...args) => warnings.push(args.join(' '));
+    try {
+      findingsForDomain(db, runId, { globs: ['**/*'], name: 'docs' });
+    } finally {
+      console.warn = originalWarn;
+    }
+
+    assert.equal(warnings.length, 0, 'a correctly-shaped caller must never see this diagnostic');
+  });
+
   it('a finding WITH a file_path is unaffected — still routed purely by glob match, filed_by_domain ignored', () => {
     const db = openMemoryDb();
     const runId = seedRun(db);
