@@ -21,7 +21,7 @@
 *用于支持人工智能辅助软件的协议、证据存储和学习循环。*
 
 <!-- version:start -->
-**v1.9.0** — 当前版本。有关已发布内容，请参阅 [CHANGELOG.md](CHANGELOG.md)。
+**v1.10.0** — 当前版本。请参阅 [CHANGELOG.md](CHANGELOG.md)，了解此版本的更新内容。
 <!-- version:end -->
 
 📖 **[阅读手册 →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -60,9 +60,11 @@ testing-os 处理通过 `repository_dispatch` 从受信任的 GitHub 仓库（�
 
 **记录完整性具有防篡改的证据，但并非完全防篡改。** 每个持久化的记录都包含一个 `integrity` 块（`submission_digest` + `prev_digest`），形成一个仅追加的哈希链，`dogfood ingest --verify-chain` 可以完全离线验证该链——检测外部篡改、磁盘损坏和部分恢复。它不会防御提交凭据本身，因为它可以重写记录和链；要解决这个问题，需要使用写入者无法控制的锚点。一个**可选的、默认关闭的 XRPL 锚点** (`dogfood ingest --anchor-*`) 会将链头见证到公共 XRP Ledger 中，从而可以检测出任何低于已锚定点的截断或重写——这是第二个公开的非 GitHub 调用，并且仅当操作员启用它时才会发生。
 
-**testing-os 处理的内容：**每个 `repository_dispatch` 有效负载中的提交 JSON；此仓库中的 `policies/`、`fixtures/`、`records/` 和 `indexes/`；对 `api.github.com` 的外部调用，用于进行可追溯性验证；以及——仅针对 `github` 提交——以只读方式获取提交仓库的 `dogfood/scenarios/<scenario_id>.yaml`（在已证明的提交中），该文件定义了场景，并为强制执行所需的步骤提供支持；在使用之前会对文件进行大小限制和模式验证；如果缺少文件，则会显示一条可见警告，但不会强制执行该检查。
+**测试操作系统涉及的内容：**每个 `repository_dispatch` 有效负载中的提交 JSON；本仓库中的 `policies/`、`fixtures/`、`records/`、`indexes/` 和 `dogfood/roadmap/`（最后一部分仅由操作员发起的 `swarm roadmap compile` 命令写入，而不是通过自动化流程）；对 `api.github.com` 进行的出站调用，用于验证来源；以及——仅针对 GitHub 提交——以只读方式获取已提交仓库中在经过认证的提交点上的 `dogfood/scenarios/<scenario_id>.yaml` 文件（该文件是驱动必需步骤强制执行的场景定义；在使用前会限制大小并进行模式验证，如果缺少文件，则只会显示一条可见警告，并且不会强制执行相应的检查）。
 
 **testing-os 不处理的内容：**超出声明的 `dogfood/scenarios/` 定义文件的消费者源代码、消费者仓库中的秘密（超出提交范围）或此仓库工作树之外的任何内容。
+
+**查找状态转换具有证据意义且只能追加。**蜂群控制平面的关闭动词（`swarm reopen`、`swarm close`）需要明确的原因、证据以及——对于操作员发起的关闭操作——声明的验证模式；每次转换都会写入一个不可变的 `finding_events` 行，记录执行该操作的授权机构。没有自动化流程可以基于过时信息来关闭查找结果或通过预测重新打开查找结果，也没有任何动词可以重写事件历史记录——使用不当的凭据可能会添加转换，但每次添加本身都会被记录在案。
 
 **网络界面。** 默认情况下，唯一的出口是 `api.github.com`（只读来源）。两种例外情况都已在上面披露，并且都是可选配置：一个 GitLab 提供商提交 (`gitlab.com/api`) 和一个由操作员启用的 XRPL 锚点运行。**没有遥测数据，也没有分析——此代码库不会自动回传；如果没有这两个可选路径，它就不会暴露任何超出 GitHub 的网络界面。** 接收工作流程的范围仅限于此代码仓库，并且具有 `contents: write` 权限。
 
@@ -94,7 +96,7 @@ testing-os/
 ├── docs/                      # Contract docs + architecture notes
 ├── examples/                  # Copy-paste consumer starter kit (dogfood.yml + scenario + policy)
 ├── scripts/                   # Repo-level utilities (sync-version, build)
-└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml
+└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml, self-dogfood.yml
 ```
 
 ## 本地开发
@@ -114,7 +116,7 @@ npm run verify      # version-sync + doc-drift + regression-pin gates + build + 
 
 ## 版本控制
 
-所有 `@dogfood-lab/*` 软件包一起更新——整个单仓库使用一个版本号。六个软件包以 v1.9.0 的形式发布到 npm，并且同步进行（`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`）；第七个软件包 `@dogfood-lab/portfolio` 保持内部状态。此 README 文件顶部的版本行通过 [`scripts/sync-version.mjs`](scripts/sync-version.mjs) 在每次 `npm run build` 时从 `package.json` 中自动生成。
+所有以 `@dogfood-lab/*` 开头的软件包会一起更新——整个单仓库的版本号都相同。六个软件包以 v1.10.0 的版本同步发布到 npm 上，这些软件包为：`schemas`、`verify`、`report`、`ingest`、`findings` 和 `dogfood-swarm`；第七个软件包 `@dogfood-lab/portfolio` 仍然是内部使用的。本 README 文件顶部的版本号会通过 [`scripts/sync-version.mjs`](scripts/sync-version.mjs) 从 `package.json` 中自动提取，并在每次执行 `npm run build` 时进行更新。
 
 ## 许可证
 

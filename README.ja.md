@@ -20,7 +20,9 @@
 
 *AIを活用したソフトウェアにおける、プロトコル、証拠データの保存方法、および学習サイクル。*
 
-**バージョン1.9.0** ― 現在のリリース版です。変更点については、[CHANGELOG.md](CHANGELOG.md) をご覧ください。
+<!-- version:start -->
+**v1.10.0** — 現在のリリース。変更点は[CHANGELOG.md](CHANGELOG.md)を参照してください。
+<!-- version:end -->
 
 📖 **[ハンドブックを読む →](https://dogfood-lab.github.io/testing-os/handbook/)**
 
@@ -58,9 +60,11 @@ swarm --help
 
 **記録の整合性は改ざんが「検知可能」であるだけで、「完全に防止」されるわけではありません。** 保存されたすべてのレコードには、`integrity` ブロック（`submission_digest` + `prev_digest`）が含まれており、これは追記のみを許可するハッシュチェーンを形成します。`dogfood ingest --verify-chain` を使用して、オフラインで完全に検証できます。これにより、外部からの改ざん、ディスクの破損、および部分的な復元が検出されます。ただし、これだけでは提出に使用される認証情報自体に対する保護にはなりません。認証情報はレコードとチェーンの両を書き換える可能性があるため、それを防ぐには、書き込み者の制御外にあるアンカーが必要です。 **オプションでデフォルトオフになっている XRPL アンカー**（`dogfood ingest --anchor-*`）は、チェーンの先頭をパブリックな XRP Ledger に記録し、アンカーポイントより前の任意の切り捨てまたは書き換えを検出できるようにします。これは、開示されている 2 番目の GitHub 以外の呼び出しであり、オペレーターが有効にした場合にのみ実行されます。
 
-**テスト対象となるもの：** 各「リポジトリ」の `repository_dispatch` ペイロードに含まれる送信JSON、このリポジトリ内の `policies/`、`fixtures/`、`records/`、および `indexes/` ディレクトリ、およびプロビナンス検証のための `api.github.com` への外部呼び出し。また、「github」への送信に限り、送信元のリポジトリの `dogfood/scenarios/<scenario_id>.yaml` ファイルを読み取り専用で取得します（これは、必要なステップの強制に使用されるシナリオ定義であり、使用前にサイズ制限とスキーマ検証が行われ、ファイルが存在しない場合は、そのチェックは実行されず、警告が表示されます）。
+**テスト対象となる要素:** 各`repository_dispatch`ペイロード内の送信JSON、このリポジトリ内の`policies/`、`fixtures/`、`records/`、`indexes/`、および`dogfood/roadmap/`（最後のものは、オペレーターが実行する`swarm roadmap compile`によってのみ書き込まれ、自動化されたインジェストパスでは決して書き込まれません）、プロビナンス検証のための`api.github.com`へのアウトバウンド呼び出し、そして—`github`の送信の場合のみ—認証済みのコミットにおける送信リポジトリの`dogfood/scenarios/<scenario_id>.yaml`を読み取り専用で取得します（このシナリオ定義は、必須ステップの強制に使用され、使用前にサイズ制限とスキーマ検証が行われ、ファイルが存在しない場合は、そのチェックが実行されず、目に見える警告が表示されます）。
 
 **テスト対象外となるもの：** 公開されている「dogfood/scenarios/」ディレクトリ内の定義ファイル以外の、ユーザー側のソースコード、ディスパッチエンベロープに含まれないユーザーリポジトリ内の機密情報、またはこのリポジトリの作業ツリー外にあるあらゆるもの。
+
+**検出状態の遷移は証拠となり、追加のみ可能です。** スウォームコントロールプレーンのクローズ動詞（`swarm reopen`、`swarm close`）には、明示的な理由と証拠が必要であり、オペレーターによるクローズの場合は、宣言された検証モードも必要です。すべての遷移では、実行権限を記録した不変の`finding_events`行が書き込まれます。自動化されたパスで検出結果を古くなったものとして閉じたり、予測に基づいて再開したりすることはできず、どの動詞もイベント履歴を書き換えることはできません。誤って使用された認証情報は遷移を追加できますが、各追加はそれ自体が記録されます。
 
 **ネットワークの露出範囲。** デフォルトでは、唯一のエグレスは `api.github.com`（読み取り専用のプロビナンス）です。例外は2つだけで、どちらもオプションであり、上記で説明されています。GitLab プロバイダーへの提出（`gitlab.com/api`）、およびオペレーターが有効にした XRPL アンカーの実行です。 **テレメトリや分析は行いません。このコードベースは外部に情報を送信しません。上記の2つのオプションパスがない場合、GitHub 以外のネットワークへの露出はありません。** 受信ワークフローは、このリポジトリのみを対象として `contents: write` のスコープで実行されます。
 
@@ -92,7 +96,7 @@ testing-os/
 ├── docs/                      # Contract docs + architecture notes
 ├── examples/                  # Copy-paste consumer starter kit (dogfood.yml + scenario + policy)
 ├── scripts/                   # Repo-level utilities (sync-version, build)
-└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml
+└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml, self-dogfood.yml
 ```
 
 ## 地域開発
@@ -112,7 +116,7 @@ Nodeのバージョンが22以上である必要があります。CI環境では
 
 ## バージョン管理
 
-すべての`@dogfood-lab/*`パッケージはまとめてバージョンアップされ、モノリポ全体で一括してバージョン番号が更新されます。6つのパッケージ（`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`）がnpmに`@dogfood-lab`という名前でv1.9.0として公開され、7番目のパッケージである`@dogfood-lab/portfolio`は引き続き内部利用のみとなります。このREADMEの冒頭付近にあるバージョン情報は、`npm run build`を実行するたびに[`scripts/sync-version.mjs`](scripts/sync-version.mjs)から`package.json`を読み込んで自動的に更新されます。
+すべての`@dogfood-lab/*`パッケージはまとめてバージョンアップします—モノリポジトリ全体で1つの番号が更新されます。6つのパッケージがnpmに`@dogfood-lab`の下でv1.10.0として公開されます（`schemas`、`verify`、`report`、`ingest`、`findings`、`dogfood-swarm`）。7番目のパッケージである`@dogfood-lab/portfolio`は内部で使用されます。このREADMEの先頭付近にあるバージョン行は、すべての`npm run build`時に[`scripts/sync-version.mjs`](scripts/sync-version.mjs)から自動的に`package.json`を読み込んでスタンプが付けられます。
 
 ## ライセンス
 

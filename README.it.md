@@ -21,7 +21,7 @@
 *Protocolli, archivi di evidenze e cicli di apprendimento per software assistito dall'IA.*
 
 <!-- version:start -->
-**v1.9.0** — versione corrente. Consultare [CHANGELOG.md](CHANGELOG.md) per i dettagli sulle modifiche apportate.
+**v1.10.0** — versione corrente. Per i dettagli sulle modifiche, consultare il file [CHANGELOG.md](CHANGELOG.md).
 <!-- version:end -->
 
 📖 **[Leggi la guida →](https://dogfood-lab.github.io/testing-os/handbook/)**
@@ -60,9 +60,11 @@ testing-os elabora le richieste di test inviate tramite `repository_dispatch` da
 
 **L'integrità della registrazione è evidente, non a prova di manomissione.** Ogni registrazione memorizzata contiene un blocco `integrity` (`submission_digest` + `prev_digest`), che forma una catena hash modificabile solo in appendice che `dogfood ingest --verify-chain` convalida completamente offline, rilevando manipolazioni esterne, corruzione del disco e ripristini parziali. Non protegge dalle credenziali di invio stesse, che possono riscrivere sia una registrazione che la catena; per risolvere questo problema è necessario un ancoraggio esterno al controllo dello scrittore. Un **ancoraggio XRPL opzionale, disattivato per impostazione predefinita** (`dogfood ingest --anchor-*`), testimonia l'intestazione della catena nel registro pubblico XRP Ledger, rendendo rilevabile qualsiasi troncamento o riscrittura al di sotto del punto ancorato: la seconda chiamata non GitHub divulgata e solo quando un operatore la abilita.
 
-**Cosa elabora testing-os:** il JSON della richiesta in ogni payload `repository_dispatch`; `policies/`, `fixtures/`, `records/` e `indexes/` in questo repository; chiamate in uscita a `api.github.com` per la verifica della provenienza; e — solo per le richieste di tipo `github` — un recupero in sola lettura del file `dogfood/scenarios/<scenario_id>.yaml` del repository che effettua l'invio, all'hash di commit attestato (la definizione dello scenario che alimenta l'applicazione dei passaggi obbligatori; la dimensione è limitata e lo schema viene convalidato prima dell'uso; in caso di file mancanti, tale controllo non viene applicato, ma viene visualizzato un avviso).
+**Quali elementi vengono interessati dai test:** il JSON di invio in ogni payload `repository_dispatch`; le cartelle `policies/`, `fixtures/`, `records/`, `indexes/` e `dogfood/roadmap/` in questo repository (l'ultima viene modificata solo tramite il comando `swarm roadmap compile` eseguito da un operatore, mai tramite il processo di ingest automatizzato); le chiamate in uscita a `api.github.com` per la verifica della provenienza; e — solo per gli invii relativi a `github` — una lettura (in sola modalità) del file `dogfood/scenarios/<scenario_id>.yaml` del repository che effettua l'invio, all'altezza del commit attestato (la definizione dello scenario che alimenta l'applicazione dei passaggi obbligatori; i file vengono controllati per dimensioni e schema prima dell'uso; in caso di assenza, il controllo viene semplicemente omesso con un avviso visibile).
 
 **Cosa testing-os NON elabora:** codice sorgente del consumatore oltre ai file di definizione `dogfood/scenarios/` dichiarati, segreti nei repository dei consumatori oltre all'invio stesso o qualsiasi elemento al di fuori dell'albero di lavoro di questo repository.
+
+**Le transizioni di stato relative alle anomalie sono basate su prove e vengono aggiunte in modo sequenziale.** I verbi di chiusura del piano di controllo dello swarm (`swarm reopen`, `swarm close`) richiedono una motivazione esplicita, delle prove e — per le chiusure effettuate dagli operatori — una modalità di verifica dichiarata; ogni transizione scrive una riga immutabile in `finding_events` che registra l'autorità responsabile. Nessun processo automatizzato può chiudere un'anomalia a causa della sua obsolescenza o riaprirla tramite previsione, e nessun verbo può riscrivere la cronologia degli eventi: un set di credenziali utilizzato in modo errato può aggiungere transizioni, ma ogni aggiunta viene registrata.
 
 **Superficie di rete.** Per impostazione predefinita, l'unica uscita è `api.github.com` (provenienza in sola lettura). Le due eccezioni sono entrambe attivate esplicitamente e divulgate sopra: un invio dal provider GitLab (`gitlab.com/api`) e un ancoraggio XRPL abilitato dall'operatore. **Nessun telemetria, nessuna analisi: questo codebase non comunica mai con l'esterno; in assenza di questi due percorsi attivati esplicitamente, non espone alcuna superficie di rete oltre a GitHub.** Il flusso di lavoro del ricevitore viene eseguito con `contents: write` limitato solo a questo repository.
 
@@ -94,7 +96,7 @@ testing-os/
 ├── docs/                      # Contract docs + architecture notes
 ├── examples/                  # Copy-paste consumer starter kit (dogfood.yml + scenario + policy)
 ├── scripts/                   # Repo-level utilities (sync-version, build)
-└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml
+└── .github/workflows/         # ci.yml, ingest.yml, pages.yml, release.yml, self-dogfood.yml
 ```
 
 ## Sviluppo locale
@@ -114,7 +116,7 @@ Richiede Node ≥ 22. La matrice CI esegue Node 22 + 24 su `ubuntu-latest`; loca
 
 ## Versioning
 
-Tutti i pacchetti `@dogfood-lab/*` vengono aggiornati insieme: un unico numero in tutto il monorepo. Sei pacchetti vengono pubblicati su npm sotto `@dogfood-lab` alla versione 1.9.0 in modo sincronizzato (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); il settimo, `@dogfood-lab/portfolio`, rimane interno. La riga della versione nella parte superiore di questo README viene aggiunta automaticamente da `package.json` tramite [`scripts/sync-version.mjs`](scripts/sync-version.mjs) ad ogni esecuzione di `npm run build`.
+Tutti i pacchetti `@dogfood-lab/*` vengono aggiornati contemporaneamente, con un unico numero di versione nell'intero monorepository. Sei pacchetti vengono pubblicati su npm sotto il nome `@dogfood-lab` alla versione v1.10.0 in modo sincronizzato (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); il settimo, `@dogfood-lab/portfolio`, rimane interno. La riga della versione che si trova all'inizio di questo file README viene aggiunta automaticamente dal file `package.json` tramite lo script [`scripts/sync-version.mjs`](scripts/sync-version.mjs) ogni volta che viene eseguito il comando `npm run build`.
 
 ## Licenza
 
