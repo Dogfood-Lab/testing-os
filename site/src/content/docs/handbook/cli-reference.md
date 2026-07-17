@@ -20,13 +20,17 @@ Bootstrap a new run against a repo. Walks the file tree, detects domain candidat
 
 ```text
 Usage: swarm init <repo-path> [--repo org/name]
+                  [--seed-from-roadmap[=<run-id>|latest]]
 
 Example:
   $ swarm init E:/AI/my-repo
   $ swarm init E:/AI/my-repo --repo dogfood-lab/my-repo
+  $ swarm init E:/AI/my-repo --seed-from-roadmap
 ```
 
 The output lists the draft domain map. Review it, then run `swarm domains <run-id> --freeze` (or pass `--auto-freeze` on the first dispatch).
+
+`--seed-from-roadmap` is the T4 consumption side of the [trajectory layer](/testing-os/handbook/trajectory/): it records durable lineage from a prior run's compiled roadmap onto the new run, so the first audit wave's briefs open with that roadmap's bounded digest instead of starting cold. Bare (or `=latest`) resolves `dogfood/roadmap/latest.json`; `=<run-id>` resolves that run's artifact directly. Resolution is fail-fast and validating — a missing artifact refuses with `ROADMAP_SEED_NOT_FOUND`, a malformed one with `ROADMAP_SEED_SCHEMA_INVALID` ([error codes](../error-codes/)) — so a run can never be created against a phantom or broken lineage. Seeding is always an explicit flag; nothing propagates from run to run silently.
 
 ## swarm domains
 
@@ -52,6 +56,9 @@ Usage: swarm dispatch <run-id> <phase>
                       [--auto-freeze]
                       [--isolate]
                       [--skip-verify]
+                      [--seed-roadmap]
+                      [--roadmap-digest=<run-id>]
+                      [--no-roadmap-digest]
                       [--dry-run]        # alias --preview
 
 Example:
@@ -59,6 +66,8 @@ Example:
   $ swarm dispatch <run-id> health-amend-b --skip-verify
   $ swarm dispatch <run-id> feature-execute --dry-run
 ```
+
+For a run initialized with `--seed-from-roadmap`, the first audit-phase dispatch automatically injects the seeded roadmap's bounded digest (top-K attention list + unexpired notes + drain summary) at the **top** of every generated brief — the T4 positioning rule. `--no-roadmap-digest` suppresses the injection for one dispatch; `--roadmap-digest=<run-id>` injects a specific run's roadmap explicitly (refusing with `DISPATCH_ROADMAP_DIGEST_NOT_FOUND` if that run has no compiled artifact — the check runs *before* the wave-build transaction, so a bad reference can never strand a half-built wave). `--seed-roadmap` opts an unseeded run's dispatch into the same injection.
 
 `--dry-run` (alias `--preview`) previews the wave shape with **zero side effects** — which domains become agents, the prompt paths that would be written, the per-domain approved-finding routing (on amend phases), and (under `--isolate`) the worktrees that would be created — without opening the wave-build transaction or touching the working tree.
 
