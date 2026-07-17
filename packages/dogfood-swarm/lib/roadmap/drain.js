@@ -165,8 +165,55 @@ export function compileDeferredFindingsDrain(db, runId, opts = {}) {
 }
 
 /**
- * Compose both drain-queue halves. Pure orchestration — no new logic beyond
- * the two functions above.
+ * F-32e2ed6f: findings that are `approved` (queued for an amend wave) but
+ * structurally UNROUTABLE by any mechanism this pass ships —
+ * findingsForDomain's file_path glob match cannot select them (no
+ * file_path), and its filed_by_domain fallback cannot either (either
+ * filed_by_domain is NULL — pre-this-attribution-feature history, F-ad2d6318
+ * — or it names a domain that is not live in this run's CURRENT frozen map,
+ * e.g. a domain renamed or dropped since the finding was filed). Proven live
+ * against this run's own data: 40 approved feature findings with
+ * file_path/filed_by_domain both NULL, permanently stuck in `approved` with
+ * no lawful path to `fixed` (see F-e71f9e7a's backfill mechanism, this same
+ * domain, for the remediation these ids need).
+ *
+ * ADVISORY ONLY, matching this module's existing posture (compileGrandfathered
+ * ManifestDrain/compileDeferredFindingsDrain never gate — they surface a
+ * count and a list so an operator can act, via `swarm close` or a
+ * filed_by_domain backfill). This section does the same: it does not fail a
+ * wave, it does not block anything — it makes a fact that was already true
+ * and already provable from this run's own data visible in the artifact an
+ * operator actually reads (`swarm roadmap show`), instead of requiring a
+ * hand-written SQL query to discover.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} runId
+ * @returns {{ count: number, findings: Array<{ finding_id: string, filed_by_domain: string|null }> }}
+ *   — `findings` ordered finding_id ASC (deterministic, matching every other
+ *   array this compiler emits).
+ */
+export function compileUnroutableApprovedDrain(db, runId) {
+  const liveDomainNames = new Set(
+    db.prepare(`SELECT name FROM domains WHERE run_id = ?`).all(runId).map((r) => r.name),
+  );
+
+  const approvedFileless = db.prepare(`
+    SELECT finding_id, filed_by_domain
+    FROM findings
+    WHERE run_id = ? AND status = 'approved' AND file_path IS NULL
+    ORDER BY finding_id ASC
+  `).all(runId);
+
+  const findings = approvedFileless.filter(
+    (row) => row.filed_by_domain == null || !liveDomainNames.has(row.filed_by_domain),
+  );
+
+  return { count: findings.length, findings };
+}
+
+/**
+ * Compose both drain-queue halves plus the unroutable-approved advisory.
+ * Pure orchestration — no new logic beyond the functions above.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {string} runId
@@ -178,6 +225,7 @@ export function compileDeferredFindingsDrain(db, runId, opts = {}) {
  *   grandfathered_manifest: ReturnType<typeof compileGrandfatheredManifestDrain>,
  *   deferred_findings: ReturnType<typeof compileDeferredFindingsDrain>,
  *   deferred_findings_scope_note: string,
+ *   unroutable_approved: ReturnType<typeof compileUnroutableApprovedDrain>,
  * }}
  */
 export function compileDrainQueue(db, runId, opts = {}) {
@@ -189,6 +237,7 @@ export function compileDrainQueue(db, runId, opts = {}) {
       "deferred findings get last_seen_wave-based staleness only in this pass — no owner/revalidate_by "
       + "columns were added to findings (a disclosed scope decision, not the allowlist's richer schema; "
       + 'see F-6c807f60)',
+    unroutable_approved: compileUnroutableApprovedDrain(db, runId),
   };
 }
 
