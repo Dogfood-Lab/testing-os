@@ -1,0 +1,723 @@
+{
+  "runId": "swarm-1784091637-5127",
+  "repo": "dogfood-lab/testing-os",
+  "compiledAt": "2026-07-15T09:00:38.000Z",
+  "notes": [],
+  "expired": [],
+  "attention": [
+    {
+      "file": "scripts/check-finding-regression-pins.mjs",
+      "score": 0.0048439675510519795
+    },
+    {
+      "file": "packages/dogfood-swarm/cli.js",
+      "score": 0.0017536510461439274
+    },
+    {
+      "file": "packages/dogfood-swarm/reason-escaping-discipline.test.js",
+      "score": 0.0015014905838726098
+    },
+    {
+      "file": "HANDOFF.md",
+      "score": 0.0013903536563942985
+    },
+    {
+      "file": "swarms/PROTOCOL.md",
+      "score": 0.001285772476604278
+    },
+    {
+      "file": "scripts/pin-declarations.mjs",
+      "score": 0.0011021912436645675
+    },
+    {
+      "file": "packages/dogfood-swarm/wave23-findings-format.test.js",
+      "score": 0.0008264147256956674
+    },
+    {
+      "file": "swarms/templates/audit.md",
+      "score": 0.0007404303633217994
+    },
+    {
+      "file": "docs/pin-matcher-rewrite.dispatch.md",
+      "score": 0.0007135982075233527
+    },
+    {
+      "file": "packages/dogfood-swarm/lib/templates.js",
+      "score": 0.0006849770118690493
+    },
+    {
+      "file": "packages/dogfood-swarm/persist-results.js",
+      "score": 0.0006392107965380666
+    },
+    {
+      "file": "packages/dogfood-swarm/lib/fingerprint.js",
+      "score": 0.0006050833719314498
+    },
+    {
+      "file": "packages/dogfood-swarm/amend1-tx-discipline.test.js",
+      "score": 0.0006036879595588235
+    },
+    {
+      "file": "packages/dogfood-swarm/commands/lib/escape-reason.js",
+      "score": 0.0005566425208697339
+    },
+    {
+      "file": "site/src/content/docs/handbook/error-codes.md",
+      "score": 0.0005392287419229055
+    },
+    {
+      "file": "packages/dogfood-swarm/stageA-dispatch-phase-precondition.test.js",
+      "score": 0.0005023707646065183
+    },
+    {
+      "file": "packages/dogfood-swarm/wave12-swarm-cp-pins.test.js",
+      "score": 0.0004603580562659846
+    },
+    {
+      "file": "scripts/regression-pin-allowlist.json",
+      "score": 0.0004270599298747277
+    },
+    {
+      "file": "CLAUDE.md",
+      "score": 0.0004120710784313726
+    },
+    {
+      "file": "packages/ingest/load-context.js",
+      "score": 0.000399144462415936
+    }
+  ],
+  "drain": {
+    "entries": [],
+    "overdue_ids": []
+  },
+  "sections": {
+    "run_id": "swarm-1784091637-5127",
+    "repo": "dogfood-lab/testing-os",
+    "generated_at": "2026-07-15T09:00:38.000Z",
+    "findings": {
+      "open": [],
+      "deferred": [
+        {
+          "finding_id": "F-04ecea6d",
+          "severity": "LOW",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-166ab759",
+          "severity": "HIGH",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-3b70bc65",
+          "severity": "LOW",
+          "category": "future-proofing",
+          "file_path": "packages/dogfood-swarm/cli.js",
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-49940082",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-6a5eb347",
+          "severity": "MEDIUM",
+          "category": "tests_coverage",
+          "file_path": "packages/dogfood-swarm/package.json",
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-92a05b18",
+          "severity": "MEDIUM",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-a7c10cee",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-b4799d13",
+          "severity": "MEDIUM",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-b48cb209",
+          "severity": "MEDIUM",
+          "category": "security",
+          "file_path": "scripts/check-finding-regression-pins.mjs",
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-c7752910",
+          "severity": "MEDIUM",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-d0c33457",
+          "severity": "LOW",
+          "category": "future-proofing",
+          "file_path": "swarms/STAGE-D-KICKOFF.md",
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-e4557bf5",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        }
+      ],
+      "approved": [
+        {
+          "finding_id": "F-07895c2c",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-0da857cb",
+          "severity": "HIGH",
+          "category": "integration",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-194bd3b8",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-1cd5de59",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-2519d9a4",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-271b4661",
+          "severity": "HIGH",
+          "category": "integration",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-274e7ac5",
+          "severity": "MEDIUM",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-29640f0b",
+          "severity": "HIGH",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-2c216782",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-338c8c46",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-405ae92b",
+          "severity": "MEDIUM",
+          "category": "integration",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-4a0354b4",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-5164d456",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-668eddf0",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-694e1a01",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-6c807f60",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-7493be3c",
+          "severity": "HIGH",
+          "category": "integration",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-74ba2c79",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-830bce9e",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-837dcb2f",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-8595faf8",
+          "severity": "CRITICAL",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-874c0683",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-875708f9",
+          "severity": "HIGH",
+          "category": "integration",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-8a97a700",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-8f9e3ea0",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-91f34832",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-936c83f4",
+          "severity": "MEDIUM",
+          "category": "integration",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-93d58082",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-a3af1ac5",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-a3c2337d",
+          "severity": "MEDIUM",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-ad2d6318",
+          "severity": "MEDIUM",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-c0b12add",
+          "severity": "LOW",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-d59346d0",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-d656acc4",
+          "severity": "MEDIUM",
+          "category": "integration",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-e7c4c16d",
+          "severity": "MEDIUM",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-eb396bbc",
+          "severity": "LOW",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-f713ede0",
+          "severity": "HIGH",
+          "category": "production-readiness",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-f86e42eb",
+          "severity": "HIGH",
+          "category": "integration",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-fe05c6d7",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        },
+        {
+          "finding_id": "F-feeaef78",
+          "severity": "HIGH",
+          "category": "missing-feature",
+          "file_path": null,
+          "filed_by_domain": null
+        }
+      ]
+    },
+    "recurrence": {
+      "recurring_findings": [],
+      "recurrence_rate": {
+        "total_runs": 9,
+        "distinct_fingerprints": 951,
+        "recurring_fingerprints": 0,
+        "recurrence_rate": 0,
+        "window_days": null
+      }
+    },
+    "attention": {
+      "advisory": true,
+      "churn_available": true,
+      "top": [
+        {
+          "file": "scripts/check-finding-regression-pins.mjs",
+          "attention_score": 0.0048439675510519795,
+          "factors": {
+            "relative_churn": 4.679455445544554,
+            "finding_count": 17,
+            "most_recent_wave": 53,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/cli.js",
+          "attention_score": 0.0017536510461439274,
+          "factors": {
+            "relative_churn": 1.2309498956158664,
+            "finding_count": 20,
+            "most_recent_wave": 62,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/reason-escaping-discipline.test.js",
+          "attention_score": 0.0015014905838726098,
+          "factors": {
+            "relative_churn": 1.1668726823238567,
+            "finding_count": 10,
+            "most_recent_wave": 56,
+            "domain_count": 2
+          }
+        },
+        {
+          "file": "HANDOFF.md",
+          "attention_score": 0.0013903536563942985,
+          "factors": {
+            "relative_churn": 1.39419795221843,
+            "finding_count": 14,
+            "most_recent_wave": 62,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "swarms/PROTOCOL.md",
+          "attention_score": 0.001285772476604278,
+          "factors": {
+            "relative_churn": 1.2863636363636364,
+            "finding_count": 15,
+            "most_recent_wave": 58,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "scripts/pin-declarations.mjs",
+          "attention_score": 0.0011021912436645675,
+          "factors": {
+            "relative_churn": 1.181462140992167,
+            "finding_count": 14,
+            "most_recent_wave": 58,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/wave23-findings-format.test.js",
+          "attention_score": 0.0008264147256956674,
+          "factors": {
+            "relative_churn": 1.160179640718563,
+            "finding_count": 2,
+            "most_recent_wave": 62,
+            "domain_count": 5
+          }
+        },
+        {
+          "file": "swarms/templates/audit.md",
+          "attention_score": 0.0007404303633217994,
+          "factors": {
+            "relative_churn": 9.764705882352942,
+            "finding_count": 2,
+            "most_recent_wave": 33,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "docs/pin-matcher-rewrite.dispatch.md",
+          "attention_score": 0.0007135982075233527,
+          "factors": {
+            "relative_churn": 1.150214592274678,
+            "finding_count": 10,
+            "most_recent_wave": 54,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/lib/templates.js",
+          "attention_score": 0.0006849770118690493,
+          "factors": {
+            "relative_churn": 1.2849223946784922,
+            "finding_count": 8,
+            "most_recent_wave": 58,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/persist-results.js",
+          "attention_score": 0.0006392107965380666,
+          "factors": {
+            "relative_churn": 1.2418952618453865,
+            "finding_count": 7,
+            "most_recent_wave": 64,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/lib/fingerprint.js",
+          "attention_score": 0.0006050833719314498,
+          "factors": {
+            "relative_churn": 1.1755905511811024,
+            "finding_count": 7,
+            "most_recent_wave": 64,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/amend1-tx-discipline.test.js",
+          "attention_score": 0.0006036879595588235,
+          "factors": {
+            "relative_churn": 1.13,
+            "finding_count": 3,
+            "most_recent_wave": 31,
+            "domain_count": 5
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/commands/lib/escape-reason.js",
+          "attention_score": 0.0005566425208697339,
+          "factors": {
+            "relative_churn": 1.2359735973597359,
+            "finding_count": 7,
+            "most_recent_wave": 56,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "site/src/content/docs/handbook/error-codes.md",
+          "attention_score": 0.0005392287419229055,
+          "factors": {
+            "relative_churn": 1.081439393939394,
+            "finding_count": 7,
+            "most_recent_wave": 62,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/stageA-dispatch-phase-precondition.test.js",
+          "attention_score": 0.0005023707646065183,
+          "factors": {
+            "relative_churn": 1.0168918918918919,
+            "finding_count": 2,
+            "most_recent_wave": 43,
+            "domain_count": 5
+          }
+        },
+        {
+          "file": "packages/dogfood-swarm/wave12-swarm-cp-pins.test.js",
+          "attention_score": 0.0004603580562659846,
+          "factors": {
+            "relative_churn": 1.0434782608695652,
+            "finding_count": 3,
+            "most_recent_wave": 64,
+            "domain_count": 2
+          }
+        },
+        {
+          "file": "scripts/regression-pin-allowlist.json",
+          "attention_score": 0.0004270599298747277,
+          "factors": {
+            "relative_churn": 1.1990740740740742,
+            "finding_count": 5,
+            "most_recent_wave": 62,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "CLAUDE.md",
+          "attention_score": 0.0004120710784313726,
+          "factors": {
+            "relative_churn": 1.5459770114942528,
+            "finding_count": 4,
+            "most_recent_wave": 58,
+            "domain_count": 1
+          }
+        },
+        {
+          "file": "packages/ingest/load-context.js",
+          "attention_score": 0.000399144462415936,
+          "factors": {
+            "relative_churn": 1.4008683068017367,
+            "finding_count": 4,
+            "most_recent_wave": 62,
+            "domain_count": 1
+          }
+        }
+      ],
+      "truncated": true,
+      "total_candidates": 895
+    },
+    "drain_queue": {
+      "grandfathered_manifest": {
+        "available": true,
+        "overdue": []
+      },
+      "deferred_findings": {
+        "stale": [
+          {
+            "finding_id": "F-3b70bc65",
+            "file_path": "packages/dogfood-swarm/cli.js",
+            "last_seen_wave": 9,
+            "waves_behind": 30
+          },
+          {
+            "finding_id": "F-b48cb209",
+            "file_path": "scripts/check-finding-regression-pins.mjs",
+            "last_seen_wave": 23,
+            "waves_behind": 16
+          },
+          {
+            "finding_id": "F-6a5eb347",
+            "file_path": "packages/dogfood-swarm/package.json",
+            "last_seen_wave": 30,
+            "waves_behind": 9
+          },
+          {
+            "finding_id": "F-d0c33457",
+            "file_path": "swarms/STAGE-D-KICKOFF.md",
+            "last_seen_wave": 34,
+            "waves_behind": 5
+          }
+        ]
+      },
+      "deferred_findings_scope_note": "deferred findings get last_seen_wave-based staleness only in this pass — no owner/revalidate_by columns were added to findings (a disclosed scope decision, not the allowlist's richer schema; see F-6c807f60)"
+    }
+  },
+  "notesPath": "E:\\AI\\testing-os\\dogfood\\roadmap-notes.json"
+}
