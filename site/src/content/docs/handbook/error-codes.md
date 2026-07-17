@@ -525,15 +525,91 @@ The operator-supplied `--verified-how <value>` on `swarm close` is not one of th
 ### `swarm reopen` / `swarm close` / `swarm roadmap` — failure modes
 
 :::note[Severity: LOW]
-The recovery and trajectory verbs introduce **one new typed error code** (`CLI_INVALID_VERIFIED_HOW`, above). Everything else follows the two established untyped-guard-clause / per-id-refusal conventions their siblings already use, so an operator's existing reflexes mostly apply unchanged.
+An earlier revision of this section claimed the recovery and trajectory verbs introduce one new typed error code. That was a source-verified undercount, twice caught by confirming audits (the class-level JSDoc in `lib/errors.js` was itself three codes stale). The family carries **twelve typed codes**: `CLI_INVALID_VERIFIED_HOW` (above), the reopen/close-specific narrow `CLI_INVALID_FORMAT` (below), four from `commands/roadmap.js`, and the seven-code operator-notes validation family — plus **three more added with the roadmap seeding flags** (`ROADMAP_SEED_NOT_FOUND`, `ROADMAP_SEED_SCHEMA_INVALID`, `DISPATCH_ROADMAP_DIGEST_NOT_FOUND`). Each has its own entry below. The untyped-guard-clause and per-id-refusal conventions described here still govern everything else.
 :::
 
 - **Usage errors** (missing `--ids`, empty `--reason` or `--evidence`, missing `--verified-how` on `close`, an `--as` value other than `fixed`): each guard clause calls `console.error` directly and `process.exit(1)` — it never throws, so `renderTopLevelError` never sees it: there is no typed `ERROR [<CODE>]:` envelope and no untyped `ERROR: <message>` line either. The printed text is a plain, mostly verb-prefixed sentence (e.g. `reopen: --evidence "<text>" is required (non-empty) — …`, or the bare `Specify --ids F-001,F-002 (reopen is targeted — there is no --all)`). No usage synopsis prints alongside any of these — the `Usage: swarm reopen ...` / `Usage: swarm close ...` synopsis is reserved for the one case where the run-id itself is missing. Unrecognized flags (e.g. a typo'd `--this-flag-does-not-exist`) are silently ignored, not rejected — verified live against both verbs. Both mutation verbs are **dry-run by default** — forgetting `--apply` is not an error; it prints the would-do report and changes nothing.
+- **The narrow `--format` enum:** `swarm reopen`/`swarm close` accept `--format=text|json` only — deliberately excluding `markdown` — and an out-of-enum value throws the typed `CLI_INVALID_FORMAT` from their own `closureFormatError()` (`cli.js`), a distinct call site from the shared `text|markdown|json` parser other verbs use. Same code string, narrower contract; the message names the two accepted values.
 - **Per-id refusals** (reopening an id that is not closed, operator-closing an id that is not open, an id that names no finding in the run): listed per-id in the dry-run/apply report rather than thrown — the verbs are idempotent over ineligible rows, matching `defer`/`reject`'s established contract. A typo'd or hallucinated id can never vacuously transition anything.
-- **`swarm roadmap compile`** validates operator notes at compile time, before any core compile work: more than seven notes, an `invariant` note without `enforced_by`, or an `enforced_by` path that does not exist on disk each refuse the compile with a per-note report (nothing is written on refusal — compile is atomic). `expires` is never a validation trigger — `validateNote()` does not inspect it at all, so a malformed `expires` cannot refuse the compile. Compile still buckets every note into `active`/`expired` by `expires` (an unparseable value — e.g. the `<N runs>` shorthand, a disclosed scope gap; only ISO-date `expires` is implemented today — is treated as non-expiring, never a refusal), and both buckets land in the artifact: `roadmap show` renders `expired` notes as EXPIRED rather than silently dropping them.
+- **`swarm roadmap compile`** validates operator notes at compile time, before any core compile work, via the seven typed `ROADMAP_NOTES_*`/`ROADMAP_NOTE_*`/`ROADMAP_TOO_MANY_NOTES`/`ROADMAP_INVARIANT_NO_ENFORCER`/`ROADMAP_ENFORCER_NOT_FOUND` codes (grouped entry below); nothing is written on refusal — compile is atomic. `expires` is never a validation trigger — `validateNote()` does not inspect it, so a malformed `expires` cannot refuse the compile; an unparseable value (e.g. the `<N runs>` shorthand — only ISO-date `expires` is implemented today, a disclosed scope gap) is treated as non-expiring, never a refusal. Both buckets land in the artifact — `operator_notes` (active) and `expired_notes` (required, empty-allowed; the cross-run carrier for loud expiry) — and `roadmap show` renders expired notes as EXPIRED rather than silently dropping them.
 - **Provenance guarantees on every transition:** each applied reopen/close writes an append-only `finding_events` row — `event_type='reopened'` for `swarm reopen`; for `swarm close`, `event_type` mirrors the `--as` target status (`'fixed'` today, the only value `--as` accepts) rather than a distinct `operator_closed` event type — carrying reason, evidence, and the acting authority. The original closure a reopen reverses is never rewritten — it remains in the event history.
 
 Documented at contract level alongside the verbs' first shipped wave; the next confirming audit re-verifies this section against the implementation, per this page's standing discipline.
+
+### `ROADMAP_RUN_NOT_FOUND`
+
+:::note[Severity: LOW]
+A `swarm roadmap compile|show` (or `compile --undo`) named a run id with no `runs` row. Nothing is read or written.
+:::
+
+- **Class:** plain `Error` with `e.code` via the `roadmapError()` factory (`commands/lib/roadmap-notes.js`), thrown by `requireRun()` in `commands/roadmap.js`.
+- **Trigger:** the `<run-id>` argument matches no row in the control-plane DB the CLI resolved.
+- **Operator action:** `swarm runs` lists real run ids; check `SWARM_DB` if the id looks right but the DB is wrong.
+
+### `ROADMAP_ARTIFACT_MISSING`
+
+:::caution[Severity: MEDIUM]
+The roadmap ledger names an artifact sequence whose file is missing on disk — the ledger and the tree disagree. `show` refuses with the named sequence instead of crashing on a raw `ENOENT`.
+:::
+
+- **Class:** `roadmapError()` in `commands/roadmap.js` — the raw fs error is caught and re-thrown as this named, recoverable state (the F-d875b3c1 compensator lineage).
+- **Trigger:** `swarm roadmap show` resolving a `roadmap_artifacts` row whose `path` does not exist under the run's `local_path`.
+- **Operator action:** either re-run `swarm roadmap compile <run-id>` (a fresh sequence supersedes; history is never rewritten) or remove the orphaned ledger row with `swarm roadmap compile <run-id> --undo <sequence> --apply` — the named compensator documented in the [CLI reference](../cli-reference/#swarm-roadmap).
+
+### `ROADMAP_UNDO_INVALID_SEQUENCE` / `ROADMAP_UNDO_NOT_FOUND`
+
+:::note[Severity: LOW]
+The `--undo` compensator refuses bad targeting before touching anything: a non-positive-integer sequence (`ROADMAP_UNDO_INVALID_SEQUENCE`) or a sequence with no ledger row for that run (`ROADMAP_UNDO_NOT_FOUND`). Zero mutation in both cases — verified live.
+:::
+
+- **Class:** `roadmapError()` in `commands/roadmap.js` (`undoRoadmapCompile`).
+- **Operator action:** the hint names the discovery path — `swarm roadmap show <run-id> --format=json` lists the sequences that actually exist.
+
+### `ROADMAP_NOTES_*` — the operator-notes validation family
+
+:::note[Severity: LOW]
+Seven typed codes, all minted by `commands/lib/roadmap-notes.js`'s `roadmapError()` factory during `swarm roadmap compile`'s T3 seed validation. All refuse the compile atomically — nothing is written on any of them.
+:::
+
+| Code | Trigger |
+|------|---------|
+| `ROADMAP_NOTES_UNPARSEABLE` | the notes seed file exists but is not valid JSON |
+| `ROADMAP_NOTES_SHAPE_INVALID` | the parsed seed is neither a top-level array nor `{"notes": [...]}` |
+| `ROADMAP_TOO_MANY_NOTES` | more than 7 notes (the T3 Reflexion bound) |
+| `ROADMAP_NOTE_INVALID` | a note missing a non-empty `text` |
+| `ROADMAP_NOTE_INVALID_KIND` | `kind` outside `theme\|open-question\|invariant` |
+| `ROADMAP_INVARIANT_NO_ENFORCER` | an `invariant` note without `enforced_by` — a lesson without a mechanical verifier is not persisted as a lesson |
+| `ROADMAP_ENFORCER_NOT_FOUND` | an `enforced_by` path that resolves to no file on disk |
+
+- **Operator action:** fix the named note in the seed file and re-run compile; the per-note report names which note and which rule.
+
+### `ROADMAP_SEED_NOT_FOUND`
+
+:::caution[Severity: MEDIUM]
+`swarm init --seed-from-roadmap` could not resolve a roadmap artifact to seed from. Init fails fast — no run row is created against a phantom lineage.
+:::
+
+- **Class:** `roadmapError()` via `commands/lib/roadmap-seed.js` (`resolveRoadmapSeed`).
+- **Trigger:** any of the four nothing-resolves shapes — `dogfood/roadmap/latest.json` missing, unparseable, missing a usable `path` field, or the resolved artifact file absent on disk (explicit `=<run-id>` resolves `dogfood/roadmap/<run-id>.json` directly).
+- **Operator action:** run `swarm roadmap compile` on the source run first, or drop the flag to init cold.
+
+### `ROADMAP_SEED_SCHEMA_INVALID`
+
+:::caution[Severity: MEDIUM]
+The seed artifact resolved but failed validation — invalid JSON, an Ajv failure against `dogfood-roadmap.schema.json`, or a missing `run_id`/`sequence` belt-and-braces field. Init refuses rather than recording lineage to a malformed artifact.
+:::
+
+- **Class:** `roadmapError()` via `commands/lib/roadmap-seed.js`.
+- **Operator action:** recompile the source run's roadmap (a conformant fresh sequence supersedes the malformed one), then retry.
+
+### `DISPATCH_ROADMAP_DIGEST_NOT_FOUND`
+
+:::note[Severity: LOW]
+An explicit `swarm dispatch --roadmap-digest=<run-id>` named a run with no compiled roadmap artifact on disk. The refusal fires before `buildWave()`'s transaction — a bad reference can never strand a half-built wave.
+:::
+
+- **Class:** `DispatchPreconditionError` (`lib/errors.js`), like the other six `DISPATCH_*` codes above.
+- **Operator action:** compile the referenced run's roadmap, or omit the flag (auto-injection only fires for runs initialized with `--seed-from-roadmap`; `--no-roadmap-digest` suppresses it entirely).
 
 ## Cross-references
 

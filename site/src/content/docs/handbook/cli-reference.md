@@ -20,13 +20,17 @@ Bootstrap a new run against a repo. Walks the file tree, detects domain candidat
 
 ```text
 Usage: swarm init <repo-path> [--repo org/name]
+                  [--seed-from-roadmap[=<run-id>|latest]]
 
 Example:
   $ swarm init E:/AI/my-repo
   $ swarm init E:/AI/my-repo --repo dogfood-lab/my-repo
+  $ swarm init E:/AI/my-repo --seed-from-roadmap
 ```
 
 The output lists the draft domain map. Review it, then run `swarm domains <run-id> --freeze` (or pass `--auto-freeze` on the first dispatch).
+
+`--seed-from-roadmap` is the T4 consumption side of the [trajectory layer](/testing-os/handbook/trajectory/): it records durable lineage from a prior run's compiled roadmap onto the new run, so the first audit wave's briefs open with that roadmap's bounded digest instead of starting cold. Bare (or `=latest`) resolves `dogfood/roadmap/latest.json`; `=<run-id>` resolves that run's artifact directly. Resolution is fail-fast and validating — a missing artifact refuses with `ROADMAP_SEED_NOT_FOUND`, a malformed one with `ROADMAP_SEED_SCHEMA_INVALID` ([error codes](../error-codes/)) — so a run can never be created against a phantom or broken lineage. Seeding is always an explicit flag; nothing propagates from run to run silently.
 
 ## swarm domains
 
@@ -52,6 +56,9 @@ Usage: swarm dispatch <run-id> <phase>
                       [--auto-freeze]
                       [--isolate]
                       [--skip-verify]
+                      [--seed-roadmap]
+                      [--roadmap-digest=<run-id>]
+                      [--no-roadmap-digest]
                       [--dry-run]        # alias --preview
 
 Example:
@@ -59,6 +66,8 @@ Example:
   $ swarm dispatch <run-id> health-amend-b --skip-verify
   $ swarm dispatch <run-id> feature-execute --dry-run
 ```
+
+For a run initialized with `--seed-from-roadmap`, the first audit-phase dispatch automatically injects the seeded roadmap's bounded digest (top-K attention list + unexpired notes + drain summary) at the **top** of every generated brief — the T4 positioning rule. `--no-roadmap-digest` suppresses the injection for one dispatch; `--roadmap-digest=<run-id>` injects a specific run's roadmap explicitly (refusing with `DISPATCH_ROADMAP_DIGEST_NOT_FOUND` if that run has no compiled artifact — the check runs *before* the wave-build transaction, so a bad reference can never strand a half-built wave). `--seed-roadmap` opts an unseeded run's dispatch into the same injection.
 
 `--dry-run` (alias `--preview`) previews the wave shape with **zero side effects** — which domains become agents, the prompt paths that would be written, the per-domain approved-finding routing (on amend phases), and (under `--isolate`) the worktrees that would be created — without opening the wave-build transaction or touching the working tree.
 
@@ -367,15 +376,17 @@ Example:
 
 ## swarm roadmap
 
-Compile and inspect the trajectory artifact — the compiled-never-authored roadmap that lets the next run on this repo start targeted instead of cold. `compile` regenerates `dogfood/roadmap/<run-id>.json` (+ the `latest.json` pointer) from the control-plane DB and git alone: open/deferred queues, the drain queue with per-entry provenance and cadence, recurrence stats, the advisory attention list, and the bounded operator notes (validated at compile — an `invariant` note must name an existing `enforced_by` gate; expired notes are dropped loudly). `show` renders the latest artifact, or an earlier one via `--version=N`. See the [trajectory layer](/testing-os/handbook/trajectory/) page for the full design and its refusals.
+Compile and inspect the trajectory artifact — the compiled-never-authored roadmap that lets the next run on this repo start targeted instead of cold. `compile` regenerates `dogfood/roadmap/<run-id>.json` (+ the `latest.json` pointer) from the control-plane DB and git alone: open/deferred queues, the drain queue with per-entry provenance and cadence, recurrence stats, the advisory attention list, and the bounded operator notes (validated at compile — an `invariant` note must name an existing `enforced_by` gate; expired notes are dropped loudly). `show` renders the latest artifact, or an earlier one via `--version=N`. `compile --undo <sequence> --apply` is the named compensator for a partial or wrong compile: it removes exactly that sequence's ledger row and, when that sequence was the latest, repoints `latest.json` at the prior version (dry-run without `--apply`; a nonexistent sequence refuses with `ROADMAP_UNDO_NOT_FOUND`, zero mutation). See the [trajectory layer](/testing-os/handbook/trajectory/) page for the full design and its refusals.
 
 ```text
-Usage: swarm roadmap compile <run-id> [--format=text|json]
+Usage: swarm roadmap compile <run-id> [--undo <sequence> --apply]
+                             [--format=text|json]
        swarm roadmap show <run-id> [--version=N]
                           [--format=text|json]
 
 Example:
   $ swarm roadmap compile <run-id>
+  $ swarm roadmap compile <run-id> --undo 3 --apply
   $ swarm roadmap show <run-id> --format=json
 ```
 
