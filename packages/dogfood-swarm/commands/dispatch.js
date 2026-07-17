@@ -31,6 +31,7 @@ import { mintCorrelationId } from '../lib/correlation-id.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { AUDIT_PHASES, AMEND_PHASES, renderPhaseList } from '../lib/phases.js';
 import { escapePathForDisplay } from './lib/escape-reason.js';
+import { readRoadmapSeedLineage } from './lib/roadmap-seed.js';
 
 /**
  * D3B-003 (Wave A2 Stage C): emit a structured NDJSON event for a
@@ -104,8 +105,20 @@ function previewWorktree(repoPath, waveNumber, domainName, runId) {
 
 /**
  * The current roadmap's digest-relevant fields (T4), read from
- * `<repoLocalPath>/dogfood/roadmap/latest.json`. Tolerates BOTH shapes that
- * file can legitimately hold:
+ * `<repoLocalPath>/dogfood/roadmap/latest.json` — or, when `opts.forRunId`
+ * is given, directly from `<repoLocalPath>/dogfood/roadmap/<forRunId>.json`
+ * (T5's sequence-free content mirror, always kept current on every compile —
+ * see lib/roadmap/compiler.js#writeRoadmapArtifact). The named-run path lets
+ * a caller resolve a SPECIFIC prior run's digest rather than "whichever run
+ * most recently compiled one in this checkout" (F-d110f547's ad hoc
+ * `--roadmap-digest=<run-id>` and the seeded-run auto-injection gate both
+ * need this — a run seeded from run A must not silently drift to reading
+ * run B's digest just because B compiled something more recently in the
+ * SAME checkout between seeding and dispatch).
+ *
+ * Tolerates BOTH shapes latest.json can legitimately hold (only relevant
+ * on the no-forRunId path — an explicit `<run-id>.json` read is always the
+ * full content mirror, never a pointer):
  *
  *   (1) A thin `{ run_id, sequence, path }` POINTER — the shape
  *       lib/roadmap/compiler.js#writeRoadmapArtifact actually writes for a
@@ -118,27 +131,39 @@ function previewWorktree(repoPath, waveNumber, domainName, runId) {
  * Absent/unreadable/malformed input degrades to `null` (no digest to seed),
  * never a throw — matching this package's established advisory-content
  * degrade-not-fail posture (getChurnStats, compileGrandfatheredManifestDrain).
+ * Callers that must FAIL LOUD on a missing named artifact (the ad hoc
+ * `--roadmap-digest=<run-id>` CLI path, per F-d110f547's "never silent in
+ * either direction") check for a `null` return themselves and throw a
+ * typed precondition error — this function stays uniformly degrade-only so
+ * its behavior does not depend on which caller invoked it.
  *
- * H5 discipline: both reads go through the bounded reader rather than a raw
- * synchronous parse of the file contents — `latest.json` and the artifact
- * it points at both live under the AUDITED repo's checkout (run.local_path),
- * the same "untrusted target-repo file" trust class as
- * lib/verify/adapters/node.js's package.json read.
+ * H5 discipline: every read goes through the bounded reader rather than a
+ * raw synchronous parse of the file contents — `latest.json`/`<run-id>.json`
+ * and the artifact latest.json points at all live under the AUDITED repo's
+ * checkout (run.local_path), the same "untrusted target-repo file" trust
+ * class as lib/verify/adapters/node.js's package.json read.
  *
  * @param {string} repoLocalPath
+ * @param {object} [opts]
+ * @param {string} [opts.forRunId] — read this run's own content mirror
+ *   directly instead of following latest.json.
  * @returns {{ attention?: Array, drain?: Array, notes?: Array } | null}
  */
-function loadRoadmapDigestSource(repoLocalPath) {
-  const latestPath = join(repoLocalPath, 'dogfood', 'roadmap', 'latest.json');
-  if (!existsSync(latestPath)) return null;
+function loadRoadmapDigestSource(repoLocalPath, opts = {}) {
+  const { forRunId } = opts;
+  const roadmapDir = join(repoLocalPath, 'dogfood', 'roadmap');
+  const targetPath = forRunId ? join(roadmapDir, `${forRunId}.json`) : join(roadmapDir, 'latest.json');
+  if (!existsSync(targetPath)) return null;
 
   let parsed;
   try {
-    parsed = readBoundedJson(latestPath);
+    parsed = readBoundedJson(targetPath);
   } catch {
     return null;
   }
   if (!parsed || typeof parsed !== 'object') return null;
+
+  if (forRunId) return parsed;
 
   const looksLikePointer = typeof parsed.path === 'string'
     && !Array.isArray(parsed.attention) && !Array.isArray(parsed.drain) && !Array.isArray(parsed.notes);
@@ -170,14 +195,44 @@ const ROADMAP_DIGEST_TOP_K = 10;
  * ROADMAP_DIGEST_TOP_K, with an explicit "+N more, see <path>" line — never
  * a raw dump of a 200-file/500-entry artifact into every agent's prompt.
  *
+ * A3 SHAPES (self-caught, this wave): reads the artifact's A3.1/A3.2(a)/
+ * A3.4 section shapes — `attention.items[]` (not a bare array), `drain_queue.
+ * entries[]` (not `drain`), `operator_notes[]` (not `notes`) — matching
+ * commands/roadmap.js's own buildRoadmapArtifact mapping exactly, since both
+ * read/write the SAME persisted artifact. An earlier revision of this
+ * function still read the pre-A3 flat shapes (`source.attention` as a bare
+ * array, `source.drain`, `source.notes`); against an A3-shaped artifact
+ * every one of those checks silently failed its `Array.isArray`/truthiness
+ * guard and rendered an EMPTY digest — no error, just nothing, the exact
+ * silent-failure class T4's own contract text refuses to allow. DISCLOSED
+ * RESIDUAL: a historical artifact compiled BEFORE this wave (pre-A3 shape)
+ * would now read empty here too — T5's immutability guarantee means such
+ * files can legitimately still exist on disk, but this function's own
+ * degrade-to-nothing posture for absent/malformed content already treats
+ * that identically to "no artifact at all" (a fully handled, non-error
+ * state), and `--seed-from-roadmap`'s OWN schema gate (commands/lib/
+ * roadmap-seed.js) independently refuses to seed a NEW run from a
+ * non-conforming artifact in the first place, so a pre-A3 artifact cannot
+ * reach this reader via the seeding path this wave adds — only via the
+ * pre-existing, always-degrade-silently `--seed-roadmap`/latest.json
+ * convenience path, which had no correctness guarantee about content shape
+ * even before this fix.
+ *
  * @param {string} repoLocalPath
+ * @param {object} [opts]
+ * @param {string} [opts.forRunId] — forwarded to loadRoadmapDigestSource;
+ *   read a NAMED run's digest instead of "whatever latest.json says"
+ *   (F-d110f547: the seeded-run auto-injection gate and the ad hoc
+ *   `--roadmap-digest=<run-id>` escape hatch both need a specific run, not
+ *   "whichever run most recently compiled one in this checkout").
  * @returns {string|undefined} — undefined when there is nothing to seed
- *   (no latest.json, or an empty/malformed one) so the caller can leave
- *   `roadmapDigest` unset entirely and templates.js's own `? ... : ''`
- *   renders nothing, exactly as if --seed-roadmap had never been passed.
+ *   (no latest.json/<run-id>.json, or an empty/malformed one) so the caller
+ *   can leave `roadmapDigest` unset entirely and templates.js's own
+ *   `? ... : ''` renders nothing, exactly as if --seed-roadmap had never
+ *   been passed.
  */
-function buildRoadmapDigest(repoLocalPath) {
-  const source = loadRoadmapDigestSource(repoLocalPath);
+function buildRoadmapDigest(repoLocalPath, opts = {}) {
+  const source = loadRoadmapDigestSource(repoLocalPath, opts);
   if (!source) return undefined;
 
   const pointerHint = 'dogfood/roadmap/latest.json';
@@ -196,7 +251,9 @@ function buildRoadmapDigest(repoLocalPath) {
   // its one render site (lib/templates.js's renderRoadmapDigestSection)
   // before reaching any agent, so adding a second, redundant escape call
   // here would only duplicate that protection, not add any.
-  const attention = Array.isArray(source.attention) ? [...source.attention] : [];
+  // A3.1: attention is {advisory, items[{file,score,components}]} — read
+  // `.items`, never the bare array the pre-A3 shape had.
+  const attention = source.attention && Array.isArray(source.attention.items) ? [...source.attention.items] : [];
   if (attention.length > 0) {
     attention.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
     lines.push('Attention (advisory, ranked — never a gate):');
@@ -208,20 +265,26 @@ function buildRoadmapDigest(repoLocalPath) {
     }
   }
 
-  const drain = Array.isArray(source.drain) ? source.drain : (source.drain && Array.isArray(source.drain.entries) ? source.drain.entries : []);
+  // A3.2(a): drain_queue is {entries[{id,owner,cadence_runs,runs_since_review,
+  // overdue,reason?}], overdue_ids[]} — the key itself is `drain_queue`, not
+  // the pre-A3 `drain`.
+  const drain = source.drain_queue && Array.isArray(source.drain_queue.entries) ? source.drain_queue.entries : [];
   if (drain.length > 0) {
     lines.push('');
     lines.push('Drain queue (advisory):');
     for (const d of drain.slice(0, ROADMAP_DIGEST_TOP_K)) {
       const reason = d.reason ? ` — ${d.reason}` : '';
-      lines.push(`- ${d.id} (owner: ${d.owner || 'unknown'})${reason}`);
+      const overdueTag = d.overdue ? ' [OVERDUE]' : '';
+      lines.push(`- ${d.id} (owner: ${d.owner || 'unknown'})${overdueTag}${reason}`);
     }
     if (drain.length > ROADMAP_DIGEST_TOP_K) {
       lines.push(`- +${drain.length - ROADMAP_DIGEST_TOP_K} more, see ${pointerHint}`);
     }
   }
 
-  const notes = Array.isArray(source.notes) ? source.notes : [];
+  // A3.4: the persisted key is `operator_notes` (flat active-notes array),
+  // never the pre-A3 `notes`.
+  const notes = Array.isArray(source.operator_notes) ? source.operator_notes : [];
   if (notes.length > 0) {
     lines.push('');
     lines.push('Operator notes:');
@@ -257,6 +320,25 @@ function buildRoadmapDigest(repoLocalPath) {
  *   precedent; the same cross-boundary-trust class F-18d0ef6d/F-a9c399ce
  *   already warn against, moved from cross-domain to cross-run). See
  *   buildRoadmapDigest's own header for the bounding/truncation contract.
+ *   Superseded as the PRIMARY seeding path by --seed-from-roadmap (below)
+ *   once a run is init'd with it — kept working unchanged for an unseeded
+ *   run/latest.json convenience, and composed as the final fallback in the
+ *   resolution order F-d110f547 adds.
+ * @param {boolean} [opts.noRoadmapDigest] — T4/F-d110f547: unconditionally
+ *   suppresses roadmap-digest auto-injection for this dispatch, even when
+ *   the run was seeded and this is its first audit-phase wave. Takes effect
+ *   only when `opts.roadmapDigestRunId` is absent (an explicit ad hoc digest
+ *   always wins — see that param).
+ * @param {string} [opts.roadmapDigestRunId] — T4/F-d110f547: ad hoc escape
+ *   hatch, `--roadmap-digest=<run-id>`. Forces a digest built from THIS
+ *   named run's compiled roadmap onto THIS dispatch, bypassing both the
+ *   seeded-lineage check and the first-audit-wave gate — the documented way
+ *   to inject a digest on an unseeded run or a later wave. Unlike every
+ *   other roadmap-digest source in this function, an unresolvable name here
+ *   is a FAIL-LOUD precondition (DISPATCH_ROADMAP_DIGEST_NOT_FOUND), not a
+ *   silent degrade to no-digest — the operator named a specific run this
+ *   invocation; T4's contract text is explicit that the behavior must never
+ *   be silent in either direction.
  * @returns {object} — { waveId, waveNumber, agents, promptDir, dryRun? }
  *
  * Atomicity contract (D3B-002, Wave A2 Stage C):
@@ -540,6 +622,91 @@ export function dispatch(opts) {
   const isAudit = AUDIT_PHASES.includes(opts.phase);
   const isAmend = AMEND_PHASES.includes(opts.phase);
 
+  // T4/F-d110f547: whether THIS dispatch would be the run's FIRST
+  // audit-phase wave — read from the PRE-dispatch waves table, BEFORE
+  // buildWave() inserts this wave's own row below. Querying this AFTER the
+  // insert would make every audit-phase dispatch see its own just-created
+  // row and permanently read as "not first". Only meaningful for audit
+  // phases; a bare `AUDIT_PHASES.includes` short-circuit keeps the query
+  // off the amend-dispatch hot path entirely.
+  const isFirstAuditPhaseWaveOfRun = isAudit && !db.prepare(`
+    SELECT 1 FROM waves WHERE run_id = ? AND phase IN (${AUDIT_PHASES.map(() => '?').join(',')}) LIMIT 1
+  `).get(opts.runId, ...AUDIT_PHASES);
+
+  // T4/F-d110f547: resolve roadmapDigest's FINAL value now, BEFORE the
+  // dry-run branch and BEFORE buildWave()'s transaction — not in the
+  // post-commit prompt-rendering section further down, where this file's
+  // OTHER preconditions never run. A fail-loud --roadmap-digest=<run-id>
+  // typo must abort before any DB mutation, matching every sibling
+  // precondition above (phase validity, run existence, domains frozen);
+  // discovering it only after the wave/agent_runs rows already committed
+  // would strand exactly the "DB row that promises agents which never got
+  // their prompts" state this function's own header names as the thing
+  // dispatch must never create.
+  //
+  // Three independent knobs, evaluated in explicit precedence order so the
+  // behavior is NEVER silent in either direction (T4's own words):
+  //
+  //   1. opts.roadmapDigestRunId (ad hoc, --roadmap-digest=<run-id>) ALWAYS
+  //      wins when present — bypasses BOTH the seeded-lineage check and the
+  //      first-audit-wave gate, so an operator can inject a digest on an
+  //      unseeded run or a later wave. A missing/invalid source artifact is
+  //      a FAIL-LOUD precondition (the operator named a specific run this
+  //      invocation; silently rendering nothing would be the exact silent
+  //      failure T4 refuses to allow) — the only roadmapDigest source in
+  //      this function that does not degrade quietly.
+  //   2. Else opts.noRoadmapDigest (--no-roadmap-digest) suppresses
+  //      auto-injection outright, regardless of seeding/wave-position.
+  //   3. Else AUTO-INJECT iff this run was seeded (commands/init.js's
+  //      --seed-from-roadmap, stamped via readRoadmapSeedLineage) AND this
+  //      dispatch is the FIRST audit-phase wave of the run (T4: "injects...
+  //      at the TOP of audit briefs" — subsequent audit phases build their
+  //      OWN accumulating findings history via priorContext/
+  //      openPriorContext, so re-injecting a prior run's digest there would
+  //      be redundant). Degrades to undefined on any resolution failure —
+  //      advisory content, the SAME posture the pre-existing
+  //      opts.seedRoadmap path already has — falling back to that
+  //      seed-run's own stamped artifact first, then (if it has since
+  //      rotted off disk) to whatever latest.json currently names, so a
+  //      seeded run never regresses below the unseeded convenience.
+  //
+  // opts.seedRoadmap (the ORIGINAL F-8a97a700 flag) stays wired exactly as
+  // before for back-compat: an unseeded run dispatched with --seed-roadmap
+  // keeps working unchanged, composed here as the final fallback.
+  let roadmapDigest;
+  if (opts.roadmapDigestRunId) {
+    const forced = buildRoadmapDigest(run.local_path, { forRunId: opts.roadmapDigestRunId });
+    if (forced === undefined) {
+      emitPreconditionFailed({
+        runId: opts.runId,
+        phase: opts.phase,
+        code: 'DISPATCH_ROADMAP_DIGEST_NOT_FOUND',
+        message: `--roadmap-digest=${opts.roadmapDigestRunId}: no compiled roadmap artifact found`,
+      });
+      throw new DispatchPreconditionError(
+        `--roadmap-digest=${opts.roadmapDigestRunId}: no compiled roadmap artifact found ` +
+        `(dogfood/roadmap/${opts.roadmapDigestRunId}.json is absent or empty under ${run.local_path})`,
+        {
+          code: 'DISPATCH_ROADMAP_DIGEST_NOT_FOUND',
+          runId: opts.runId,
+          phase: opts.phase,
+          hint: `run \`swarm roadmap compile ${opts.roadmapDigestRunId}\` first, or check \`swarm roadmap show ${opts.roadmapDigestRunId}\``,
+        }
+      );
+    }
+    roadmapDigest = forced;
+  } else if (opts.noRoadmapDigest) {
+    roadmapDigest = undefined;
+  } else {
+    const seedLineage = readRoadmapSeedLineage(db, opts.runId);
+    if (seedLineage && isFirstAuditPhaseWaveOfRun) {
+      roadmapDigest = buildRoadmapDigest(run.local_path, { forRunId: seedLineage.source_run_id })
+        ?? buildRoadmapDigest(run.local_path);
+    } else {
+      roadmapDigest = opts.seedRoadmap ? buildRoadmapDigest(run.local_path) : undefined;
+    }
+  }
+
   const promptDirPath = join(opts.outputDir, `wave-${waveNumber}`);
 
   // F-aa32371b: approved findings that route to NO domain agent — a finding
@@ -775,14 +942,12 @@ export function dispatch(opts) {
   // generator helpers; the wave is recoverable via `swarm resume` because
   // the agent rows exist with status=dispatched.
   //
-  // F-8a97a700 (T4): computed ONCE for the whole wave (not per-agent — the
-  // digest is the same cross-run targeting context regardless of which
-  // domain is reading it), and ONLY when opts.seedRoadmap is explicitly
-  // true. Every OTHER dispatch — the overwhelming default — leaves
-  // roadmapDigest undefined, so templates.js's renderRoadmapDigestSection
-  // renders nothing and a prior run's roadmap never leaks in (Q5: Semgrep's
-  // opt-in triage-propagation precedent).
-  const roadmapDigest = opts.seedRoadmap ? buildRoadmapDigest(run.local_path) : undefined;
+  // F-8a97a700 / F-d110f547 (T4): roadmapDigest itself is already resolved
+  // above, BEFORE buildWave()'s transaction (see that block's own comment
+  // for why a fail-loud --roadmap-digest=<run-id> precondition cannot live
+  // here, after the wave/agent_runs rows already committed). Computed ONCE
+  // for the whole wave, not per-agent — the digest is the same cross-run
+  // targeting context regardless of which domain is reading it.
 
   const builtAgents = [];
   for (const a of agents) {
