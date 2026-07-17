@@ -2291,7 +2291,12 @@ function parseClosureFormatFlag(args) {
  * @param {'reopen'|'close'} spec.verb
  * @param {string[]} spec.sourceStatuses — eligible current-status set
  * @param {string} spec.targetStatus — status to flip matched+eligible rows to
- * @param {'reopened'|'operator_closed'} spec.eventType
+ * @param {'reopened'|'fixed'} spec.eventType — the two values this function
+ *   actually ever receives today (cmdReopen passes 'reopened'; cmdClose
+ *   passes `asRaw`, always 'fixed' since C2's --as enum is narrowed to
+ *   fixed-only). 'operator_closed' remains a legal db/schema.js EVENT_TYPES
+ *   member but is never passed here (F-68cf9b48) — see the eventType
+ *   comment at this function's insertEvent call site, below.
  * @param {Object<string, string|null>} spec.extraSetColumns — fixed,
  *   code-controlled column -> bound value pairs applied to every matched row
  *   on --apply (never operator-derived — safe to splice as literal column
@@ -2374,10 +2379,12 @@ export function transitionFindings(spec, opts) {
     // either) — 'operator' is the fixed literal distinguishing an
     // operator-invoked write from collect()'s automated fingerprint-pipeline
     // writes, matching close's own closure_kind='operator' naming. The
-    // event_type itself (reopened/operator_closed, following an earlier
-    // fixed/approved/operator_closed event for the same finding_id) is
-    // already the distinguishing-from-the-original-closer signal C1 asks
-    // for — no new auth mechanism needed (F-8595faf8).
+    // event_type itself (reopened for this verb, or the --as-mirroring
+    // literal for close — currently always 'fixed' per C2's own --as
+    // narrowing, never the literal 'operator_closed' despite db/schema.js's
+    // EVENT_TYPES still naming it as if `swarm close` produced it —
+    // F-68cf9b48) is already the distinguishing-from-the-original-closer
+    // signal C1 asks for — no new auth mechanism needed (F-8595faf8).
     const insertEvent = db.prepare(
       `INSERT INTO finding_events (finding_id, event_type, notes, actor) VALUES (?, ?, ?, 'operator')`
     );
@@ -2529,7 +2536,16 @@ function cmdReopen(args) {
 
   console.log(formatTransitionReport(report));
   if (report.apply && report.flipped > 0) {
-    console.log(`Next: swarm approve ${runId} --ids ${ids.join(',')} to route into the next amend wave.`);
+    // F-648f8b51: route through report.eligible's already-validated,
+    // DB-canonical finding_id values — never the raw --ids array. `ids` is
+    // the operator's own unescaped input verbatim (proven live: a raw ANSI
+    // escape byte survives to this line unneutralized) AND the full parsed
+    // array, so an entry matching no real finding (silently absent from
+    // eligible/ineligible per the mixed-batch behavior) would otherwise
+    // survive into this hint untouched, advertising garbage as the next
+    // command to run.
+    const flippedIds = report.eligible.map(f => f.finding_id).join(',');
+    console.log(`Next: swarm approve ${runId} --ids ${flippedIds} to route into the next amend wave.`);
   } else if (!report.apply) {
     console.log(`Next: re-run with --apply to reopen ${pluralize(report.eligible.length, 'finding')}.`);
   }
@@ -3079,7 +3095,7 @@ function formatTrends(query, payload) {
 async function cmdRoadmap(args) {
   const sub = args[0];
   if (sub !== 'compile' && sub !== 'show') {
-    console.error('Usage: swarm roadmap compile <run-id> [--format=text|json]');
+    console.error('Usage: swarm roadmap compile <run-id> [--undo <sequence> --apply] [--format=text|json]');
     console.error('   or: swarm roadmap show <run-id> [--version=N] [--format=text|json]');
     process.exit(1);
   }
@@ -3093,10 +3109,32 @@ async function cmdRoadmap(args) {
   const format = parseClosureFormatFlag(args); // text|json — roadmap has no markdown rendering either
   const dbPath = getDbPath();
 
-  const { compileRoadmap, showRoadmap, formatRoadmapCompile, formatRoadmapShow } =
-    await import('./commands/roadmap.js');
+  const {
+    compileRoadmap, showRoadmap, formatRoadmapCompile, formatRoadmapShow,
+    undoRoadmapCompile, formatRoadmapUndo,
+  } = await import('./commands/roadmap.js');
 
   if (sub === 'compile') {
+    // F-d875b3c1: `--undo <sequence>` is the compensator for compile's own
+    // no-dry-run, four-chained-write posture — checked first so `--undo`
+    // never falls through to a real compile.
+    const undoRaw = parseValueFlag(args, '--undo');
+    if (undoRaw !== undefined) {
+      const sequence = Number(undoRaw);
+      if (!Number.isInteger(sequence) || sequence <= 0) {
+        console.error(`roadmap compile --undo: sequence must be a positive integer (got ${JSON.stringify(undoRaw)})`);
+        process.exit(1);
+      }
+      const apply = args.includes('--apply');
+      const report = undoRoadmapCompile({ runId, dbPath, sequence, apply });
+      if (format === 'json') {
+        console.log(JSON.stringify(report, null, 2));
+        return;
+      }
+      console.log(formatRoadmapUndo(report));
+      return;
+    }
+
     const report = compileRoadmap({ runId, dbPath });
     if (format === 'json') {
       console.log(JSON.stringify(report, null, 2));
@@ -3377,15 +3415,16 @@ export const USAGE = {
     '  --format=text|json        Output format (default: text)',
     '',
     'Persists closure_kind=\'operator\' (never \'declared\' or \'absence\').',
-    'Writes one finding_events row per finding actually flipped',
-    '(event_type=\'operator_closed\').',
+    'Writes one finding_events row per finding actually flipped;',
+    'event_type mirrors --as (currently always \'fixed\' — \'operator_closed\'',
+    'is a legal db/schema.js EVENT_TYPES value but this verb never writes it).',
   ].join('\n'),
   persist: 'Usage: swarm persist <run-id> [--ingest] [--dry-run]',
   findings: 'Usage: swarm findings <run-id> [wave-number] [--format=text|markdown|json]',
   runs: 'Usage: swarm runs [--format=text|json]',
   trends: 'Usage: swarm trends --query <recurring|history|recurrence> [--format=text|json]',
   roadmap: [
-    'Usage: swarm roadmap compile <run-id> [--format=text|json]',
+    'Usage: swarm roadmap compile <run-id> [--undo <sequence> --apply] [--format=text|json]',
     '   or: swarm roadmap show <run-id> [--version=N] [--format=text|json]',
     '',
     'T1 (trajectory layer): the roadmap is COMPILED, never authored. `compile`',
@@ -3396,7 +3435,18 @@ export const USAGE = {
     'note with no resolvable `enforced_by` gate/test, or more than 7 notes,',
     'is a hard, fail-loud refusal — not silent clamping. `show` is a',
     'read-only render of the latest (or --version=N) compiled artifact;',
-    'expired notes are listed as EXPIRED, never silently dropped.',
+    'expired notes are listed as EXPIRED, never silently dropped. A missing',
+    'artifact file for a ledger-recorded sequence fails loud with a named',
+    'ROADMAP_ARTIFACT_MISSING error naming the repair, not a raw ENOENT.',
+    '',
+    '--undo <sequence>       Compensator (F-d875b3c1): retires an orphaned',
+    '                        roadmap_artifacts ledger row (a compile whose',
+    '                        file-tree half was reverted after the ledger row',
+    '                        already committed) — dry-run by default, --apply',
+    '                        to mutate. Repoints latest.json to the prior',
+    '                        sequence when that sequence was latest AND its',
+    '                        own file still exists; otherwise warns rather',
+    '                        than guessing. Never touches any other sequence.',
   ].join('\n'),
 };
 
