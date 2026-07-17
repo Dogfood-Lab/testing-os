@@ -1,11 +1,17 @@
 {
-  "run_id": "swarm-fixture-0001",
+  "run_id": "swarm-fixture-0008",
   "sequence": 1,
   "compiled_at": "2026-07-17T00:00:00.000Z",
   "repo": "dogfood-lab/testing-os",
   "compiled_from": { "commit_sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" },
   "open_summary": { "open": 0, "deferred": 0, "approved": 0 },
-  "grandfathered_drain": { "frozen_total": 0, "drained": 0, "outstanding": [] },
+  "grandfathered_drain": {
+    "frozen_total": 256,
+    "drained": 0,
+    "outstanding": [
+      { "id": "F-002109-003", "revalidate_by": "2026-10-14" }
+    ]
+  },
   "recurrence_stats": {},
   "attention": { "advisory": true, "items": [] },
   "operator_notes": [],

@@ -264,19 +264,25 @@ test('F-7493be3c: every committed fixture is pointer-shaped ({ run_id, sequence,
 // instead (T5 immutability for .1/.2; F-feeaef78's sequence-free mirror for
 // the third). This file's two static-shape tests below were updated in the
 // SAME commit that widened the real config, per this section's own forcing-
-// function design. DISCLOSED RESIDUAL (ci-tooling, wave 43): A3.6 also asked
-// for scripts/__roadmap-document-fixtures__/ to be re-authored to A3.2's two
-// new drain shapes (+ a new required expired_notes section) — this was
-// tried and reverted: an A3.2-shaped trial document does not validate
-// against packages/schemas/src/json/dogfood-roadmap.schema.json as it
-// stands in this tree (backend's domain; unchanged by any wave-43 lane's
-// brief — verified by reading backend.md/swarm-cp-core.md/swarm-cp-verbs.md
-// directly). Landing A3.2-shaped fixtures now would turn this check RED
-// against its own positive fixtures. The fixtures below therefore still
-// target the CURRENT (wave-41) schema shape — this is a disclosed, named
-// residual for whichever wave lands the schema+emitter reconciliation, not
-// a silent gap (see scripts/doc-drift-patterns.json's own description for
-// the same disclosure at its origin).
+// function design.
+//
+// A3 CONTRACT FIXTURES — validate green at wave-43 merge (backend's amended
+// schema). Second wave-43 ci-tooling commit, coordinator-directed, and it
+// supersedes an earlier revision of this paragraph that recorded the fixture
+// re-authoring as "tried and reverted": backend's A3.2/A3.4 schema amendment
+// exists, committed, in ITS worktree (branch swarm/4091637-5127/w43-backend,
+// commit 06d79ce) — invisible to this worktree's schema copy until merge —
+// so the coordinator lifted the green-in-this-worktree constraint for the
+// fixtures, mirroring the tests lane's contract-red pattern. The fixtures
+// below now target the AMENDED contract, proven by direct Ajv2020 execution
+// against backend's actual committed schema file (valids pass; each invalid
+// fails with exactly its claimed violation). PRE-MERGE, EXPECTED-RED in this
+// worktree: the tests here that validate fixtures against THIS tree's
+// pre-amendment schema fail until the merge (enumerated in the wave-43
+// ci-tooling output.json); the coordinator runs the gates bare at merge
+// reconciliation, where this file must be fully green. Post-merge red here
+// means the merge dropped one side of the contract — cross-reference
+// backend's schema commit before touching a fixture.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const documentFixturesDir = join(repoRoot, 'scripts/__roadmap-document-fixtures__');
@@ -344,7 +350,12 @@ test('F-f52fc700 seam proof: the committed invalid-*.json document fixtures corr
   assert.equal(result.clean, true, JSON.stringify(result.reports, null, 2));
 });
 
-test('F-f52fc700: direct-Ajv proof that each invalid document fixture violates the SPECIFIC constraint its name claims', async () => {
+// A3 CONTRACT-RED pre-merge: this test reads the schema from THIS worktree
+// (join(repoRoot, realSchemaRel)), which is still the pre-amendment shape
+// until backend's 06d79ce merges — so every assertion below fails in this
+// worktree and passes at the merged tree. The assertions target the AMENDED
+// contract on purpose (see the A3 CONTRACT FIXTURES banner above).
+test('F-f52fc700: direct-Ajv proof that each invalid document fixture violates the SPECIFIC constraint its name claims (A3 contract — green at wave-43 merge)', async () => {
   const Ajv2020Mod = await import('ajv/dist/2020.js');
   const Ajv2020 = Ajv2020Mod.default ?? Ajv2020Mod;
   const addFormatsMod = await import('ajv-formats');
@@ -358,21 +369,14 @@ test('F-f52fc700: direct-Ajv proof that each invalid document fixture violates t
   assert.equal(validate(missingRequired), false);
   assert.ok(validate.errors.some((e) => e.keyword === 'required' && e.params.missingProperty === 'drain_queue'),
     `expected a missing drain_queue error, got: ${JSON.stringify(validate.errors)}`);
-  assert.equal(validate({ ...missingRequired, drain_queue: [] }), true,
-    'fixing the ONE claimed violation must make it pass — proves the schema requirement, not an unrelated typo, rejected it');
+  // A3.2: drain_queue is now the {entries, overdue_ids} OBJECT, not an array —
+  // repairing with the amended shape must make the document pass.
+  assert.equal(validate({ ...missingRequired, drain_queue: { entries: [], overdue_ids: [] } }), true,
+    'fixing the ONE claimed violation (with the A3.2 object shape) must make it pass — proves the schema requirement, not an unrelated typo, rejected it');
 
-  // RESCOPE 2026-07-17 (wave-41 seam repair, tracked with the wave-42 items):
-  // this fixture originally used `notesPath` as its unknown extra property.
-  // The backend lane's same-wave schema amendment (F-c7b0f47b) LEGALIZED
-  // notesPath as an optional, repo-relative-only top-level property, so the
-  // old fixture stopped violating additionalProperties and started violating
-  // the new pattern instead — failing for a different reason than its name
-  // claims, which is exactly what this test exists to catch. The extra
-  // property is now `sections`, the CLI-envelope key the amended schema
-  // deliberately dropped (and therefore the most valuable additionalProperties
-  // pin available: it asserts the old envelope vocabulary stays unrecognized).
-  // The absolute-notesPath shape moved to its own correctly-named fixture,
-  // asserted below.
+  // `sections` stays the extra property: A3.1 keeps the old CLI-envelope key
+  // unblessed, so this is still the most valuable additionalProperties pin
+  // available (it asserts the retired envelope vocabulary stays unrecognized).
   const extraProperty = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-extra-top-level-property.json'), 'utf8'));
   assert.equal(validate(extraProperty), false);
   assert.ok(validate.errors.some((e) => e.keyword === 'additionalProperties' && e.params.additionalProperty === 'sections'),
@@ -380,10 +384,9 @@ test('F-f52fc700: direct-Ajv proof that each invalid document fixture violates t
   const { sections, ...withoutExtra } = extraProperty;
   assert.equal(validate(withoutExtra), true);
 
-  // RESCOPE 2026-07-17: the schema-side half of the F-cec640b1 absolute-path
-  // story — notesPath is legal ONLY when repo-relative; a drive-letter value
-  // must fail on the pattern, and relativizing that ONE value must make the
-  // whole document pass.
+  // The schema-side half of the F-cec640b1 absolute-path story — notesPath is
+  // legal ONLY when repo-relative; a drive-letter value must fail on the
+  // pattern, and relativizing that ONE value must make the whole document pass.
   const absoluteNotesPath = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-absolute-notes-path.json'), 'utf8'));
   assert.equal(validate(absoluteNotesPath), false);
   assert.ok(validate.errors.some((e) => e.keyword === 'pattern' && e.instancePath === '/notesPath'),
@@ -393,13 +396,44 @@ test('F-f52fc700: direct-Ajv proof that each invalid document fixture violates t
 
   const missingEnforcedBy = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-invariant-note-missing-enforced-by.json'), 'utf8'));
   assert.equal(validate(missingEnforcedBy), false);
-  assert.ok(validate.errors.some((e) => e.schemaPath.includes('allOf/0/then') && e.params.missingProperty === 'enforced_by'),
+  assert.ok(validate.errors.some((e) => e.schemaPath.includes('allOf') && e.params.missingProperty === 'enforced_by'),
     `expected the invariant-requires-enforced_by conditional to fire, got: ${JSON.stringify(validate.errors)}`);
   const repaired = {
     ...missingEnforcedBy,
     operator_notes: missingEnforcedBy.operator_notes.map((n) => ({ ...n, enforced_by: 'scripts/check-finding-regression-pins.mjs' })),
   };
   assert.equal(validate(repaired), true);
+
+  // A3.2's per-population missing-owner pair — one fixture per entry $def, so
+  // the two populations' shapes cannot silently drift into sharing (or
+  // dropping) the owner requirement without one of these going stale.
+  const dqMissingOwner = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-drain-queue-entry-missing-owner.json'), 'utf8'));
+  assert.equal(validate(dqMissingOwner), false);
+  assert.ok(validate.errors.some((e) => e.keyword === 'required' && e.params.missingProperty === 'owner' && e.instancePath === '/drain_queue/entries/0'),
+    `expected required(owner) at /drain_queue/entries/0 ($defs/drainQueueEntry), got: ${JSON.stringify(validate.errors)}`);
+  const dqRepaired = {
+    ...dqMissingOwner,
+    drain_queue: {
+      ...dqMissingOwner.drain_queue,
+      entries: dqMissingOwner.drain_queue.entries.map((e) => ({ ...e, owner: 'coordinator' })),
+    },
+  };
+  assert.equal(validate(dqRepaired), true,
+    'adding the one missing owner must make it pass — proves $defs/drainQueueEntry.owner, not an unrelated defect, rejected it');
+
+  const gmMissingOwner = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-grandfathered-entry-missing-owner.json'), 'utf8'));
+  assert.equal(validate(gmMissingOwner), false);
+  assert.ok(validate.errors.some((e) => e.keyword === 'required' && e.params.missingProperty === 'owner' && e.instancePath === '/grandfathered_drain/outstanding/0'),
+    `expected required(owner) at /grandfathered_drain/outstanding/0 ($defs/grandfatheredManifestEntry), got: ${JSON.stringify(validate.errors)}`);
+  const gmRepaired = {
+    ...gmMissingOwner,
+    grandfathered_drain: {
+      ...gmMissingOwner.grandfathered_drain,
+      outstanding: gmMissingOwner.grandfathered_drain.outstanding.map((e) => ({ ...e, owner: 'coordinator' })),
+    },
+  };
+  assert.equal(validate(gmRepaired), true,
+    'adding the one missing owner must make it pass — proves $defs/grandfatheredManifestEntry.owner, not an unrelated defect, rejected it');
 });
 
 test('A3.6 (wave 43): the real doc-drift-patterns.json wires roadmap-artifact-full-document-schema with the WIDENED shape (2026-07-17 — suspendedTargets retired, live archive moved into targets, 3 pre-conformance historical artifacts allowlisted by name)', () => {
