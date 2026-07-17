@@ -223,3 +223,160 @@ test('F-7493be3c: every committed fixture is pointer-shaped ({ run_id, sequence,
       `${name} looks like the FULL roadmap document, not the latestPointer shape — dogfood/roadmap/latest.json only ever holds { run_id, sequence, path }`);
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-f52fc700 (wave 41 amend, HIGH): roadmap-artifact-full-document-schema —
+// the FULL document's other half. roadmap-artifact-schema above only ever
+// validates the small latestPointer; nothing validated the full compiled
+// document (dogfood/roadmap/<run-id>.json / <run-id>.<seq>.json) against the
+// schema's TOP LEVEL until this check. Same seam shape as F-7493be3c above,
+// ONE LEVEL WORSE: F-7493be3c's schema dependency simply hadn't merged yet at
+// authoring time (a timing gap); this check's dependency is genuinely
+// UNRESOLVED even once merged — the schema and the compiler's real output are
+// PROVEN to disagree on 16 points (see scripts/doc-drift-patterns.json's
+// roadmap-artifact-full-document-schema description for the live Ajv proof),
+// and which side moves is a cross-domain decision still in flight this same
+// wave (backend may amend the schema; core/verbs may conform the emitters).
+//
+// Consequently this file does NOT assert running the live repoRoot's
+// roadmap-artifact-full-document-schema check is clean — it structurally
+// cannot be until that reconciliation lands AND the affected run is
+// recompiled (see the coordinator's own wave-41 seam note). What CAN be
+// pinned permanently: (1) the check is wired with the shape this finding
+// specifies, independent of the reconciliation's outcome; (2) the FIXTURES
+// this lane authored are schema-accurate against the schema as it exists in
+// THIS worktree right now, proven in isolation from the live (currently
+// nonconformant) dogfood/roadmap/*.json data — so if the schema is the side
+// that ends up moving, these fixtures either still pass or fail loud with a
+// clear Ajv diff, never silently.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const documentFixturesDir = join(repoRoot, 'scripts/__roadmap-document-fixtures__');
+const realSchemaRel = 'packages/schemas/src/json/dogfood-roadmap.schema.json';
+
+/**
+ * Unlike makeIsolatedRoot() above (F-7493be3c), this does not need a
+ * stand-in schema — packages/schemas/src/json/dogfood-roadmap.schema.json
+ * already exists, complete, in this worktree. What needs isolating is the
+ * TARGET GLOB: the real check also targets the live dogfood/roadmap/*.json
+ * artifacts, which are proven-live nonconformant pending a cross-domain fix
+ * this file does not own. This helper builds a config that reuses the REAL
+ * schema file (by resolving repoRoot to the real repo) but restricts targets
+ * to ONLY the committed fixtures directory, so the fixture-soundness proof
+ * below is decoupled from the live artifacts' current, expected-to-change
+ * conformance state.
+ */
+function makeFixturesOnlyConfig(t, namePattern) {
+  const names = readdirSync(documentFixturesDir).filter((n) => namePattern.test(n));
+  assert.ok(names.length > 0, `expected at least one document fixture matching ${namePattern} in ${documentFixturesDir}`);
+
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-document-schema-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const configObj = {
+    checks: [{
+      id: 'roadmap-artifact-full-document-schema',
+      kind: 'schema-conformance',
+      title: 'fixtures-only isolation of the real check (F-f52fc700)',
+      schema: realSchemaRel,
+      targets: ['scripts/__roadmap-document-fixtures__/*.json'],
+      allowlist: [],
+      negativeFilenamePattern: '^invalid-',
+    }],
+  };
+  // namePattern narrows via a temp copy so valid-only / invalid-only runs
+  // don't have to reason about the OTHER bucket's expected outcome.
+  const scopedDir = mkdtempSync(join(tmpdir(), 'roadmap-document-schema-scope-'));
+  t.after(() => rmSync(scopedDir, { recursive: true, force: true }));
+  mkdirSync(join(scopedDir, 'scripts/__roadmap-document-fixtures__'), { recursive: true });
+  mkdirSync(dirname(join(scopedDir, realSchemaRel)), { recursive: true });
+  writeFileSync(join(scopedDir, realSchemaRel), readFileSync(join(repoRoot, realSchemaRel)));
+  for (const name of names) {
+    writeFileSync(
+      join(scopedDir, 'scripts/__roadmap-document-fixtures__', name),
+      readFileSync(join(documentFixturesDir, name)),
+    );
+  }
+  const configPath = join(dir, 'doc-drift-config.json');
+  writeFileSync(configPath, JSON.stringify(configObj, null, 2));
+  return { repoRoot: scopedDir, configPath };
+}
+
+/** @pins F-f52fc700 */
+test('F-f52fc700 seam proof: the committed valid-*.json document fixtures validate against the real, current dogfood-roadmap.schema.json top level', async (t) => {
+  const { repoRoot: scopedRoot, configPath } = makeFixturesOnlyConfig(t, /^valid-/);
+  const result = await runDriftChecks({ repoRoot: scopedRoot, configPath });
+  assert.equal(result.clean, true, JSON.stringify(result.reports, null, 2));
+});
+
+test('F-f52fc700 seam proof: the committed invalid-*.json document fixtures correctly fail validation', async (t) => {
+  const { repoRoot: scopedRoot, configPath } = makeFixturesOnlyConfig(t, /^invalid-/);
+  const result = await runDriftChecks({ repoRoot: scopedRoot, configPath });
+  // Negative-fixture-correctly-failed is a silent pass (no report) — see
+  // schemaConformanceHandler. A report here would mean NEGATIVE_FIXTURE_PASSED.
+  assert.equal(result.clean, true, JSON.stringify(result.reports, null, 2));
+});
+
+test('F-f52fc700: direct-Ajv proof that each invalid document fixture violates the SPECIFIC constraint its name claims', async () => {
+  const Ajv2020Mod = await import('ajv/dist/2020.js');
+  const Ajv2020 = Ajv2020Mod.default ?? Ajv2020Mod;
+  const addFormatsMod = await import('ajv-formats');
+  const addFormats = addFormatsMod.default ?? addFormatsMod;
+  const schema = JSON.parse(readFileSync(join(repoRoot, realSchemaRel), 'utf8'));
+  const ajv = new Ajv2020({ allErrors: true, strict: false });
+  addFormats(ajv);
+  const validate = ajv.compile(schema);
+
+  const missingRequired = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-missing-required-field.json'), 'utf8'));
+  assert.equal(validate(missingRequired), false);
+  assert.ok(validate.errors.some((e) => e.keyword === 'required' && e.params.missingProperty === 'drain_queue'),
+    `expected a missing drain_queue error, got: ${JSON.stringify(validate.errors)}`);
+  assert.equal(validate({ ...missingRequired, drain_queue: [] }), true,
+    'fixing the ONE claimed violation must make it pass — proves the schema requirement, not an unrelated typo, rejected it');
+
+  const extraProperty = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-extra-top-level-property.json'), 'utf8'));
+  assert.equal(validate(extraProperty), false);
+  assert.ok(validate.errors.some((e) => e.keyword === 'additionalProperties' && e.params.additionalProperty === 'notesPath'),
+    `expected an additionalProperties(notesPath) error, got: ${JSON.stringify(validate.errors)}`);
+  const { notesPath, ...withoutExtra } = extraProperty;
+  assert.equal(validate(withoutExtra), true);
+
+  const missingEnforcedBy = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-invariant-note-missing-enforced-by.json'), 'utf8'));
+  assert.equal(validate(missingEnforcedBy), false);
+  assert.ok(validate.errors.some((e) => e.schemaPath.includes('allOf/0/then') && e.params.missingProperty === 'enforced_by'),
+    `expected the invariant-requires-enforced_by conditional to fire, got: ${JSON.stringify(validate.errors)}`);
+  const repaired = {
+    ...missingEnforcedBy,
+    operator_notes: missingEnforcedBy.operator_notes.map((n) => ({ ...n, enforced_by: 'scripts/check-finding-regression-pins.mjs' })),
+  };
+  assert.equal(validate(repaired), true);
+});
+
+test('F-f52fc700: the real doc-drift-patterns.json wires roadmap-artifact-full-document-schema with the shape the finding specifies (permanent — independent of the cross-domain schema/compiler reconciliation)', () => {
+  const config = JSON.parse(readFileSync(join(repoRoot, 'scripts/doc-drift-patterns.json'), 'utf8'));
+  const entry = config.checks.find((c) => c.id === 'roadmap-artifact-full-document-schema');
+  assert.ok(entry, 'expected a roadmap-artifact-full-document-schema check entry in scripts/doc-drift-patterns.json');
+  assert.equal(entry.kind, 'schema-conformance');
+  assert.equal(entry.schema, realSchemaRel);
+  assert.equal(entry.schemaPointer, undefined,
+    'this check validates the FULL document against the schema TOP LEVEL — unlike roadmap-artifact-schema, it must not set schemaPointer');
+  assert.ok(entry.targets.includes('dogfood/roadmap/*.json'),
+    'must target the real committed per-run documents, not just fixtures — that is this finding\'s whole point');
+  assert.ok(entry.targets.some((t) => t.includes('__roadmap-document-fixtures__')),
+    'must also target committed fixtures, so the gate has a guaranteed-non-vacuous target independent of the live artifacts\' current shape');
+  assert.deepEqual(entry.allowlist, ['dogfood/roadmap/latest.json'],
+    'latest.json is the separate, already-covered latestPointer shape — validating it against the full-document top level would be a category error, not a real finding');
+  assert.equal(entry.negativeFilenamePattern, '^invalid-');
+  assert.notEqual(entry.allowEmpty, true, 'a zero-match glob here must fail loud, not silently pass');
+});
+
+test('F-f52fc700: the document-fixtures directory has both valid- and invalid-*.json convention-named fixtures, and none are pointer-shaped', () => {
+  const names = readdirSync(documentFixturesDir);
+  assert.ok(names.some((n) => n.startsWith('valid-')), 'expected at least one valid-*.json fixture');
+  assert.ok(names.filter((n) => n.startsWith('invalid-')).length >= 3,
+    'expected at least 3 invalid-*.json fixtures — one per distinct constraint class exercised above (missing required, additionalProperties, the invariant/enforced_by conditional)');
+  for (const name of names) {
+    const parsed = JSON.parse(readFileSync(join(documentFixturesDir, name), 'utf8'));
+    assert.ok('operator_notes' in parsed || name.startsWith('invalid-missing-required'),
+      `${name} should look like the FULL roadmap document shape (operator_notes present), not the latestPointer shape — these fixtures target the OTHER check`);
+  }
+});

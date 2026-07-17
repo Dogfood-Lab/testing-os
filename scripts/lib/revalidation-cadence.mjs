@@ -27,6 +27,41 @@
  * This module is deliberately dependency-free (no imports) so both a
  * scripts/ gate and a future packages/dogfood-swarm/ compiler can import it
  * without creating a new workspace edge for a three-line comparison.
+ *
+ * F-780490da (wave 41 amend): the "future packages/dogfood-swarm/ compiler"
+ * caller predicted two paragraphs up arrived at T6 (F-6c807f60,
+ * packages/dogfood-swarm/lib/roadmap/drain.js's compileGrandfatheredManifestDrain)
+ * — and reimplemented the comparison inline instead of importing this
+ * module, exactly the copy-paste drift this module exists to prevent.
+ * PROVEN LIVE: at an entry's revalidate_by boundary (revalidate_by ===
+ * today), this module's isDueForRevalidation returns false (exclusive —
+ * not yet due until the following day) while drain.js's own inline
+ * `dueAt.getTime() <= now.getTime()` returns true (inclusive) for the
+ * identical input — pinned executably in
+ * scripts/revalidation-cadence-drain-parity.test.mjs, which cross-package
+ * imports the real drain.js via `@dogfood-lab/dogfood-swarm/lib/roadmap/
+ * drain.js` to prove the disagreement rather than asserting it in prose.
+ *
+ * SEAM DECISION (ci-tooling's half of F-780490da; the drain.js comparison
+ * line itself is core's half, out of ci-tooling's owned globs): packages
+ * must not import repo-root scripts/ — drain.js's own header already
+ * rejected the relative `'../../../../scripts/lib/revalidation-cadence.mjs'`
+ * alternative for crossing a boundary the workspace was never designed for.
+ * The clean direction is the reverse of that: this module's canonical copy
+ * should live PACKAGE-SIDE (e.g. packages/dogfood-swarm/lib/
+ * revalidation-cadence.js, matching the sibling-file naming convention of
+ * lib/log-stage.js and lib/bounded-json-read.js in that same directory),
+ * with scripts/ consuming it via the workspace path
+ * (`@dogfood-lab/dogfood-swarm/lib/revalidation-cadence.js`) exactly the way
+ * scripts/check-doc-drift.test.mjs already imports
+ * `@dogfood-lab/dogfood-swarm/lib/log-stage.js` and
+ * scripts/check-validator-cache-singleton.test.mjs already imports
+ * `@dogfood-lab/findings/lib/atomic-write.js` — both proven, working,
+ * cross-package-from-scripts/ precedents already in this repo. That move is
+ * a packages/dogfood-swarm edit (core domain), so this file stays put as
+ * scripts/'s own working copy until that migration lands; the parity test
+ * above is what proves the two copies agree in the meantime and would keep
+ * proving it against whichever side ends up canonical.
  */
 
 /**
