@@ -565,7 +565,38 @@ export function revalidate(opts) {
             const currentFindings = db.prepare(
               'SELECT * FROM findings WHERE run_id = ? AND last_seen_wave = ?'
             ).all(runId, wave.id);
-            const classified = classifyFindings(currentFindings, priorMap, { full: true });
+            // The `confirmed` union — the ids agents DECLARED they checked.
+            // Without it this branch closes an absent prior on coverage alone,
+            // which is the lens-blind reading collect.js stopped doing: domain
+            // coverage proves the wave read the files, never that it looked for
+            // a given defect. This is the SECOND caller of classifyFindings;
+            // the fix that threaded `confirmed` through the first one missed it
+            // entirely, so the gate was live on the collect path and wide open
+            // here — found by swarm-cp-core's wave-31 audit, proven with a live
+            // PoC against the post-fix source.
+            //
+            // Read from agent_runs.output_path rather than the in-memory
+            // `results`: those hold only the runs THIS revalidate repaired,
+            // while the union needs every complete agent in the wave —
+            // including the ones the earlier failed collect already accepted.
+            // An unreadable or declaration-less output contributes nothing,
+            // which fails CLOSED (its priors stay `unverified`, open, re-asked)
+            // rather than closing a finding on a file we could not read.
+            const confirmed = [];
+            for (const row of db.prepare(`
+              SELECT ar.output_path
+                FROM agent_runs ar
+               WHERE ar.wave_id = ?
+                 ${LATEST_AGENT_RUN_PER_DOMAIN}
+                 AND ar.status = 'complete'
+            `).all(wave.id)) {
+              if (!row.output_path || !existsSync(row.output_path)) continue;
+              try {
+                const out = readBoundedJson(row.output_path);
+                if (Array.isArray(out?.confirmed)) confirmed.push(...out.confirmed);
+              } catch { /* unreadable output declares nothing; fail closed */ }
+            }
+            const classified = classifyFindings(currentFindings, priorMap, { full: true, confirmed });
             const stats = upsertFindings(db, runId, wave.id, {
               new: [], recurring: [], fixed: classified.fixed, unverified: [],
             });

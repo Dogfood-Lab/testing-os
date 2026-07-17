@@ -322,10 +322,13 @@ describe('revalidate — a repaired-to-collected FULL-coverage audit wave closes
   });
   afterEach(() => { closeDb(dbPath); rmSync(tmp, { recursive: true, force: true }); });
 
-  function writeAuditOutput(name) {
+  function writeAuditOutput(name, confirmed = []) {
     const p = join(tmp, `${name}.json`);
-    // A clean feature-audit output rediscovers NOTHING.
-    writeFileSync(p, JSON.stringify({ domain: name, summary: 'clean', features: [] }));
+    // A clean feature-audit output rediscovers NOTHING. `confirmed` is the
+    // agent's declaration of which open priors it actually checked and found
+    // gone — required for a close since revalidate stopped reading coverage
+    // alone as evidence (see the FULL-coverage test below).
+    writeFileSync(p, JSON.stringify({ domain: name, summary: 'clean', features: [], confirmed }));
     return p;
   }
 
@@ -333,7 +336,15 @@ describe('revalidate — a repaired-to-collected FULL-coverage audit wave closes
     seed({ partial: false });
     const report = revalidate({
       runId: RUN, dbPath,
-      outputs: { 'domain-a': writeAuditOutput('domain-a') },
+      // The repaired agent DECLARES it checked F-PRIOR and found it gone.
+      // Coverage alone no longer closes anything here: this branch is the
+      // second classifyFindings caller, and it read "every domain completed" as
+      // proof the wave looked for THIS defect — which coverage never says. The
+      // lens is what decides that, and it changes between stages. Unchanged:
+      // the property this pin exists for — a repaired-to-collected full-coverage
+      // wave DOES run the reclassification and DOES leave a by-absence event.
+      // The undeclared direction is pinned by the GATE RED test below.
+      outputs: { 'domain-a': writeAuditOutput('domain-a', ['F-PRIOR']) },
       reason: 'repair domain-a',
       apply: true,
     });
@@ -349,6 +360,38 @@ describe('revalidate — a repaired-to-collected FULL-coverage audit wave closes
     assert.equal(prior.status, 'fixed', 'a full-coverage repair must close the absent prior as fixed');
     assert.ok(closeEvents.some(e => /absence/i.test(e.notes || '')),
       'the closure must carry a "closed by absence" finding_event');
+  });
+
+  it('GATE RED: full coverage WITHOUT a declaration closes nothing here either', () => {
+    // The sibling half of the collect-path gate (wave4-swarm-cp-pins.test.js's
+    // own "GATE RED"). It exists because the collect fix MISSED this caller
+    // entirely: `confirmed` was threaded through collect.js and not through
+    // revalidate.js, so the same absence that was inert on one path still
+    // closed a finding on the other — a fix applied to the instance and not the
+    // class, found by swarm-cp-core's wave-31 audit. Byte-identical to the test
+    // above except for the missing declaration.
+    seed({ partial: false });
+    const report = revalidate({
+      runId: RUN, dbPath,
+      outputs: { 'domain-a': writeAuditOutput('domain-a') },
+      reason: 'repair domain-a',
+      apply: true,
+    });
+    assert.equal(report.waveStatusAfter, 'collected', 'the wave still flips to collected');
+
+    const db = openDb(dbPath);
+    const prior = db.prepare("SELECT status FROM findings WHERE run_id = ? AND finding_id = 'F-PRIOR'").get(RUN);
+    closeDb(dbPath);
+    assert.notEqual(prior.status, 'fixed',
+      'an undeclared prior must NOT close on silence, even when every domain completed');
+    // It keeps its prior OPEN status ('approved') rather than flipping to
+    // 'unverified': this block passes `unverified: []` to upsertFindings by
+    // deliberate design (see revalidate.js's point-repair note — revalidate is
+    // a repair, not a re-audit, and does not restate sibling agents' statuses).
+    // The gate's contract is "silence does not CLOSE it"; which open status it
+    // keeps is that older decision's business, not this one's.
+    assert.ok(isOpenFinding(prior.status),
+      `the prior must remain OPEN and re-askable next wave (got '${prior.status}')`);
   });
 
   it('PARTIAL repair: another agent still blocked → wave stays failed and the prior stays OPEN', () => {
