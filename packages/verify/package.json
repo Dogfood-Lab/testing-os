@@ -33,7 +33,7 @@
   },
   "dependencies": {
     "@dogfood-lab/schemas": "^1.2.0",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^5.2.1"
   },
   "engines": {
     "node": ">=22"
