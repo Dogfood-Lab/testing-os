@@ -639,9 +639,22 @@ describe('F-6c5ee5dd — a zero-findings audit wave reclassifies prior findings'
     // (pre-CP4 it landed `unverified` because collect never passed a scope).
     // The original F-6c5ee5dd property — a clean wave still RECLASSIFIES
     // priors instead of skipping the pass — is unchanged.
+    //
+    // The lens-blindness fix refines that expectation a SECOND time, the same
+    // way and for the same kind of reason: full coverage proves the wave read
+    // the files, never that it looked for THIS defect (a stage-d-audit agent
+    // hunting typography covers every file a bug lives in). So `fixed` now also
+    // requires the agent to DECLARE the id in `confirmed`, and the fixture
+    // declares it the way a real agent does. Unchanged again: the property this
+    // pin exists for — a clean wave reclassifies rather than skipping the pass,
+    // and leaves an audit-trail event. The undeclared direction is pinned
+    // separately (wave4-swarm-cp-pins.test.js, "GATE RED: full coverage WITHOUT
+    // a declaration closes nothing").
     const outA = join(tmp, 'a.json');
     const outB = join(tmp, 'b.json');
-    writeFileSync(outA, JSON.stringify({ domain: 'domain-a', stage: 'A', summary: 'clean', findings: [] }));
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a', stage: 'A', summary: 'clean', findings: [], confirmed: ['F-P-001'],
+    }));
     writeFileSync(outB, JSON.stringify({ domain: 'domain-b', stage: 'A', summary: 'clean', findings: [] }));
     const report = collect({ runId: 'r-clean', dbPath, outputs: { 'domain-a': outA, 'domain-b': outB } });
     assert.equal(report.findings.fixed, 1,

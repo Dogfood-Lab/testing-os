@@ -27,6 +27,11 @@
       "items": { "$ref": "#/$defs/finding" },
       "description": "Audit-pass findings. Required in audit outputs (Stages A–D)."
     },
+    "confirmed": {
+      "type": "array",
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Audit-pass only: finding_ids from the brief's OPEN-findings confirmation queue that this agent explicitly checked and found gone. This is a positive-evidence declaration, and it is what closes a prior finding: classifyFindings marks an absent prior `fixed` only if its id is declared here, and `unverified` (still open) otherwise. Domain coverage cannot substitute — it proves the wave read the file, never that it looked for a given defect, which is exactly what a lens change breaks. Omit an id you did not actually verify; it costs nothing but another wave asking again."
+    },
     "features": {
       "type": "array",
       "items": { "$ref": "#/$defs/feature" },

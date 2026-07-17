@@ -478,8 +478,20 @@ describe('CP4-SCOPE-WIRING — a full-coverage re-audit can classify absent prio
     dispatch({ runId: 'r-full', phase: 'health-audit-a', dbPath, outputDir: tmp });
     const outA = join(tmp, 'a.json');
     const outB = join(tmp, 'b.json');
-    writeFileSync(outA, JSON.stringify({ domain: 'domain-a', stage: 'A', summary: 'clean', findings: [] }));
-    writeFileSync(outB, JSON.stringify({ domain: 'domain-b', stage: 'A', summary: 'clean', findings: [] }));
+    // `confirmed` is the agents' declaration of which priors they actually
+    // checked. It is REQUIRED for a close as of the lens-blindness fix: full
+    // coverage proves the wave read the files, never that it looked for a given
+    // defect — a stage-d-audit agent hunting typography "covers" every file a
+    // defensive-coding finding lives in. This test's PURPOSE is unchanged and
+    // is still scope WIRING (its own message: "pre-fix ... scope was never
+    // passed"); what changed is that the descriptor now carries a second, finer
+    // field, so the fixture declares it the way a real agent does.
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a', stage: 'A', summary: 'clean', findings: [], confirmed: ['F-P-APPR'],
+    }));
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b', stage: 'A', summary: 'clean', findings: [], confirmed: ['F-P-UNV'],
+    }));
     const report = collect({ runId: 'r-full', dbPath, outputs: { 'domain-a': outA, 'domain-b': outB } });
 
     assert.equal(report.findings.fixed, 2,
@@ -489,6 +501,35 @@ describe('CP4-SCOPE-WIRING — a full-coverage re-audit can classify absent prio
     for (const row of statuses) {
       assert.equal(row.status, 'fixed', `${row.finding_id} must flip to fixed under full coverage`);
     }
+  });
+
+  it('GATE RED: full coverage WITHOUT a declaration closes nothing — silence is not evidence', () => {
+    // The other half of the wiring, which the assertion above cannot see on its
+    // own: it would pass identically if `confirmed` were ignored entirely. This
+    // is the lens-blindness case in miniature — two agents that covered every
+    // owned domain and said nothing about the priors. Pre-fix that closed both;
+    // now it closes neither, because coverage is not a claim about THIS defect.
+    const db = setupRun(dbPath, repoPath, 'r-silent', { findings: false });
+    db.prepare(`INSERT INTO findings
+      (run_id, finding_id, fingerprint, severity, category, file_path, description, status)
+      VALUES ('r-silent', 'F-S-APPR', 'fp-sil-1', 'HIGH', 'bug', 'packages/a/x.js', 'approved defect', 'approved')`).run();
+
+    dispatch({ runId: 'r-silent', phase: 'health-audit-a', dbPath, outputDir: tmp });
+    const outA = join(tmp, 'sa.json');
+    const outB = join(tmp, 'sb.json');
+    // Byte-identical to the fixture above except for the missing declaration.
+    writeFileSync(outA, JSON.stringify({ domain: 'domain-a', stage: 'A', summary: 'clean', findings: [] }));
+    writeFileSync(outB, JSON.stringify({ domain: 'domain-b', stage: 'A', summary: 'clean', findings: [] }));
+    const report = collect({ runId: 'r-silent', dbPath, outputs: { 'domain-a': outA, 'domain-b': outB } });
+
+    assert.equal(report.findings.fixed, 0,
+      'an undeclared prior must NOT close on silence, even under full coverage');
+    assert.equal(report.findings.unverified, 1);
+    assert.equal(
+      db.prepare("SELECT status FROM findings WHERE run_id = 'r-silent'").get().status,
+      'unverified',
+      'the honest state is "we do not know whether it was fixed or simply not looked at" — open, re-asked next wave',
+    );
   });
 
   it('safe default: a PARTIAL-coverage wave still classifies absent priors as unverified', () => {

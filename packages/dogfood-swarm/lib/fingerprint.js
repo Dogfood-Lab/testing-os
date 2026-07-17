@@ -681,6 +681,15 @@ function saltByContent(base, member, ordinal) {
  * @param {string[]} [scope.scopePaths] — path prefixes covered by the current wave.
  *   A prior finding's path is "in scope" iff it starts with one of these prefixes.
  *   Path comparison is normalized via normalizePath() (forward slashes, lowercase).
+ * @param {string[]} [scope.confirmed] — finding_ids the wave's agents EXPLICITLY
+ *   declared they checked (their `confirmed` output field). This is the caller's
+ *   finest coverage assertion and the only one that survives a lens change:
+ *   `full`/`scopePaths` say the wave looked at the PATH, never that it looked for
+ *   THIS defect. When supplied, an absent prior closes ONLY if its id appears
+ *   here; otherwise it is `unverified` (open, re-evaluated next wave). Omit it and
+ *   the coarser reading stands unchanged — every pre-existing caller and this
+ *   package's own scope pins (CP4-SCOPE-WIRING, B-BACK-003) keep their contract,
+ *   because a caller that asserts nothing finer is not silently held to it.
  * @returns {{ new: Array, recurring: Array, fixed: Array, unverified: Array, recurred_while_closed: Array }}
  *   recurred_while_closed holds priors rediscovered this wave while
  *   deferred/rejected (F-130dee59) — NOT reclassified into `recurring`, so
@@ -744,6 +753,13 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
   const scopePaths = Array.isArray(scope?.scopePaths)
     ? scope.scopePaths.map(normalizePath).filter(Boolean)
     : null;
+  // The caller's FINEST coverage assertion: the ids agents explicitly declared
+  // they checked. `null` = the caller made no such assertion and the coarser
+  // full/scopePaths reading stands (every pre-existing caller, incl. this
+  // package's own scope pins). See the `scope.confirmed` @param for why.
+  const confirmed = Array.isArray(scope?.confirmed)
+    ? new Set(scope.confirmed.map((id) => String(id).toUpperCase()))
+    : null;
 
   for (const [fp, prior] of priorFingerprints) {
     if (currentSet.has(fp)) continue;
@@ -761,7 +777,27 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
     const priorPath = normalizePath(prior.file_path || prior.file || '');
     const inScope = fullScope || isPathInScope(priorPath, scopePaths);
 
-    if (inScope) {
+    // Coverage says the wave looked at the PATH. It cannot say the wave looked
+    // for THIS DEFECT — the lens decides that, and the lens changes between
+    // stages. A stage-d-audit agent hunting typography covers every file a
+    // health finding lives in while having no way to see it, so its silence is
+    // guaranteed by the lens, not earned by the defect being gone. That is the
+    // wave-28 shape (where the silence was guaranteed by the brief's own
+    // "do NOT re-report" order) wearing different clothes: absence
+    // manufactured by something other than a fix.
+    //
+    // So when the caller supplies `confirmed`, an id NOT in it was never
+    // declared checked and cannot close. It becomes `unverified` — the state
+    // B-BACK-003 built for exactly this ("we do not know whether the defect was
+    // fixed or simply not looked at"), which stays OPEN and re-enters the next
+    // wave's prior map. This is what makes the brief's "Did not check it? Say
+    // so" instruction mechanical rather than decorative: before this, an agent
+    // could honestly disclose it never looked and the finding closed anyway,
+    // because nothing read the disclosure.
+    const declaredChecked = confirmed === null
+      || confirmed.has(String(prior.finding_id || '').toUpperCase());
+
+    if (inScope && declaredChecked) {
       result.fixed.push({ ...prior, fingerprint: fp });
     } else {
       result.unverified.push({ ...prior, fingerprint: fp });

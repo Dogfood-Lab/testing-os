@@ -89,19 +89,35 @@ describe('the audit brief must never order an agent to ignore an OPEN finding', 
     assert.ok(!open.includes('F-CLOSED-1'), 'a closed prior must not be queued for confirmation');
   });
 
-  it('the CONFIRM block states all three outcomes, including the one that closes a finding', () => {
+  it('the CONFIRM block states all three outcomes, and names the DECLARATION as what closes a finding', () => {
     const { open } = sections(buildAuditPrompt({ ...BASE, openPriorContext: line('new', 'F-OPEN-1') }));
 
-    // An agent that is not told silence CLOSES the finding cannot make an
-    // informed choice to stay silent — which is the whole mechanism here.
     assert.match(open, /[Ss]till present/, 'must tell the agent what to do when the defect is still there');
     assert.match(open, /recurring/, 'must say a re-report is recorded as recurring, not rejected as a duplicate');
-    assert.match(open, /omit/i, 'must tell the agent that omission is the closing signal');
-    assert.match(open, /fixed/, 'must say plainly that silence records the finding as fixed');
-    assert.match(open, /summary/, 'must give the agent a way to say "I did not check this"');
+    assert.match(open, /`confirmed`/, 'must name the declaration field — it is the mechanism, not prose');
+    assert.match(open, /omit/i, 'must tell the agent to omit a verified-gone finding from `findings`');
+    assert.match(open, /closes it/, 'must say plainly what the declaration does');
+    assert.match(open, /[Dd]id not check/, 'must give the agent an explicit not-checked path');
     assert.ok(
       !/do NOT re-report/i.test(open),
       'the confirm block must not inherit the do-not-report instruction it exists to undo',
+    );
+
+    // The contract INVERTED when scope stopped being lens-blind, and this
+    // assertion is what stops the old one creeping back in a future reword.
+    // The brief used to say silence closes a finding — true then, and the
+    // reason a typography-hunting stage-d agent could close a defensive-coding
+    // finding by never looking at it. Now the DECLARATION closes it and silence
+    // is inert (classifyFindings: an id absent from `confirmed` goes
+    // `unverified`, not `fixed`). A brief that still promises an agent its
+    // silence is authoritative is lying to it about its own leverage.
+    assert.ok(
+      !/silence is the ONLY thing that closes it/i.test(open),
+      'the brief must not tell an agent that silence closes a finding — it no longer does',
+    );
+    assert.ok(
+      !/on your authority/i.test(open) || /`confirmed`/.test(open),
+      'any "on your authority" framing must be attached to the declaration, never to silence',
     );
   });
 

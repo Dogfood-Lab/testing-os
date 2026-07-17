@@ -539,10 +539,15 @@ export function buildAuditPrompt(opts) {
       + `it is your confirmation queue, and your report is what decides their fate:\n\n`
       + `- **Still present?** Report it again, reusing its id from below. That records\n`
       + `  it as recurring, not as a duplicate. This is wanted, not noise.\n`
-      + `- **Verified gone?** Omit it. Your silence is the ONLY thing that closes it,\n`
-      + `  and it will be recorded as fixed on your authority.\n`
-      + `- **Did not check it?** Say so explicitly in your \`summary\`. Omitting a\n`
-      + `  finding you never looked at closes a live defect — the one outcome to avoid.\n\n`
+      + `- **Verified gone?** Put its id in your output's \`confirmed\` array AND omit\n`
+      + `  it from \`findings\`. That declaration is what closes it, on your authority.\n`
+      + `- **Did not check it?** Leave it out of \`confirmed\`. It stays open and the\n`
+      + `  next wave re-asks — no penalty, and far better than closing a live defect.\n`
+      + `  Say why in your \`summary\` too, but \`confirmed\` is the part that counts.\n\n`
+      + `\`confirmed\` is a declaration, not a formality: an id you list is one you are\n`
+      + `stating you checked. Silence alone no longer closes anything — list only what\n`
+      + `you actually verified, and an id outside your domain belongs to another agent,\n`
+      + `not to you.\n\n`
       + `${fenceSafeBlock(neutralizeForPrompt(opts.openPriorContext))}\n`
     : '';
 

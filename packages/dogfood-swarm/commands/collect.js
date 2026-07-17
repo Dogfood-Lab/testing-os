@@ -864,6 +864,12 @@ export function collect(opts) {
     }
 
     agentReport.findings_count = findings.length;
+    // The agent's own declaration of which open priors it actually checked and
+    // found gone. Audit-only: an amend wave's silence about a prior never
+    // closed anything in the first place. Carried onto the report so the
+    // classify call below can hold `fixed` to a declaration instead of
+    // inferring it from silence.
+    if (isAudit) agentReport.confirmed = Array.isArray(output.confirmed) ? output.confirmed : [];
     if (agentReport.status === 'complete') {
       tryTransition(db, ar.id, 'complete', 'Output collected and validated', domain.name);
       db.prepare('UPDATE agent_runs SET output_path = ? WHERE id = ?')
@@ -953,8 +959,24 @@ export function collect(opts) {
     const agentBearing = domains.filter(d => d.ownership_class !== 'shared');
     const fullCoverage = agentBearing.length > 0
       && agentBearing.every(d => completedDomains.has(d.name));
+    // The union of every COMPLETE agent's `confirmed` declaration — the ids they
+    // said out loud they checked. Domain coverage proves the wave read the
+    // files; only this proves it looked for a given prior, which is the one
+    // thing that does not survive a lens change (a stage-d-audit agent hunting
+    // typography "covers" every file a defensive-coding finding lives in). An
+    // incomplete agent's declaration is discarded for the same reason its
+    // silence is: it did not audit its domain.
+    //
+    // Deliberately NOT `|| null`: a wave where every agent legitimately checked
+    // nothing must assert an EMPTY set (close nothing), not "no assertion"
+    // (close everything). That distinction is the whole gate — collapsing an
+    // empty declaration into the coarse reading would fail open exactly when
+    // the agents told us they looked at nothing.
+    const confirmed = report.agents
+      .filter(a => a.status === 'complete')
+      .flatMap(a => Array.isArray(a.confirmed) ? a.confirmed : []);
     const classified = classifyFindings(
-      allFindings, priorMap, fullCoverage ? { full: true } : null
+      allFindings, priorMap, fullCoverage ? { full: true, confirmed } : null
     );
     let stats;
     try {
