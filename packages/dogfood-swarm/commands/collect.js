@@ -21,6 +21,7 @@ import { minimatch } from 'minimatch';
 import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from '../lib/output-schema.js';
 import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate-agent-output.js';
 import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
+import { matchesAnyGlob } from '../lib/findings-filter.js';
 import { transitionAgent, canTransition } from '../lib/state-machine.js';
 import { transitionWave } from '../lib/wave-state-machine.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
@@ -231,6 +232,69 @@ function tryTransition(db, agentRunId, to, reason, domainHint) {
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
+
+/**
+ * Narrow each agent's `confirmed` declaration to the findings its OWN domain
+ * owns. Shared with revalidate.js, whose full-coverage branch builds the
+ * structurally identical union — the same one-definition/two-callers seam
+ * reconcileFileClaims below already established for this pair, and the reason
+ * the fix lands here rather than being copy-pasted into both.
+ *
+ * WHY (F-18d0ef6d, HIGH). The `confirmed` declaration replaced "silence closes
+ * a finding" with "a declaration closes a finding" — but never checked WHO was
+ * declaring. Any domain could close any other domain's finding by naming an id
+ * it saw in the confirmation queue, which is run-wide and shows every domain's
+ * open findings to every agent. Proven live against the unmutated code: a
+ * domain owning only `packages/b/**` declared a CRITICAL living exclusively in
+ * `packages/a/**`, and it closed, permanently. The brief tells agents "an id
+ * outside your domain belongs to another agent, not to you" — prose, enforced
+ * by nothing, which is the exact "nothing reads the summary" shape the
+ * declaration mechanism was built to kill, one layer down inside that fix.
+ *
+ * Ownership is resolved with `matchesAnyGlob` — the same helper
+ * findingsForDomain uses to route work TO a domain. A domain that may not be
+ * ASSIGNED a finding must not be able to CLOSE it; routing and vouching had
+ * better answer to one rule.
+ *
+ * DISCLOSED, not silently assumed away: a finding whose `file_path` no
+ * agent-bearing domain matches — a file-less repo-level finding, or one under a
+ * `shared` domain, which dispatch never gives an agent — becomes unclosable by
+ * declaration and stays open (`unverified`) until a coordinator disposes of it
+ * via defer/reject. That is not new and not this rule's doing: F-6a5eb347
+ * (root package.json, `shared`) already behaves exactly this way, correctly —
+ * no agent checked it because no agent COULD. Failing closed there is the whole
+ * point; the alternative is letting an unrelated domain vouch for a file nobody
+ * owns, which is the defect being fixed.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} runId
+ * @param {Array<{name: string, globs: string[]}>} domains — the frozen map
+ * @param {Array<{domain: string, confirmed?: string[]}>} agents — COMPLETE agents only
+ * @returns {string[]} the ids whose declaring agent actually owns them
+ */
+export function scopeConfirmedToOwningDomain(db, runId, domains, agents) {
+  const pathById = new Map(
+    db.prepare('SELECT finding_id, file_path FROM findings WHERE run_id = ?')
+      .all(runId)
+      .map(f => [String(f.finding_id).toUpperCase(), f.file_path]),
+  );
+  const domainByName = new Map(domains.map(d => [d.name, d]));
+
+  const scoped = [];
+  for (const agent of agents) {
+    const domain = domainByName.get(agent.domain);
+    if (!domain || !Array.isArray(agent.confirmed)) continue;
+    for (const id of agent.confirmed) {
+      // An id naming no finding in this run declares nothing. Dropping it is
+      // not merely tidiness: a typo'd or hallucinated id must never be able to
+      // vacuously "close" anything, and it cannot be owned by definition.
+      const filePath = pathById.get(String(id).toUpperCase());
+      if (filePath == null) continue;
+      if (matchesAnyGlob(filePath, domain.globs)) scoped.push(id);
+    }
+  }
+  return scoped;
+}
 
 /**
  * F-67ddcd02: the shared file_claims reconciliation step BOTH collect() (this
@@ -959,22 +1023,23 @@ export function collect(opts) {
     const agentBearing = domains.filter(d => d.ownership_class !== 'shared');
     const fullCoverage = agentBearing.length > 0
       && agentBearing.every(d => completedDomains.has(d.name));
-    // The union of every COMPLETE agent's `confirmed` declaration — the ids they
-    // said out loud they checked. Domain coverage proves the wave read the
-    // files; only this proves it looked for a given prior, which is the one
-    // thing that does not survive a lens change (a stage-d-audit agent hunting
-    // typography "covers" every file a defensive-coding finding lives in). An
-    // incomplete agent's declaration is discarded for the same reason its
-    // silence is: it did not audit its domain.
+    // The union of every COMPLETE agent's `confirmed` declaration, NARROWED to
+    // the findings each agent's own domain owns. Domain coverage proves the
+    // wave read the files; only the declaration proves it looked for a given
+    // prior, which is the one thing that does not survive a lens change (a
+    // stage-d-audit agent hunting typography "covers" every file a
+    // defensive-coding finding lives in). An incomplete agent's declaration is
+    // discarded for the same reason its silence is: it did not audit its domain.
     //
     // Deliberately NOT `|| null`: a wave where every agent legitimately checked
     // nothing must assert an EMPTY set (close nothing), not "no assertion"
     // (close everything). That distinction is the whole gate — collapsing an
     // empty declaration into the coarse reading would fail open exactly when
     // the agents told us they looked at nothing.
-    const confirmed = report.agents
-      .filter(a => a.status === 'complete')
-      .flatMap(a => Array.isArray(a.confirmed) ? a.confirmed : []);
+    const confirmed = scopeConfirmedToOwningDomain(
+      db, opts.runId, domains,
+      report.agents.filter(a => a.status === 'complete'),
+    );
     const classified = classifyFindings(
       allFindings, priorMap, fullCoverage ? { full: true, confirmed } : null
     );

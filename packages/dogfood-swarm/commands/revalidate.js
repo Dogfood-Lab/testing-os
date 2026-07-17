@@ -60,7 +60,7 @@ import { getActualTouchedFiles, resolveWorktreeBaseRef } from '../lib/git-touche
 // F-67ddcd02: the file_claims reconciliation step is shared with collect.js
 // (both write paths superseded the SAME way) — see reconcileFileClaims's own
 // doc comment there for the full rationale.
-import { reconcileFileClaims } from './collect.js';
+import { reconcileFileClaims, scopeConfirmedToOwningDomain } from './collect.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
@@ -582,10 +582,17 @@ export function revalidate(opts) {
             // An unreadable or declaration-less output contributes nothing,
             // which fails CLOSED (its priors stay `unverified`, open, re-asked)
             // rather than closing a finding on a file we could not read.
-            const confirmed = [];
+            // Each complete agent's declaration, tagged with the domain that
+            // made it — the domain is load-bearing, not decoration: an id is
+            // only honoured if the DECLARING agent's own globs cover the
+            // finding's file (F-18d0ef6d). Without that, any domain could close
+            // any other domain's finding by naming an id from the run-wide
+            // queue every agent can see.
+            const declarations = [];
             for (const row of db.prepare(`
-              SELECT ar.output_path
+              SELECT ar.output_path, d.name AS domain
                 FROM agent_runs ar
+                JOIN domains d ON d.id = ar.domain_id
                WHERE ar.wave_id = ?
                  ${LATEST_AGENT_RUN_PER_DOMAIN}
                  AND ar.status = 'complete'
@@ -593,9 +600,12 @@ export function revalidate(opts) {
               if (!row.output_path || !existsSync(row.output_path)) continue;
               try {
                 const out = readBoundedJson(row.output_path);
-                if (Array.isArray(out?.confirmed)) confirmed.push(...out.confirmed);
+                if (Array.isArray(out?.confirmed)) {
+                  declarations.push({ domain: row.domain, confirmed: out.confirmed });
+                }
               } catch { /* unreadable output declares nothing; fail closed */ }
             }
+            const confirmed = scopeConfirmedToOwningDomain(db, runId, domains, declarations);
             const classified = classifyFindings(currentFindings, priorMap, { full: true, confirmed });
             const stats = upsertFindings(db, runId, wave.id, {
               new: [], recurring: [], fixed: classified.fixed, unverified: [],

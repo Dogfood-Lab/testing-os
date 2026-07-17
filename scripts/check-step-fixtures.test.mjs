@@ -58,8 +58,8 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readdirSync, readFileSync } from 'node:fs';
-import { dirname, join, relative, sep } from 'node:path';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { dirname, join, relative, resolve, sep } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
@@ -146,8 +146,70 @@ function extractStepFixtures(ast) {
 /** Compose exactly as Node composes for `shell: true`: file + args joined by a space. */
 const composeShellCommand = (cmd, args) => (args.length ? `${cmd} ${args.join(' ')}` : cmd);
 
+/**
+ * Locate a POSIX shell (F-af5ed718).
+ *
+ * A bare `spawnSync('sh', ...)` is a PATH lookup, and on Windows Git's
+ * installer does NOT put its `usr/bin` on PATH — only `Git\cmd` and
+ * `Git\mingw64\bin`. So `sh.exe` is present on disk while `sh` is
+ * unresolvable, and this gate failed with ENOENT for every fixture in a plain
+ * PowerShell session: `npm run verify` — the repo's own canonical pre-commit
+ * check — was red in the repo's primary shell while green in git-bash and
+ * green on Linux CI. **The gate built to catch Windows/Linux verify-parity
+ * gaps had one, on its first wave.** It was written and "verified" from a
+ * git-bash shell, which is exactly the environment that hides the defect; the
+ * probe proving `sh` reachable was itself run in the wrong shell.
+ *
+ * DERIVED, not enumerated. The location comes from `git --exec-path` — git is
+ * a hard prerequisite of this repo (it IS a git repo, and the ownership probe
+ * and `--isolate` worktrees need it), and Git for Windows ships the same sh
+ * this gate wants. Walking up from git's own exec-path to a sibling
+ * `usr/bin/sh.exe` asks the installed tool where it lives rather than
+ * hardcoding `C:\Program Files\Git\...`, which would be the enumeration class
+ * this run has now caught four separate times (CONTROL_CLASS, ZALGO_RUN,
+ * DASH_CONFUSABLES, the ingest flag registry). A machine that moved Git, or
+ * uses a non-default install root, resolves correctly.
+ *
+ * Returns the resolved argv[0] (`'sh'` or an absolute path), or null when no
+ * POSIX shell exists at all — which the caller must treat as "cannot verify",
+ * never as "verified clean".
+ */
+let _resolvedSh;
+function resolveSh() {
+  if (_resolvedSh !== undefined) return _resolvedSh;
+
+  if (!spawnSync('sh', ['-c', 'exit 0'], { encoding: 'utf-8' }).error) {
+    _resolvedSh = 'sh';
+    return _resolvedSh;
+  }
+
+  if (process.platform === 'win32') {
+    const gitExec = spawnSync('git', ['--exec-path'], { encoding: 'utf-8' });
+    if (!gitExec.error && gitExec.status === 0) {
+      let dir = resolve(gitExec.stdout.trim());
+      for (let hop = 0; hop < 6; hop++) {
+        for (const rel of [join('usr', 'bin', 'sh.exe'), join('bin', 'sh.exe')]) {
+          const candidate = join(dir, rel);
+          if (existsSync(candidate)) {
+            _resolvedSh = candidate;
+            return _resolvedSh;
+          }
+        }
+        const parent = dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+    }
+  }
+
+  _resolvedSh = null;
+  return _resolvedSh;
+}
+
 function shCanParse(command) {
-  const r = spawnSync('sh', ['-n', '-c', command], { encoding: 'utf-8' });
+  const sh = resolveSh();
+  if (sh === null) return { ok: false, unavailable: true, stderr: 'no POSIX shell found (PATH, and git --exec-path on win32)' };
+  const r = spawnSync(sh, ['-n', '-c', command], { encoding: 'utf-8' });
   if (r.error) return { ok: false, unavailable: true, stderr: String(r.error.code) };
   return { ok: r.status === 0, unavailable: false, stderr: String(r.stderr || '').trim() };
 }
@@ -219,6 +281,29 @@ function auditSource(source, label) {
 }
 
 describe('verify-step fixtures must survive runStep\'s shell:true composition', () => {
+  it('a POSIX shell is resolvable on THIS machine, in THIS shell (F-af5ed718)', () => {
+    // The gate's own prerequisite, asserted first and by itself — because when
+    // it was missing, every OTHER test in this file failed with an identical
+    // `sh ENOENT` and none of them said why. This one names the real problem in
+    // one line instead of making an operator infer it from a wall of red.
+    //
+    // It is not decoration: `sh` is unresolvable from a plain PowerShell
+    // session on this repo's own primary rig (Git ships sh.exe but its
+    // installer does not PATH `usr/bin`), so `npm run verify` was red in the
+    // repo's primary shell while green in git-bash and green on Linux CI. This
+    // assertion fails in exactly the environment the original probe could not
+    // see — the probe having been run from git-bash, the one shell where the
+    // defect is invisible.
+    const sh = resolveSh();
+    assert.notEqual(sh, null,
+      'no POSIX shell found via PATH or `git --exec-path`. This gate consults the SHELL\'S OWN PARSER '
+        + 'rather than a regex, so without one it cannot verify anything and must not pretend otherwise. '
+        + 'On Windows, install Git for Windows (it ships sh.exe) or put a POSIX sh on PATH.');
+    const probe = spawnSync(sh, ['-c', 'exit 7'], { encoding: 'utf-8' });
+    assert.equal(probe.error, undefined, `resolved shell must actually spawn (got ${probe.error?.code})`);
+    assert.equal(probe.status, 7, 'the resolved shell must be a real shell that runs the command it is given');
+  });
+
   it('the detector actually fires on the exact shape that shipped (non-vacuity)', () => {
     // The real pre-fix fixture from lib/verify-runner-max-buffer-env-warning-dedup.test.js:71.
     // If this stops being caught, the gate is theater and every assertion below is worthless.

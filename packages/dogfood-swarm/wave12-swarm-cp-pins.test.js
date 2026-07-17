@@ -308,7 +308,16 @@ describe('revalidate — a repaired-to-collected FULL-coverage audit wave closes
     // classifyFindings' currentSet and be skipped, not closed by absence.
     db.prepare(`INSERT INTO findings
       (run_id, finding_id, fingerprint, severity, category, file_path, description, status, first_seen_wave, last_seen_wave)
-      VALUES (?, 'F-PRIOR', 'fp-prior', 'HIGH', 'bug', 'packages/b/y.js', 'earlier defect', 'approved', 1, 1)`).run(RUN);
+      VALUES (?, 'F-PRIOR', 'fp-prior', 'HIGH', 'bug', 'packages/a/x.js', 'earlier defect', 'approved', 1, 1)`).run(RUN);
+    // file_path is under packages/a/** — domain-a's glob — because domain-a is
+    // the agent this test repairs and therefore the only one with an output to
+    // declare through. It previously sat under packages/b/**, which made the
+    // fixture itself an instance of F-18d0ef6d: domain-a vouching for a file
+    // domain-b owns. The declaration is now honoured only when the DECLARING
+    // domain's globs cover the finding, so the owner has to be the one that
+    // speaks. Unchanged: everything this pin exists for — the prior is still an
+    // earlier-wave (last_seen_wave=1), still open, still not rediscovered in
+    // wave 2, still closed by absence-plus-declaration under full coverage.
 
     closeDb(dbPath);
     return { waveId };

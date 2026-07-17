@@ -168,6 +168,12 @@
       "file": "packages/dogfood-swarm/commands/lib/escape-reason.js",
       "owner": "swarm-cp-verbs",
       "revalidate_by": "2026-10-17"
+    },
+    "F-6a5eb347": {
+      "reason": "Cross-reference, not a fix pin. scopeConfirmedToOwningDomain's docstring cites F-6a5eb347 to DISCLOSE that its rule creates no new zombie class: a finding no agent-bearing domain owns cannot close by declaration, and F-6a5eb347 (root package.json, which routes only to the agentless `shared` domain) already behaved exactly that way BEFORE the rule existed — it went `unverified` on wave 32 because no agent checked it, because no agent could. The mention is the evidence for a disclosed boundary, not a claim to have fixed it. F-6a5eb347's own fix is packages/dogfood-swarm/test-discovery-completeness.test.js, which deliberately carries no @pins tag of its own: package.json is not a scanned source extension, so at the time that gate landed there was no source pin for a tag to match and one would have dangled (the gate's own C3 rule; F-7d4ac5ce precedent). Note the ordering trap this entry exists to avoid: this very citation is now the first source mention of the id, so a tag added to that gate today would technically resolve — but adding a source mention in an unrelated file in order to legitimize a tag elsewhere is laundering the gate with extra steps, which is precisely what the allowlist exists to keep visible instead.",
+      "file": "packages/dogfood-swarm/commands/collect.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-17"
     }
   }
 }
