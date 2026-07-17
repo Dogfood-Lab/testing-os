@@ -79,25 +79,15 @@ function recordActualHead() {
 /**
  * Strip BOTH block and line comments from JS source so the forbidden-pattern
  * grep at the bottom of this file scans live code only. Documentation
- * comments at the top of this file deliberately mention `process.cwd()` and
- * `swarms/control-plane.db` as forbidden tokens (the contract IS the
- * documentation); without comment-stripping the self-scan would flag those.
+ * comments at the top of this file deliberately mention forbidden tokens
+ * (the contract IS the documentation); without comment-stripping the
+ * self-scan would flag those. Shared scanner (test-support/strip-comments.js):
+ * unlike the old per-file regex pair it preserves string contents, so a
+ * token inside a string literal is now VISIBLE to the grep — that is the
+ * correct direction (a real forbidden call in code was never in a string,
+ * and a string that embeds one deserves a look, not silence).
  */
-function stripCommentsForGrep(source) {
-  // First strip /* ... */ blocks (greedy non-cross-line is wrong here; use
-  // [\s\S] to match across newlines, non-greedy).
-  let cleaned = source.replace(/\/\*[\s\S]*?\*\//g, '');
-  // Then strip // ... line comments. The full-line strip is sufficient
-  // because we are not parsing strings — we want to err on the side of
-  // hiding too much, not flagging too much.
-  cleaned = cleaned.split('\n')
-    .map(line => {
-      const idx = line.indexOf('//');
-      return idx >= 0 ? line.slice(0, idx) : line;
-    })
-    .join('\n');
-  return cleaned;
-}
+import { stripComments as stripCommentsForGrep } from './test-support/strip-comments.js';
 
 before(() => {
   ACTUAL_HEAD_AT_SUITE_START = recordActualHead();
@@ -881,7 +871,7 @@ describe('rewind — T4: preserved-count surface in summary', () => {
       assert.equal(r.planned_agent_runs.length, 2, '2 non-terminal agent_runs are affected');
 
       // Surface assertion: the preserved-count line is present in the summary.
-      assert.match(r.summary, /Preserved:\s+1 terminal waves,\s+1 terminal agent_runs/);
+      assert.match(r.summary, /Preserved:\s+1 terminal wave,\s+1 terminal agent_run\b/);
     } finally {
       teardown(tempDir, dbPath);
     }
@@ -895,11 +885,17 @@ describe('rewind — T4: preserved-count surface in summary', () => {
 describe('rewind — CLI subprocess smoke', () => {
   const CLI_PATH = join(__dirname, 'cli.js');
 
+  // SWARM_DB fallback pin (task_6026249b): a call site that forgets env must
+  // hit a temp DB, never the live repo control-plane.db — enforced
+  // package-wide by meta-wal-sidecar-teardown-guard.test.js.
+  const safeDbDir = mkdtempSync(join(tmpdir(), 'rewind-smoke-safe-db-'));
+  after(() => { try { rmSync(safeDbDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
+
   function runRewindCli(args, { cwd, env = {} } = {}) {
     return spawnSync(process.execPath, [CLI_PATH, 'rewind', ...args], {
       encoding: 'utf-8',
       cwd: cwd || __dirname,
-      env: { ...process.env, ...env },
+      env: { ...process.env, SWARM_DB: join(safeDbDir, 'control-plane.db'), ...env },
     });
   }
 

@@ -13,12 +13,21 @@
  *   any status -> candidate (except initial creation)
  */
 
-const TRANSITIONS = {
+// F-937733ee: family sibling of F-2965699b/F-7ce07baa/verdict.js's
+// VERDICT_RANK. Object.create(null) removes the prototype chain, so
+// `TRANSITIONS['constructor']` is `undefined` rather than
+// `Object.prototype.constructor` (a truthy function) — the `if (!allowed)`
+// / `if (!TRANSITIONS[from])` unknown-status guards below fire correctly for
+// every Object.prototype key instead of going on to call `.has()` on a
+// built-in method and throwing a raw TypeError. `from` is currently always a
+// schema-enum-constrained finding status, so this is defense-in-depth for a
+// caller that skips that gate, not a live vector.
+const TRANSITIONS = Object.assign(Object.create(null), {
   candidate: new Set(['reviewed', 'accepted', 'rejected']),
   reviewed:  new Set(['accepted', 'rejected']),
   accepted:  new Set(['reviewed', 'rejected']),
   rejected:  new Set(['reviewed'])
-};
+});
 
 /**
  * Check if a status transition is lawful.

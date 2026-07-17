@@ -7,7 +7,8 @@
  * wired in CI right after `npm ci`).
  *
  * Coverage:
- *   1. Each configured check in scripts/doc-drift-patterns.json (currently 13)
+ *   1. Each configured check in scripts/doc-drift-patterns.json (currently 17,
+ *      after F-41379e68 added the three retired-swarm-artifact tombstone pins)
  *      with a clean fixture and a drift fixture.
  *   2. Live-tree assertion: the actual repo passes all checks. This is the
  *      load-bearing test — it's the contract that the docs agents in wave 19
@@ -333,6 +334,28 @@ test('missing config file reports config-error', async (t) => {
   assert.match(result.reports[0].message, /config file not found/);
 });
 
+/** @pins F-016e7a8c */
+test('F-016e7a8c: a malformed (unparseable) config file degrades to the documented { clean, reports } contract, never an uncaught throw', async (t) => {
+  const fx = makeFixture(t);
+  // Deliberately malformed JSON (trailing comma) — an ordinary hand-edit
+  // slip this file's own docstring invites ("Adding a new check is a config
+  // edit"). Written directly (not via fx.config, which only accepts a valid
+  // JS object) so the bytes on disk are genuinely unparseable.
+  fx.write('scripts/doc-drift-patterns.json', '{ "checks": [ { "id": "x", } ] }');
+
+  await assert.doesNotReject(
+    () => runDriftChecks({ repoRoot: fx.dir }),
+    'runDriftChecks must never reject/throw on malformed config JSON — every other failure path in this function (config not found, unknown checkId) already returns the structured { clean, reports } shape instead of throwing (F-016e7a8c)',
+  );
+
+  const result = await runDriftChecks({ repoRoot: fx.dir });
+  assert.equal(result.clean, false);
+  assert.equal(result.reports[0].severity, 'config-error');
+  assert.match(result.reports[0].message, /not valid JSON/i);
+  assert.equal(result.checksRun, 0);
+  assert.equal(result.checksTotal, 0);
+});
+
 test('expandGlobs: exact path returns single file, glob expands directory', async (t) => {
   const fx = makeFixture(t);
   fx.write('docs/a.md', 'a');
@@ -342,6 +365,119 @@ test('expandGlobs: exact path returns single file, glob expands directory', asyn
   assert.equal(exact.length, 1);
   const glob = expandGlobs(['docs/*.md'], fx.dir);
   assert.equal(glob.length, 2);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-41379e68 — retired-swarm-artifact tombstone pins.
+//
+// swarms/manifest-schema.json and swarms/templates/{audit,explore}.md are this
+// run's proven chronic drift offenders (F-f67526e6 / F-ef033db4 / F-bd8b4353:
+// the templates sat wrong and unnoticed from the 2026-04-24 migration until
+// wave 6 tombstoned them). The wave-6 fix added RETIRED markers but no
+// regression net: the files sat outside every ci.yml paths trigger and every
+// doc-drift target, so a future edit reverting the tombstone would ship with
+// zero signal. The three retired-swarm-artifact--* self-consistency entries in
+// scripts/doc-drift-patterns.json pin the marker text; ci.yml's paths filters
+// gained matching triggers (guarded by stageA-check-ci-honesty-paths.test.mjs).
+//
+// The fixture tests below deliberately pull the LIVE config entries (not
+// copies) so they exercise the exact production regexes — a reword of the
+// live entry that weakens it to never-fire cannot stay hidden behind a
+// green test that pinned a stale copy.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const RETIRED_ARTIFACT_CHECK_IDS = [
+  'retired-swarm-artifact--manifest-schema',
+  'retired-swarm-artifact--template-audit',
+  'retired-swarm-artifact--template-explore',
+];
+
+function liveRetiredArtifactChecks() {
+  const liveCfg = JSON.parse(readFileSync(resolve(repoRoot, 'scripts/doc-drift-patterns.json'), 'utf8'));
+  return RETIRED_ARTIFACT_CHECK_IDS.map((id) => liveCfg.checks.find((c) => c.id === id));
+}
+
+test('F-41379e68: live config carries all three retired-swarm-artifact tombstone checks with the exact targets', () => {
+  const [manifest, audit, explore] = liveRetiredArtifactChecks();
+  const expectations = [
+    [manifest, 'retired-swarm-artifact--manifest-schema', 'swarms/manifest-schema.json'],
+    [audit, 'retired-swarm-artifact--template-audit', 'swarms/templates/audit.md'],
+    [explore, 'retired-swarm-artifact--template-explore', 'swarms/templates/explore.md'],
+  ];
+  for (const [entry, id, target] of expectations) {
+    assert.ok(entry, `live doc-drift-patterns.json must carry the '${id}' check — without it the wave-6 tombstone has no drift net (F-41379e68)`);
+    assert.equal(entry.kind, 'self-consistency', `${id} must be a self-consistency check`);
+    assert.equal(entry.target, target, `${id} must target ${target}`);
+    const musts = (entry.rules ?? []).flatMap((r) => r.must ?? []);
+    assert.ok(musts.length >= 1, `${id} must pin at least one required marker (got ${musts.length})`);
+  }
+});
+
+test('F-41379e68: the real retired files, copied verbatim into a fixture, satisfy the live tombstone checks', async (t) => {
+  const fx = makeFixture(t);
+  for (const rel of ['swarms/manifest-schema.json', 'swarms/templates/audit.md', 'swarms/templates/explore.md']) {
+    fx.write(rel, readFileSync(resolve(repoRoot, rel), 'utf8'));
+  }
+  const cfg = fx.config({ checks: liveRetiredArtifactChecks() });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+  assert.equal(result.checksRun, 3);
+});
+
+test('F-41379e68 RED-capability: stripping a template\'s RETIRED banner (un-tombstoning) fires drift via the LIVE entry', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('swarms/manifest-schema.json', readFileSync(resolve(repoRoot, 'swarms/manifest-schema.json'), 'utf8'));
+  fx.write('swarms/templates/explore.md', readFileSync(resolve(repoRoot, 'swarms/templates/explore.md'), 'utf8'));
+  // Simulate the revert F-41379e68 warns about: audit.md loses its banner
+  // block and reads like a live template again.
+  const audit = readFileSync(resolve(repoRoot, 'swarms/templates/audit.md'), 'utf8');
+  const reverted = audit
+    .split('\n')
+    .filter((line) => !line.startsWith('# RETIRED TEMPLATE') && !line.includes('No code path consumes this file'))
+    .join('\n');
+  fx.write('swarms/templates/audit.md', `# Audit Template\n${reverted}`);
+
+  const cfg = fx.config({ checks: liveRetiredArtifactChecks() });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'an un-tombstoned template must not pass');
+  const auditReports = result.reports.filter((r) => r.checkId === 'retired-swarm-artifact--template-audit');
+  assert.ok(auditReports.length >= 1, `expected drift from the audit-template check; got: ${JSON.stringify(result.reports)}`);
+  assert.match(auditReports[0].message, /required content missing/);
+});
+
+test('F-41379e68 RED-capability: a banner demoted off the first line (frontmatter prepended) fires drift', async (t) => {
+  // The banner is load-bearing as the FIRST thing a reader sees; the live
+  // regex is ^-anchored (no m flag → index 0 only). Prepending anything
+  // demotes it and must fire.
+  const fx = makeFixture(t);
+  fx.write('swarms/manifest-schema.json', readFileSync(resolve(repoRoot, 'swarms/manifest-schema.json'), 'utf8'));
+  fx.write('swarms/templates/audit.md', readFileSync(resolve(repoRoot, 'swarms/templates/audit.md'), 'utf8'));
+  fx.write('swarms/templates/explore.md', `---\ntitle: Explore\n---\n${readFileSync(resolve(repoRoot, 'swarms/templates/explore.md'), 'utf8')}`);
+
+  const cfg = fx.config({ checks: liveRetiredArtifactChecks() });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  const exploreReports = result.reports.filter((r) => r.checkId === 'retired-swarm-artifact--template-explore');
+  assert.ok(exploreReports.length >= 1, `expected drift from the explore-template check; got: ${JSON.stringify(result.reports)}`);
+});
+
+test('F-41379e68 RED-capability: stripping the RETIRED $comment marker from manifest-schema.json fires drift via the LIVE entry', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('swarms/templates/audit.md', readFileSync(resolve(repoRoot, 'swarms/templates/audit.md'), 'utf8'));
+  fx.write('swarms/templates/explore.md', readFileSync(resolve(repoRoot, 'swarms/templates/explore.md'), 'utf8'));
+  const schema = JSON.parse(readFileSync(resolve(repoRoot, 'swarms/manifest-schema.json'), 'utf8'));
+  // Simulate re-livening: the $comment loses its RETIRED head, the
+  // description loses its RETIRED cross-ref.
+  schema.$comment = 'Checkpoint schema for swarm runs.';
+  schema.description = 'Checkpoint file that tracks swarm audit progress across phases and agents.';
+  fx.write('swarms/manifest-schema.json', JSON.stringify(schema, null, 2));
+
+  const cfg = fx.config({ checks: liveRetiredArtifactChecks() });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'a re-livened manifest-schema must not pass');
+  const schemaReports = result.reports.filter((r) => r.checkId === 'retired-swarm-artifact--manifest-schema');
+  assert.ok(schemaReports.length >= 1, `expected drift from the manifest-schema check; got: ${JSON.stringify(result.reports)}`);
+  assert.match(schemaReports[0].message, /required content missing/);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -372,7 +508,60 @@ test('LIVE TREE: actual repo passes all drift checks (post-wave-26 framework gen
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// untagged-fence handler (D-CI-001 / F-827321-010, wave 23)
+// F-25e984d7: doublestarToRegex()'s three sentinel string literals must use
+// the two-character `\0` escape sequence, not a raw embedded 0x00 byte. Six
+// raw NULs made this whole 1660+-line file register as binary to content-
+// mode grep/ripgrep (zero visible matches on ANY token, whole-file blast
+// radius) and made the Read tool silently render each NUL as a plain space
+// — misrepresenting the sentinel's collision-safety rationale, since a
+// genuinely space-delimited sentinel would collide with real glob text
+// containing spaces where the actual NUL-delimited one cannot. Two-part pin,
+// both directions of the lens: (1) the file's own bytes contain no raw NUL,
+// (2) the sentinel substitution the escape swap touches — doublestar glob
+// expansion — still functions, proven by a real CLI subprocess run against
+// the live config (not just the programmatic call the LIVE TREE test above
+// already makes) so the pin also covers the actual entry point wiring.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-25e984d7: the live file contains zero raw NUL bytes (sentinels must use the \\0 escape, not the raw byte)', () => {
+  const liveFile = resolve(repoRoot, 'scripts/check-doc-drift.mjs');
+  const buf = readFileSync(liveFile);
+  assert.equal(
+    buf.includes(0x00),
+    false,
+    'scripts/check-doc-drift.mjs must not contain a raw NUL (0x00) byte anywhere. A raw NUL makes ' +
+      'ripgrep/grep content-mode search treat the whole file as binary (matches found but zero visible ' +
+      "content) and makes the Read tool silently render the byte as a space. Use the '\\0' two-character " +
+      'escape sequence inside the string literal instead — identical runtime value, plain-text source bytes.',
+  );
+});
+
+test("F-25e984d7: doublestarToRegex's sentinel substitution still functions after the byte fix — live CLI run exits 0 with zero reports", () => {
+  // Runs the actual entry point (spawnSync on driftScript, no args -> default
+  // config) rather than only the exported runDriftChecks function. The live
+  // doc-drift-patterns.json config includes recursive '**' checks (helper-
+  // adoption-sweep, schema-conformance) that only resolve their target files
+  // correctly if doublestarToRegex's sentinel mark/replace round-trip is
+  // intact — a corrupted sentinel degrades those globs silently (see the
+  // F-ae195c1d comment in doublestarToRegex itself) and would surface here
+  // as a config-error or drift, not just as a broken unit test.
+  const result = spawnSync(process.execPath, [driftScript], { cwd: repoRoot, encoding: 'utf8' });
+  assert.equal(
+    result.status,
+    0,
+    `expected the live doc-drift gate to exit 0 (no drift, no config-error).\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`,
+  );
+  assert.match(
+    result.stdout,
+    /^\[check-doc-drift\] OK/,
+    'expected the OK banner, proving every configured check — including the recursive-glob ones that depend on doublestarToRegex — passed',
+  );
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-827321-010 — untagged-fence handler (D-CI-001, wave 23). Id-first so the
+// F-f0339e12 structural filter credits this section as the fix's coverage
+// (wave-8 disposition — the tests below ARE the handler's regression net).
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('untagged-fence: clean fixture (every opener tagged) passes', async (t) => {
@@ -463,7 +652,9 @@ test('untagged-fence: empty target glob reports config-error', async (t) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// helper-adoption-sweep handler (F-252713-016 / FT-CITOOLING-001, wave 26)
+// F-252713-016 — helper-adoption-sweep handler (FT-CITOOLING-001, wave 26).
+// Id-first so the F-f0339e12 structural filter credits this section as the
+// fix's coverage (wave-8 disposition — the tests below ARE the handler's net).
 // Productizes wave22-log-stage-discipline.test.js as a generalized Class #9
 // sweep. Tests cover: clean adoption, raw-primitive drift, wrapper-with-import
 // allowed, allowlist exemption, helper-not-found config error, helper missing
@@ -879,6 +1070,74 @@ test('schema-conformance: allowEmpty gate allows zero-target glob', async (t) =>
   assert.equal(result.clean, true, JSON.stringify(result.reports));
 });
 
+test('F-5d126106 META: a sibling glob matching files does NOT mask a different glob matching zero', async (t) => {
+  // Mutation proof for the exact bug F-5d126106 found on the live tree:
+  // 'fixtures/*.json' matches a real file (mirrors swarms/__schema-fixtures__/),
+  // 'nonexistent/*.json' matches nothing (mirrors the gitignored live-run
+  // glob) and is declared in NEITHER allowEmpty NOR allowEmptyGlobs. Before
+  // the per-glob fix, the union-level guard saw targetFiles.length > 0 (from
+  // the fixtures glob) and never inspected the empty one — this exact
+  // fixture shape would have returned clean:true. It must not.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write('fixtures/valid-basic.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json', 'nonexistent/*.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'a glob matching zero files must fail loud even when a sibling glob matches real files');
+  assert.equal(result.reports[0].severity, 'config-error');
+  assert.match(result.reports[0].message, /no target files matched: nonexistent\/\*\.json/, 'the config-error must name the SPECIFIC unmatched glob, not the whole target list');
+  assert.doesNotMatch(result.reports[0].message, /fixtures\/\*\.json/, 'the glob that DID match files must not be named as unmatched');
+});
+
+test('schema-conformance: allowEmptyGlobs permits one specific glob to match zero while still requiring the other', async (t) => {
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write('fixtures/valid-basic.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json', 'nonexistent/*.json'],
+      allowEmptyGlobs: ['nonexistent/*.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+});
+
+test('schema-conformance: allowEmptyGlobs does NOT excuse a glob it does not name', async (t) => {
+  // Declaring one glob empty-ok must not accidentally waive the check for a
+  // THIRD glob that rotted for an unrelated reason — allowEmptyGlobs is an
+  // allowlist of specific patterns, not a boolean escape hatch.
+  const fx = makeFixture(t);
+  fx.write('scripts/agent-output.schema.json', JSON.stringify(SIMPLE_SCHEMA));
+  fx.write('fixtures/valid-basic.json', JSON.stringify(VALID_AMEND_OUTPUT));
+  const cfg = fx.config({
+    checks: [{
+      id: 'sc',
+      kind: 'schema-conformance',
+      title: 'sc',
+      schema: 'scripts/agent-output.schema.json',
+      targets: ['fixtures/*.json', 'nonexistent-a/*.json', 'nonexistent-b/*.json'],
+      allowEmptyGlobs: ['nonexistent-a/*.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  assert.match(result.reports[0].message, /nonexistent-b\/\*\.json/);
+  assert.doesNotMatch(result.reports[0].message, /nonexistent-a\/\*\.json/, 'the glob named in allowEmptyGlobs must not be reported');
+});
+
 test('schema-conformance: schema file missing reports config-error', async (t) => {
   const fx = makeFixture(t);
   fx.write('outputs/agent.json', JSON.stringify(VALID_AMEND_OUTPUT));
@@ -1057,6 +1316,25 @@ test('LIVE WIRING: agent-output-schema check does NOT carry allowEmpty:true (D4-
   );
 });
 
+test('LIVE WIRING: agent-output-schema allowEmptyGlobs names ONLY the structurally-unmatchable live-run glob (F-5d126106)', async () => {
+  // F-5d126106: swarms/swarm-*/wave-*/outputs/*.json can never match a
+  // committed file (swarms/.gitignore ignores swarm-*/ wholesale) — that is
+  // the one glob allowed to report zero on CI. swarms/__schema-fixtures__/*.json
+  // is the real, committed, meaningfully-checked glob and must stay OUT of
+  // allowEmptyGlobs, or a future config edit could silently re-introduce the
+  // exact vacuous-gate class D4-004 closed for the fixtures path.
+  const cfgPath = resolve(repoRoot, 'scripts/doc-drift-patterns.json');
+  const { readFileSync: read } = await import('node:fs');
+  const config = JSON.parse(read(cfgPath, 'utf8'));
+  const entry = config.checks.find((c) => c.id === 'agent-output-schema');
+  assert.ok(entry);
+  assert.deepEqual(
+    entry.allowEmptyGlobs,
+    ['swarms/swarm-*/wave-*/outputs/*.json'],
+    'allowEmptyGlobs must name exactly the gitignored live-run glob — not the committed fixtures glob',
+  );
+});
+
 test('LIVE WIRING: running the agent-output-schema check validates the committed positive fixtures (D4-004)', async () => {
   // Behavior assertion: the live check, run against the live tree, passes.
   // This is the operator-facing contract — `npm run check-doc-drift` stays
@@ -1145,6 +1423,40 @@ test('framework-self-test: missing required field in config entry triggers drift
   assert.ok(
     fields.some((m) => m.includes('helper')),
     `Expected a report mentioning missing 'helper' field. Got: ${fields.join('; ')}`,
+  );
+});
+
+/** @pins F-016e7a8c */
+test('F-016e7a8c: framework-self-test degrades to a DEDICATED config-error (not the generic "handler threw" fallback) when its OWN re-read configPath is malformed JSON', async (t) => {
+  const fx = makeFixture(t);
+  // The MAIN config (parseable) that runDriftChecks itself reads and dispatches.
+  const cfg = fx.config({
+    checks: [
+      {
+        id: 'self',
+        kind: 'framework-self-test',
+        title: 'self',
+        configPath: 'scripts/broken-config.json', // points at the malformed file below
+      },
+    ],
+  });
+  // The file framework-self-test's OWN handler re-reads to self-validate the
+  // framework — deliberately malformed JSON (a trailing comma), reproducing
+  // an ordinary hand-edit slip.
+  fx.write('scripts/broken-config.json', '{ "checks": [ { "id": "x", } ] }');
+
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg, checkId: 'self' });
+  assert.equal(result.clean, false);
+  assert.equal(result.reports[0].severity, 'config-error');
+  assert.match(
+    result.reports[0].message,
+    /\[self\] config file is not valid JSON/,
+    `expected framework-self-test's OWN try/catch to produce the dedicated config-error message, not runDriftChecks' generic loop-level "handler for '...' threw" fallback (F-016e7a8c). Got: ${result.reports[0].message}`,
+  );
+  assert.doesNotMatch(
+    result.reports[0].message,
+    /handler for 'self' threw/,
+    "must not fall through to the generic per-handler catch in runDriftChecks' own dispatch loop — the handler's OWN try/catch must intercept the malformed-JSON re-read first, with a JSON-syntax-specific hint instead of the generic 'misconfigured source/target path' one (F-016e7a8c)",
   );
 });
 
@@ -1940,6 +2252,83 @@ test('CLI: --config <path> is honored — a nonexistent path yields the config-n
   );
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// F-a80acc6d: the CLI header names the severity ACTUALLY present, not a
+// hardcoded 'DRIFT' literal. Prior behavior printed 'DRIFT' for every
+// non-clean result, even a config-error-only run (the check ITSELF is
+// broken and is gating nothing) — a different problem from real drift (the
+// docs disagree with the source). All three fixture configs below point
+// `targets`/`schema` at paths resolved against the REAL repoRoot (these
+// tests invoke the real driftScript with `cwd: repoRoot`, only the config
+// file is a temp override via --config), so no fixture repo copy is needed.
+// ─────────────────────────────────────────────────────────────────────────────
+
+function writeTempConfig(t, obj) {
+  const p = join(tmpdir(), `doc-drift-header-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+  writeFileSync(p, JSON.stringify(obj, null, 2));
+  t.after(() => rmSync(p, { force: true }));
+  return p;
+}
+
+test('F-a80acc6d: a CONFIG-ERROR-only result prints "CONFIG-ERROR", not "DRIFT"', (t) => {
+  const cfg = writeTempConfig(t, {
+    checks: [{
+      id: 'missing-schema',
+      kind: 'schema-conformance',
+      title: 'deliberately missing schema',
+      schema: 'scripts/definitely-missing-schema-xyz.json',
+      targets: ['scripts/check-doc-drift.mjs'],
+    }],
+  });
+  const result = spawnSync(process.execPath, [driftScript, '--config', cfg], { cwd: repoRoot, encoding: 'utf8' });
+  assert.equal(result.status, 2, 'a config-error-only run must exit 2');
+  assert.match(result.stderr, /\[check-doc-drift\] CONFIG-ERROR — /, 'the header must say CONFIG-ERROR when every report is a config-error');
+  assert.doesNotMatch(result.stderr, /\[check-doc-drift\] DRIFT/, 'the header must NOT say DRIFT when no report is actually drift');
+});
+
+test('F-a80acc6d: a DRIFT-only result prints "DRIFT", not "CONFIG-ERROR"', (t) => {
+  const cfg = writeTempConfig(t, {
+    checks: [{
+      id: 'synthetic-drift',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'synthetic drift for the header test',
+      targets: ['package.json'],
+      patterns: [{ regex: '"name"', label: 'synthetic drift — package.json always declares "name"' }],
+    }],
+  });
+  const result = spawnSync(process.execPath, [driftScript, '--config', cfg], { cwd: repoRoot, encoding: 'utf8' });
+  assert.equal(result.status, 1, 'a drift-only run must exit 1');
+  assert.match(result.stderr, /\[check-doc-drift\] DRIFT — /, 'the header must say DRIFT when every report is real drift');
+  assert.doesNotMatch(result.stderr, /\[check-doc-drift\] CONFIG-ERROR/, 'the header must NOT say CONFIG-ERROR when no check is actually broken');
+});
+
+test('F-a80acc6d: a MIXED result prints "CONFIG-ERROR + DRIFT", naming both severities present', (t) => {
+  const cfg = writeTempConfig(t, {
+    checks: [
+      {
+        id: 'missing-schema',
+        kind: 'schema-conformance',
+        title: 'deliberately missing schema',
+        schema: 'scripts/definitely-missing-schema-xyz.json',
+        targets: ['scripts/check-doc-drift.mjs'],
+      },
+      {
+        id: 'synthetic-drift',
+        kind: 'forbidden-pattern-in-targets',
+        title: 'synthetic drift for the header test',
+        targets: ['package.json'],
+        patterns: [{ regex: '"name"', label: 'synthetic drift — package.json always declares "name"' }],
+      },
+    ],
+  });
+  const result = spawnSync(process.execPath, [driftScript, '--config', cfg], { cwd: repoRoot, encoding: 'utf8' });
+  // Exit code takes the STRICTER path (config-error, 2) even though drift is
+  // also present — unaffected by this fix, asserted here as a sanity check
+  // that the header change didn't accidentally alter the exit-code mapping.
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /\[check-doc-drift\] CONFIG-ERROR \+ DRIFT — /, 'the header must name BOTH severities when both are present');
+});
+
 test('CLI: the config-not-found hint promises --config, and that flag now exists (F-eda5a0db honesty pin)', () => {
   // Read the source: the hint that says "pass --config explicitly" must be
   // matched by a real parser. We assert both the hint text and the parser are
@@ -1962,14 +2351,14 @@ test('CLI: the config-not-found hint promises --config, and that flag now exists
 // relative-count claims (sibling = total-1, "the other N" = total-K).
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('FT-g: countCommandMapEntries counts the real cli.js commands map as 27', () => {
+test('FT-g: countCommandMapEntries counts the real cli.js commands map as 28', () => {
   const cliSrc = readFileSync(
     resolve(repoRoot, 'packages/dogfood-swarm/cli.js'),
     'utf8',
   );
   assert.equal(
     countCommandMapEntries(cliSrc, 'commands', 'packages/dogfood-swarm/cli.js'),
-    27,
+    28,
     'The authoritative verb count is the key count of the `commands` dispatch map. ' +
       'If this changed, every prose surface stating the count (and its offsets) must follow.',
   );
@@ -2342,6 +2731,79 @@ test('F-1ca7b818: value-position call expressions and arrows still count correct
   assert.equal(countCommandMapEntries(src, 'commands', 'fixture.js'), 3);
 });
 
+test('F-6cfe4d01 META: countCommandMapEntries throws on a computed key at depth 1 (no silent vanish)', () => {
+  const src = [
+    'const commands = {',
+    '  a: cmdA,',
+    '  [dynamicName]: cmdDynamic,',
+    '  b: cmdB,',
+    '};',
+  ].join('\n');
+  // Pre-fix this returned 1 — the '[' bumped depth before the key-position
+  // check ever saw it, swallowing the computed key's contents as a nested
+  // "value" with no pendingKeyAtTopLevel ever set, and the identifier right
+  // after '][:' (cmdDynamic) then never got confirmed as a key because a
+  // comma followed before a second ':'. The doc-comment promises computed
+  // keys are outside the supported shape and THROW — hold it to that,
+  // mirroring the ternary/method-shorthand META cases above.
+  assert.throws(
+    () => countCommandMapEntries(src, 'commands', 'fixture.js'),
+    /computed key/i,
+    'a computed key must throw (fail-loud), not silently vanish from the count',
+  );
+});
+
+test('F-6cfe4d01: a VALUE-position array literal (not a computed key) still counts correctly', () => {
+  // Distinguishes the computed-KEY throw above from an array literal in
+  // VALUE position, which is a supported nested shape (docstring: "nested
+  // objects, arrays ... don't confuse the boundary") — the '[' here is
+  // reached with awaitingKey already false (a ':' was already consumed for
+  // key 'a'), so it must fall through to the generic bracket handler, not
+  // the computed-key throw.
+  const src = [
+    'const commands = {',
+    '  a: [cmdA1, cmdA2],',
+    '  b: cmdB,',
+    '};',
+  ].join('\n');
+  assert.equal(countCommandMapEntries(src, 'commands', 'fixture.js'), 2);
+});
+
+test('F-6cfe4d01: a regex-literal VALUE with an internal colon does not overcount', () => {
+  const src = [
+    'const commands = {',
+    '  a: cmdA,',
+    '  b: /a:b/,',
+    '  c: cmdC,',
+    '};',
+  ].join('\n');
+  // Pre-fix this returned 4 — the scanner had no regex-literal skip, so
+  // '/a:b/' was re-tokenized char by char: the 'a' inside the pattern read
+  // as a key-position identifier (arming pendingKeyAtTopLevel), and the
+  // pattern's own ':' then confirmed a phantom third key before the real
+  // key 'c' ever appeared.
+  assert.equal(
+    countCommandMapEntries(src, 'commands', 'fixture.js'),
+    3,
+    'a colon inside a regex-literal value must not be misread as confirming a phantom key',
+  );
+});
+
+test('F-6cfe4d01: a regex-literal VALUE with a character class does not terminate early', () => {
+  const src = [
+    'const commands = {',
+    '  a: cmdA,',
+    '  b: /[a/b]{1,2}/,', // unescaped '/' inside [...] must not end the literal; '{1,2}' must not corrupt depth
+    '  c: cmdC,',
+    '};',
+  ].join('\n');
+  assert.equal(
+    countCommandMapEntries(src, 'commands', 'fixture.js'),
+    3,
+    'an unescaped / inside a character class, and braces inside the pattern, must not confuse the scanner',
+  );
+});
+
 test('F-1b9456a0 META: schema-conformance refuses a silent downgrade when Ajv is unavailable (config-error by default)', async (t) => {
   const fx = makeFixture(t);
   fx.write('schema.json', JSON.stringify({ type: 'object', required: ['domain'] }));
@@ -2502,4 +2964,54 @@ test('F-1c99c064: an opener whose info string contains a backtick is not a fence
   });
   const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
   assert.equal(result.clean, true, `a backtick-bearing info string must not open a fence (and must not trip state for the real fence below): ${JSON.stringify(result.reports)}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// F-W1-CI-005 — ESM main-entry guard uses the canonical pathToFileURL
+// comparison, not a fragile resolve()-based path-string compare.
+//
+// Previous heuristic compared `resolve(fileURLToPath(import.meta.url))` to
+// `resolve(process.argv[1])` — on Windows the two strings can disagree on
+// drive-letter casing or 8.3-vs-long-name resolution, silently no-op'ing the
+// CLI entry block even when check-doc-drift.mjs IS the invoked script. The
+// fix (matching sync-version.mjs / check-finding-regression-pins.mjs /
+// apply-finding-migration.mjs's W31-BACK-001) is
+// `pathToFileURL(process.argv[1]).href === import.meta.url` — URL-vs-URL
+// comparison, reliable everywhere.
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('F-W1-CI-005: main-entry guard uses pathToFileURL(process.argv[1]).href === import.meta.url, not a resolve()-based compare', () => {
+  const src = readFileSync(resolve(repoRoot, 'scripts/check-doc-drift.mjs'), 'utf8');
+  const stripped = src
+    .replace(/\/\/[^\n]*/g, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
+  const guardLine = stripped
+    .split(/\r?\n/)
+    .find((l) => /^\s*const isMain\s*=/.test(l));
+  assert.ok(guardLine, 'expected a `const isMain = ...` line in check-doc-drift.mjs — pin is stale');
+  assert.match(
+    guardLine,
+    /process\.argv\[1\]\s*&&/,
+    'main-entry guard must short-circuit on `process.argv[1] &&`',
+  );
+  assert.match(
+    guardLine,
+    /pathToFileURL\(\s*process\.argv\[1\]\s*\)\.href\s*===\s*import\.meta\.url/,
+    'main-entry guard must compare pathToFileURL(process.argv[1]).href against import.meta.url, not resolve()d path strings (F-W1-CI-005)',
+  );
+  assert.doesNotMatch(
+    guardLine,
+    /resolve\(\s*fileURLToPath/,
+    'main-entry guard must not revert to the resolve(fileURLToPath(...)) === resolve(process.argv[1]) comparison — that class disagrees on Windows drive-letter casing / 8.3 resolution and silently no-ops (F-W1-CI-005)',
+  );
+});
+
+test('F-W1-CI-005: --help invokes the main-entry block (proves isMain fires on a real script invocation), prints Usage, exits 0', () => {
+  const targetScript = resolve(repoRoot, 'scripts/check-doc-drift.mjs');
+  const result = spawnSync(process.execPath, [targetScript, '--help'], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+  });
+  assert.equal(result.status, 0, `--help must exit 0 (proves the main-entry block ran).\n  stdout: ${result.stdout}\n  stderr: ${result.stderr}`);
+  assert.match(result.stdout, /Usage:/, '--help must print the Usage block, proving isMain fired');
 });

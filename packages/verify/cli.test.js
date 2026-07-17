@@ -276,4 +276,67 @@ describe('renderExplain / buildJsonResult helpers', () => {
     assert.ok(classes.includes('operational'));
     assert.equal(json.rejection_reasons[0].raw, 'policy: evidence requirement not met');
   });
+
+  // F-be0deacd (wave 20): PROVEN pre-fix — renderExplain grouped
+  // CONTRACT_SCHEMA_TOO_NEW under the "[SUBMISSION — fix your payload and
+  // resubmit]" bucket header, directly above a detail line that (correctly)
+  // says "upgrade testing-os" — a self-contradictory block telling the
+  // submitter to both fix their own payload AND wait on an operator upgrade
+  // for the very same reason. parseRejectionReason's fix (parse-rejection.js)
+  // is the single source of truth CLASS_LABEL/byClass key off, so both
+  // renderExplain and buildJsonResult correct automatically with no rendering
+  // code change here — these are consumer-facing regression pins proving that.
+  it('F-be0deacd: renderExplain groups CONTRACT_SCHEMA_TOO_NEW under OPERATIONAL, not SUBMISSION', () => {
+    const rejected = {
+      run_id: 'r4',
+      verification: {
+        status: 'rejected',
+        schema_valid: false,
+        policy_valid: true,
+        provenance_confirmed: true,
+        rejection_reasons: ['CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 but this build supports v1.0.0 (major 1-1) - upgrade testing-os']
+      }
+    };
+    const text = renderExplain(rejected);
+    assert.match(text, /\[OPERATIONAL/,
+      `pre-fix bug: rendered under SUBMISSION instead; got:\n${text}`);
+    // This fixture's ONLY reason is CONTRACT_SCHEMA_TOO_NEW, so the SUBMISSION
+    // bucket header must not render at all (byClass has no 'submission-bad'
+    // entries to group) — pre-fix it rendered BOTH headers self-contradictorily.
+    assert.doesNotMatch(text, /\[SUBMISSION/,
+      `the SUBMISSION bucket must not appear for an all-operational reason set; got:\n${text}`);
+  });
+
+  it('F-be0deacd: buildJsonResult classifies CONTRACT_SCHEMA_TOO_NEW as operational (machine path matches the human --explain path)', () => {
+    const rejected = {
+      run_id: 'r5',
+      verification: {
+        status: 'rejected',
+        schema_valid: false,
+        policy_valid: true,
+        provenance_confirmed: true,
+        rejection_reasons: ['CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 but this build supports v1.0.0 - upgrade testing-os']
+      }
+    };
+    const json = buildJsonResult(rejected);
+    assert.equal(json.rejection_reasons[0].class, 'operational');
+    assert.equal(json.rejection_reasons[0].prefix, 'CONTRACT_SCHEMA_TOO_NEW:');
+  });
+
+  it('F-be0deacd: CONTRACT_SCHEMA_TOO_OLD still groups under SUBMISSION (the asymmetry is deliberate)', () => {
+    const rejected = {
+      run_id: 'r6',
+      verification: {
+        status: 'rejected',
+        schema_valid: false,
+        policy_valid: true,
+        provenance_confirmed: true,
+        rejection_reasons: ['CONTRACT_SCHEMA_TOO_OLD: recordSubmission schema v0.5.0 is below the supported floor - re-emit against the current contract']
+      }
+    };
+    const text = renderExplain(rejected);
+    assert.match(text, /\[SUBMISSION/, `got:\n${text}`);
+    const json = buildJsonResult(rejected);
+    assert.equal(json.rejection_reasons[0].class, 'submission-bad');
+  });
 });

@@ -48,10 +48,18 @@ const CLI_PATH = join(__dirname, 'cli.js');
 // LEFT at its default `npm test --if-present` so the node adapter's no_tests
 // downgrade still fires for a fixture with no `test` script — overriding the
 // test step would suppress exactly the path under test.
+// Both the bare `node` and the inner quotes are load-bearing under runStep's
+// `shell: true`, which joins cmd+args into ONE string for the shell:
+//   - process.execPath is "C:\Program Files\nodejs\node.exe" on Windows — the
+//     shell splits it at the space and runs `C:\Program` (tool_missing).
+//   - an unquoted `(` is a /bin/sh subshell metachar (POSIX syntax error).
+// These steps are `optional: true`, so BOTH failures were silent: the pipeline
+// tolerates them and the test stayed green while every "no-op" was really a
+// failing shell-out — the exact opposite of this fixture's stated purpose.
 const SAFE_OPTIONAL_OVERRIDES = {
-  lint: { name: 'lint', cmd: process.execPath, args: ['-e', 'process.exit(0)'], optional: true },
-  typecheck: { name: 'typecheck', cmd: process.execPath, args: ['-e', 'process.exit(0)'], optional: true },
-  build: { name: 'build', cmd: process.execPath, args: ['-e', 'process.exit(0)'], optional: true },
+  lint: { name: 'lint', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
+  typecheck: { name: 'typecheck', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
+  build: { name: 'build', cmd: 'node', args: ['-e', '"process.exit(0)"'], optional: true },
 };
 
 function makeNoTestRepo(parent) {
@@ -209,9 +217,14 @@ describe('cli-p-002: `swarm verify` exits non-zero unless the verdict is a clean
     seedRunWithWave(db, 'r1', repoPath);
     closeDb(dbPath);
   });
+  // F-8ad2d58d: rmSync itself must be Windows-tolerant, not just closeDb —
+  // closeDb only releases THIS process's own pooled connection, never the
+  // just-exited CLI child's, so the WAL sidecar can still be lock-held for a
+  // beat here. Matches the established sibling idiom (redrive.test.js,
+  // rewind.test.js, every wave4/6/8/10/12-*-swarm-cp-pins.test.js).
   after(() => {
     try { closeDb(dbPath); } catch { /* */ }
-    rmSync(tempDir, { recursive: true, force: true });
+    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
   });
 
   it('a no_tests verdict makes `swarm verify <run>` exit non-zero with an explanation', () => {
@@ -270,7 +283,10 @@ describe('cli-p-001: `swarm persist --ingest` exits non-zero when ingest hard-fa
     // SWARM_DB) the persist artifacts — one rmSync clears the lot. No repo-tree
     // cleanup is needed; a leak there would mean getOutputDir regressed, and
     // silently sweeping it would hide that (stageD-output-dir-tracks-db guards it).
-    rmSync(tempDir, { recursive: true, force: true });
+    // F-8ad2d58d: rmSync itself must be Windows-tolerant, not just closeDb —
+    // the two `it()`s above each spawn a CLI subprocess, which can still hold
+    // the WAL sidecar lock for a beat after it exits.
+    try { rmSync(tempDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
   });
 
   it('exit is non-zero and the reproduce line is surfaced when the ingest subprocess fails', () => {
@@ -374,8 +390,19 @@ describe('fp-p-003: buildDogfoodSubmission is dedup-stable for an INCOMPLETE run
 // ═══════════════════════════════════════════
 
 describe('cli-r-002: main() extraction keeps the help + usage contract intact', () => {
+  // SWARM_DB pin (task_6026249b): help/usage paths exit before touching the DB
+  // today, but that ordering is not contractual (cmdHistory already opens the
+  // DB before arg validation) — never let a CLI child inherit the repo default.
+  // Enforced package-wide by meta-wal-sidecar-teardown-guard.test.js.
+  const safeDbDir = mkdtempSync(join(tmpdir(), 'cli-r-002-safe-db-'));
+  after(() => { try { rmSync(safeDbDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
+
   function runCli(args) {
-    return spawnSync(process.execPath, [CLI_PATH, ...args], { encoding: 'utf-8', cwd: __dirname });
+    return spawnSync(process.execPath, [CLI_PATH, ...args], {
+      encoding: 'utf-8',
+      cwd: __dirname,
+      env: { ...process.env, SWARM_DB: join(safeDbDir, 'control-plane.db') },
+    });
   }
 
   it('no-args prints the help banner and exits 0', () => {
@@ -386,10 +413,46 @@ describe('cli-r-002: main() extraction keeps the help + usage contract intact', 
     assert.match(r.stdout, /Phases:/);
   });
 
-  it('an unknown command exits 1 and still prints the help banner', () => {
+  // CONTRACT CHANGED — wave 29, F-554bcd68 (Stage C humanization).
+  //
+  // This subtest previously read "an unknown command exits 1 and still prints
+  // the help banner" and asserted /Commands:/ on stdout. That was a
+  // REFACTOR-SAFETY snapshot, not a designed contract: cli-r-002 was a pure
+  // main() extraction whose own stated claim was "behavior is identical", so
+  // this block captured the status quo to prove the extraction changed
+  // nothing. It never argued that dumping the manual at a typo was RIGHT.
+  //
+  // F-554bcd68 changed it deliberately. The exit-1 half is unchanged and is
+  // still pinned below — only the banner assertion is replaced, by three
+  // stricter ones. Why the banner had to go:
+  //
+  //   1. STREAM DISCIPLINE. The banner went to stdout via console.log, so the
+  //      diagnostic was not on the error stream: `swarm dispach 2>/dev/null`
+  //      printed ~240 happy-looking lines, and `swarm dispach >/dev/null`
+  //      printed NOTHING AT ALL. A diagnostic that disappears under
+  //      stderr-only capture is not a diagnostic.
+  //   2. NO SIGNAL. A typo produced output byte-identical to a successful
+  //      `--help`. Nothing anywhere named the token that was wrong — grepping
+  //      the full pre-fix output for /unknown|not found|did you mean/ matched
+  //      zero times.
+  //   3. CONVENTION, verified rather than asserted: on this rig `git dispach`
+  //      prints exactly one line ("git: 'dispach' is not a git command. See
+  //      'git --help'.") and exits 1 — it does not dump the manual. The
+  //      finding's own fix text sanctions this shape explicitly ("without
+  //      necessarily dumping the entire reference").
+  //
+  // Discoverability is not lost: the one-line message names the nearest real
+  // verb AND points at `swarm --help`, which is one keystroke and strictly
+  // more targeted than 240 lines the operator must scroll.
+  it('an unknown command exits 1, names the token on stderr, and does not dump the reference', () => {
     const r = runCli(['definitely-not-a-command']);
     assert.equal(r.status, 1, `unknown command must exit 1; got ${r.status}`);
-    assert.match(r.stdout, /Commands:/);
+    assert.match(r.stderr, /Unknown command: 'definitely-not-a-command'/,
+      'the diagnostic must name the offending token, and must be on stderr (see 1 + 2 above)');
+    assert.match(r.stderr, /swarm --help/,
+      'and must still route the operator to the full command list');
+    assert.doesNotMatch(r.stdout, /Commands:/,
+      'a typo must NOT be answered with output indistinguishable from a successful --help');
   });
 
   it('verify with no run-id exits 1 with its Usage line (guard unchanged by exit-code fix)', () => {

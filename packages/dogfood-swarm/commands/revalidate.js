@@ -55,8 +55,13 @@ import { transitionWave } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { readBoundedJson } from '../lib/bounded-json-read.js';
-import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
+import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings, honorReusedFindingIds } from '../lib/fingerprint.js';
 import { getActualTouchedFiles, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
+// F-67ddcd02: the file_claims reconciliation step is shared with collect.js
+// (both write paths superseded the SAME way) — see reconcileFileClaims's own
+// doc comment there for the full rationale.
+import { reconcileFileClaims, scopeConfirmedToOwningDomain } from './collect.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
@@ -269,9 +274,15 @@ export function revalidate(opts) {
       const worktree = ar.worktree_path || run.local_path;
       // F-0e55b5ca (mirrors collect.js): per-wave dispatch-time base; the
       // init-time runs.commit_sha is the legacy fallback only.
-      const baseRef = isolated
-        ? resolveWorktreeBaseRef(worktree, run.branch)
-        : (wave.dispatch_sha || run.commit_sha);
+      // F-COORD-DIFFBASE (mirrors collect.js): dispatch_sha is preferred on
+      // the ISOLATED path too — merge-base(run.branch, HEAD) only equals the
+      // dispatch point when the worktrees forked from run.branch's tip, and
+      // returns a stale base otherwise. Revalidate is the recovery verb for a
+      // wave that collect just failed, so a fix here that left revalidate
+      // re-deriving would hand the operator a recovery path that reproduces
+      // the same phantom violations it is meant to clear.
+      const baseRef = wave.dispatch_sha
+        || (isolated ? resolveWorktreeBaseRef(worktree, run.branch) : run.commit_sha);
       const actualTouched = getActualTouchedFiles(worktree, { baseRef });
       // V2-CONTRACT-003 / V2-INVARIAN-006 (mirrors collect.js): a failed base
       // diff or an unresolvable fork point makes committed edits invisible —
@@ -401,14 +412,41 @@ export function revalidate(opts) {
         db.prepare('UPDATE agent_runs SET output_path = ?, error_message = NULL WHERE id = ?')
           .run(r.output_path, r.agent_run_id);
 
-        // Record file claims for amend (mirrors collect.js:288-294)
-        if (isAmend && r.ownership && Array.isArray(r.ownership.valid)) {
-          for (const v of r.ownership.valid) {
-            const domain = domainByName.get(r.domain);
-            db.prepare(`
-              INSERT OR IGNORE INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
-              VALUES (?, ?, 'edit', ?, 0)
-            `).run(r.agent_run_id, v.file, domain.id);
+        // Record file claims for amend (mirrors collect.js:793-799 / 835-841).
+        //
+        // F-3ee5d050: reconcileFileClaims must run whenever isAmend is true
+        // for this repair, NOT only when r.ownership ended up truthy.
+        // r.ownership is null whenever the validation pass's union of
+        // reported + independently-observed files came back EMPTY
+        // (revalidate.js's filesForOwnership.length > 0 gate) — which is
+        // exactly the shape of a fully-reverted repair: the agent's entire
+        // contribution to the wave WAS the out-of-domain edit, so the lawful
+        // fix is to remove it, not replace it with something else, and its
+        // corrected output.json reports files_changed: []. Pre-fix, that
+        // left the earlier collect() attempt's violation=1 rows for this
+        // agent_run in place forever, even though the agent_run itself
+        // genuinely transitioned to 'complete' — the exact phantom-violation
+        // class F-67ddcd02 exists to close, reachable through the one
+        // asymmetric branch that fix's collect.js/revalidate.js call-site
+        // placement left behind. The keep-set for that case is simply [];
+        // reconcileFileClaims's own empty-array branch already deletes every
+        // row for this agent_run_id with no NOT IN clause, so this is purely
+        // a call-site placement fix — collect.js's equivalent call
+        // (collect.js:799) already runs unconditionally, before its own
+        // `if (filesForOwnership.length > 0)` gate, for the identical reason.
+        if (isAmend) {
+          const keep = (r.ownership && Array.isArray(r.ownership.valid))
+            ? r.ownership.valid.map(v => v.file)
+            : [];
+          reconcileFileClaims(db, r.agent_run_id, keep);
+          if (r.ownership && Array.isArray(r.ownership.valid)) {
+            for (const v of r.ownership.valid) {
+              const domain = domainByName.get(r.domain);
+              db.prepare(`
+                INSERT OR IGNORE INTO file_claims (agent_run_id, file_path, claim_type, domain_id, violation)
+                VALUES (?, ?, 'edit', ?, 0)
+              `).run(r.agent_run_id, v.file, domain.id);
+            }
           }
         }
 
@@ -421,6 +459,9 @@ export function revalidate(opts) {
           for (const f of findings) {
             const sourceText = readFindingSource(sourceRoot, f.file);
             f.fingerprint = computeFingerprint(f, { sourceText });
+            // Same domain attribution collect.js stamps — the id-reuse
+            // ownership gate must hold on the repair path too.
+            f._declaringDomain = r.domain;
             repairedFindings.push(f);
           }
         }
@@ -450,7 +491,13 @@ export function revalidate(opts) {
       // already ingested by the failed collect and must keep their statuses.
       if (isAudit && repairedFindings.length > 0) {
         const priorMap = buildPriorMap(db, runId);
-        const classified = classifyFindings(repairedFindings, priorMap);
+        // Same declared-id reconciliation as collect.js's classify call — the
+        // repaired output is the same CONFIRM-queue contract arriving through
+        // the recovery path, and the wave-31 lesson is that this file is where
+        // a collect-only sweep goes to die. One definition, two callers, one
+        // ownership authority (the frozen map).
+        const reconciled = honorReusedFindingIds(repairedFindings, priorMap, domains);
+        const classified = classifyFindings(reconciled, priorMap);
         const stats = upsertFindings(db, runId, wave.id, {
           new: classified.new,
           recurring: classified.recurring,
@@ -527,7 +574,48 @@ export function revalidate(opts) {
             const currentFindings = db.prepare(
               'SELECT * FROM findings WHERE run_id = ? AND last_seen_wave = ?'
             ).all(runId, wave.id);
-            const classified = classifyFindings(currentFindings, priorMap, { full: true });
+            // The `confirmed` union — the ids agents DECLARED they checked.
+            // Without it this branch closes an absent prior on coverage alone,
+            // which is the lens-blind reading collect.js stopped doing: domain
+            // coverage proves the wave read the files, never that it looked for
+            // a given defect. This is the SECOND caller of classifyFindings;
+            // the fix that threaded `confirmed` through the first one missed it
+            // entirely, so the gate was live on the collect path and wide open
+            // here — found by swarm-cp-core's wave-31 audit, proven with a live
+            // PoC against the post-fix source.
+            //
+            // Read from agent_runs.output_path rather than the in-memory
+            // `results`: those hold only the runs THIS revalidate repaired,
+            // while the union needs every complete agent in the wave —
+            // including the ones the earlier failed collect already accepted.
+            // An unreadable or declaration-less output contributes nothing,
+            // which fails CLOSED (its priors stay `unverified`, open, re-asked)
+            // rather than closing a finding on a file we could not read.
+            // Each complete agent's declaration, tagged with the domain that
+            // made it — the domain is load-bearing, not decoration: an id is
+            // only honoured if the DECLARING agent's own globs cover the
+            // finding's file (F-18d0ef6d). Without that, any domain could close
+            // any other domain's finding by naming an id from the run-wide
+            // queue every agent can see.
+            const declarations = [];
+            for (const row of db.prepare(`
+              SELECT ar.output_path, d.name AS domain
+                FROM agent_runs ar
+                JOIN domains d ON d.id = ar.domain_id
+               WHERE ar.wave_id = ?
+                 ${LATEST_AGENT_RUN_PER_DOMAIN}
+                 AND ar.status = 'complete'
+            `).all(wave.id)) {
+              if (!row.output_path || !existsSync(row.output_path)) continue;
+              try {
+                const out = readBoundedJson(row.output_path);
+                if (Array.isArray(out?.confirmed)) {
+                  declarations.push({ domain: row.domain, confirmed: out.confirmed });
+                }
+              } catch { /* unreadable output declares nothing; fail closed */ }
+            }
+            const confirmed = scopeConfirmedToOwningDomain(db, runId, domains, declarations);
+            const classified = classifyFindings(currentFindings, priorMap, { full: true, confirmed });
             const stats = upsertFindings(db, runId, wave.id, {
               new: [], recurring: [], fixed: classified.fixed, unverified: [],
             });
@@ -607,13 +695,18 @@ export function revalidate(opts) {
         `inspect with \`swarm status ${runId}\`.)`
       : '';
 
+    // F-7c3e91a4 class (wave 18): immediate echo of the operator's own
+    // just-typed --reason — this line was the LEAST protected of the whole
+    // family (no quote-fencing at all, unlike every sibling site), so it
+    // now gets both the quote-fence and the escape. See
+    // commands/lib/escape-reason.js.
     report.summary =
       `Revalidate (APPLIED) — Wave ${wave.wave_number} (${wave.phase}):\n` +
       `  Repaired: ${repairCount} agent_run(s)\n` +
       `  Refused:  ${refusalCount}\n` +
       `  Skipped:  ${skipCount}\n` +
       `  Wave status: ${report.waveStatusBefore} → ${report.waveStatusAfter}${recoveryClause}\n` +
-      `  Reason: ${reason}`;
+      `  Reason: "${escapeReasonForDisplay(reason)}"`;
   } else {
     report.summary =
       `Revalidate (DRY-RUN) — Wave ${wave.wave_number} (${wave.phase}):\n` +
@@ -622,7 +715,7 @@ export function revalidate(opts) {
       `  Skipped:      ${skipCount}\n` +
       `  Wave status would: ${report.waveStatusBefore} → ` +
       `${plannedCount > 0 && report.waveStatusBefore === 'failed' ? 'collected (only if ALL agents repaired)' : report.waveStatusBefore}\n` +
-      `  Re-run with --apply to mutate. Reason will be: "${reason}"`;
+      `  Re-run with --apply to mutate. Reason will be: "${escapeReasonForDisplay(reason)}"`;
   }
 
   return report;
@@ -645,7 +738,19 @@ export function formatRevalidate(report) {
   if (report.refusals.length > 0) {
     out += '\nRefused:\n';
     for (const r of report.refusals) {
-      out += `  [REFUSE] ${r.domain}: ${r.reason}\n`;
+      // F-f1dae277 (wave 22): r.reason is a composite string — for an
+      // ownership refusal it is built above by joining
+      // `ownership (reported + git-observed): ${check.violations.map(v =>
+      // v.file).join(', ')}` (zero-privilege file paths from the SAME
+      // family F-4773fb77/wave 20 routed through escapeReasonForDisplay
+      // elsewhere), for the other refusal shapes it is a fixed template.
+      // Escaped HERE, at render, not at the join site above: `swarm
+      // revalidate` has no --format=json branch today, but escaping only at
+      // the text-rendering boundary (this file's, and this package's,
+      // established pattern) means one never has to be un-escaped if that
+      // branch is ever added, and avoids double-escaping the two refusal
+      // shapes differently.
+      out += `  [REFUSE] ${r.domain}: ${escapeReasonForDisplay(r.reason)}\n`;
     }
   }
 

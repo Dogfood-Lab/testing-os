@@ -174,10 +174,13 @@ jobs:
         # scripts/check-severity-contrast.test.mjs, but the architecture,
         # state-machines, and cli-reference pages have orthogonal a11y
         # surface area (figure+caption alt text, complex tables, dense
-        # code blocks). The current sweep runs 4 pages serially — same
-        # `npx -y` install reused across attempts via the npm cache, so
-        # the wall-clock overhead is modest. If pa11y churn becomes a
-        # maintenance burden, the future state is promotion to
+        # code blocks). The current sweep runs each curated page in
+        # `targets` below serially (see its live count echoed via
+        # `${#targets[@]}` at the end of this step, rather than a static
+        # number here that would drift the next time a page is added or
+        # removed) — same `npx -y` install reused across attempts via the
+        # npm cache, so the wall-clock overhead is modest. If pa11y churn
+        # becomes a maintenance burden, the future state is promotion to
         # site/package-lock.json (acknowledged in the original comment).
         #
         # Chromium sandbox shim: GitHub Actions ubuntu-latest runners disable

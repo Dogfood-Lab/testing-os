@@ -36,6 +36,20 @@
  * pinned to `verify-fixed-delta/v1` and isn't ready to migrate. The flag
  * routes through the v1 builder so output is byte-for-byte v1.
  *
+ * F-2f10ff78 (wave 29): the filename this dual-mode contract writes to
+ * (verify-fixed-<wave>.json, below) is deliberately schema-agnostic — which
+ * means a v2 invocation and a --legacy-v1 invocation against the identical
+ * run+wave write the IDENTICAL path, with no clobber guard and no version
+ * suffix. verifyFixed() now reads whatever schema is already on disk at that
+ * path immediately before the atomic write replaces it, and logs a durable
+ * `verify_fixed_schema_overwrite` event when it differs from the schema
+ * about to be written — so a consumer that reads a mysteriously
+ * wrong-shaped delta has a trail to follow. The clobber itself is
+ * unchanged: the filename contract is part of this repo's published
+ * backing-store API (root CLAUDE.md "Runtime data dirs at the repo root"),
+ * so widening it to encode schema version is a bigger, cross-cutting change
+ * left for a future finding, not folded into this one.
+ *
  * The command:
  *   1. Loads every finding WHERE run_id=? AND status='fixed'.
  *   2. Hands them to buildV2Delta() (or buildVerifyFixedDelta() under
@@ -54,6 +68,7 @@ import { loadFixedFindings, buildVerifyFixedDelta } from '../lib/verify-fixed.js
 import { buildV2Delta } from '../lib/verify-classifier-v2.js';
 import { renderVerifyFixedDelta } from '../lib/findings-render.js';
 import { logStage } from '../lib/log-stage.js';
+import { readBoundedJson } from '../lib/bounded-json-read.js';
 
 const V2_SCHEMA = 'verify-fixed-delta/v2';
 const V2_VERB = 'verify-fixed';
@@ -127,6 +142,52 @@ export function verifyFixed(opts) {
   if (!existsSync(dirname(deltaPath))) {
     mkdirSync(dirname(deltaPath), { recursive: true });
   }
+
+  // F-2f10ff78 (Stage C): --legacy-v1 and the v2 default write to the
+  // IDENTICAL deltaPath for a given run+wave — the filename is deliberately
+  // schema-agnostic (the module header's v1/v2 dual-mode contract above), so
+  // a v2 invocation followed by a --legacy-v1 invocation against the same
+  // run+wave (or vice versa) silently clobbers the other schema with no
+  // warning and no version suffix in the filename. Changing the filename
+  // contract or refusing the overwrite outright are both bigger, more
+  // cross-cutting changes than this Stage C humanization pass should make
+  // unilaterally (the filename is part of this repo's published backing-
+  // store API — see root CLAUDE.md "Runtime data dirs at the repo root").
+  // What IS fixed: the missing observability. Read whatever schema is
+  // already on disk at this exact path BEFORE the atomic write replaces it,
+  // and log a durable, greppable event when it differs from the schema
+  // about to be written — a downstream consumer that reads a mysteriously
+  // wrong-shaped delta now has an actual trail to follow instead of nothing.
+  //
+  // Routed through readBoundedJson rather than a bare JSON.parse(readFileSync)
+  // (the bounded-json discipline, amend1-bounded-json-discipline.test.js). The
+  // helper's own "out of scope" carve-out names lib/verify-fixed.js — that is
+  // the sibling module parsing DB-derived columns, NOT this file: here the
+  // input is a real on-disk artifact whose size scales with the run's finding
+  // count, so no bound can be honestly argued from this call site, and only
+  // one small field is needed off the front of it. A prior file that is
+  // oversized, unreadable, or corrupt fails CLOSED to "no warning" rather than
+  // taking down the verb: this check is best-effort observability layered onto
+  // the write path, and diagnosing a malformed prior delta is not its job.
+  if (existsSync(deltaPath)) {
+    let priorSchema;
+    try {
+      priorSchema = readBoundedJson(deltaPath).schema;
+    } catch {
+      priorSchema = undefined;
+    }
+    if (priorSchema && priorSchema !== delta.schema) {
+      logStage('verify_fixed_schema_overwrite', {
+        component: 'dogfood-swarm',
+        runId: opts.runId,
+        wave: waveNumber,
+        deltaPath,
+        priorSchema,
+        newSchema: delta.schema,
+      });
+    }
+  }
+
   atomicWriteFileSync(deltaPath, JSON.stringify(delta, null, 2) + '\n', 'utf-8');
 
   const output = renderVerifyFixedDelta(delta, opts.format, opts.stream || process.stdout);

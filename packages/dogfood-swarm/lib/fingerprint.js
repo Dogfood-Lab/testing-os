@@ -57,16 +57,32 @@
 import { createHash } from 'node:crypto';
 
 import { logStage } from './log-stage.js';
+import { matchesAnyGlob } from './findings-filter.js';
 
 /**
  * Normalize a file path for fingerprinting.
- * Strips leading ./ and normalizes separators.
+ * Strips leading ./, collapses repeated/trailing slashes, and normalizes
+ * separators and case.
+ *
+ * F-c63da27b: a trailing slash ('foo.js/') and a doubled internal slash
+ * ('packages//dogfood-swarm/...' — a common path-join artifact, e.g.
+ * `${prefix}/${file}` where prefix already ends in '/') used to fingerprint
+ * DIFFERENTLY from the clean spelling, even though they name the identical
+ * file. Two audit passes reporting the same real defect, where one happens
+ * to compute a doubled- or trailing-slash path, would silently fail
+ * cross-wave dedup — the same double-count risk (fixed + new) the
+ * description-exclusion in this file's header was written to prevent.
+ * Collapsing repeated slashes BEFORE stripping the leading './' also
+ * normalizes a leading './/', which a strict single-slash leading-dot strip
+ * alone would otherwise leave as a stray '/'.
  */
 function normalizePath(filePath) {
   if (!filePath) return '';
   return filePath
     .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/')
     .replace(/^\.\//, '')
+    .replace(/\/$/, '')
     .toLowerCase();
 }
 
@@ -174,7 +190,15 @@ export function computeFingerprint(finding, options = {}) {
     finding.category || 'unknown',
     finding.rule_id || '',
     normalizePath(finding.file),
-    (finding.symbol || '').toLowerCase(),
+    // F-a8c0cf04: symbol case is NOT folded, unlike the path component above.
+    // A file path's case-folding absorbs LLM-transcription slips for the SAME
+    // real file (F-c63da27b) — but two identifiers differing only by case are
+    // almost always two DIFFERENT things in JS/TS (a `Runner` class vs. a
+    // `runner` instance, a `Component` vs. a `component` helper), not
+    // spelling variants of one identifier. Folding it let an unrelated new
+    // finding about `runner` silently collide with an already-closed finding
+    // about `Runner` and get discarded — proven live, two independent probes.
+    finding.symbol || '',
     location,
   ];
 
@@ -286,7 +310,57 @@ export function disambiguateFingerprints(findings, priorFingerprints = new Map()
   const resolved = new Map();
   for (const [base, members] of groups) {
     if (members.length === 1) {
-      resolved.set(members[0], base);
+      const only = members[0];
+      // F-a8c0cf04 (widened by F-20bde286): the collision-safety-net below
+      // only ever runs for a same-WAVE group of size > 1 — but the
+      // cross-wave collision this guards against never produces one. A
+      // finding whose prior row is absent from `findings` this wave (it was
+      // not re-reported) can never sit alongside a colliding new finding as
+      // a same-wave sibling; the group here is a singleton even though a
+      // real collision exists one wave away. This is the cross-wave analogue
+      // of a same-wave collision group — one member just lives in
+      // `priorFingerprints` instead of `findings` — so salt it exactly like
+      // an ordinary non-keeper UNLESS the raw (pre-normalizePath) file
+      // spelling genuinely agrees with the prior's. A spelling MATCH is
+      // either an exact regression (new information — let it reopen via the
+      // ordinary `recurring` path below) or a same-file rediscovery under
+      // different casing — the case-fold's intended job (F-c63da27b) —
+      // which must keep collapsing, regardless of the prior's status.
+      //
+      // F-20bde286: a spelling MISMATCH was originally salted ONLY when
+      // priorRow.status === 'fixed'. Every OTHER status (new, recurring,
+      // unverified, deferred) fell straight through to `resolved.set(only,
+      // base)` below with no check at all — so a genuinely different,
+      // higher-severity finding that happened to share the coarse key with
+      // an OPEN or deferred prior silently merged into that prior's row via
+      // classifyFindings' ordinary matching, discarding the new finding's
+      // real severity/description. shouldSaltCrossWaveCollision (below)
+      // makes the same raw-mismatch check fire for every prior status, using
+      // SEVERITY as the discriminator for non-'fixed' priors: a re-audit
+      // that rediscovers the SAME still-open bug under a different spelling
+      // reports it at the same-or-a-lower severity essentially always, so
+      // only a STRICTLY HIGHER incoming severity is treated as proof this is
+      // a different defect. See shouldSaltCrossWaveCollision's own header
+      // for the full case-by-case breakdown of why 'fixed' stays
+      // unconditional while the open/deferred statuses are severity-gated.
+      const priorRow = priorFingerprints.get(base);
+      if (priorRow && shouldSaltCrossWaveCollision(only, priorRow)) {
+        const salted = saltByContent(base, only, 0);
+        logStage('fingerprint_disambiguated_cross_wave', {
+          component: 'dogfood-swarm',
+          base_fingerprint: base,
+          salted_fingerprint: salted,
+          prior_status: priorRow.status,
+          prior_severity: priorRow.severity || null,
+          incoming_severity: only.severity || null,
+          file: only.file || only.file_path || null,
+          prior_file: priorRow.file_path || priorRow.file || null,
+          category: only.category || null,
+        });
+        resolved.set(only, salted);
+        continue;
+      }
+      resolved.set(only, base);
       continue;
     }
 
@@ -337,6 +411,174 @@ function normalizeDescription(description) {
 }
 
 /**
+ * True when a finding's RAW (pre-normalizePath) file spelling differs from a
+ * prior row's raw spelling, even though their NORMALIZED identity (and
+ * therefore base fingerprint) already matches. normalizePath's case/slash
+ * folding exists to absorb LLM-transcription slips for the SAME real file
+ * (F-c63da27b's header) — a raw mismatch means the fingerprint match is
+ * coincidental: two differently-spelled files (which, on this repo's
+ * case-sensitive ubuntu-latest CI, really are two different files) rather
+ * than two spellings of the one file the fold was designed to unify.
+ *
+ * Requires POSITIVE evidence on BOTH sides: a prior row with no file info at
+ * all (e.g. a hand-built fixture, or a genuinely file-less finding) must NOT
+ * be treated as "differs" just because the current finding has a file — that
+ * would fire the cross-wave safety net on missing data rather than a proven
+ * mismatch, wrongly salting an ordinary regression whose prior row simply
+ * never carried file_path.
+ */
+function rawFileIdentityDiffers(finding, priorRow) {
+  const findingFile = finding.file || '';
+  const priorFile = priorRow.file_path || priorRow.file || '';
+  if (!findingFile || !priorFile) return false;
+  return findingFile !== priorFile;
+}
+
+/**
+ * Severity rank — LOWER number is MORE severe. Mirrors findings-digest.js's
+ * module-private `SEV_ORDER` (also used by findings-render.js's inline sort
+ * map) rather than importing it: that constant is not exported, and a
+ * four-entry rank table is cheap enough to hold to the same convention here
+ * without wiring a new cross-file dependency for it. (lib/queries/cross-
+ * run-analytics.js's SQL CASE statement ranks the OPPOSITE direction —
+ * CRITICAL=4 down to LOW=1 — because SQLite's MAX() aggregate needs "larger
+ * wins"; that inversion is intrinsic to doing the reduction in SQL, not a
+ * second, driftable JS convention.) An unrecognized/missing severity ranks
+ * as the LEAST severe (never wins a "more severe than" comparison) — the
+ * safe default used throughout this module for absent data.
+ */
+const SEVERITY_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+
+function severityRank(severity) {
+  return SEVERITY_RANK[severity] ?? 4;
+}
+
+/**
+ * The MORE severe of two severities (lower SEVERITY_RANK wins). Missing/
+ * unrecognized input never outranks a real value on either side.
+ */
+function maxSeverity(a, b) {
+  return severityRank(b) < severityRank(a) ? b : a;
+}
+
+/**
+ * F-20bde286: decide whether a cross-wave singleton collision — the current
+ * wave's finding is the ONLY member of its base-fingerprint group, and a
+ * PRIOR row already occupies that exact base fingerprint — must be salted
+ * (kept as its own distinct row) rather than left to fall through to
+ * classifyFindings' ordinary prior-match handling.
+ *
+ * Both scenarios this function must tell apart have rawFileIdentityDiffers()
+ * === true (that guard runs first, unconditionally); the discriminator below
+ * is what separates them:
+ *
+ *   (1) TRUE COLLISION — an unrelated, materially different finding happens
+ *       to share the coarse key (category/rule_id/symbol/line-bucket) with a
+ *       prior row, purely because the file paths differ only by the
+ *       normalize-away casing F-c63da27b folds. MUST be salted: merging it
+ *       hides its real severity/description inside the older row and — for
+ *       an OPEN prior — can defeat lib/advance.js#checkFindingSeverity,
+ *       which reads the merged row's stale `severity` column.
+ *   (2) INTENDED CASE-FOLD JOB — the SAME still-live bug, re-audited by a
+ *       pass that happened to re-case the path differently. MUST keep
+ *       collapsing (NOT be salted): this is F-c63da27b's entire reason for
+ *       existing, pinned by this file's own "cross-wave PATH case-fold
+ *       stability is preserved for a still-open prior" tests.
+ *
+ * TWO discriminators tell these apart for every status except 'fixed' — a
+ * severity check FIRST, a description-content check SECOND (F-f0c537bf,
+ * this class's 4th pass; see git log for fp-002 / F-a8c0cf04 / F-20bde286,
+ * the three passes before it):
+ *
+ *   - SEVERITY: a re-audit re-describing the SAME open bug does not
+ *     spontaneously invent a jump to a STRICTLY higher severity tier — LLM
+ *     severity assessment has noise, but noise moves a rating by one notch
+ *     or leaves it level far more often than it manufactures a new, more
+ *     alarming defect out of an old one. A strictly higher incoming
+ *     severity is, on its own, sufficient positive evidence of scenario (1)
+ *     — checked FIRST, independent of description content.
+ *   - DESCRIPTION (F-f0c537bf): severity alone left a gap. Two
+ *     INDEPENDENTLY-authored, genuinely different bugs at the SAME (or a
+ *     lower) severity tier, sharing the coarse key by coincidence, used to
+ *     fall all the way through to scenario (2) unconditionally — silently
+ *     merging into the prior's row and discarding the incoming finding's
+ *     real description/recommendation with no separate finding_id to
+ *     recover it from. This does not defeat checkFindingSeverity's numeric
+ *     gate the way scenario (1) can (the companion maxSeverity fix in
+ *     upsertFindings still bumps the surviving row to the more severe of
+ *     the two), but it still permanently hides that a second, distinct bug
+ *     exists. For the equal-or-lower case, this function now ALSO compares
+ *     the incoming finding's description against the prior row's — the
+ *     SAME normalizeDescription()-based exact-match chooseBareKeeper
+ *     already uses to identify a same-wave collision's rightful keeper. A
+ *     description that does NOT match (post-normalization: lowercased,
+ *     whitespace-collapsed, trimmed) is treated as proof this is scenario
+ *     (1) after all, even though severity alone did not give it away. A
+ *     MATCHING description is scenario (2) — the same re-audited bug,
+ *     case-respelled — and collapses exactly as it did before F-f0c537bf.
+ *
+ *     Why exact equality, not fuzzy similarity: this file has no
+ *     fuzzy-match dependency anywhere, and exact equality (after the SAME
+ *     normalization chooseBareKeeper already trusts for same-wave keeper
+ *     selection) is sufficient for every "must still collapse" fixture in
+ *     this package's pin suite — a genuine re-audit of the SAME bug reports
+ *     the SAME prose far more often than not. The asymmetry of harm also
+ *     favors erring toward a false split over a false collapse: a false
+ *     split is a small, visible, operator-correctable duplicate row; a
+ *     false collapse is a silent, permanent loss of a distinct bug's
+ *     description/recommendation with no separate finding_id to recover it
+ *     from.
+ *
+ *   - status === 'fixed': UNCONDITIONAL salt on raw-mismatch, no severity OR
+ *     description check — F-a8c0cf04's original, already-proven behavior,
+ *     unchanged. A raw-mismatch against CLOSED material has no "just
+ *     re-cased, still the same open bug" reading available in the first
+ *     place (there is no "still open" for a fixed row); treating it with
+ *     LESS suspicion than an open prior would be backwards, not more
+ *     lenient.
+ *   - status in {new, recurring, unverified, deferred}: salted iff the
+ *     incoming severity is STRICTLY more severe than priorRow.severity, OR
+ *     (F-f0c537bf) the incoming description does not match priorRow's
+ *     description post-normalization. 'deferred' rides this same rule
+ *     rather than being excluded: a coordinator's decision to defer one
+ *     specific, understood bug must not silently absorb an unrelated
+ *     defect — same severity tier or not — under that same deferred banner
+ *     (the harm F-20bde286 rates worse in kind than the open-status gate
+ *     defeat, even though deferred findings are already excluded from the
+ *     gate's count) — but a matching-description, equal-or-lower-severity
+ *     rediscovery while deferred is still exactly scenario (2) and must
+ *     still reach classifyFindings' `recurred_while_closed` handling
+ *     (F-130dee59/F-833dff6f) untouched.
+ *   - 'rejected': buildPriorMap excludes 'rejected' rows from the map this
+ *     function's `priorRow` argument is drawn from (F-6a8a98d6's comment on
+ *     classifyFindings), so this function never observes that status today.
+ *     Left un-special-cased rather than silently folded into the open-status
+ *     branch, so a future change to that exclusion does not inherit an
+ *     untested behavior by accident.
+ *
+ * @param {object} finding — the current-wave singleton (only member of its group)
+ * @param {object} priorRow — the prior-wave row occupying the same base fingerprint
+ * @returns {boolean}
+ */
+function shouldSaltCrossWaveCollision(finding, priorRow) {
+  if (!rawFileIdentityDiffers(finding, priorRow)) return false;
+  if (priorRow.status === 'fixed') return true;
+  if (priorRow.status === 'new' || priorRow.status === 'recurring'
+    || priorRow.status === 'unverified' || priorRow.status === 'deferred') {
+    if (severityRank(finding.severity) < severityRank(priorRow.severity)) return true;
+    // F-f0c537bf: severity alone cannot tell a genuinely different,
+    // same-or-lower-severity bug apart from the SAME bug re-audited under
+    // different path casing — both look identical to the check above. A
+    // description that does not match the prior row's (post-normalization)
+    // is the second, content-based signal: two independently-authored
+    // findings essentially never share prose verbatim, while a re-audit of
+    // the SAME defect overwhelmingly does.
+    return normalizeDescription(finding.description) !== normalizeDescription(priorRow.description);
+  }
+  return false;
+}
+
+/**
  * Choose the member of a collision group that keeps the BARE fingerprint.
  *
  * - With a prior row: prefer the member whose normalized description equals the
@@ -345,6 +587,17 @@ function normalizeDescription(description) {
  * - Without a prior row: the first member under the stable content sort.
  */
 function chooseBareKeeper(base, members, priorRow) {
+  // A DECLARED id reuse (honorReusedFindingIds) is authoritative over content
+  // heuristics: without this, a same-wave sibling that coincidentally shares
+  // the prior's base fingerprint could win the keeper slot on description
+  // sort, merging the UNRELATED sibling into the prior (stale description,
+  // severity bumped) while the true re-report gets salted into a duplicate —
+  // proven live pre-ship, and strictly worse than the pre-helper baseline.
+  // Two honored members (two agents declaring one id) is degenerate input;
+  // fall through to the deterministic content heuristics for that.
+  const honored = members.filter((m) => m._idReuseHonored === true);
+  if (honored.length === 1) return honored[0];
+
   if (priorRow) {
     const priorDesc = normalizeDescription(priorRow.description);
     const descMatches = members.filter((m) => normalizeDescription(m.description) === priorDesc);
@@ -440,11 +693,24 @@ function saltByContent(base, member, ordinal) {
  * @param {string[]} [scope.scopePaths] — path prefixes covered by the current wave.
  *   A prior finding's path is "in scope" iff it starts with one of these prefixes.
  *   Path comparison is normalized via normalizePath() (forward slashes, lowercase).
- * @returns {{ new: Array, recurring: Array, fixed: Array, unverified: Array }}
+ * @param {string[]} [scope.confirmed] — finding_ids the wave's agents EXPLICITLY
+ *   declared they checked (their `confirmed` output field). This is the caller's
+ *   finest coverage assertion and the only one that survives a lens change:
+ *   `full`/`scopePaths` say the wave looked at the PATH, never that it looked for
+ *   THIS defect. When supplied, an absent prior closes ONLY if its id appears
+ *   here; otherwise it is `unverified` (open, re-evaluated next wave). Omit it and
+ *   the coarser reading stands unchanged — every pre-existing caller and this
+ *   package's own scope pins (CP4-SCOPE-WIRING, B-BACK-003) keep their contract,
+ *   because a caller that asserts nothing finer is not silently held to it.
+ * @returns {{ new: Array, recurring: Array, fixed: Array, unverified: Array, recurred_while_closed: Array }}
+ *   recurred_while_closed holds priors rediscovered this wave while
+ *   deferred/rejected (F-130dee59) — NOT reclassified into `recurring`, so
+ *   their status is untouched; upsertFindings logs an observability event for
+ *   each without overwriting status.
  */
 export function classifyFindings(currentFindings, priorFingerprints, scope = null) {
   const currentSet = new Set();
-  const result = { new: [], recurring: [], fixed: [], unverified: [] };
+  const result = { new: [], recurring: [], fixed: [], unverified: [], recurred_while_closed: [] };
 
   // fp-002 Part 1 (fp-r-001 repair): salt the NON-keeper members of any
   // within-wave base-fingerprint collision so two genuinely-distinct findings
@@ -463,8 +729,31 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
     const fp = finding.fingerprint || computeFingerprint(finding);
     currentSet.add(fp);
 
-    if (priorFingerprints.has(fp)) {
-      result.recurring.push({ ...finding, fingerprint: fp, prior: priorFingerprints.get(fp) });
+    const prior = priorFingerprints.get(fp);
+    if (prior) {
+      // F-130dee59: a coordinator's deferred/rejected verdict is a decision
+      // NOT to act — the operator has seen the defect and chosen to accept or
+      // reject it, not claimed it is gone. Rediscovery is not new information
+      // that should silently overturn that decision; it is exactly what the
+      // not-rediscovered branch below already protects via the identical
+      // terminal-status check, but this branch previously had no check at
+      // all, so `upsertFindings`' updateRecurring blindly overwrote
+      // status='deferred' -> 'recurring' with no log line — unlike
+      // 'rejected', which the (fp not in priorFingerprints) INSERT-OR-IGNORE
+      // path already protects explicitly (see upsertFindings). `rejected` is
+      // checked here too, defensively: buildPriorMap excludes it today so
+      // this branch cannot currently observe it, but a future change to that
+      // exclusion should not silently reopen this exact gap.
+      //
+      // `fixed` is deliberately NOT covered here: a fixed finding recurring
+      // IS new information — a regression — so it flows through the ordinary
+      // recurring path below and reopens, mirroring the asymmetry the
+      // not-rediscovered branch documents for its own terminal check.
+      if (prior.status === 'deferred' || prior.status === 'rejected') {
+        result.recurred_while_closed.push({ ...finding, fingerprint: fp, prior, priorStatus: prior.status });
+        continue;
+      }
+      result.recurring.push({ ...finding, fingerprint: fp, prior });
     } else {
       result.new.push({ ...finding, fingerprint: fp });
     }
@@ -476,17 +765,51 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
   const scopePaths = Array.isArray(scope?.scopePaths)
     ? scope.scopePaths.map(normalizePath).filter(Boolean)
     : null;
+  // The caller's FINEST coverage assertion: the ids agents explicitly declared
+  // they checked. `null` = the caller made no such assertion and the coarser
+  // full/scopePaths reading stands (every pre-existing caller, incl. this
+  // package's own scope pins). See the `scope.confirmed` @param for why.
+  const confirmed = Array.isArray(scope?.confirmed)
+    ? new Set(scope.confirmed.map((id) => String(id).toUpperCase()))
+    : null;
 
   for (const [fp, prior] of priorFingerprints) {
     if (currentSet.has(fp)) continue;
-    // Terminal statuses are not re-classified — once fixed/deferred/rejected,
-    // a finding stays out of the new/recurring/fixed/unverified buckets.
+    // Terminal-WHEN-ABSENT statuses: once fixed/deferred/rejected and NOT
+    // seen again this wave, a finding stays put — absence never invents a
+    // new verdict for a closed finding. `fixed` is NOT also
+    // terminal-when-REDISCOVERED (see the disambiguated loop above): a fixed
+    // finding reappearing is a regression, which reopens via the ordinary
+    // recurring path. `deferred`/`rejected` ARE terminal-when-rediscovered
+    // too (same loop, `recurred_while_closed`) — an operator's decision not
+    // to act is not overturned by the defect still being there; only an
+    // operator can reopen it.
     if (prior.status === 'deferred' || prior.status === 'rejected' || prior.status === 'fixed') continue;
 
     const priorPath = normalizePath(prior.file_path || prior.file || '');
     const inScope = fullScope || isPathInScope(priorPath, scopePaths);
 
-    if (inScope) {
+    // Coverage says the wave looked at the PATH. It cannot say the wave looked
+    // for THIS DEFECT — the lens decides that, and the lens changes between
+    // stages. A stage-d-audit agent hunting typography covers every file a
+    // health finding lives in while having no way to see it, so its silence is
+    // guaranteed by the lens, not earned by the defect being gone. That is the
+    // wave-28 shape (where the silence was guaranteed by the brief's own
+    // "do NOT re-report" order) wearing different clothes: absence
+    // manufactured by something other than a fix.
+    //
+    // So when the caller supplies `confirmed`, an id NOT in it was never
+    // declared checked and cannot close. It becomes `unverified` — the state
+    // B-BACK-003 built for exactly this ("we do not know whether the defect was
+    // fixed or simply not looked at"), which stays OPEN and re-enters the next
+    // wave's prior map. This is what makes the brief's "Did not check it? Say
+    // so" instruction mechanical rather than decorative: before this, an agent
+    // could honestly disclose it never looked and the finding closed anyway,
+    // because nothing read the disclosure.
+    const declaredChecked = confirmed === null
+      || confirmed.has(String(prior.finding_id || '').toUpperCase());
+
+    if (inScope && declaredChecked) {
       result.fixed.push({ ...prior, fingerprint: fp });
     } else {
       result.unverified.push({ ...prior, fingerprint: fp });
@@ -494,6 +817,183 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
   }
 
   return result;
+}
+
+/**
+ * Honor a CONFIRM-queue re-report's declared finding id.
+ *
+ * The audit brief's confirmation queue tells an agent: "Still present? Report
+ * it again, reusing its id from below. That records it as recurring, not as a
+ * duplicate." Before this helper, that promise was not mechanical: the
+ * agent-supplied `id` was never read — matching ran purely on the content
+ * fingerprint, whose inputs (category, rule_id, symbol, line-context) the
+ * queue does not even show the agent. A faithful re-report with a rewritten
+ * description and a re-derived line landed as a NEW row, duplicating a
+ * still-open prior (10 of 14 intended re-reports did exactly that in one
+ * wave), while the prior stayed open as unverified — a state no lawful verb
+ * can route to an amend. Content matching also cannot be made reliable here
+ * even in principle: the context-hash LOCATION component is computed from the
+ * CURRENT source at each collect, so any edit near the finding between waves
+ * shifts the window and breaks the match.
+ *
+ * The declared id is the stable handle built for exactly this (D3B-006), so:
+ * when a current finding's `id` exactly matches an OPEN prior's finding_id
+ * (case-insensitive, same UPPER() convention as `swarm approve --ids`) AND
+ * the finding names the SAME file as that prior (normalizePath equality —
+ * an id typo'd onto an unrelated file must not inherit the prior's identity),
+ * the finding takes the prior's fingerprint and the prior's RAW file spelling.
+ *
+ * The raw-spelling alignment matters: shouldSaltCrossWaveCollision treats a
+ * raw-file mismatch + rewritten description as evidence of a coincidental
+ * collision and would salt the re-report right back into a new row. A
+ * deliberate, declared id reuse is the opposite of coincidence, so the
+ * mapping removes the mismatch instead of fighting the salt logic.
+ *
+ * Deliberately NOT new policy: this changes only HOW a prior is matched
+ * (declared id instead of content luck). WHAT happens on the match stays with
+ * classifyFindings' existing branches — recurring for open priors, regression
+ * reopen for fixed ones, recurred_while_closed for deferred (rejected rows
+ * are not in the prior map at all, so a reused rejected id falls through to
+ * the INSERT-conflict path unchanged). A mismatched or unknown id changes
+ * nothing and is logged, never guessed.
+ *
+ * Two authority rules, both adversarially earned pre-ship (the first review
+ * of this helper returned DO-NOT-SHIP with live PoCs for each):
+ *
+ *   - OWNERSHIP. The CONFIRM queue is run-wide: every domain's brief shows
+ *     every open finding, so "the agent knew the id and the file" proves it
+ *     can read its own prompt, nothing more. Without an ownership gate, any
+ *     domain could recur / severity-escalate / regression-reopen a finding it
+ *     never read — proven live through the real collect(): a packages/b/**
+ *     domain flipped a packages/a/** finding to recurring and LOW→CRITICAL by
+ *     echoing its own prompt. That is F-18d0ef6d's cross-domain-vouching
+ *     shape on the recur path, so it takes the same rule the confirmed[]
+ *     close path takes: the DECLARING domain's globs must cover the prior's
+ *     file (matchesAnyGlob — routing, closing, and now recurring answer to
+ *     one authority). A finding with no domain attribution fails closed.
+ *
+ *   - THE APPROVED WINDOW. `approved` means "queued for amend": between
+ *     `swarm approve` and the amend landing, the defect is KNOWN present, so
+ *     an honest re-confirmation proves nothing new — but updateRecurring
+ *     would flip approved → recurring, silently dropping the finding out of
+ *     findingsForDomain's amend routing and undoing the coordinator's verb.
+ *     Proven live through collect(). An approved prior is therefore never
+ *     honored (logged, so the re-confirmation is visible, not swallowed).
+ *     The content-fingerprint path's pre-existing behavior for approved rows
+ *     is deliberately not widened by this helper.
+ *
+ * @param {Array} findings — current-wave findings (before classifyFindings);
+ *   each entry may carry `_declaringDomain` (stamped by the collecting
+ *   caller from the agent that reported it)
+ * @param {Map<string, object>} priorFingerprints — buildPriorMap output
+ * @param {Array<{name: string, globs: string[]}>} [domains] — the frozen map
+ *   (the same rows scopeConfirmedToOwningDomain takes). Omitted/empty →
+ *   nothing can be honored (fail closed).
+ * @returns {Array} new array; entries are replaced (not mutated) only when a
+ *   declared id reuse is honored. Honored entries carry
+ *   `_idReuseHonored: true`, which chooseBareKeeper treats as authoritative
+ *   over content heuristics in a same-wave collision group.
+ */
+export function honorReusedFindingIds(findings, priorFingerprints, domains = []) {
+  if (!(priorFingerprints instanceof Map) || priorFingerprints.size === 0) {
+    return findings;
+  }
+  const byId = new Map();
+  for (const row of priorFingerprints.values()) {
+    if (row && row.finding_id) byId.set(String(row.finding_id).toUpperCase(), row);
+  }
+  if (byId.size === 0) return findings;
+  const domainByName = new Map(
+    (Array.isArray(domains) ? domains : []).map((d) => [d.name, d]),
+  );
+
+  return findings.map((raw) => {
+    // `_idReuseHonored` is trust metadata only this helper may mint: the
+    // agent-output schema leaves findings additionalProperties-open, so an
+    // agent can ship the flag in its own JSON, and chooseBareKeeper consumes
+    // it DOWNSTREAM of the ownership gate — a forged copy hijacks collision-
+    // group keeper selection and re-opens the exact cross-domain escalation
+    // the gate closed (proven live by the pre-ship review's PoC). Stripping
+    // it here, before any logic, is what makes the flag mean "this helper
+    // honored a declared reuse" and nothing else. `_declaringDomain` is the
+    // opposite case — INPUT metadata whose integrity the callers own by
+    // assigning it unconditionally AFTER their spread of the agent object
+    // (forge attempt proven squashed through the real collect()).
+    let finding = raw;
+    if (raw && Object.hasOwn(raw, '_idReuseHonored')) {
+      const { _idReuseHonored, ...rest } = raw;
+      finding = rest;
+    }
+    const declaredId = finding && finding.id ? String(finding.id).toUpperCase() : '';
+    if (!declaredId) return finding;
+    const prior = byId.get(declaredId);
+    if (!prior) return finding;
+
+    if (prior.status === 'approved') {
+      logStage('confirm_id_reuse_skipped_approved', {
+        component: 'dogfood-swarm',
+        declared_id: finding.id,
+        declaring_domain: finding._declaringDomain || null,
+        file: prior.file_path || prior.file || null,
+      });
+      return finding;
+    }
+
+    const priorFile = prior.file_path || prior.file || '';
+    if (normalizePath(finding.file) !== normalizePath(priorFile)) {
+      logStage('confirm_id_reuse_file_mismatch', {
+        component: 'dogfood-swarm',
+        declared_id: finding.id,
+        declaring_domain: finding._declaringDomain || null,
+        finding_file: finding.file || null,
+        prior_file: priorFile || null,
+        prior_status: prior.status || null,
+      });
+      return finding;
+    }
+
+    // F-00d67cb6: normalize priorFile through normalizePath() — the SAME
+    // normalize-then-match shape the file-mismatch check three lines above
+    // already uses — before the ownership glob match. Without this, a prior
+    // row whose file_path carries a capitalized directory segment (a
+    // realistic LLM-transcription variant of the real, all-lowercase file
+    // on disk) fails the file-mismatch check's normalized comparison the
+    // SAME way as any other spelling variant (i.e. it still MATCHES, since
+    // normalizePath folds case on both sides there), but then hits this raw,
+    // un-normalized matchesAnyGlob call — minimatch is case-sensitive, so
+    // the same capitalized path that just proved identity three lines up
+    // wrongly fails ownership here, and a faithful same-id re-report of an
+    // OWNED file is refused as confirm_id_reuse_unowned. The identical class
+    // is open as F-f347d858 against commands/collect.js's
+    // scopeConfirmedToOwningDomain (a different domain's file, not edited
+    // here) — both call sites converge on the same normalize-then-match
+    // shape independently.
+    const declaringDomain = domainByName.get(finding._declaringDomain);
+    if (!declaringDomain || !matchesAnyGlob(normalizePath(priorFile), declaringDomain.globs)) {
+      logStage('confirm_id_reuse_unowned', {
+        component: 'dogfood-swarm',
+        declared_id: finding.id,
+        declaring_domain: finding._declaringDomain || null,
+        prior_file: priorFile || null,
+        prior_status: prior.status || null,
+      });
+      return finding;
+    }
+
+    if (finding.fingerprint === prior.fingerprint && (finding.file || '') === priorFile) {
+      return { ...finding, _idReuseHonored: true };
+    }
+    logStage('confirm_id_reuse_applied', {
+      component: 'dogfood-swarm',
+      declared_id: finding.id,
+      declaring_domain: finding._declaringDomain || null,
+      prior_status: prior.status || null,
+      prior_fingerprint: prior.fingerprint,
+      replaced_fingerprint: finding.fingerprint || null,
+      file: priorFile || null,
+    });
+    return { ...finding, fingerprint: prior.fingerprint, file: priorFile || finding.file, _idReuseHonored: true };
+  });
 }
 
 /**
@@ -544,7 +1044,7 @@ export function buildPriorMap(db, runId) {
  * @param {string} runId
  * @param {number} waveId
  * @param {object} classified — output of classifyFindings
- * @returns {{ inserted: number, updated: number, fixed: number, unverified: number }}
+ * @returns {{ inserted: number, updated: number, fixed: number, unverified: number, preserved: number }}
  */
 export function upsertFindings(db, runId, waveId, classified) {
   // fp-002 Part 2 (safety net): INSERT OR IGNORE so a residual within-wave
@@ -573,11 +1073,26 @@ export function upsertFindings(db, runId, waveId, classified) {
   `);
 
   const updateRecurring = db.prepare(`
-    UPDATE findings SET status = 'recurring', last_seen_wave = ? WHERE id = ?
+    UPDATE findings SET status = 'recurring', last_seen_wave = ?, severity = ? WHERE id = ?
   `);
 
   const updateFixed = db.prepare(`
     UPDATE findings SET status = 'fixed', last_seen_wave = ? WHERE id = ?
+  `);
+
+  // F-833dff6f: recurred-while-closed findings need last_seen_wave bumped
+  // WITHOUT touching status — the opposite split from updateRecurring/
+  // updateFixed above, which bump both together. Status must stay untouched
+  // (that is F-130dee59's whole point: a coordinator's deferred/rejected
+  // call is not overturned by mere recurrence); last_seen_wave must NOT stay
+  // untouched, because the finding genuinely WAS observed again this wave,
+  // and every per-wave operator surface that reasons about "what did this
+  // wave touch" keys off last_seen_wave (commands/status.js's
+  // currentWaveFindingCount half-state check; commands/revalidate.js's
+  // full-coverage reclassification query `WHERE last_seen_wave = ?`) — not
+  // off finding_events, which none of them join against today.
+  const updateLastSeenPreserveStatus = db.prepare(`
+    UPDATE findings SET last_seen_wave = ? WHERE id = ?
   `);
 
   // Note: unverified does NOT bump last_seen_wave — the agent did not see
@@ -588,7 +1103,7 @@ export function upsertFindings(db, runId, waveId, classified) {
     UPDATE findings SET status = 'unverified' WHERE id = ?
   `);
 
-  let inserted = 0, updated = 0, fixed = 0, unverified = 0;
+  let inserted = 0, updated = 0, fixed = 0, unverified = 0, preserved = 0;
 
   const tx = db.transaction(() => {
     // Insert new findings.
@@ -626,10 +1141,23 @@ export function upsertFindings(db, runId, waveId, classified) {
         // an explicit finding_event so triage can see "this keeps coming
         // back" WITHOUT reopening the rejected row (rejection is a
         // coordinator decision; recurrence alone does not overturn it).
+        //
+        // The last_seen_wave bump mirrors F-833dff6f's fix in the
+        // recurred_while_closed loop below — this is that finding's sibling
+        // gap, on the path 'rejected' actually takes. The two closed statuses
+        // are one class in intent (F-130dee59) but reach upsert through
+        // different branches: 'deferred' via that loop, 'rejected' via this
+        // insert-conflict. The event row alone left last_seen_wave-keyed
+        // operator surfaces blind to the recurrence — notably status.js's
+        // currentWaveFindingCount, where a wave rediscovering ONLY rejected
+        // findings counted 0 and tripped the half-state "artifacts present,
+        // findings absent" breadcrumb. Status stays untouched: that is
+        // F-130dee59's point and this does not re-litigate it.
         const existing = db.prepare(
           'SELECT id, status FROM findings WHERE run_id = ? AND (fingerprint = ? OR finding_id = ?)'
         ).get(runId, f.fingerprint, fid);
         if (existing && existing.status === 'rejected') {
+          updateLastSeenPreserveStatus.run(waveId, existing.id);
           insertEvent.run(
             existing.id, 'recurred', waveId,
             'recurred-while-rejected: rediscovered by this wave; rejected status preserved'
@@ -650,12 +1178,49 @@ export function upsertFindings(db, runId, waveId, classified) {
       inserted++;
     }
 
-    // Update recurring findings
+    // Update recurring findings.
+    //
+    // F-20bde286 (part 2, defense-in-depth): bump the stored severity to the
+    // MORE severe of (prior, incoming) — see maxSeverity's header. This
+    // closes the checkFindingSeverity gate-defeat consequence even for a
+    // merge shouldSaltCrossWaveCollision's own identity logic decided IS the
+    // same finding (an equal-or-lower-severity case-variant rediscovery, or
+    // an ordinary same-spelling regression): the stored severity a wave-gate
+    // reads must never stay pinned to a STALE, less-severe value just
+    // because an earlier wave happened to create the row. When a bump
+    // actually happens, the finding_event note names it so the escalation is
+    // visible in the audit trail, not just the resulting column value.
     for (const f of classified.recurring) {
       if (f.prior?.id) {
-        updateRecurring.run(waveId, f.prior.id);
-        insertEvent.run(f.prior.id, 'recurred', waveId, null);
+        const bumpedSeverity = maxSeverity(f.prior.severity, f.severity);
+        updateRecurring.run(waveId, bumpedSeverity, f.prior.id);
+        insertEvent.run(
+          f.prior.id, 'recurred', waveId,
+          bumpedSeverity !== f.prior.severity
+            ? `severity escalated ${f.prior.severity} -> ${bumpedSeverity} on recurrence`
+            : null,
+        );
         updated++;
+      }
+    }
+
+    // F-130dee59: findings rediscovered while deferred/rejected. classifyFindings
+    // already kept their status untouched (see recurred_while_closed's header
+    // comment) — this loop only adds the same observability 'rejected' already
+    // had via the INSERT-OR-IGNORE conflict path above, generalized to
+    // whichever closed status applied, so an operator can see "this keeps
+    // coming back" without the recurrence overturning their decision. Callers
+    // that hand-build a partial classified-shaped object (revalidate.js) simply
+    // omit this bucket — status-preservation itself does not depend on it,
+    // since classifyFindings already never routed these into `recurring`.
+    for (const f of (classified.recurred_while_closed || [])) {
+      if (f.prior?.id) {
+        updateLastSeenPreserveStatus.run(waveId, f.prior.id);
+        insertEvent.run(
+          f.prior.id, 'recurred', waveId,
+          `recurred-while-${f.priorStatus}: rediscovered by this wave; ${f.priorStatus} status preserved`
+        );
+        preserved++;
       }
     }
 
@@ -685,5 +1250,5 @@ export function upsertFindings(db, runId, waveId, classified) {
   });
 
   tx();
-  return { inserted, updated, fixed, unverified };
+  return { inserted, updated, fixed, unverified, preserved };
 }

@@ -99,7 +99,33 @@ export async function runDriftChecks({ repoRoot, configPath, checkId }) {
     };
   }
 
-  const config = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  // F-016e7a8c: this parse was unguarded — a hand-edit JSON syntax error
+  // (this file's own docstring invites exactly this: "Adding a new check is
+  // a config edit") propagated as an uncaught SyntaxError out of this async
+  // function (a rejected promise), bypassing the documented Programmatic API
+  // contract (`{ clean, reports, checksRun, checksTotal }`) this function's
+  // own JSDoc promises — every OTHER failure path in this function (config
+  // not found, above; unknown checkId, below) already degrades to that
+  // shape instead of throwing. Mirrors the schema-conformance handler's
+  // identical try/catch a few hundred lines down, which already proves the
+  // codebase knows this pattern; it just wasn't applied to this function's
+  // own top-level config load.
+  let config;
+  try {
+    config = JSON.parse(readFileSync(cfgPath, 'utf8'));
+  } catch (err) {
+    return {
+      clean: false,
+      reports: [{
+        checkId: '<config>',
+        severity: 'config-error',
+        message: `[check-doc-drift] config file is not valid JSON: ${relative(repoRoot, cfgPath)} — ${err.message}`,
+        hint: 'Check the config file for a JSON syntax error (trailing comma, unclosed bracket).',
+      }],
+      checksRun: 0,
+      checksTotal: 0,
+    };
+  }
   const allChecks = config.checks ?? [];
   const checks = checkId ? allChecks.filter((c) => c.id === checkId) : allChecks;
 
@@ -652,13 +678,32 @@ const schemaConformanceHandler = {
       check.negativeFilenamePattern ?? '^invalid-',
     );
 
-    if (targetFiles.length === 0 && !check.allowEmpty) {
-      return [{
-        checkId: check.id,
-        severity: 'config-error',
-        message: `[${check.id}] no target files matched: ${(check.targets ?? []).join(', ')}`,
-        hint: 'Set "allowEmpty": true in the config if matching zero files is acceptable (e.g. early in a run before any agent output exists).',
-      }];
+    // F-5d126106: per-glob zero-match check, not union-level. The prior
+    // guard checked only the FLATTENED union (targetFiles.length === 0), so
+    // any one glob matching files permanently masked every other glob
+    // matching zero — this is exactly how the live-run wave-outputs glob
+    // (swarms/swarm-*/wave-*/outputs/*.json — structurally unmatchable on
+    // CI because swarms/.gitignore ignores `swarm-*/` wholesale) stayed
+    // invisible for as long as swarms/__schema-fixtures__/*.json kept
+    // matching its 4 committed fixtures. `allowEmptyGlobs` names the
+    // specific target globs EXPECTED to legitimately match zero files on
+    // CI, declaring that intent explicitly rather than a check-wide
+    // `allowEmpty: true` silently covering a glob that rotted for an
+    // unrelated reason. Every glob not listed there is checked
+    // independently and must match at least one file.
+    if (!check.allowEmpty) {
+      const allowEmptyGlobs = new Set(check.allowEmptyGlobs ?? []);
+      const emptyRequired = (check.targets ?? []).filter(
+        (pattern) => !allowEmptyGlobs.has(pattern) && expandGlobs([pattern], repoRoot, { recursive: true }).length === 0,
+      );
+      if (emptyRequired.length > 0) {
+        return [{
+          checkId: check.id,
+          severity: 'config-error',
+          message: `[${check.id}] no target files matched: ${emptyRequired.join(', ')}`,
+          hint: 'The target glob(s) may have rotted (docs reorganized, path typo). Fix the glob in scripts/doc-drift-patterns.json, or add it to "allowEmptyGlobs" only if matching zero files is genuinely expected for that specific glob (e.g. a local-only live-run tree that CI never populates).',
+        }];
+      }
     }
 
     const reports = [];
@@ -765,7 +810,28 @@ const frameworkSelfTestHandler = {
         message: `[${check.id}] config file not found: ${cfgPath}`,
       }];
     }
-    const config = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    // F-016e7a8c: the same unguarded JSON.parse(readFileSync(...)) pattern
+    // fixed in runDriftChecks above, repeated here — this handler re-reads
+    // the config file to self-validate the framework, and a malformed file
+    // threw uncaught out of this run() rather than the structured
+    // DriftReport[] this handler's own return type promises. (The generic
+    // per-handler try/catch in runDriftChecks' own dispatch loop happens to
+    // already convert this specific throw into SOME config-error report
+    // today, but with a generic "handler threw" message and a misleading
+    // "misconfigured source/target path" hint — not the JSON-syntax-specific
+    // guidance this failure actually needs, and any future direct caller of
+    // this handler's run() would not get that safety net at all.)
+    let config;
+    try {
+      config = JSON.parse(readFileSync(cfgPath, 'utf8'));
+    } catch (err) {
+      return [{
+        checkId: check.id,
+        severity: 'config-error',
+        message: `[${check.id}] config file is not valid JSON: ${cfgPath} — ${err.message}`,
+        hint: 'Check the config file for a JSON syntax error (trailing comma, unclosed bracket).',
+      }];
+    }
     const reports = [];
     for (const entry of config.checks ?? []) {
       // Skip self — framework-self-test asserting its own required fields is
@@ -1071,17 +1137,23 @@ function resolveOne(spec, repoRoot) {
  *
  * Implementation: locate the binding, find the opening brace of its object
  * literal, then walk the source tracking brace/bracket/paren depth and
- * string/comment state so nested objects, arrays, and template literals don't
- * confuse the boundary. Keys are counted as the identifiers/string-literals
- * that sit at depth 1 immediately before a `:`. A trailing comma produces no
- * phantom key because we only count a key when a `:` follows it at depth 1.
+ * string/template/regex/comment state so nested objects, arrays, template
+ * literals, and regex literals don't confuse the boundary. Keys are counted
+ * as the identifiers/string-literals that sit at depth 1 immediately before
+ * a `:`. A trailing comma produces no phantom key because we only count a
+ * key when a `:` follows it at depth 1.
  *
  * This is deliberately a small purpose-built scanner rather than a full JS
  * parser: pulling acorn/espree into a CI doc-gate would be a heavyweight dep
  * for one resolver, and the dispatch-table shape we parse is constrained
  * (a flat map of verb → handler). If the map ever grows computed keys or
  * spread elements the scanner throws, which surfaces as a config-error rather
- * than a silently-wrong count.
+ * than a silently-wrong count. F-6cfe4d01: a regex-literal VALUE (e.g.
+ * `b: /a:b/`) is skipped as one atomic unit rather than re-tokenized char by
+ * char — without that, an internal `:` reads as a phantom key confirmation
+ * (an overcount) and any bracket the pattern contains (e.g. `/a{2,3}/`)
+ * would corrupt the depth counter this function's own boundary-finding
+ * depends on.
  *
  * @param {string} src         - JS source
  * @param {string} bindingName - e.g. 'commands'
@@ -1141,7 +1213,43 @@ export function countCommandMapEntries(src, bindingName, fileLabel) {
       if (depth === 1) pendingKeyAtTopLevel = true;
       continue;
     }
+    // F-6cfe4d01: skip regex literals wholesale, mirroring the string/
+    // template skip above. A bare '/' here is never division — line/block
+    // comments were already consumed above, and the constrained flat
+    // verb->handler shape this resolver supports never puts an arithmetic
+    // expression in value position, so a stray '/' can only be a regex
+    // literal (e.g. `b: /a:b/`). A character class (`[...]`) is tracked
+    // separately because an unescaped '/' inside one does not terminate the
+    // literal (e.g. `/[a/b]/`). Never a key, so — unlike the string/template
+    // skip above — this never sets pendingKeyAtTopLevel.
+    if (c === '/') {
+      i++;
+      let inClass = false;
+      while (i < n && (inClass || src[i] !== '/')) {
+        if (src[i] === '\\') { i += 2; continue; }
+        if (src[i] === '[') inClass = true;
+        else if (src[i] === ']') inClass = false;
+        i++;
+      }
+      i++; // past closing '/' (or past end-of-source if unterminated)
+      while (i < n && /[a-z]/i.test(src[i])) i++; // regex flags (g, i, m, ...)
+      continue;
+    }
 
+    // F-6cfe4d01: a computed key (`[expr]:`) at the top level of the object
+    // literal is outside the constrained shape this resolver supports — fail
+    // loud, mirroring the ternary/spread/method-shorthand checks below. Must
+    // run before the generic '[' depth++ immediately after, and is gated on
+    // awaitingKey (KEY position) so a VALUE-position array literal (e.g.
+    // `verb: [1, 2, 3]`) still falls through to the generic bracket handler
+    // unaffected — pre-fix, the '[' there bumped depth first regardless of
+    // position, so the computed key's contents were swallowed into a nested
+    // "value" and silently vanished from the count instead of throwing.
+    if (c === '[' && depth === 1 && awaitingKey) {
+      throw new Error(
+        `command-map-count: computed key ('[expr]:') in '${bindingName}' object literal in ${fileLabel} — the resolver only supports a flat verb→handler map (its bracket contents would be swallowed as a nested value, silently vanishing from the count)`,
+      );
+    }
     if (c === '{' || c === '[' || c === '(') {
       depth++;
       i++;
@@ -1387,9 +1495,9 @@ function globToRegex(glob) {
  */
 function doublestarToRegex(glob) {
   // First mark `**/` as a placeholder to expand later.
-  const SENTINEL_DOUBLE = ' DBL ';
-  const SENTINEL_SINGLE = ' SGL ';
-  const SENTINEL_TRAIL = ' TRL ';
+  const SENTINEL_DOUBLE = '\0DBL\0';
+  const SENTINEL_SINGLE = '\0SGL\0';
+  const SENTINEL_TRAIL = '\0TRL\0';
   // F-ae195c1d: a TRAILING `**` means "everything under this directory".
   // Routing it through the generic doublestar sentinel compiled `outputs/**`
   // to `^outputs/(?:.*/)?$`, which requires the match to END at a slash
@@ -1639,6 +1747,17 @@ if (isMain) {
 
   runDriftChecks({ repoRoot, checkId, configPath })
     .then((result) => {
+      // F-a80acc6d: hoisted above the print so BOTH the header text and the
+      // exit code read the same two booleans (previously computed AFTER the
+      // print, so the header text was a hardcoded literal instead of a
+      // reflection of what's actually in `reports`). Prior behavior labeled
+      // every non-clean result 'DRIFT', even when every report was a
+      // config-error — mislabeling a broken CHECK (gating nothing) as a
+      // content problem (docs disagree with source). Those mean opposite
+      // things to an operator scanning a CI log first-line: 'drift' says
+      // update a doc; 'config-error' says fix the check itself.
+      const hasConfigError = result.reports.some((r) => r.severity === 'config-error');
+      const hasDrift = result.reports.some((r) => r.severity === 'drift');
       if (json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
@@ -1646,7 +1765,8 @@ if (isMain) {
         if (result.clean) {
           console.log(`[check-doc-drift] OK — ${verb} passed.`);
         } else {
-          console.error(`[check-doc-drift] DRIFT — ${result.reports.length} report(s) from ${verb}:\n`);
+          const kinds = [hasConfigError && 'CONFIG-ERROR', hasDrift && 'DRIFT'].filter(Boolean).join(' + ');
+          console.error(`[check-doc-drift] ${kinds} — ${result.reports.length} report(s) from ${verb}:\n`);
           for (const r of result.reports) {
             console.error(`  ${r.severity.toUpperCase()}: ${r.message}`);
             if (r.missing && r.missing.length) {
@@ -1659,9 +1779,10 @@ if (isMain) {
           }
         }
       }
-      const hasConfigError = result.reports.some((r) => r.severity === 'config-error');
-      const hasDrift = result.reports.some((r) => r.severity === 'drift');
-      process.exit(hasConfigError ? 2 : hasDrift ? 1 : 0);
+      // Fail closed on an unrecognized severity: only 'drift' and
+      // 'config-error' are emitted today, but a report of any OTHER
+      // severity should still red the run rather than silently exit 0.
+      process.exit(hasConfigError ? 2 : result.reports.length > 0 ? 1 : 0);
     })
     .catch((err) => {
       console.error(`[check-doc-drift] fatal: ${err.message}`);

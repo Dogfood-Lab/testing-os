@@ -205,7 +205,43 @@ export function buildRunExport(db, runId) {
  * Used by downstream systems to determine pass/fail/partial.
  */
 export function computeRunVerdict(exportData) {
-  if (exportData.run.status === 'complete') return 'pass';
+  // F-b721038e: `complete` used to short-circuit HERE, before the
+  // open-findings count below ever ran — so 'complete' (the run's normal
+  // SUCCESS terminal state, not an edge case) always returned 'pass'
+  // regardless of what findings were still open. A run that picked up an
+  // open CRITICAL and was forced past the (overridable) finding_severity
+  // gate via a documented `swarm advance --override` carried that open
+  // finding all the way to 'complete' with zero further check, and this
+  // function erased it entirely from the published verdict — while the
+  // sibling repoknowledge-bridge#buildAuditPayload, built from the SAME
+  // exportData in the SAME `swarm persist` call, has never special-cased
+  // run.status: it derives overallStatus purely from isOpenFinding() and
+  // correctly reported 'fail'/blocking_release:true for the identical
+  // finding state. Two artifacts, one call, opposite verdicts.
+  //
+  // The fix: 'complete' no longer skips the check. It now falls through to
+  // the same open-findings count every other non-aborted status already
+  // used, so 'complete' means 'pass' only when it is actually earned.
+  // 'aborted' keeps its unconditional 'fail' below.
+  //
+  // F-6859e492: this paragraph used to end "...the safe/conservative
+  // direction, unlike 'complete', so it is not subject to the same fix" —
+  // true of THIS function in isolation, but that framing missed that the
+  // cross-artifact-agreement test above ("two artifacts, one call, opposite
+  // verdicts") applies to every run.status value, not only 'complete'.
+  // buildAuditPayload never special-cased run.status either way, so for
+  // 'aborted' it fell straight through to the SAME open-findings computation
+  // 'complete' used pre-fix — reporting overall_status:'pass'/
+  // blocking_release:false whenever an aborted run happened to have zero
+  // open findings (or all findings closed), while this function kept
+  // returning 'fail' unconditionally. The fix mirrors THIS branch's
+  // conservative semantics into buildAuditPayload
+  // (lib/persist/repoknowledge-bridge.js) rather than loosening it here: an
+  // aborted run is never a safe 'pass' in either artifact, because the run
+  // itself never reached a point where "no open findings" means "nothing
+  // left to find." See export-verdict-aborted-sibling-agreement.test.js for
+  // the 4-state × both-artifacts pin (this file's own agreement test above
+  // only covers 'complete').
   if (exportData.run.status === 'aborted') return 'fail';
 
   // F-5c562913: the verdict counts OPEN findings only. Pre-fix, hasCritical

@@ -15,11 +15,13 @@
  *               (all three code paths) and `swarm status`.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 
 import { ALL_PHASES, renderPhaseList, renderPhaseColumns } from './lib/phases.js';
 import { renderTopLevelError } from './lib/error-render.js';
@@ -27,6 +29,13 @@ import { formatDomainRow } from './lib/domain-row.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const CLI_PATH = join(__dirname, 'cli.js');
+
+// SWARM_DB pin (task_6026249b): the bad-args / --help spawns below exit before
+// touching the DB today, but that ordering is not contractual — never let a
+// CLI child inherit the repo-default control-plane.db. Enforced package-wide
+// by meta-wal-sidecar-teardown-guard.test.js.
+const SAFE_DB_DIR = mkdtempSync(join(tmpdir(), 'w10-pins-safe-db-'));
+after(() => { try { rmSync(SAFE_DB_DIR, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
 
 /** Capture console.error output produced by fn(). */
 function captureStderr(fn) {
@@ -63,14 +72,20 @@ describe('F-c972badf — one shared ordered phase-list constant renders every op
   });
 
   it('the cmdDispatch bad-args usage renders the same ordered phase list as the hint', () => {
-    const r = spawnSync(process.execPath, [CLI_PATH, 'dispatch'], { encoding: 'utf-8', cwd: __dirname });
+    const r = spawnSync(process.execPath, [CLI_PATH, 'dispatch'], {
+      encoding: 'utf-8', cwd: __dirname,
+      env: { ...process.env, SWARM_DB: join(SAFE_DB_DIR, 'control-plane.db') },
+    });
     assert.notEqual(r.status, 0, 'missing args must exit non-zero');
     assert.ok(r.stderr.includes(renderPhaseList()),
       'pre-fix: cli.js:512 printed a DIFFERENT order (audit-abc, amend-abc, stage-d pair, feature pair) than the hint');
   });
 
   it('the top-level --help Phases block contains all ten phases from the shared constant', () => {
-    const r = spawnSync(process.execPath, [CLI_PATH], { encoding: 'utf-8', cwd: __dirname });
+    const r = spawnSync(process.execPath, [CLI_PATH], {
+      encoding: 'utf-8', cwd: __dirname,
+      env: { ...process.env, SWARM_DB: join(SAFE_DB_DIR, 'control-plane.db') },
+    });
     const out = r.stdout + r.stderr;
     for (const p of ALL_PHASES) {
       assert.ok(out.includes(p), `--help Phases block must render "${p}" from the shared constant`);

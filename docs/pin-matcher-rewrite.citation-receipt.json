@@ -1,0 +1,152 @@
+{
+  "schema": "roleos-citation-receipt/v1",
+  "kind": "citation-verification",
+  "tool": "roleos verify-citations",
+  "input": "C:/Users/mikey/AppData/Local/Temp/claude/E--AI-testing-os/fb26a51a-f46f-4830-9381-31c057b110b3/scratchpad/pin-matcher-rewrite.dispatch.md",
+  "verdict": "escalate",
+  "blocking": false,
+  "advisory": true,
+  "citations_sha256": "7bb138507d63ffbce13efbdd2128b30618425141cb7b930ab498ab0f9670af77",
+  "prism_receipt": {
+    "id": "prism-01kxn552ptv5etrb22sa7tryzt",
+    "signature": "cfc2e430f4717f66c8f5a6f52b43b66ccfe50c3ca2eb3240561e4acaf6a2ea1f1cc22ecfe5137d7085d2757945985cddb1d80f7fd8bad2d53b5a8284c9596903",
+    "verdict": "escalate"
+  },
+  "retrieval_pins": [
+    {
+      "id": "c1",
+      "identifier": "10.1007/s11334-007-0024-1",
+      "query": "https://api.crossref.org/works/10.1007/s11334-007-0024-1?mailto=verify%40prism-verify.dev",
+      "source_sha256": "69f4b9486e357e862e57066fa4193ae6ed63d78a3dfc7a19c96bbf4f992d88d8",
+      "existence": "resolved"
+    },
+    {
+      "id": "c2",
+      "identifier": "10.1007/s10664-018-9653-2",
+      "query": "https://api.crossref.org/works/10.1007/s10664-018-9653-2?mailto=verify%40prism-verify.dev",
+      "source_sha256": "83321aa845dad8099b998e36a361a0bac05a56b864004b49b0fb39e9beab0f5b",
+      "existence": "resolved"
+    },
+    {
+      "id": "c3",
+      "identifier": "10.1145/2568225.2568271",
+      "query": "https://api.crossref.org/works/10.1145/2568225.2568271?mailto=verify%40prism-verify.dev",
+      "source_sha256": "f8383734a71b19f2db528f8c06131d7bcbfe935510546be329a8f730bd8125fc",
+      "existence": "resolved"
+    },
+    {
+      "id": "c4",
+      "identifier": "10.1145/2635868.2635929",
+      "query": "https://api.crossref.org/works/10.1145/2635868.2635929?mailto=verify%40prism-verify.dev",
+      "source_sha256": "5aa490a1b75e2d5c0cd5a105f818cccb573205bc53b4b29ffb9b96e3845f2611",
+      "existence": "resolved"
+    },
+    {
+      "id": "c5",
+      "identifier": "10.1145/3183519.3183521",
+      "query": "https://api.crossref.org/works/10.1145/3183519.3183521?mailto=verify%40prism-verify.dev",
+      "source_sha256": "21c86f176d67860abbb554ecb0be3eb35253e1282bab672183278b6361e785ab",
+      "existence": "resolved"
+    },
+    {
+      "id": "c6",
+      "identifier": "10.1145/3180155.3180183",
+      "query": "https://api.crossref.org/works/10.1145/3180155.3180183?mailto=verify%40prism-verify.dev",
+      "source_sha256": "ca6356c8bf03cce2434cc55ec76ed5ec743824c059e1e0cbaaa3981d78a30ab2",
+      "existence": "resolved"
+    },
+    {
+      "id": "c7",
+      "identifier": "arXiv:2010.13464",
+      "query": "https://export.arxiv.org/api/query?id_list=2010.13464",
+      "source_sha256": "48ed6fbe29c32ed5659606524d0c391286f0fb908a376db8798719eabfcdde07",
+      "existence": "resolved"
+    },
+    {
+      "id": "c8",
+      "identifier": "10.1109/TSE.2010.62",
+      "query": "https://api.crossref.org/works/10.1109/TSE.2010.62?mailto=verify%40prism-verify.dev",
+      "source_sha256": "014b57f031fd4cc085b2faa7b3d881c7c62eca1aa2cc7c000a03b45bb7cfff7f",
+      "existence": "resolved"
+    },
+    {
+      "id": "c9",
+      "identifier": "10.1145/3338112",
+      "query": "https://api.crossref.org/works/10.1145/3338112?mailto=verify%40prism-verify.dev",
+      "source_sha256": "040648902a74a849a630edf7bb0e4e9a58fe196840613c7477b8f0da929ab86a",
+      "existence": "resolved"
+    },
+    {
+      "id": "c10",
+      "identifier": "10.1145/2644805",
+      "query": "https://api.crossref.org/works/10.1145/2644805?mailto=verify%40prism-verify.dev",
+      "source_sha256": "4c6fe5a92d53edd9ac58edf8740a7029100c03e6ebd276dee8de6514ed53fd7e",
+      "existence": "resolved"
+    },
+    {
+      "id": "c11",
+      "identifier": "10.1145/3715729",
+      "query": "https://api.crossref.org/works/10.1145/3715729?mailto=verify%40prism-verify.dev",
+      "source_sha256": "1a84e448c41c00fa7ace09e4f90cf34f663ef76018b05b7c7f7e724b8bb75a9b",
+      "existence": "resolved"
+    },
+    {
+      "id": "c12",
+      "identifier": "10.1145/1646353.1646374",
+      "query": "https://api.crossref.org/works/10.1145/1646353.1646374?mailto=verify%40prism-verify.dev",
+      "source_sha256": "65f104a350e0b99b84bb0298663c438ea68282afe73d7a0c105dcbe73204a977",
+      "existence": "resolved"
+    },
+    {
+      "id": "c13",
+      "identifier": "10.1145/1993498.1993532",
+      "query": "https://api.crossref.org/works/10.1145/1993498.1993532?mailto=verify%40prism-verify.dev",
+      "source_sha256": "2839440468a010570d41fa318c8481b4817be022c9b857ef14bc501703ff768a",
+      "existence": "resolved"
+    },
+    {
+      "id": "c14",
+      "identifier": "10.1145/2594291.2594334",
+      "query": "https://api.crossref.org/works/10.1145/2594291.2594334?mailto=verify%40prism-verify.dev",
+      "source_sha256": "4c495ddf1e13ac0c8056730610534fbfc2f9e7346b382152f0dd9ff43646512c",
+      "existence": "resolved"
+    },
+    {
+      "id": "c15",
+      "identifier": "10.1109/TSE.2014.2372785",
+      "query": "https://api.crossref.org/works/10.1109/TSE.2014.2372785?mailto=verify%40prism-verify.dev",
+      "source_sha256": "13ec3c94678e062a4fdcc0b77ff210c9fe7f16ced48b3823d41ff112455cdc1d",
+      "existence": "resolved"
+    },
+    {
+      "id": "c16",
+      "identifier": "arXiv:2507.15892",
+      "query": "https://export.arxiv.org/api/query?id_list=2507.15892",
+      "source_sha256": "6493901e7eede8cbe8f6ed5a11f364a8bdebc50d45c4c05ff4293ee634b463d1",
+      "existence": "resolved"
+    },
+    {
+      "id": "c17",
+      "identifier": "arXiv:2408.13855",
+      "query": "https://export.arxiv.org/api/query?id_list=2408.13855",
+      "source_sha256": "7f2d8cc191a643f0f2c507259ad9b88c00dabc489feaee049e0ffd9bb4f9b096",
+      "existence": "resolved"
+    },
+    {
+      "id": "c18",
+      "identifier": "arXiv:2009.01120",
+      "query": "https://export.arxiv.org/api/query?id_list=2009.01120",
+      "source_sha256": "491b06bd0b0f35c44fd8fa7c7814dad75d4a5b6e39182e763949eda3af93afde",
+      "existence": "resolved"
+    },
+    {
+      "id": "c19",
+      "identifier": "10.1109/QRS54544.2021.00032",
+      "query": "https://api.crossref.org/works/10.1109/QRS54544.2021.00032?mailto=verify%40prism-verify.dev",
+      "source_sha256": "d2e4988bcd152cfbb2626d78bc603e9f19b83e89d0564dd09a942d6dab552742",
+      "existence": "resolved"
+    }
+  ],
+  "local_panel": null,
+  "chain_sha256": "4dbefdb0995e3090d5c5a63fbd41a3707a5eebc19a3355f87a6643648a3d18e5"
+}

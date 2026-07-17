@@ -109,6 +109,8 @@ import {
 } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { pluralize } from './lib/pluralize.js';
 
 const REDRIVE_TARGET_STATUS = 'dispatched';
 
@@ -268,11 +270,24 @@ export function redrive(opts) {
     });
   }
 
-  // ── Pre-apply: receipt-byte-identity hash for every PRESERVED row ──
+  // ── Pre-apply: receipt-byte-identity hash for every `complete` agent_run ──
   // Receipt-byte-identity contract: the test pins this hash, asserting it
   // unchanged after --apply. We hash the identity-carrying agent_run fields
-  // plus the agent_state_events history for each preserved agent.
-  const preservedReceiptHashesBefore = computeReceiptHashes(db, preserved);
+  // plus the agent_state_events history for each complete agent.
+  //
+  // F-a5f6b585: the watch-set is re-queried directly from the DB by
+  // (wave_id, status='complete') — NOT derived from the `preserved` array
+  // above. `preserved` is a product of the SAME classification
+  // (AGENT_PRESERVED_SOURCES) this gate exists to police; hashing only what
+  // the classification calls "preserved" makes the gate structurally unable
+  // to see a classification bug (move 'complete' into
+  // AGENT_ELIGIBLE_SOURCES and `preserved` silently becomes [] — the gate
+  // would then compare {} to {} and report `true` in exactly the run where
+  // every complete receipt was about to be destroyed). Querying the DB
+  // independently means the before-hash captures whatever is ACTUALLY
+  // 'complete' right now, regardless of what the classifier above believes.
+  const preservedReceiptHashesBefore = computeReceiptHashes(db, waveId);
+  const receiptsChecked = Object.keys(preservedReceiptHashesBefore).length;
 
   // ── Plan the wave transition ──
   // If there are eligible agent_runs OR if the wave is currently in a
@@ -311,7 +326,21 @@ export function redrive(opts) {
     summary: null,
     preserved_receipt_hashes_before: preservedReceiptHashesBefore,
     preserved_receipt_hashes_after: null,
+    // F-a5f6b585: three-state contract, never a vacuous `true`.
+    //   false          — dry-run (or apply never reached the tx) — nothing
+    //                    was verified yet, distinct from "verified and ok".
+    //   'not_applicable' — apply ran, the independent watch-set was EMPTY
+    //                    (zero 'complete' agent_runs in this wave) — there
+    //                    was nothing to check, so we refuse to call that a
+    //                    passing verification.
+    //   true           — apply ran, the watch-set was non-empty, and the
+    //                    in-tx byte-identity check (below) passed. Any
+    //                    failure of that check throws and rolls back the
+    //                    tx (F-ad3004f4) — a `report` documenting `false`
+    //                    for a non-empty, failed check is never returned;
+    //                    the caller gets a thrown Error instead.
     receipt_byte_identity_verified: false,
+    receipts_checked: receiptsChecked,
     design_calls_surfaced: [
       {
         name: 'agent_target_status_on_redrive',
@@ -382,6 +411,13 @@ export function redrive(opts) {
   // in an inconsistent state. transitionAgent / transitionWave each do their
   // own UPDATE + INSERT, and better-sqlite3 nests transactions cleanly under
   // a single outer tx().
+  //
+  // F-ad3004f4: `preservedReceiptHashesAfter` / `receiptByteIdentityVerified`
+  // are declared here (outer scope) so the transaction body below can write
+  // them via closure — the actual byte-identity CHECK runs INSIDE the tx,
+  // not after it commits. See the comment at the bottom of the tx body.
+  let preservedReceiptHashesAfter = null;
+  let receiptByteIdentityVerified = false;
   const tx = db.transaction(() => {
     // Transition each eligible agent_run. override=true is harmless for
     // non-blocked sources (the override branch only fires when from is in
@@ -436,6 +472,35 @@ export function redrive(opts) {
       `).run(waveId, waveFromStatus, REDRIVE_TARGET_STATUS, reasonPrefixed);
     }
     report.planned_wave_transition.applied = true;
+
+    // ── F-ad3004f4: receipt-byte-identity check runs INSIDE the tx ──
+    // Re-query the SAME independent watch-set (wave_id + status='complete')
+    // used for the before-hash, now that the transitions above have landed.
+    // If the classification above wrongly routed a still-'complete' row into
+    // `eligible` (the F-a5f6b585 mutant: 'complete' moved into
+    // AGENT_ELIGIBLE_SOURCES), that row no longer satisfies status='complete'
+    // post-transition, so it drops out of the after-set — the key-count
+    // mismatch trips hashesAreEqual. Throwing HERE, before this function
+    // returns, means better-sqlite3 rolls back every write the tx body just
+    // made: the violation is PREVENTED (the destructive transition never
+    // durably lands), not merely detected after the fact. Pre-fix this same
+    // check ran after tx() had already returned, so by the time a mismatch
+    // was observed the mutation was already committed and irreversible — the
+    // thrown error's only remedy was 'Inspect manually', with no compensator
+    // possible (the pre-tx hashes are opaque digests, not row values; they
+    // cannot restore anything). Prevention removes the need for a
+    // compensator here entirely.
+    preservedReceiptHashesAfter = computeReceiptHashes(db, waveId);
+    receiptByteIdentityVerified = hashesAreEqual(preservedReceiptHashesBefore, preservedReceiptHashesAfter);
+    if (!receiptByteIdentityVerified) {
+      const err = new Error(
+        `redrive: receipt-byte-identity contract violated — a 'complete' agent_run's ` +
+        `identity-carrying fields changed during this redrive. Transaction rolled back; ` +
+        `nothing was mutated. wave_id=${waveId}.`,
+      );
+      err.code = 'RECEIPT_BYTE_IDENTITY_VIOLATION';
+      throw err;
+    }
   });
 
   try {
@@ -443,7 +508,8 @@ export function redrive(opts) {
     report.db_transaction_done = true;
   } catch (e) {
     const correlationId = mintCorrelationId();
-    logStage('redrive_db_tx_failed', {
+    const isReceiptViolation = e?.code === 'RECEIPT_BYTE_IDENTITY_VIOLATION';
+    logStage(isReceiptViolation ? 'redrive_receipt_violation' : 'redrive_db_tx_failed', {
       component: 'dogfood-swarm',
       correlation_id: correlationId,
       waveId,
@@ -451,52 +517,81 @@ export function redrive(opts) {
       eligibleCount: eligible.length,
       preservedCount: preserved.length,
       refusedCount: refused.length,
+      receiptsChecked,
       err: e?.message,
     });
+    // The receipt-byte-identity violation is a distinct, actionable failure
+    // mode (a state-machine/classification bug) from a generic DB error (a
+    // busy lock, a constraint violation) — preserve its `.code` and message
+    // rather than flattening both into the same generic wrapper, so a
+    // caller (or a test) can branch on `err.code`.
+    if (isReceiptViolation) {
+      const wrapped = new Error(`${e.message} (correlation_id=${correlationId})`);
+      wrapped.code = e.code;
+      // F-67908e23: waveId + hint for parity with this file's sibling typed
+      // errors (and DISPATCH_NO_AGENT_DOMAINS / COLLECT_UNKNOWN_DOMAIN /
+      // CLEAN_WAVE_IN_FLIGHT) — renderTopLevelError prints dedicated lines
+      // for both when present. waveId is already resolved in this function's
+      // outer scope, so setting it here is free.
+      wrapped.waveId = waveId;
+      wrapped.hint = 'inspect wave_state_events / agent_state_events for this wave; ' +
+        'this indicates a classification or state-machine regression, not an operator mistake';
+      throw wrapped;
+    }
     throw new Error(
       `redrive: DB transaction failed (correlation_id=${correlationId}): ${e?.message || e}.`,
     );
   }
 
-  // ── Post-apply: receipt-byte-identity verification ──
-  // Re-hash preserved agent_runs. Any change to a complete row would surface
-  // as a hash mismatch here. The test pins this assertion.
-  const preservedReceiptHashesAfter = computeReceiptHashes(db, preserved);
+  // ── Post-apply reporting only — the CHECK already ran inside the tx ──
+  // Reaching this line means tx() returned without throwing, which means
+  // (F-ad3004f4) the in-tx byte-identity check already passed. F-a5f6b585:
+  // an EMPTY watch-set (zero 'complete' agent_runs this wave — the common
+  // redrive case, since redrive exists to recover a wave whose agents
+  // failed) is reported `not_applicable`, never `true` — hashesAreEqual({},
+  // {}) is trivially true, and rendering that as a verified pass would be
+  // exactly the vacuous claim this finding closes.
   report.preserved_receipt_hashes_after = preservedReceiptHashesAfter;
-  report.receipt_byte_identity_verified =
-    hashesAreEqual(preservedReceiptHashesBefore, preservedReceiptHashesAfter);
-  if (!report.receipt_byte_identity_verified) {
-    throw new Error(
-      `redrive: receipt-byte-identity contract violated — preserved complete ` +
-      `agent_runs hash mismatch. Inspect manually. wave_id=${waveId}.`,
-    );
-  }
+  report.receipt_byte_identity_verified = receiptsChecked === 0 ? 'not_applicable' : true;
 
   report.summary = formatPlanSummary(report);
   return report;
 }
 
 /**
- * Compute a sha256 hash over the identity-carrying fields of every preserved
- * agent_run (status, output_path, completed_at) PLUS the full
- * agent_state_events row chain for that agent. Any byte-level change to a
- * preserved row trips this gate.
+ * Compute a sha256 hash over the identity-carrying fields of every agent_run
+ * currently 'complete' in this wave (status, output_path, completed_at) PLUS
+ * the full agent_state_events row chain for that agent. Any byte-level
+ * change to a complete row trips this gate.
  *
- * Returns an object keyed by agent_run_id so a mismatch can be localized
- * to a specific row (the test asserts this shape).
+ * F-a5f6b585: queries the DB directly by (wave_id, status='complete') —
+ * deliberately NOT parameterized by the caller's `preserved` classification
+ * array. The watch-set must be independent of the classification the gate
+ * exists to police, or a classification bug (routing a 'complete' row into
+ * `eligible`) silently narrows the watch-set to nothing instead of tripping
+ * it. Called once before the tx (captures whatever is complete now) and once
+ * inside the tx after the transitions land (captures what is complete
+ * after) — both calls use this same independent query.
+ *
+ * Returns an object keyed by agent_run_id so a mismatch can be localized to
+ * a specific row (the test asserts this shape).
  */
-function computeReceiptHashes(db, preserved) {
+function computeReceiptHashes(db, waveId) {
+  const completeIds = db.prepare(
+    `SELECT id FROM agent_runs WHERE wave_id = ? AND status = 'complete'`
+  ).all(waveId).map(r => r.id);
+
   const out = {};
-  for (const p of preserved) {
+  for (const id of completeIds) {
     const ar = db.prepare(
       'SELECT id, status, output_path, completed_at FROM agent_runs WHERE id = ?'
-    ).get(p.agent_run_id);
+    ).get(id);
     const events = db.prepare(
       'SELECT id, agent_run_id, from_status, to_status, reason, created_at ' +
       'FROM agent_state_events WHERE agent_run_id = ? ORDER BY id'
-    ).all(p.agent_run_id);
+    ).all(id);
     const payload = JSON.stringify({ ar, events });
-    out[p.agent_run_id] = createHash('sha256').update(payload).digest('hex');
+    out[id] = createHash('sha256').update(payload).digest('hex');
   }
   return out;
 }
@@ -525,16 +620,32 @@ function formatPlanSummary(report) {
   const lines = [];
   lines.push(`${verb} — wave_id: ${report.waveId} (run ${report.runId}, ${report.phase}, #${report.waveNumber})`);
   lines.push(`  Wave status: ${report.waveStatusBefore} -> ${REDRIVE_TARGET_STATUS}`);
-  lines.push(`  Preserved: ${report.preserved.length} complete agent_runs (receipts unchanged)`);
-  lines.push(`  Redriven:  ${report.eligible.length} agent_runs to ${REDRIVE_TARGET_STATUS}`);
-  lines.push(`  Refused:   ${report.refused.length} agent_runs (named recovery verb per row)`);
+  lines.push(`  Preserved: ${pluralize(report.preserved.length, 'complete agent_run')} (receipts unchanged)${formatByteIdentitySuffix(report)}`);
+  lines.push(`  Redriven:  ${pluralize(report.eligible.length, 'agent_run')} to ${REDRIVE_TARGET_STATUS}`);
+  lines.push(`  Refused:   ${pluralize(report.refused.length, 'agent_run')} (named recovery verb per row)`);
+  // F-7c3e91a4 class (wave 18): immediate echo of the operator's own
+  // just-typed --reason. See commands/lib/escape-reason.js.
   if (report.apply) {
-    lines.push(`  Reason recorded: "${report.reasonRecorded}"`);
+    lines.push(`  Reason recorded: "${escapeReasonForDisplay(report.reasonRecorded)}"`);
   } else {
-    lines.push(`  Reason would be: "redrive: ${report.reason}"`);
+    lines.push(`  Reason would be: "redrive: ${escapeReasonForDisplay(report.reason)}"`);
     lines.push('  Re-run with --apply to mutate.');
   }
   return lines.join('\n');
+}
+
+/**
+ * F-a5f6b585: render the VERIFIED byte-identity claim next to the Preserved:
+ * line, instead of leaving the printed text to imply verification from the
+ * classification alone (the pre-fix bug this closes). Dry-run renders
+ * nothing extra — apply was never attempted, so there is no verified claim
+ * to print yet; the Preserved: count there is a preview, not a claim.
+ */
+function formatByteIdentitySuffix(report) {
+  if (!report.apply) return '';
+  const v = report.receipt_byte_identity_verified;
+  if (v === 'not_applicable') return ' — byte-identity: not_applicable (0 checked)';
+  return ` — byte-identity: VERIFIED (${report.receipts_checked} checked)`;
 }
 
 /**

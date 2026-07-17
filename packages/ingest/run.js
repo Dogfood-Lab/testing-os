@@ -25,7 +25,8 @@ import { verify } from '@dogfood-lab/verify';
 import { stubProvenance, provenanceForProvider } from '@dogfood-lab/verify/validators/provenance.js';
 import { logStage as sharedLogStage } from '@dogfood-lab/dogfood-swarm/lib/log-stage.js';
 import { loadGlobalPolicy, loadRepoPolicy, loadScenarios, githubScenarioFetcher } from './load-context.js';
-import { isDuplicate, writeRecord, computeRecordPath } from './persist.js';
+import { isDuplicate, writeRecord, computeRecordPath, UnsafeRecordPathError } from './persist.js';
+import { RecordValidationError } from './validate-record.js';
 import { rebuildIndexes } from './rebuild-indexes.js';
 import { verifyChain, formatChainResult } from './verify-chain.js';
 import { handleAnchorCompute, handleAnchorPost, handleAnchorVerify } from './anchor/cli.js';
@@ -350,7 +351,40 @@ export async function ingest(submission, options) {
       timing: submission.timing,
       verification: { status: 'accepted' }
     };
-    if (isDuplicate(submission.run_id, probeRecord, repoRoot)) {
+    // F-f8952a50 (wave 10): this probe's hardcoded `status: 'accepted'` is
+    // ALSO the site the finding proved a corrected repo:mismatch resubmission
+    // was swallowed at — isDuplicate() only asks isRetryableRejection() when
+    // the record it's handed claims 'accepted' (see isDuplicate's own
+    // comment), so this probe is the FIRST place a stale non-schema rejection
+    // could mask a genuine correction, before verify() ever runs. No separate
+    // fix belongs HERE, though: this probe and writeRecord()'s own internal
+    // isDuplicate() call (persist.js) share the exact same isDuplicate() /
+    // isRetryableRejection() code path, so persist.js's per-prefix
+    // `retryable` fix (parse-rejection.js) already reaches both call sites —
+    // widening retryability there is what unblocks this probe too, with
+    // nothing probe-specific to change.
+    // F-a37d36f5: isDuplicate -> computeRecordPath runs against RAW untrusted
+    // submission.repo/run_id, three steps BEFORE verify()'s schema gate. A
+    // malformed repo ('a/b/c', a path-traversal attempt, etc.) makes
+    // computeRecordPath THROW ('invalid repo format' / 'unsafe repo segment'
+    // / 'unsafe run_id') — good, the traversal guards hold — but letting that
+    // throw escape here inverts this repo's submission-bad vs operational
+    // doctrine: it propagates as an uncaught fault (exit 2, "operator error"
+    // per the CLI's own USAGE block) for input that is squarely the
+    // SUBMITTER's to fix, and no `_rejected` evidence record is ever
+    // written. A malformed repo/run_id can never collide with an existing
+    // record anyway, so treating an unpathable submission as "not a
+    // duplicate" is semantically free — verify()'s schema gate is the
+    // authoritative judge of bad input, and writeRecord's own
+    // computeRecordPath (which runs AFTER validateRecord, on the SCHEMA-
+    // VALIDATED persisted record) remains the real enforcement point.
+    let duplicate;
+    try {
+      duplicate = isDuplicate(submission.run_id, probeRecord, repoRoot);
+    } catch {
+      duplicate = false;
+    }
+    if (duplicate) {
       logStage('rejected_pre_persist', {
         submission_id: submissionId,
         correlation_id,
@@ -463,7 +497,72 @@ export async function ingest(submission, options) {
     return { record, path: null, written: false, duplicate: false };
   }
   const persistStart = Date.now();
-  const { path, written } = writeRecord(record, repoRoot);
+  let path, written;
+  try {
+    ({ path, written } = writeRecord(record, repoRoot));
+  } catch (err) {
+    // F-4acd28d8: computeRecordPath()'s traversal guard (isUnsafeSegment) is
+    // STRICTER than the submission schema's repo pattern (F-bbbe2e1f — e.g.
+    // `../etc` is schema-valid but traversal-unsafe), so a record can reach
+    // here without `_skipPersist` ever having been set. The record's own
+    // identifier is what's unfilable — submission-bad, not an operator
+    // incident — so route it like `_skipPersist` above instead of letting the
+    // throw reach the outer CLI catch, which would misreport it as
+    // failed_stage:'cli_parse_payload' and exit 2 ("operator error") for
+    // content that is squarely the submitter's to fix.
+    //
+    // RecordValidationError is the SIBLING gap F-4036ae25's _skipPersist
+    // narrowing opens: dogfood-record.schema.json mirrors the submission
+    // schema's constraints on every source-authored field verify() copies
+    // verbatim (ref, source, timing, scenario_results, overall_verdict.proposed),
+    // so a submission that is schema-invalid on one of THOSE fields (not just
+    // repo/run_id/timing.finished_at) reaches writeRecord() filable-by-identity
+    // and still fails validateRecord() here. Only catch it when the submission
+    // was ALREADY schema-invalid (record.verification.schema_valid === false)
+    // — that is the authoritative signal this is submission-bad fallout, not a
+    // genuine internal defect in what verify() assembled for an
+    // otherwise-valid submission, which must keep crashing loudly.
+    const isUnfilableRecordPath = err instanceof UnsafeRecordPathError;
+    const isSubmissionBadRecordShape =
+      err instanceof RecordValidationError && record.verification.schema_valid === false;
+    if (!isUnfilableRecordPath && !isSubmissionBadRecordShape) {
+      throw err;
+    }
+
+    // verify() already rejected this submission for a real reason whenever
+    // one exists (e.g. repo:mismatch, or the schema violation itself) — those
+    // reasons survive untouched. When verify() had no reason to reject (an
+    // otherwise-accepted record whose ONLY problem is storage-unsafety),
+    // downgrade the verdict here — the same shape used below for a late
+    // scenario-load rejection.
+    if (isUnfilableRecordPath) {
+      record.verification.rejection_reasons.push(`unsafe-record-path: ${err.message}`);
+      if (record.verification.status === 'accepted') {
+        record.verification.status = 'rejected';
+        record.verification.policy_valid = false;
+        if (record.overall_verdict.verified === 'pass') {
+          record.overall_verdict.verified = 'fail';
+          record.overall_verdict.downgraded = true;
+          if (!record.overall_verdict.downgrade_reasons) {
+            record.overall_verdict.downgrade_reasons = [];
+          }
+          record.overall_verdict.downgrade_reasons.push('record path could not be safely computed');
+        }
+      }
+    }
+
+    logStage('rejected_pre_persist', {
+      submission_id: submissionId,
+      correlation_id,
+      reason: isUnfilableRecordPath ? 'unsafe_record_path' : 'record_schema_invalid_from_submission',
+      rejection_reasons: record.verification.rejection_reasons ?? [],
+      // Operator-debug only: validateRecord()'s OWN structured errors, distinct
+      // from (and not merged into) the submitter-facing rejection_reasons above,
+      // which stay exactly as verify() computed them against the submission schema.
+      ...(isSubmissionBadRecordShape ? { record_validation_errors: err.errors } : {})
+    });
+    return { record, path: null, written: false, duplicate: false };
+  }
   logStage('persist_complete', {
     submission_id: submissionId,
     correlation_id,
@@ -525,7 +624,20 @@ export async function ingest(submission, options) {
     }
   }
 
-  return { record, path, written, duplicate: false };
+  // F-7b97fbd4 (wave 10): mirror persist_complete's OWN `duplicate: !written`
+  // (logged a few lines above, off the same `written`) instead of a bare
+  // `false` that silently disagreed with it. By this point `written` can be
+  // `false` for exactly one reason — writeRecord()'s internal isDuplicate()
+  // blocked the write as a collision (persist.js) — every OTHER
+  // non-persisting outcome in this function (record._skipPersist above; the
+  // UnsafeRecordPathError / RecordValidationError catch above that) already
+  // returns its own honest `duplicate: false` earlier and never reaches this
+  // line. The CLI wrapper's `if (result.duplicate)` branch depends on this
+  // being accurate: a blocked resubmission must take the terse exit-0
+  // `{status:'duplicate'}` path, the same one an early-detected duplicate
+  // (the pre-verify probe above) already takes, not fall through to the
+  // full rejected-record exit-1 shape.
+  return { record, path, written, duplicate: !written };
 }
 
 /**
@@ -664,10 +776,12 @@ export async function verifyOnly(submission, options) {
       would_persist_to = computeRecordPath(record, repoRoot);
     } catch {
       // Defensive: if a record passes verify() but still trips path
-      // computation (e.g., a future schema with looser constraints), keep
-      // verify-only side-effect-free. Real ingest would surface the throw
-      // via writeRecord; verify-only just returns null and lets the operator
-      // see the rejection in record.verification.rejection_reasons.
+      // computation (e.g. F-bbbe2e1f's `../etc` — schema-valid but
+      // traversal-unsafe), keep verify-only side-effect-free. Real ingest
+      // hits the SAME underlying computeRecordPath failure inside
+      // writeRecord() but now catches it too (F-4acd28d8, UnsafeRecordPathError)
+      // rather than letting it escape; verify-only just returns null here and
+      // lets the operator see the rejection in record.verification.rejection_reasons.
       would_persist_to = null;
     }
   }
@@ -719,27 +833,30 @@ function emitCliErrorEvent({ failedStage, correlationId, submissionId = null, er
 // to live IN the tool, not scattered across docs.
 const USAGE = `ingest — persist a dogfood submission (verify → policy → provenance → write)
 
-USAGE:
+Usage:
   node packages/ingest/run.js --file <path>   --provenance=github|stub
   node packages/ingest/run.js --payload '<json>' --provenance=github|stub
   echo '<json>' | node packages/ingest/run.js --provenance=github|stub
 
-INPUT (exactly one; stdin used when neither flag is given):
+Input (exactly one; stdin used when neither flag is given):
   --file <path>        Read the submission JSON from a file.
   --payload <json>     Pass the submission JSON inline.
   (stdin)              Pipe the submission JSON on stdin.
 
-PROVENANCE (required for an ingest):
+Provenance (required for an ingest):
   --provenance=github  Confirm the source run via the GitHub API.
   --provenance=stub    No-network local confirm (dry-run / dev only).
 
-MODES:
+Modes:
   --verify-only        Run the full pipeline WITHOUT writing or rebuilding
                        indexes; report where a real ingest WOULD have landed.
 
-STANDALONE AUDIT VERBS (no submission, no stdin, no --provenance):
+Standalone audit verbs (no submission, no stdin, no --provenance):
   --verify-chain       Verify the append-only integrity ledger (offline).
-    --reconcile        Also fail on on-disk records missing from the ledger.
+    --reconcile        Also fail on genuine torn-write orphans (on-disk records
+                       missing from the ledger). Records that predate the
+                       integrity chain itself are reported separately and do
+                       not fail the audit.
     --all              Report every independent break instead of the first.
   --anchor-compute     Compute + write the next XRPL anchor manifest (offline).
   --anchor-post        Compute if needed + post the anchor to XRPL (needs XRPL_SEED).
@@ -747,7 +864,7 @@ STANDALONE AUDIT VERBS (no submission, no stdin, no --provenance):
 
   -h, --help           Show this help.
 
-EXIT CODES:
+Exit codes:
   0  success     1  integrity/audit break     2  operator error (flags / IO / JSON)`;
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(__dirname, 'run.js');
@@ -820,9 +937,38 @@ if (isMain) {
     const hasValue = inlineValue !== null || nextIsValue;
     const takeValue = () => (inlineValue !== null ? inlineValue : args[++i]);
 
-    if (arg === '--provenance' && hasValue) {
+    // F-e0bcbc47 (amended wave 29, after the first attempt regressed
+    // F-INGEST-003): `flagIs(name)` both TESTS the token and RECORDS that
+    // `name` is a flag this chain knows about, so the catch-all below can tell
+    // "unknown flag" (no branch knows this name) apart from "known flag, no
+    // value" (a branch knows the name but its `&& hasValue` guard failed —
+    // exactly what F-INGEST-003 causes for `--anchor-network --anchor-compute`).
+    // The first attempt at this fix had a bare `else if (arg.startsWith('--'))`
+    // catch-all that could not distinguish the two and so reported a KNOWN flag
+    // as "unknown argument: --anchor-network" — a claim wider than what it
+    // actually checked, which is the exact class this repo keeps paying for.
+    //
+    // `knownFlagName` is DERIVED from the chain itself rather than duplicated
+    // into a second list of flag names: the only way a name enters the known
+    // set is for the chain to literally test for it one line below. A parallel
+    // `KNOWN_FLAGS` enumeration would be a second population to keep in sync
+    // (the same enumeration-vs-property class as CONTROL_CLASS / ZALGO_RUN /
+    // DASH_CONFUSABLES), and it would drift the first time someone adds a flag
+    // and forgets the list. Adding a branch here cannot desync it — the branch
+    // IS the registration. The one residual shape is a future branch written as
+    // a bare `arg === '--new'` instead of `flagIs('--new')`; that would make the
+    // new flag report as unknown when dangling, and is guarded by
+    // f-e0bcbc47-unknown-flag-rejection.test.js's chain-shape assertion.
+    let knownFlagName = false;
+    const flagIs = (name) => {
+      if (arg !== name) return false;
+      knownFlagName = true;
+      return true;
+    };
+
+    if (flagIs('--provenance') && hasValue) {
       provenanceMode = takeValue();
-    } else if (arg === '--file' && hasValue) {
+    } else if (flagIs('--file') && hasValue) {
       const { readFileSync } = await import('node:fs');
       // D1B-001 family (operator-legibility): a --file read failure
       // (ENOENT/EACCES) routes through the structured error event and exits 2
@@ -842,53 +988,103 @@ if (isMain) {
         });
         process.exit(2);
       }
-    } else if (arg === '--payload' && hasValue) {
+    } else if (flagIs('--payload') && hasValue) {
       submissionJson = takeValue();
-    } else if (arg === '--verify-only') {
+    } else if (flagIs('--verify-only')) {
       // F-252714-058: dry-run the pipeline without writing or rebuilding
       // indexes. CI / operators preview what WOULD have been persisted.
       verifyOnlyFlag = true;
-    } else if (arg === '--verify-chain') {
+    } else if (flagIs('--verify-chain')) {
       // Integrity chain v1: verify the append-only tamper-evident ledger at
       // indexes/integrity/chain.jsonl, fully offline. No submission, no stdin,
       // no provenance — a standalone audit command.
       verifyChainFlag = true;
-    } else if (arg === '--reconcile') {
+    } else if (flagIs('--reconcile')) {
       // Modifier for --verify-chain: also reconcile on-disk records against the
       // ledger and fail on any orphan (INGEST-PROACT-001).
       reconcileFlag = true;
-    } else if (arg === '--all') {
+    } else if (flagIs('--all')) {
       // Modifier for --verify-chain: report every per-record-independent break
       // instead of stopping at the first (INGEST-PROACT-004).
       allBreaksFlag = true;
-    } else if (arg === '--anchor-compute') {
+    } else if (flagIs('--anchor-compute')) {
       // Optional XRPL anchor: compute + write the next anchor manifest. Offline.
       anchorComputeFlag = true;
-    } else if (arg === '--anchor-post') {
+    } else if (flagIs('--anchor-post')) {
       // Optional XRPL anchor: compute if needed + post to XRPL. Needs the
       // optional xrpl package (lazily loaded) and XRPL_SEED.
       anchorPostFlag = true;
-    } else if (arg === '--anchor-verify') {
+    } else if (flagIs('--anchor-verify')) {
       // Optional XRPL anchor: verify local manifests + run the truncation check.
       // Offline reports honest NOT-verified for the on-chain leg.
       anchorVerifyFlag = true;
-    } else if (arg === '--anchor-all') {
+    } else if (flagIs('--anchor-all')) {
       // Genesis snapshot mode for compute/post (covers the whole chain).
       anchorMode = 'all';
-    } else if (arg === '--anchor-algo' && hasValue) {
+    } else if (flagIs('--anchor-algo') && hasValue) {
       anchorAlgo = takeValue();
-    } else if (arg === '--anchor-network' && hasValue) {
+    } else if (flagIs('--anchor-network') && hasValue) {
       anchorNetwork = takeValue();
-    } else if (arg === '--anchor-tx' && hasValue) {
+    } else if (flagIs('--anchor-tx') && hasValue) {
       // Path to a JSON file containing a fetched XRPL tx (with Memos) for the
       // on-chain leg of --anchor-verify. Offline-honest: omit it to run the
       // truncation check only.
       anchorTxFile = takeValue();
-    } else if (arg === '--anchor-trusted' && hasValue) {
+    } else if (flagIs('--anchor-trusted') && hasValue) {
       // Comma-separated trusted anchor accounts (UNIONed with the bundled list).
       anchorTrustedAccounts = takeValue().split(',').map((s) => s.trim()).filter(Boolean);
-    } else if (arg === '-h' || arg === '--help' || arg === '--usage') {
+    } else if (flagIs('-h') || flagIs('--help') || flagIs('--usage')) {
       helpFlag = true;
+    } else if (arg.startsWith('--') && knownFlagName) {
+      // F-e0bcbc47 / F-INGEST-003 boundary: a KNOWN flag whose `&& hasValue`
+      // guard failed — i.e. a value flag given no value, because the next
+      // token was itself a flag (`--anchor-network --anchor-compute`) or it
+      // ended argv. F-INGEST-003 pins that the FOLLOWING flag is still parsed
+      // on its own rather than swallowed as this one's value, so this token
+      // keeps its historical path (fall through to positionalArgs, continue)
+      // and `--anchor-compute` runs. Rejecting here instead would break that
+      // pinned contract.
+      //
+      // RESIDUAL, STATED (not fixed here): the dangling flag is still
+      // IGNORED — `--anchor-network` with no value does not set the network
+      // and does not fail the run. That is pre-existing behavior and this
+      // amend does not change it. What changes is that it is no longer
+      // SILENT: an operator gets a structured warn naming the flag instead of
+      // the value vanishing with no trace. Making it a hard error is a real
+      // contract change (it would stop `--anchor-compute` from running and
+      // rewrite F-INGEST-003's pin), which is a bigger claim than a Stage C
+      // humanization amend should make unilaterally — filed as a follow-up
+      // rather than landed here.
+      logStage('warn', {
+        kind: 'cli_flag_missing_value',
+        flag: arg,
+        correlation_id: synthCorrelationId(),
+        message: `${arg} was given no value and is being ignored (the next token is a flag, not a value)`
+      });
+      positionalArgs.push(args[i]);
+    } else if (arg.startsWith('--')) {
+      // F-e0bcbc47 (Stage C humanization): a genuinely unrecognized `--flag`
+      // — no branch above knows this name at all. It used to fall through to
+      // the dead `positionalArgs` sink (declared, pushed to, and never read
+      // anywhere else in this file — confirmed by grep) and the CLI proceeded
+      // to read stdin, hit EOF, and crashed with a raw 'Unexpected end of
+      // JSON input' stack that misattributed the failure to the submission
+      // payload rather than the misspelled flag (live-proven trigger:
+      // `--provenance=stub --fiel <path>`, a one-character typo of --file).
+      // Reject at the point of the typo instead — matches the sibling pattern
+      // already correct in this same domain (packages/verify/cli.js:
+      // `unknown argument: --version` -> exit 2, no stack, no fallthrough).
+      // Scoped to `--`-prefixed tokens only (a bare positional stays in the
+      // historical positionalArgs sink) because that is exactly the shape a
+      // mistyped flag takes, and it is the shape the reachable repro above
+      // hits BEFORE any value token is even read.
+      emitCliErrorEvent({
+        failedStage: 'cli_parse_args',
+        correlationId: synthCorrelationId(),
+        err: new Error(`unknown argument: ${arg}`),
+        humanPrefix: 'invalid CLI invocation'
+      });
+      process.exit(2);
     } else {
       positionalArgs.push(args[i]);
     }
@@ -923,7 +1119,12 @@ if (isMain) {
       // operator asked for it, so a grep of the NDJSON shows how many breaks and
       // orphans were found, not just the first break.
       ...(Array.isArray(result.breaks) ? { break_count: result.breaks.length } : {}),
-      ...(Array.isArray(result.orphans) ? { orphan_count: result.orphans.length } : {})
+      ...(Array.isArray(result.orphans) ? { orphan_count: result.orphans.length } : {}),
+      // F-29134790: pre-adoption records are excluded from chain_ok but still
+      // worth a grep-able count — an operator diffing orphan_count over time
+      // should see the pre-chain figure hold steady while orphan_count reflects
+      // only genuine torn writes.
+      ...(Array.isArray(result.pre_adoption) ? { pre_adoption_count: result.pre_adoption.length } : {})
     });
     const lines = formatChainResult(result);
     if (result.ok) {

@@ -21,7 +21,10 @@
  *   3. DOGFOOD_FINDINGS_FORMAT env override (raw → markdown, human → text, json → json)
  *   4. Markdown regression guard            (rendered shape unchanged from pre-wave-23)
  *   5. F-091578-034 disambiguation survives in every format
- *   6. Sweep invariant                      (no other CLI subcommand emits raw markdown)
+ *   6. Sweep invariant                      (no other CLI subcommand reaches the
+ *                                             buildDigest TTY-aware path cmdFindings owns —
+ *                                             the verify-* family has its own, separately
+ *                                             choke-pointed markdown path, out of scope here)
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -212,16 +215,35 @@ describe('renderDigest — text / markdown / json each render the same model coh
 
     // Find the rows for F-1 and F-LONG-22 — they share a header row above.
     const rowF1 = lines.find(l => l.includes('F-1 ') || l.includes('F-1 '));
+    const headerLine = lines.find(l => l.startsWith('Sev'));
     const rowFLong = lines.find(l => l.includes('F-LONG-22'));
+    assert.ok(headerLine, 'header row must be rendered');
     assert.ok(rowF1, 'F-1 row must be rendered');
     assert.ok(rowFLong, 'F-LONG-22 row must be rendered');
 
     // Both rows must align — same starting column for the description text.
-    // The description sits after the file:line column. We assert: both rows
-    // contain at least one run of two spaces immediately preceding the
-    // description, which is the padEnd-output signature.
-    assert.match(rowF1, /\s{2,}short desc/);
-    assert.match(rowFLong, /\s{2,}longer description text/);
+    // F-6c23f933: the previous version of this assertion checked each row
+    // INDEPENDENTLY for /\s{2,}<its own text>/ -- a shape satisfied by two
+    // rows whose description text starts at completely different offsets
+    // (e.g. 43 and 54), because each regex only inspects its own row and
+    // never compares against the other. Proven directly: a hand-built pair
+    // of rows with description offsets 43 and 54 (demonstrably misaligned)
+    // passes both of the old regexes, and fails the offset-equality checks
+    // below. Comparing the actual character indexes is the only way to
+    // assert the property this test's own docstring claims: "same starting
+    // column" -- both against EACH OTHER and against the header's own
+    // 'Description' label (two rows could coincidentally agree with each
+    // other while both disagreeing with the header).
+    const f1Offset = rowF1.indexOf('short desc');
+    const fLongOffset = rowFLong.indexOf('longer description text');
+    const headerOffset = headerLine.indexOf('Description');
+    assert.notEqual(f1Offset, -1, `'short desc' must appear in the F-1 row: ${JSON.stringify(rowF1)}`);
+    assert.notEqual(fLongOffset, -1, `'longer description text' must appear in the F-LONG-22 row: ${JSON.stringify(rowFLong)}`);
+    assert.notEqual(headerOffset, -1, `'Description' label must appear in the header: ${JSON.stringify(headerLine)}`);
+    assert.equal(f1Offset, fLongOffset,
+      `both rows' description text must start at the same column -- got ${f1Offset} for F-1 and ${fLongOffset} for F-LONG-22:\n${JSON.stringify(rowF1)}\n${JSON.stringify(rowFLong)}`);
+    assert.equal(f1Offset, headerOffset,
+      `row description text must start at the same column as the header's 'Description' label -- got ${f1Offset} vs header ${headerOffset}`);
   });
 
   it('markdown format: keeps **bold** + | pipe tables | + ## headers exactly as pre-wave-23', () => {
@@ -409,24 +431,120 @@ describe('F-091578-034 — 3-way disambiguation preserved in text + markdown + j
 });
 
 // ═══════════════════════════════════════════
-// 6. Sweep invariant — no other CLI subcommand emits raw markdown to stdout
+// 6. Sweep invariant — no other CLI subcommand reaches the buildDigest path
 // ═══════════════════════════════════════════
+
+/**
+ * F-c5593165: the prior version of this sweep asserted five hardcoded
+ * `console.log(formatX(...))` call-site strings plus a literal-spelling
+ * regex (`console.log(renderMarkdown`). Neither is anchored to a specific
+ * command's body, so neither enumerates cli.js's actual command set — a NEW
+ * subcommand added tomorrow as
+ *   `const { output } = buildDigest({...}); console.log(output);`
+ * (the exact shape cmdFindings itself used pre-F-19f86582) satisfies every
+ * one of those checks, because the danger is in calling the markdown-
+ * capable primitive, not in a specific literal spelling.
+ *
+ * F-19f86582: cmdFindings no longer calls buildDigest( — that all-in-one
+ * wrapper (lib/findings-digest.js) has no seam to attach a `.code`/`.hint`
+ * to its own directory-resolution throws, and lib/ is a different domain
+ * (swarm-cp-core) than cli.js, so cmdFindings reassembles the SAME
+ * orchestration from buildDigest's individually-exported pieces
+ * (findLatestWave / loadDomainOutputs / buildDigestModel) and calls
+ * renderDigest(model, format, stream) directly — the identical primitive
+ * buildDigest itself calls internally, one layer lower. The markdown-
+ * capable primitive this sweep must gate is therefore renderDigest(, not
+ * buildDigest( — buildDigest is no longer imported by cli.js at all (still
+ * exported, still used by lib/findings-digest.js's own direct-execution
+ * entry point, unrelated to this file).
+ *
+ * This extracts every `cmd*` handler's real source span by brace-depth
+ * matching from its own `function`/`async function` line to its OWN closing
+ * brace — not "until the next `function`/`export` keyword", the layout-
+ * dependent pattern F-a7bf6f4e found unsound in a sibling file — and
+ * requires `renderDigest(`, the one markdown-capable primitive cli.js itself
+ * imports and calls, to appear inside exactly one handler's body. That is a
+ * true sweep: it inspects every command cli.js routes, not a fixed list of
+ * names assumed safe.
+ *
+ * F-bb7f4885: this duplicates the same brace-walk amend1-tx-discipline.test.js's
+ * extractFunctionBodies used, and inherited the same defect — a same-line
+ * default-parameter OBJECT literal in a `cmd*` signature would close depth
+ * back to zero on the signature line itself, before the walk ever reached
+ * the handler's real opening brace, truncating the body to one line. Cross-
+ * checked against every one of cli.js's 27 real cmd* handlers via acorn: 0
+ * mismatches today, because none of them currently default a parameter to
+ * an object — so this was latent here, not live. Fixed the same way: walk
+ * PAREN depth first (immune to a default value's own '{}') to find where
+ * the parameter list itself closes, and only start the brace walk at the
+ * first '{' on or after that point.
+ */
+function extractCmdFunctionBodies(src) {
+  const lines = src.split('\n');
+  const starts = [];
+  const fnRe = /^(?:async\s+)?function\s+(cmd[A-Za-z]+)\s*\(/;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(fnRe);
+    if (m) starts.push({ name: m[1], startLine: i, matchText: m[0] });
+  }
+  assert.ok(starts.length >= 10,
+    `expected to find cli.js's cmd* handlers by scanning for top-level \`function cmd*(\` — got ${starts.length}; extraction regex is wrong`);
+
+  const bodies = new Map();
+  for (const { name, startLine, matchText } of starts) {
+    // Phase 1: paren depth from the '(' the regex already matched through,
+    // to the parameter list's OWN closing ')' — see extractFunctionBodies in
+    // amend1-tx-discipline.test.js for the full defect writeup this mirrors.
+    let parenDepth = 0, seenParenOpen = false;
+    let paramsCloseLine = -1, paramsCloseCol = -1;
+    for (let i = startLine; i < lines.length && paramsCloseLine === -1; i++) {
+      const startCol = i === startLine ? matchText.length - 1 : 0;
+      for (let k = startCol; k < lines[i].length; k++) {
+        const ch = lines[i][k];
+        if (ch === '(') { parenDepth++; seenParenOpen = true; }
+        else if (ch === ')') {
+          parenDepth--;
+          if (seenParenOpen && parenDepth === 0) { paramsCloseLine = i; paramsCloseCol = k; break; }
+        }
+      }
+    }
+    assert.ok(paramsCloseLine !== -1, `could not find the closing ')' of ${name}'s parameter list — extraction is broken`);
+
+    // Phase 2: the body's opening '{' is the first one at or after that close.
+    let bodyLine = -1, bodyCol = -1;
+    for (let i = paramsCloseLine; i < lines.length && bodyLine === -1; i++) {
+      const startCol = i === paramsCloseLine ? paramsCloseCol + 1 : 0;
+      const idx = lines[i].indexOf('{', startCol);
+      if (idx !== -1) { bodyLine = i; bodyCol = idx; }
+    }
+    assert.ok(bodyLine !== -1, `could not find the opening '{' of ${name}'s body — extraction is broken`);
+
+    // Phase 3: brace-depth from that known-good start to the handler's own
+    // matching '}' — unchanged from the original walk otherwise.
+    let depth = 0, endLine = -1;
+    for (let i = bodyLine; i < lines.length && endLine === -1; i++) {
+      const startCol = i === bodyLine ? bodyCol : 0;
+      for (let k = startCol; k < lines[i].length; k++) {
+        const ch = lines[i][k];
+        if (ch === '{') depth++;
+        else if (ch === '}') { depth--; if (depth === 0) { endLine = i; break; } }
+      }
+    }
+    assert.ok(endLine !== -1, `could not find the closing brace of ${name} — brace-depth extraction is broken`);
+    bodies.set(name, lines.slice(startLine, endLine + 1).join('\n'));
+  }
+  return bodies;
+}
 
 describe('Class #9 sweep invariant — only `swarm findings` may emit markdown to stdout', () => {
   it('cli.js routes every other subcommand through plain-text format helpers (formatStatus/formatVerify/formatPersist/formatResume/formatProbe) — not markdown', () => {
-    // The audit: read cli.js as text and check that the only markdown-bearing
-    // call is the cmdFindings path (which now goes through buildDigest's
-    // TTY-aware renderer). Any future regression that adds another
-    // `console.log(buildDigest(...).output)` or pipes markdown through stdout
-    // for a different subcommand must update this sweep — the test's purpose
-    // is to MAKE such regressions visible at PR time.
     const cliPath = resolve(__dirname, 'cli.js');
     const cli = readFileSync(cliPath, 'utf-8');
 
     // Every console.log of a value coming back from a `format*` helper is
-    // a plain-text helper, not markdown. We assert these are the ONLY
-    // top-level subcommand renderers reaching stdout (besides cmdFindings,
-    // which now routes through the TTY-aware buildDigest path).
+    // a plain-text helper, not markdown. Spot-check that a representative
+    // sample stays wired — the real safety net is the per-handler sweep
+    // below, which does not depend on this list being exhaustive.
     const formatCallSites = [
       'console.log(formatStatus(s))',
       'console.log(formatResume(r))',
@@ -440,20 +558,91 @@ describe('Class #9 sweep invariant — only `swarm findings` may emit markdown t
     }
 
     // The cmdFindings function — the ONE command whose output IS a digest —
-    // must go through the wave-23 TTY-aware buildDigest path. Assert
-    // the new shape is wired (format + stream args).
-    assert.match(cli, /buildDigest\(\s*\{[^}]*format[^}]*stream:\s*process\.stdout/s,
-      'cmdFindings must route through buildDigest with format + stream args (wave-23 TTY-aware path)');
+    // must go through the wave-23 TTY-aware renderDigest path. Assert the
+    // shape is wired (model + format + stream args). F-19f86582: this used
+    // to match a single `buildDigest({...})` call; cmdFindings now builds
+    // its own model (buildDigestModel) so it can attach typed errors to the
+    // directory-resolution throws and annotate canonical finding ids
+    // (F-ad540b83) before rendering, then calls renderDigest directly.
+    assert.match(cli, /renderDigest\(\s*model\s*,\s*format\s*,\s*process\.stdout\s*\)/,
+      'cmdFindings must route through renderDigest(model, format, process.stdout) (wave-23 TTY-aware path)');
 
-    // Anti-regression: a future caller that does `console.log(renderMarkdown(...))`
-    // or `console.log(buildDigest(...).output)` for a NEW subcommand without
-    // routing through the format flag would bypass the TTY-aware path.
-    // We don't currently have such a call — assert it stays that way.
+    // Narrow supplementary guard: cli.js does not import renderMarkdown at
+    // all today (it only imports renderDigest — a level above), so an
+    // inline `console.log(renderMarkdown(...))` would mean someone reached
+    // past the digest choke-point on purpose. Cheap to keep; the sweep
+    // below is the primary defense.
     assert.equal(
       (cli.match(/console\.log\(renderMarkdown/g) || []).length,
       0,
-      'cli.js must never call renderMarkdown directly — always go through renderDigest/buildDigest'
+      'cli.js must never call renderMarkdown directly — always go through renderDigest'
     );
+
+    // The real sweep (F-c5593165, updated F-19f86582): enumerate EVERY
+    // cmd* handler cli.js defines — not a fixed list assumed safe — and
+    // require the one markdown-capable primitive cli.js calls directly
+    // (renderDigest, the same function buildDigest itself calls
+    // internally — cli.js no longer imports buildDigest at all) to live
+    // inside exactly cmdFindings's body.
+    const bodies = extractCmdFunctionBodies(cli);
+    const RENDER_DIGEST_ALLOWED = new Set(['cmdFindings']);
+    let totalInBodies = 0;
+    for (const [name, body] of bodies) {
+      const hits = (body.match(/renderDigest\(/g) || []).length;
+      totalInBodies += hits;
+      if (RENDER_DIGEST_ALLOWED.has(name)) {
+        assert.ok(hits > 0,
+          `${name} is the allowed renderDigest caller but its body no longer calls renderDigest( — sweep allowlist is stale`);
+      } else {
+        assert.equal(hits, 0,
+          `${name} calls renderDigest( — only ${[...RENDER_DIGEST_ALLOWED].join(', ')} may emit the markdown-capable digest path. ` +
+          `A future subcommand doing \`console.log(renderDigest(model, format, stream));\` is exactly the ` +
+          `regression this sweep exists to catch (F-c5593165) — route it through a plain-text format* helper instead, ` +
+          `or add it to RENDER_DIGEST_ALLOWED with a comment explaining why it also needs the TTY-aware digest path.`);
+      }
+    }
+    // Reconciliation: confirm no renderDigest( call is hiding outside every
+    // enumerated cmd* body (e.g. a shared top-level helper multiple
+    // commands funnel through) — the sum across every handler must equal
+    // the file-wide count, so nothing is invisible to this sweep.
+    const totalInFile = (cli.match(/renderDigest\(/g) || []).length;
+    assert.equal(totalInBodies, totalInFile,
+      `renderDigest( appears ${totalInFile} time(s) in cli.js but only ${totalInBodies} were attributable to a cmd* handler body — ` +
+      `a call site outside every handler is invisible to this sweep`);
+  });
+
+  // DELETION-PROOF for F-bb7f4885's two-phase (paren-then-brace) walk above.
+  // Revert extractCmdFunctionBodies to a single brace-walk seeded at the
+  // signature line and this goes red: a same-line default-parameter object
+  // literal's own '{}' closes depth back to zero before the walk ever
+  // reaches the handler's real body. None of cli.js's 27 real cmd* handlers
+  // currently have this shape (confirmed via acorn cross-check), which is
+  // exactly why this needs its own direct test rather than relying on the
+  // sweep above to trip over a real handler by accident.
+  it('extractCmdFunctionBodies is not fooled by a same-line default-parameter object literal (F-bb7f4885)', () => {
+    // Padded with 9 trivial cmd* handlers so this satisfies the function's
+    // own `starts.length >= 10` anti-vacuity guard (line ~479) — that guard
+    // exists to catch the regex silently matching nothing against the real
+    // cli.js, not to forbid a small synthetic source, so the padding here
+    // is inert filler rather than a second thing under test. Letters only
+    // (A, B, C, …) — the extraction regex requires cmd[A-Za-z]+, so a
+    // digit-suffixed name like cmdPad0 would silently fail to match at all.
+    const padding = Array.from({ length: 9 }, (_, i) =>
+      `function cmdPad${String.fromCharCode(65 + i)}() {\n  return ${i};\n}\n`).join('\n');
+    const src = padding + [
+      'function cmdExample(argv, opts = {}) {',
+      '  const a = 1;',
+      '  const b = 2;',
+      '  return a + b;',
+      '}',
+      '',
+    ].join('\n');
+    const body = extractCmdFunctionBodies(src).get('cmdExample');
+    assert.ok(body, 'cmdExample must be found at all');
+    assert.equal(body.split('\n').length, 5,
+      'the FULL 5-line body must be extracted, not truncated to the 1-line signature');
+    assert.match(body, /return a \+ b;/,
+      'the body must include the real closing content, not stop at the default-param object');
   });
 
   it('lib/findings-digest.js is the only choke-point — markdown rendering is delegated, not duplicated', () => {

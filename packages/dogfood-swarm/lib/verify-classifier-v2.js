@@ -49,16 +49,26 @@
  *                        couldn't see it; the agent attested semantically.
  *                        Use sparingly — every allowlist entry is a hole in
  *                        mechanical verification.
- *   agent_attestation  — the finding's status came in as 'fixed' but the
- *                        agent provided structured attestation (e.g., a
- *                        proof receipt) we trust without re-running anchors.
- *                        Distinct from allowlist: agent_attestation is the
- *                        normal happy path for findings whose fix isn't
- *                        anchorable (architectural, doc-level, etc.).
- *   unverifiable       — neither anchor nor cross_ref produced a verdict
- *                        and no allowlist/attestation overrode it. Human
- *                        review needed. Not a synonym for "broken" — it
- *                        means "this layer cannot conclude."
+ *   agent_attestation  — NON-authoritative (F-7cc809c4): consulted ONLY as a
+ *                        tie-breaker when BOTH anchor and cross_ref land on
+ *                        `unverifiable`, and only if the attestation
+ *                        satisfies isValidAgentAttestation's content
+ *                        contract (a required summary plus a
+ *                        machine-checkable pointer — test_name or
+ *                        commit_sha). It can never override a
+ *                        `claimed-but-still-present` anchor verdict, and
+ *                        mere presence of an object is never sufficient —
+ *                        an earlier version let `{}` alone mint `verified`,
+ *                        which is the Class #14 self-verification hole this
+ *                        restructure closes. Distinct from allowlist:
+ *                        allowlist is a coordinator (human) override;
+ *                        agent_attestation is the agent's own self-report,
+ *                        one input among several, never load-bearing alone.
+ *   unverifiable       — neither anchor nor cross_ref produced a verdict,
+ *                        and no allowlist override or valid attestation
+ *                        broke the tie. Human review needed. Not a synonym
+ *                        for "broken" — it means "this layer cannot
+ *                        conclude."
  *
  * Migration path for the wave-29 11 incidental closures:
  *   - For findings where the fix landed in a consumer file (e.g.,
@@ -75,17 +85,13 @@
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { resolve, isAbsolute } from 'node:path';
 import { MAX_AGENT_OUTPUT_BYTES } from './bounded-json-read.js';
+import { bucketForLine, findAnchorInBucket } from './verify-window.js';
 
 /**
  * Tolerance window (lines) around the recorded line where finding the
  * anchor still counts as "exact match". Mirrors v1.
  */
 const EXACT_LINE_TOLERANCE = 2;
-
-/**
- * Width of the line-bucket window (lines). Mirrors v1.
- */
-const FINGERPRINT_BUCKET = 10;
 
 /**
  * Full enum of `verified_via` values. Importable for test/assertion use.
@@ -160,44 +166,6 @@ function defaultReadLines(absolutePath) {
   } catch {
     return null;
   }
-}
-
-/**
- * Compute the bucket [start, end] inclusive that contains `recordedLine`.
- * If no line was recorded (0 / null), scan the entire file.
- *
- * The window is SYMMETRIC: it spans the finding's own 10-line bucket plus
- * one full adjacent bucket in EACH direction. An asymmetric (upward-only)
- * window let a still-present symbol that drifted into the adjacent LOWER
- * bucket escape the search and misclassify as `verified` (ve-003). Example:
- * a finding recorded at line 42 (bucket [40,50]) whose symbol drifted to
- * line 38 must still be found — line 38 is below the recorded bucket, so the
- * window must reach down a full bucket, not just by one line.
- */
-function bucketForLine(recordedLine, totalLines) {
-  if (!recordedLine || recordedLine <= 0) {
-    return { start: 1, end: totalLines };
-  }
-  const bucket = Math.floor(recordedLine / FINGERPRINT_BUCKET) * FINGERPRINT_BUCKET;
-  return {
-    start: Math.max(1, bucket - FINGERPRINT_BUCKET),
-    end: bucket + FINGERPRINT_BUCKET,
-  };
-}
-
-/**
- * Search for `anchor` in `lines` between bucket bounds (1-indexed). Return
- * the matched line number or null.
- */
-function findAnchorInBucket(lines, anchor, bucketStart, bucketEnd) {
-  const end = Math.min(bucketEnd, lines.length);
-  for (let lineNo = bucketStart; lineNo <= end; lineNo++) {
-    const text = lines[lineNo - 1];
-    if (typeof text === 'string' && anchor.test(text)) {
-      return lineNo;
-    }
-  }
-  return null;
 }
 
 /**
@@ -340,6 +308,26 @@ function classifyByCrossRef(crossRef, repoRoot, readLinesFn) {
 }
 
 /**
+ * The content contract an agent_attestation must satisfy before it can ever
+ * produce a `verified` classification (F-7cc809c4).
+ *
+ * Pre-fix, the guard was `typeof finding.agent_attestation === 'object'` —
+ * `{}` alone was sufficient, and the evidence string degraded to
+ * "agent attestation (no summary supplied)". A required non-empty `summary`
+ * closes the empty-object case; the additional machine-checkable pointer
+ * (`test_name`, `commit_sha`, or `proof_id` — extend this list, don't loosen
+ * the requirement that at least one be present) is what keeps the channel
+ * from degrading into free-text self-praise with nothing a human or a
+ * future classifier layer could go re-check.
+ */
+function isValidAgentAttestation(att) {
+  if (!att || typeof att !== 'object') return false;
+  if (typeof att.summary !== 'string' || att.summary.trim().length === 0) return false;
+  const pointer = att.test_name || att.commit_sha || att.proof_id;
+  return typeof pointer === 'string' && pointer.trim().length > 0;
+}
+
+/**
  * Validate that a `verified_via` value is in the canonical enum. Throwing
  * here makes a typo at a call site fail loudly instead of leaking a
  * misclassification through to the operator's report.
@@ -373,17 +361,36 @@ function assertVerifiedVia(via) {
  *
  * Decision order (highest priority first):
  *   1. coordinator_resolved=true → allowlist (operator-attested override)
- *   2. agent_attestation present → agent_attestation
- *   3. anchor path → if verified, accept and stop. If
+ *   2. anchor path → if verified, accept and stop. If
  *      claimed-but-still-present, try cross_ref before settling.
- *   4. cross_ref path → if it produces `verified`, override the anchor's
+ *   3. cross_ref path → if it produces `verified`, override the anchor's
  *      claimed-but-still-present verdict (Class #14b core).
+ *   4. agent_attestation → NON-authoritative (F-7cc809c4): consulted ONLY
+ *      when anchor AND cross_ref both landed on `unverifiable`, and only if
+ *      it satisfies isValidAgentAttestation's content contract. It can never
+ *      override a `claimed-but-still-present` anchor verdict — a mechanical
+ *      hit that the OLD code is still there outweighs a self-report.
  *   5. otherwise → fall back to the anchor verdict.
+ *
+ * agent_attestation used to be step 2 (checked BEFORE the anchor ever ran),
+ * so an agent's self-report about its OWN fix could mint `verified` ahead of
+ * the one mechanical, independent check this classifier has — the Class #14
+ * verifier-in-the-thing-being-verified pattern lib/git-touched-files.js was
+ * restructured to eliminate, and a direct contradiction of the
+ * EXTERNAL_VERIFIER workflow standard (no model verifies its own output).
+ * Demoting it to a tie-breaker for the one case anchor+cross_ref cannot
+ * resolve — never a promotion, never an override of contradicting mechanical
+ * evidence — keeps the channel useful for what the module header always said
+ * it was for (findings whose fix isn't anchorable: architectural, doc-level)
+ * without it being able to silently rubber-stamp a still-broken fix.
  */
 export function classifyFindingV2(finding, repoRoot, opts = {}) {
   const readLinesFn = opts.readLines || defaultReadLines;
 
   // 1. Coordinator-resolved allowlist — fast path, no mechanical reasoning.
+  // A legitimate HUMAN override; distinct from agent_attestation below,
+  // which is the agent's OWN self-report and must never carry this same
+  // authority.
   if (finding.coordinator_resolved === true) {
     const evidence = finding.verified_via_evidence
       ? `coordinator-resolved: ${finding.verified_via_evidence}`
@@ -395,24 +402,11 @@ export function classifyFindingV2(finding, repoRoot, opts = {}) {
     };
   }
 
-  // 2. Agent attestation path — distinct from allowlist; documents that the
-  // agent provided structured proof rather than a coordinator override.
-  if (finding.agent_attestation && typeof finding.agent_attestation === 'object') {
-    const att = finding.agent_attestation;
-    const evidence = att.summary
-      ? `agent attestation: ${att.summary}`
-      : 'agent attestation (no summary supplied)';
-    return {
-      classification: 'verified',
-      evidence,
-      verified_via: assertVerifiedVia(VERIFIED_VIA.AGENT_ATTESTATION),
-    };
-  }
-
-  // 3. Primary anchor path.
+  // 2. Primary anchor path — runs BEFORE agent_attestation is ever
+  // consulted (see the decision-order note above).
   const anchorResult = classifyByAnchor(finding, repoRoot, readLinesFn);
 
-  // 3a. Anchor said `verified` outright — accept and tag.
+  // 2a. Anchor said `verified` outright — accept and tag.
   if (anchorResult.classification === 'verified') {
     const out = {
       classification: 'verified',
@@ -423,7 +417,7 @@ export function classifyFindingV2(finding, repoRoot, opts = {}) {
     return out;
   }
 
-  // 3b. Anchor was unverifiable. Try cross_ref before giving up.
+  // 2b. Anchor was unverifiable. Try cross_ref before giving up.
   if (anchorResult.classification === 'unverifiable') {
     const crossResult = classifyByCrossRef(finding.cross_ref, repoRoot, readLinesFn);
     if (crossResult.applicable && crossResult.classification === 'verified') {
@@ -434,9 +428,21 @@ export function classifyFindingV2(finding, repoRoot, opts = {}) {
         cross_ref: finding.cross_ref,
       };
     }
-    // Cross-ref was unverifiable too (or absent). Surface the cross_ref
-    // reason if it's more informative than the anchor reason; otherwise
-    // keep the original anchor reason.
+
+    // Neither anchor nor cross_ref resolved it — the ONE case
+    // agent_attestation may now break, and only with a validated content
+    // contract, so `{}` can never mint a verified verdict.
+    if (isValidAgentAttestation(finding.agent_attestation)) {
+      return {
+        classification: 'verified',
+        evidence: `agent attestation: ${finding.agent_attestation.summary} (anchor and cross_ref were both unverifiable)`,
+        verified_via: assertVerifiedVia(VERIFIED_VIA.AGENT_ATTESTATION),
+      };
+    }
+
+    // Cross-ref was unverifiable too (or absent) and no valid attestation
+    // broke the tie. Surface the cross_ref reason if it's more informative
+    // than the anchor reason; otherwise keep the original anchor reason.
     const evidence = crossResult.applicable
       ? `${anchorResult.evidence}; ${crossResult.evidence}`
       : anchorResult.evidence;
@@ -449,12 +455,14 @@ export function classifyFindingV2(finding, repoRoot, opts = {}) {
     return out;
   }
 
-  // 3c. Anchor said `claimed-but-still-present` or `regressed`. Cross_ref
+  // 2c. Anchor said `claimed-but-still-present` or `regressed`. Cross_ref
   // may legitimately override `claimed-but-still-present` (Class #14b
   // core: the symbol is still there because it's the *target* of the
   // consumer-side fix). For `regressed`, we keep the anchor verdict
   // because the symbol moved within the bucket — that's a real signal,
-  // not a vantage-point limit.
+  // not a vantage-point limit. agent_attestation is DELIBERATELY not
+  // consulted here even if present and valid (F-7cc809c4): a mechanical
+  // hit that the OLD code is still at the anchor outweighs a self-report.
   if (anchorResult.classification === 'claimed-but-still-present' && finding.cross_ref) {
     const crossResult = classifyByCrossRef(finding.cross_ref, repoRoot, readLinesFn);
     if (crossResult.applicable && crossResult.classification === 'verified') {

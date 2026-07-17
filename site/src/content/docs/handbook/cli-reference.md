@@ -5,7 +5,7 @@ sidebar:
   order: 6.7
 ---
 
-`swarm` is the control-plane CLI shipped by `@dogfood-lab/dogfood-swarm`. The full source of truth is `packages/dogfood-swarm/cli.js`; this page is a per-verb quick-reference so you can scan all 27 verbs without `swarm --help`-ing your way through them.
+`swarm` is the control-plane CLI shipped by `@dogfood-lab/dogfood-swarm`. The full source of truth is `packages/dogfood-swarm/cli.js`; this page is a per-verb quick-reference so you can scan all 28 verbs without `swarm --help`-ing your way through them.
 
 For verbs that already have a dedicated handbook page, this page lists the synopsis and a one-line summary, then links out. Those deep-dive pages are:
 
@@ -210,6 +210,25 @@ Example:
       --override --reason "operator accepts soft warn"
 ```
 
+## swarm adjudicate
+
+Dispatch a neutral case-file to the cross-family jury and record the advisory verdict on the run's current wave — the wave gate `swarm advance` reads (`corroborate` clears; anything else needs Director disposition). Two tiers: `--jury=local` (default, free local seats, whole-brief reads) and `--jury=prism` (per-criterion, multi-lens, signed receipts, 4,000-char brief cap); `--cloud` opts into the paid seats and **spends Ollama-Cloud credits**. Exits 0 only on corroborate. The full contract — case-file shape, neutrality lint, tier trade-offs, compensators — lives in [`docs/case-file-contract.md`](https://github.com/dogfood-lab/testing-os/blob/main/docs/case-file-contract.md); read it before your first adjudication.
+
+```text
+Usage: swarm adjudicate <run-id>
+           --case-file <path>
+           [--jury=local|prism] [--cloud]
+           [--dry-run] [--format=text|json]
+       swarm adjudicate <run-id>
+           --undo <adjudication-id> [--apply]
+
+Example:
+  $ swarm adjudicate <run> \
+      --case-file case-file.json --dry-run
+  $ swarm adjudicate <run> \
+      --case-file case-file.json --jury=local --cloud
+```
+
 ## swarm status
 
 Render the full control-plane status for a run — phase, waves, agent states, findings counts, recovery breadcrumbs. The scan-first surface: read this when you want to know "what is this run, where is it in the lifecycle, what's blocking it, and what do I run next." The trailing `Next:` line is the canonical pointer to the next action.
@@ -257,6 +276,25 @@ Usage: swarm clean <run-id> [--apply] [--format=text|json]
 Example:
   $ swarm clean <run>          # preview stranded worktrees
   $ swarm clean <run> --apply  # remove them + branches
+```
+
+## swarm clean-claims
+
+Delete phantom `violation=1` file_claims rows stranded on **terminal** waves (`advanced` / `aborted_for_rewind`) — rows no lawful verb can revisit: `collect` only runs on a `dispatched` wave, `revalidate` only repairs blocked agents on the run's latest wave, and `redrive` refuses terminal waves outright. The class is real: a corrected pass (a revalidate repair, a fixed diff base) supersedes an earlier pass's violation claims, and before the reconcile fix landed, nothing cleaned the stale rows once the wave advanced — they permanently corrupted `swarm status`'s violation count and every exported `swarm receipt` for that wave.
+
+file_claims rows are **claims about what a pass observed, not audit events** — deleting a superseded claim is the lawful write. The `agent_state_events` audit trail is never touched; the dry-run preview shows each agent_run's rows *plus* the state-event evidence that supersedes them, so `--apply` is informed consent. Rows on non-terminal waves are refused with the verb that still owns them; `violation=0` rows and other runs' rows are never touched (re-verified inside the delete transaction — a violated invariant rolls everything back). On `--apply`, one restorable audit row per affected domain lands in `domain_events` (`event_type: file_claims_cleaned`, visible via `swarm domains <run-id> --history`).
+
+```text
+Usage: swarm clean-claims <run-id> [--wave=N] [--agent-run=ID]
+                          [--apply --reason "<text>"]
+                          [--format=text|json]
+       # default: dry-run preview
+       # --apply --reason deletes
+
+Example:
+  $ swarm clean-claims <run>       # preview rows + evidence
+  $ swarm clean-claims <run> --wave=4 \
+      --apply --reason "diff base superseded"   # audited
 ```
 
 ## swarm approve

@@ -170,7 +170,11 @@ export function parsePolicy(rawText) {
 // existing single-dir callers working while making multi-org onboarding a
 // no-code-change operation.
 export function loadPolicies(policiesDir) {
-  const policies = {};
+  // F-9b53dc33: null-prototype because this map is keyed by a policy's `repo:`
+  // field. Object.assign below uses [[Set]], so a plain-object accumulator would
+  // re-invoke the inherited __proto__ setter and drop a `repo: __proto__` policy
+  // even though loadPoliciesFromOrgDir already returns it as a clean own key.
+  const policies = Object.create(null);
   if (!existsSync(policiesDir)) return policies;
 
   const entries = readdirSync(policiesDir, { withFileTypes: true });
@@ -194,7 +198,11 @@ export function loadPolicies(policiesDir) {
 }
 
 function loadPoliciesFromOrgDir(orgDir) {
-  const policies = {};
+  // F-9b53dc33: null-prototype — `policies[repo] = ...` below is keyed by a
+  // policy YAML's `repo:` string, and on a plain object a bare `__proto__` would
+  // retarget this map's prototype instead of creating an own key, silently
+  // dropping the policy from the coverage detector's Object.entries() walk.
+  const policies = Object.create(null);
   if (!existsSync(orgDir)) return policies;
 
   for (const file of readdirSync(orgDir)) {
@@ -267,7 +275,14 @@ export function computeFreshnessDays(finishedAt) {
 function sortKeysDeep(value) {
   if (Array.isArray(value)) return value.map(sortKeysDeep);
   if (value && typeof value === 'object') {
-    const out = {};
+    // F-48672d32: Object.create(null), not {} — `out[key] = ...` re-keys whatever
+    // it is handed, so on a plain `{}` a repo literally named '__proto__' would
+    // set out's own prototype via the inherited accessor and drop the entry from
+    // the serialized bytes. This is the LAST hop before indexes/trends.json is
+    // written, so computeTrends' matching fix does not deliver without it.
+    // JSON.stringify treats a null-prototype object identically, so the served
+    // artifact is byte-for-byte unchanged for every ordinary key.
+    const out = Object.create(null);
     for (const key of Object.keys(value).sort()) out[key] = sortKeysDeep(value[key]);
     return out;
   }
@@ -410,6 +425,24 @@ function main() {
         ].join('\n')
       );
       process.exit(0);
+    }
+    // F-418f507c (Stage C humanization): this loop had no trailing `else` —
+    // ANY unrecognized token (a typo, a flag copied from a different
+    // subcommand, or literally `--version`) was silently ignored and the
+    // tool proceeded to run its FULL default action, including writing to
+    // disk (the portfolio report, indexes/trends.json, indexes/badges/*.json
+    // — all three are real writes, not scratch output; the latter two are
+    // explicitly committed "served artifacts" per this repo's own .gitignore
+    // comment). Live-proven: `--no-trend` (missing the trailing 's') printed
+    // "Trends written: ..." with zero warning that the operator's stated
+    // intent to skip the write was silently overridden. Matches the sibling
+    // pattern already correct in this same domain (verify/cli.js,
+    // findings/cli.js): reject any unrecognized argument and point at --help,
+    // rather than silently falling through to the default action.
+    else {
+      console.error(`Unknown argument: ${args[i]}`);
+      console.error('Run with --help for usage.');
+      process.exit(2);
     }
   }
 

@@ -46,14 +46,30 @@ import { toJuryRequest } from './handoff.js';
  * (gpt-oss / glm) route through Ollama's OpenAI-compatible endpoint per the F-14
  * recipe; local seats are distinct lineages the rig serves at ~24-32B. Override
  * via opts.seats.
+ *
+ * F-efe53969: this roster's non-cloud seats MUST stay in lockstep with
+ * ./ollama-jury.js's LOCAL_JURY_SEATS — same families, same model pins. That
+ * file's own header states the intended relationship: "DEFAULT_JURY_SEATS
+ * includes the gpt-oss / glm `:cloud` seats ... LOCAL_JURY_SEATS is the
+ * explicit free-local opt-in", i.e. DEFAULT = LOCAL + the two cloud seats
+ * below. A prior revision let this roster drift (missing the hermes seat,
+ * qwen re-pinned to qwen3.6) with no comment explaining either change — an
+ * unintentional divergence confirmed via commit history (LOCAL_JURY_SEATS's
+ * qwen2.5:7b-over-qwen3.x "thinking model can return empty JSON" rationale
+ * was written AFTER this roster and never backported). Cannot import
+ * LOCAL_JURY_SEATS directly here (ollama-jury.js imports FROM this module —
+ * see its header — so importing back would cycle); keep the two lists
+ * synchronized by hand and let case-file-jury-seats-parity.test.js catch a
+ * future re-drift.
  */
 export const DEFAULT_JURY_SEATS = [
   { family: 'openai', model: 'gpt-oss:120b-cloud', base_url: 'http://localhost:11434' },
   { family: 'zhipu', model: 'glm-4.6:cloud', base_url: 'http://localhost:11434' },
   { family: 'mistral', model: 'mistral-small:24b' },
   { family: 'granite', model: 'granite4.1:30b' },
-  { family: 'qwen', model: 'qwen3.6' },
+  { family: 'qwen', model: 'qwen2.5:7b' },
   { family: 'gemma', model: 'gemma4:31b' },
+  { family: 'hermes', model: 'hermes3:8b' },
 ];
 
 /**
@@ -191,7 +207,63 @@ export function normalizeAdjudication(jurorVerdicts, juryRequest, opts = {}) {
       return JUROR_ANSWERS.includes(a) ? a : 'insufficient_context';
     });
     const agg = aggregateCriterion(answers, opts);
-    return { id: c.id, ...agg };
+    // Brief completeness, onto the RECEIPT (sm-oos-002). A tier that trims the
+    // brief to fit a cap (prism's 4000-char intent ceiling) reports what it
+    // dropped per criterion; that record used to live only in the operator's
+    // terminal and was discarded here, so the signed receipt attested a verdict
+    // while omitting the single fact most likely to undermine it. The contract's
+    // honest-boundary claim — "anything that does not fit is REPORTED, not
+    // silently dropped" — is only true if REPORTED means the durable artifact.
+    //
+    // Absent (rather than zeroed) for a tier with no cap, so "no record" means
+    // "this tier delivered the whole brief" and `{0,0}` means "it trims, and
+    // dropped nothing here". Aggregated by WORST across seats: the intent is
+    // seat-independent today (buildCriterionIntent is a pure function of
+    // criterion + payload), but a receipt must not under-report if a future
+    // per-seat budget ever breaks that.
+    const omissions = jurorVerdicts
+      .map(jv => (jv.prism?.criteria || []).find(d => d.criterion === c.id)?.omitted)
+      .filter(o => o && typeof o === 'object');
+
+    // F-993df146: WHY a criterion landed on insufficient_context matters as
+    // much as THAT it did. Both jury tiers already capture a rich, typed
+    // reason at the SOURCE — ollama-jury.js's makeOllamaJury sets a
+    // whole-juror `error` string when a seat dies (ECONNREFUSED, an
+    // unpulled-model 404, ...), forcing every criterion for that seat to
+    // insufficient_context; prism-jury.js's makePrismJury sets a
+    // PER-CRITERION `error` inside `prism.criteria[]`
+    // (VERIFIER_UNAVAILABLE / BUDGET_EXCEEDED / LENS_COLLAPSE / an
+    // unparseable response) — four mechanically distinct failure classes
+    // that call for four different operator responses. This function used
+    // to read neither shape, so "insufficient_context because the case is
+    // genuinely hard" and "insufficient_context because N of M seats never
+    // actually ran" were indistinguishable in the receipt
+    // (commands/adjudicate.js serializes this return value verbatim, and it
+    // is the ONLY artifact holding per-criterion detail — db/schema.js's
+    // adjudications row is a summary with no criteria column by design).
+    // Threaded the same way `brief_omitted` already is: per-criterion,
+    // sparse (absent, not an empty array, when nobody errored on this
+    // criterion) — a whole-juror error is attributed to every criterion that
+    // juror was asked to judge, since the seat abstained on all of them.
+    const errors = jurorVerdicts
+      .map(jv => {
+        if (jv.error) return { seat: jv.seat, error: jv.error };
+        const detail = (jv.prism?.criteria || []).find(d => d.criterion === c.id);
+        return detail?.error ? { seat: jv.seat, error: detail.error } : null;
+      })
+      .filter(Boolean);
+
+    const result = { id: c.id, ...agg };
+    if (omissions.length > 0) {
+      result.brief_omitted = {
+        evidence: Math.max(...omissions.map(o => Number(o.evidence) || 0)),
+        out_of_scope: Math.max(...omissions.map(o => Number(o.out_of_scope) || 0)),
+      };
+    }
+    if (errors.length > 0) {
+      result.errors = errors;
+    }
+    return result;
   });
 
   // Overall = the highest-precedence criterion outcome present.
@@ -219,6 +291,18 @@ export function normalizeAdjudication(jurorVerdicts, juryRequest, opts = {}) {
     }
   }
 
+  // F-993df146: panel-level health flag, coarser than the per-criterion
+  // `errors` above but readable WITHOUT walking every criterion — a fully or
+  // partially offline jury (every criterion for that seat forced to
+  // insufficient_context) is visible at a glance in the artifact this repo
+  // already treats as the trust anchor for its own verification claims.
+  // Always present (unlike the sparse per-criterion `errors`/`brief_omitted`
+  // fields) so a caller can check `seats_errored.length` without an
+  // undefined guard; empty means every seat that sat on the panel actually ran.
+  const seatsErrored = jurorVerdicts
+    .filter(jv => Boolean(jv.error))
+    .map(jv => ({ seat: jv.seat, error: jv.error }));
+
   return {
     overall,
     authority: 'advisory',       // the jury is EVIDENCE, not law
@@ -228,6 +312,7 @@ export function normalizeAdjudication(jurorVerdicts, juryRequest, opts = {}) {
     out_of_brief: [...outOfBriefCounts.values()].sort((a, b) => b.jurors - a.jurors),
     panel_size: jurorVerdicts.length,
     seats: jurorVerdicts.map(jv => jv.seat).filter(Boolean),
+    seats_errored: seatsErrored,
     excluded_family: EXCLUDED_FAMILY,
   };
 }

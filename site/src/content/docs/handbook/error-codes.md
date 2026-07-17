@@ -98,6 +98,25 @@ A wave is now in a half-written state: artifact rows + file_claims + agent state
   2. Diagnose the underlying SQLite issue from `Caused by:`. `busy_timeout` usually means another process holds the DB; check for stuck `swarm` processes. UNIQUE collision usually means the fingerprint algorithm matched an existing row — check `swarms/control-plane.db` for the colliding finding.
   3. Re-run `swarm collect` for the same wave once resolved. The outer wrapper is idempotent at the upsert level.
 
+### `CONTROL_PLANE_SCHEMA_CORRUPT`
+
+:::caution[Severity: HIGH]
+The on-disk `control-plane.db` has a `kv.schema_version` that is not a number at all — it was hand-edited or otherwise damaged, as opposed to merely being older or newer than your build. `openDb` refuses it **fail-closed**: it closes the handle and throws rather than operate on a DB whose schema it cannot identify.
+:::
+
+- **Class:** `ControlPlaneSchemaCorruptError` (`packages/dogfood-swarm/lib/errors.js`), thrown by `getSchemaVersion` and surfaced through `openDb` — `packages/dogfood-swarm/db/connection.js`. Carries `code: 'CONTROL_PLANE_SCHEMA_CORRUPT'`, so it renders through `renderTopLevelError` as the structured `ERROR [CONTROL_PLANE_SCHEMA_CORRUPT]:` envelope like the rest of the family.
+- **Trigger:** `getSchemaVersion()` read a `schema_version` row from the `kv` table whose value fails `Number.isFinite` — e.g. `"abc"`, or any text `Number()` turns into `NaN`. Distinct from [`CONTROL_PLANE_SCHEMA_TOO_NEW`](#control_plane_schema_too_new) on purpose: the two conditions get separate codes so an operator is never told to "upgrade" a DB that is actually damaged, or to restore-from-backup a DB that is merely newer.
+- **Not every junk value reaches this code.** `Number('')` is **`0`**, not `NaN` — finite — so an **empty** `schema_version` does *not* throw here; it reads as version 0 and takes the bootstrap path, and a whitespace-only `" "` coerces to `0` the same way. Do **not** generalize that to every coercible string: a value that parses to a **nonzero** finite number never reaches this code either, but it does not take the bootstrap path — it is treated as a real on-disk version and routed by magnitude. `"0x10"` parses to `16`, which sits above today's schema ceiling and throws [`CONTROL_PLANE_SCHEMA_TOO_NEW`](#control_plane_schema_too_new) instead: a damaged value masquerading as version skew, where that code's "upgrade your build" hint is the wrong remediation — run the inspect query below before believing it. This is the `Number('') === 0` trap that `F-b5fd9887` fixed one module over in `cross-run-analytics.js`. An earlier revision of this bullet listed `""` as a trigger — wrong; the revision that corrected it then filed `"0x10"` under the bootstrap path — also wrong. Both were caught by audits that ran the code instead of reading the prose.
+- **Message shape:** `control-plane.db at <dbPath> has a corrupted kv.schema_version value: <rawValue> — expected a finite number.` — where `<rawValue>` is `JSON.stringify`'d, so a string value renders **quoted** (`"abc"`, not `abc`). That is deliberate: it makes a whitespace-only or empty-looking value visible instead of vanishing into the sentence.
+- **Carries:** `rawValue` (the unparseable value as read from disk), `dbPath`, `hint`.
+- **Hint:** `kv.schema_version is not a finite number — the control-plane.db is corrupted or was hand-edited, not merely older/newer. Restore control-plane.db from a known-good backup, or remove it to bootstrap a fresh one (only if this run's history is not needed) — do not hand-write schema_version without reading db/migrate.js's ledger first.`
+- **Why it fails loud instead of coping (F-9587adda):** `Number('abc')` is `NaN`, and **every** comparison against `NaN` is false. A silent `NaN` therefore defeated *both* of `openDb`'s guards at once — the too-new refusal (`onDisk > SCHEMA_VERSION`) and the bootstrap gate (`onDisk === 0`) — so a corrupted DB sailed past the exact two checks written to stop it and got operated on as though its schema were understood. This is the ordinary NaN-poisoning shape with an unusually bad blast radius: not one guard bypassed, but a matched pair.
+- **Recovery:**
+  1. Inspect the value the error names: `sqlite3 swarms/control-plane.db "SELECT * FROM kv WHERE key='schema_version'"`.
+  2. Restore `control-plane.db` from a known-good backup if this run's history matters.
+  3. Only if it does not, delete the DB and let `openDb` bootstrap a fresh one.
+  4. Do **not** hand-write `schema_version` back to a plausible-looking integer — read `db/migrate.js`'s migration ledger first, or you will claim a shape the DB does not have.
+
 ### `CONTROL_PLANE_SCHEMA_TOO_NEW`
 
 :::caution[Severity: HIGH]
@@ -457,6 +476,36 @@ A `swarm verify --ingest` run (or `persist-results.js`) reached the dogfood-inge
   1. Run the printed `Reproduce:` command to replay the ingest in isolation with full output.
   2. The most common cause is a schema-invalid submission — inspect the AJV failure against `packages/schemas/src/json/dogfood-record.schema.json` and fix the swarm's submission emitter, not the schema.
   3. Re-run `swarm verify --ingest` once the emitter is corrected. The human-readable summary still prints `Ingested: NO` to stdout so the failure is visible in both streams.
+
+### `CRITERION_INTENT_OVERFLOW`
+
+:::note[Severity: MEDIUM]
+A locally-detectable input error in the case-file, caught before any jury seat is dispatched. Nothing is spent, nothing is written, nothing is corrupted — the operator edits the case-file and re-runs.
+:::
+
+- **Class:** `CriterionIntentOverflowError` (`packages/dogfood-swarm/lib/errors.js`).
+- **Trigger:** Assembling a `--jury=prism` seat call, when the **mandatory** section — `rubric.objective` + one criterion's `check` + the whole `out_of_scope` block — already exceeds prism's 4000-char `intent` cap, before any evidence is added. Raised by `buildCriterionIntent` in `packages/dogfood-swarm/lib/case-file/prism-jury.js`.
+- **Message shape:** `rubric.objective + criterion '<id>' + out_of_scope exceed prism's 4000-char intent cap by <n> chars — shorten the objective, split the criterion, or trim the out-of-scope list`
+- **Hint:** **none reaches the operator.** `CriterionIntentOverflowError` sets no `.hint`, and `deriveHintForCode()` in `error-render.js` has no case for this code — so `renderTopLevelError` prints no `Next:` line. The actionable detail lives in the message text and in the error's structured fields (`criterionId`, `headLength`, `maxChars`). This is a real gap, recorded here rather than papered over; the fix belongs in `error-render.js`, not in this page.
+- **Operator action:**
+  1. Shorten `objective`, split the named criterion, or trim `out_of_scope` — the three levers the message names. **All three sections are mandatory** on this tier: only the evidence pack yields to the cap, so an over-cap mandatory section cannot be resolved by dropping evidence.
+  2. Re-run `swarm adjudicate <run-id> --case-file <path> --jury=prism`.
+- **Why this fails fast rather than trimming:** everything droppable is already reported per-criterion on the receipt as `criteria[].brief_omitted`. An over-cap **mandatory** section, though, was neither reported nor droppable — it was a fixed cost measured against the budget but never checked. prism's own pydantic `max_length=4000` then rejected the request on **every seat uniformly**, so the panel returned `insufficient_context` and the operator was told the jury could not reach the artifact — when the real cause was a deterministic input error knowable without spending a single ~27s seat call. This is the [case-file contract](https://github.com/dogfood-lab/testing-os/blob/main/docs/case-file-contract.md)'s "anything that does not fit is REPORTED, not silently dropped" applied to the one section that had escaped it.
+
+### `UNSAFE_RECORD_PATH`
+
+:::caution[Severity: HIGH]
+A submission passed the record schema but its on-disk path could not be safely computed. **Nothing is written** — the traversal guard holds and the ingest fails closed. The submission is rejected, not persisted.
+:::
+
+- **Class:** `UnsafeRecordPathError` (`packages/ingest/persist.js`), cause-chained to the underlying `computeRecordPath` failure.
+- **Trigger:** `writeRecord()`, when `computeRecordPath()` throws *after* `validateRecord()` has already passed. The gap it closes: the record schema's `repo` pattern (`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`) **permits embedded `..`** — `../etc` matches — while `isUnsafeSegment` correctly refuses it. So a schema-valid-but-unsafe repo reached path computation and threw a bare, unclassified `Error`.
+- **Message shape:** `record passed schema validation but its path could not be safely computed (repo: <repo>, run_id: <run_id>): <cause message>`
+- **Fields:** `repo`, `runId`, plus the chained `cause` (rendered as `Caused by: …`).
+- **Operator action:**
+  1. Read the `Caused by:` line — it names the specific guard that refused (`invalid repo format` / `unsafe repo segment` / `unsafe run_id`).
+  2. Fix the submission's `repo` or `run_id` and resubmit. **The run_id is not consumed** — nothing was written, so a corrected resubmission is not a duplicate.
+- **Why a distinct code rather than reusing `RECORD_SCHEMA_INVALID`:** the record is *not* schema-invalid — it passed. Reporting it as a schema failure would send the operator to the schema, which is exactly the confusion this code exists to end. The two checks disagree by design: the schema is a permissive contract shared with consumers, and `isUnsafeSegment` is the stricter filesystem-safety gate. A submission can satisfy the first and fail the second, and that state now has a name.
 
 ## Cross-references
 

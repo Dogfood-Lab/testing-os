@@ -14,13 +14,39 @@
  *   timed_out           → redispatch
  *   invalid_output      → BLOCKED — report, do not redispatch
  *   ownership_violation → BLOCKED — report, do not redispatch
+ *
+ * COORD-002 — compensators table (workflow-standards NAMED_COMPENSATORS; no
+ * skip allowed for an irreversible action):
+ *
+ *   Irreversible action: redispatching a candidate whose predecessor ran
+ *   --isolate calls createWorktree() (lib/worktree.js), which does
+ *   `git worktree remove <path> --force` (discards uncommitted/untracked
+ *   edits) then `git branch -D` (force-deletes the branch) before
+ *   recreating both fresh from HEAD.
+ *
+ *   Command-to-undo: NONE. Once --force proceeds over a dirty/unmerged
+ *   worktree, the destroyed content is gone — untracked files never enter
+ *   git's object store, so `git fsck` finds nothing to recover (this is not
+ *   hypothetical: it is exactly how this wave's own prior salvage attempt
+ *   was lost). There is no compensator for THIS action; the only lever is
+ *   PREVENTION, which is what the guard below is. This is stated plainly
+ *   per the standing rule rather than skipped.
+ *
+ *   Post-refusal state: nothing is touched — no DB row, no FS write. The
+ *   refusal is checked and thrown before the db.transaction() below opens.
+ *
+ *   Owner: the operator invoking `swarm resume`. --force (opts.force) is
+ *   the explicit, named escape hatch (mirrors `swarm rewind`'s
+ *   --force-on-top-of---apply contract for the same blast radius); the
+ *   operator accepts the loss by passing it after inspecting the named
+ *   at-risk worktree(s) in the refusal error.
  */
 
 import { openDb } from '../db/connection.js';
 import { getDomains } from '../lib/domains.js';
 import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../lib/templates.js';
 import { findingsForDomain } from '../lib/findings-filter.js';
-import { createWorktree } from '../lib/worktree.js';
+import { createWorktree, worktreeDisposition } from '../lib/worktree.js';
 import { IsolationError } from '../lib/errors.js';
 import { SKIP_VERIFY_DIRECTIVE } from './dispatch.js';
 import {
@@ -34,6 +60,8 @@ import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { pluralize } from './lib/pluralize.js';
 
 /**
  * @param {object} opts
@@ -41,6 +69,10 @@ import { mintCorrelationId } from '../lib/correlation-id.js';
  * @param {string} opts.dbPath
  * @param {string} opts.outputDir — where to write re-dispatch prompts
  * @param {number} [opts.nowMs] — override current time for testing
+ * @param {boolean} [opts.force] — COORD-002: proceed even when a redispatch
+ *   candidate's existing --isolate worktree has uncommitted or unmerged
+ *   work that createWorktree() would force-destroy. Without this, resume
+ *   REFUSES (touching nothing) and names the at-risk worktree(s).
  * @returns {object} — resume report
  */
 export function resume(opts) {
@@ -77,8 +109,14 @@ export function resume(opts) {
   // domain's current state drives at most one redispatch per resume call.
   // F-H6/H7/H8 (Wave A1 D3): SQL fragment now lives in
   // lib/queries/latest-agent-runs.js (shared with read-side callers).
+  // F-6d0e966c: d.ownership_class is selected here (alongside the
+  // pre-existing d.name / d.globs) so the redispatch prompt below can carry
+  // it forward — dispatch.js's promptOpts already includes it (cli.js/
+  // dispatch.js:560), and lib/templates.js#renderDomainContract silently
+  // omits the `## Your domain` block's ownership-class line when it is
+  // undefined, rather than failing loud.
   const agentRuns = db.prepare(`
-    SELECT ar.*, d.name as domain_name, d.globs
+    SELECT ar.*, d.name as domain_name, d.globs, d.ownership_class
     FROM agent_runs ar
     JOIN domains d ON ar.domain_id = d.id
     WHERE ar.wave_id = ?
@@ -149,6 +187,43 @@ export function resume(opts) {
 
     if (isRedispatchable(ar.status)) {
       redispatchCandidates.push(ar);
+    }
+  }
+
+  // COORD-002: refuse BEFORE any mutation when a redispatch candidate's
+  // existing --isolate worktree has uncommitted or unmerged work that
+  // createWorktree() (below) would force-destroy on recreation. Checked for
+  // every candidate up front — a pure read-only git probe, no DB write, no
+  // FS write — so a refusal is total and atomic: either every candidate is
+  // safe to recreate, or NOTHING happens and the operator sees exactly
+  // which worktree(s) are at risk. This mirrors dispatch.js's in-flight
+  // precondition (checked before its own tx) and rewind's
+  // --force-on-top-of---apply contract for the identical blast radius —
+  // resume previously had NEITHER a dry-run/--apply split NOR this gate,
+  // making it the only work-destroying verb in the package with no gate at
+  // all (see the module header's compensators note: there is no undo once
+  // --force proceeds, so prevention is the only lever).
+  if (!opts.force) {
+    const atRisk = [];
+    for (const ar of redispatchCandidates) {
+      if (!ar.worktree_path) continue;
+      const disposition = worktreeDisposition(run.local_path, ar.worktree_path, ar.worktree_branch, run.branch);
+      if (disposition.dirty || disposition.unmerged) {
+        atRisk.push({ domain: ar.domain_name, agentRunId: ar.id, worktreePath: ar.worktree_path, ...disposition });
+      }
+    }
+    if (atRisk.length > 0) {
+      const err = new Error(
+        `resume: ${atRisk.length} worktree(s) have uncommitted or unmerged work that redispatch's ` +
+        `worktree recreation would DESTROY: ` +
+        atRisk.map(a => `${a.domain} (${a.worktreePath}${a.dirty ? ', dirty' : ''}${a.unmerged ? ', unmerged' : ''})`).join('; ') +
+        `. Nothing was mutated. Salvage the work first (commit + push from inside the worktree, or copy it out), ` +
+        `then either re-run \`swarm resume\` (clean now) or pass { force: true } (CLI: --force) to proceed anyway ` +
+        `and accept the loss — there is no undo once --force destroys uncommitted work.`
+      );
+      err.code = 'RESUME_WORKTREE_AT_RISK';
+      err.atRisk = atRisk;
+      throw err;
     }
   }
 
@@ -238,6 +313,14 @@ export function resume(opts) {
       repo: run.repo,
       domainName: ar.domain_name,
       globs,
+      // F-6d0e966c: dispatch.js's promptOpts (cli.js's dispatch call site)
+      // always includes both of these; resume's redispatch prompt dropped
+      // them, so a resumed wave's agent contract read "the snapshot ID
+      // below is the audit anchor for this wave" with no snapshot ID below
+      // it — self-contradictory prose handed to an LLM agent on exactly the
+      // recovery path (timeout/failure) most likely to already be degraded.
+      ownershipClass: ar.ownership_class,
+      domainSnapshotId: wave.domain_snapshot_id,
       phase: wave.phase,
       waveNumber: wave.wave_number,
     };
@@ -279,13 +362,13 @@ export function resume(opts) {
     report.reason = 'All agents complete. Ready for collect.';
   } else if (report.manual_fix.length > 0 && report.redispatch.length === 0 && report.still_running.length === 0) {
     report.action = 'blocked';
-    report.reason = `${report.manual_fix.length} agents blocked (${report.manual_fix.map(m => `${m.domain}: ${m.status}`).join(', ')})`;
+    report.reason = `${pluralize(report.manual_fix.length, 'agent')} blocked (${report.manual_fix.map(m => `${m.domain}: ${m.status}`).join(', ')})`;
   } else if (report.redispatch.length > 0) {
     report.action = 'redispatched';
-    report.reason = `Redispatched ${report.redispatch.length} agents`;
+    report.reason = `Redispatched ${pluralize(report.redispatch.length, 'agent')}`;
   } else if (report.still_running.length > 0) {
     report.action = 'waiting';
-    report.reason = `${report.still_running.length} agents still in-flight`;
+    report.reason = `${pluralize(report.still_running.length, 'agent')} still in-flight`;
   } else if (report.rewound.length > 0) {
     // ds-lib-002: every non-terminal agent is accounted for and the remainder
     // were aborted by `swarm rewind --apply`. The wave's tree was reset, so it
@@ -373,7 +456,16 @@ export function formatResume(r) {
   if (r.manual_fix.length > 0) {
     lines.push(`Blocked — manual fix or \`swarm revalidate\` required (${r.manual_fix.length}):`);
     for (const a of r.manual_fix) {
-      lines.push(`  [STOP] ${a.domain} — ${a.status}: ${a.error || 'no details'}`);
+      // F-f1dae277 (wave 22): a.error is agent_runs.error_message (set at
+      // resume.js's report.manual_fix.push site above from ar.error_message
+      // verbatim), which for an 'ownership_violation' status agent is
+      // collect.js's `violMsg` — unescaped joined ownership.violations[].file
+      // paths. `swarm resume` has no --format=json branch, so this text
+      // render is the only surface this value reaches; escaped at render
+      // regardless, matching this package's uniform convention rather than
+      // relying on that absence to stay true.
+      const detail = a.error ? escapeReasonForDisplay(a.error) : 'no details';
+      lines.push(`  [STOP] ${a.domain} — ${a.status}: ${detail}`);
     }
     lines.push(`  Recovery: \`swarm revalidate <run-id> --reason "<text>" --domain=<domain>:<corrected.json> --apply\` (lawful override; dry-run without --apply).`);
   }

@@ -20,7 +20,8 @@ import { getDomains, checkOwnership, narrowToExclusivelyOwned } from '../lib/dom
 import { minimatch } from 'minimatch';
 import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from '../lib/output-schema.js';
 import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate-agent-output.js';
-import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
+import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings, honorReusedFindingIds } from '../lib/fingerprint.js';
+import { matchesAnyGlob } from '../lib/findings-filter.js';
 import { transitionAgent, canTransition } from '../lib/state-machine.js';
 import { transitionWave } from '../lib/wave-state-machine.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
@@ -31,6 +32,7 @@ import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { getActualTouchedFiles, diffReportedVsActual, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { pluralize } from './lib/pluralize.js';
 
 /**
  * The deterministic per-domain output filename the dispatch layout promises an
@@ -233,6 +235,168 @@ const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'sta
 const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
 
 /**
+ * Narrow each agent's `confirmed` declaration to the findings its OWN domain
+ * owns. Shared with revalidate.js, whose full-coverage branch builds the
+ * structurally identical union — the same one-definition/two-callers seam
+ * reconcileFileClaims below already established for this pair, and the reason
+ * the fix lands here rather than being copy-pasted into both.
+ *
+ * WHY (F-18d0ef6d, HIGH). The `confirmed` declaration replaced "silence closes
+ * a finding" with "a declaration closes a finding" — but never checked WHO was
+ * declaring. Any domain could close any other domain's finding by naming an id
+ * it saw in the confirmation queue, which is run-wide and shows every domain's
+ * open findings to every agent. Proven live against the unmutated code: a
+ * domain owning only `packages/b/**` declared a CRITICAL living exclusively in
+ * `packages/a/**`, and it closed, permanently. The brief tells agents "an id
+ * outside your domain belongs to another agent, not to you" — prose, enforced
+ * by nothing, which is the exact "nothing reads the summary" shape the
+ * declaration mechanism was built to kill, one layer down inside that fix.
+ *
+ * Ownership is resolved with `matchesAnyGlob` — the same helper
+ * findingsForDomain uses to route work TO a domain. A domain that may not be
+ * ASSIGNED a finding must not be able to CLOSE it; routing and vouching had
+ * better answer to one rule.
+ *
+ * DISCLOSED, not silently assumed away: a finding whose `file_path` no
+ * agent-bearing domain matches becomes unclosable by declaration and stays open
+ * (`unverified`) until a coordinator disposes of it via defer/reject. Two ways
+ * to land there, and they are NOT the same gap:
+ *   - the path matches a `shared` domain, which dispatch never gives an agent
+ *     (root `package.json` — F-3af2f9c8's home);
+ *   - the path matches NO domain at all, not even `shared`, because `shared`'s
+ *     globs are root-level (`package.json`, `*.json`) and minimatch does not
+ *     cross a path separator without a globstar — so a nested
+ *     `packages/<name>/package.json` belongs to nobody (F-6a5eb347's home).
+ *     (Spelling that glob literally here would end this comment: the star-slash
+ *     closes the block. The suite went 161-red on exactly that.)
+ * That is not new and not this rule's doing: F-6a5eb347 went `unverified` on
+ * wave 32, ~14 minutes BEFORE this rule was committed, correctly — no agent
+ * checked it because no agent COULD. Failing closed is the whole point; the
+ * alternative is letting an unrelated domain vouch for a file nobody owns,
+ * which is the defect being fixed.
+ *
+ * An earlier revision of this paragraph cited F-6a5eb347 as "root package.json,
+ * `shared`" — wrong on both halves (it is `packages/dogfood-swarm/package.json`,
+ * and it matches zero domains), conflating it with F-3af2f9c8. Three separate
+ * lanes caught it independently, each by running minimatch against the real
+ * frozen map rather than reading the comment. The conclusion survived; the
+ * citation did not.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} runId
+ * @param {Array<{name: string, globs: string[]}>} domains — the frozen map
+ * @param {Array<{domain: string, confirmed?: string[]}>} agents — COMPLETE agents only
+ * @returns {string[]} the ids whose declaring agent actually owns them
+ */
+export function scopeConfirmedToOwningDomain(db, runId, domains, agents) {
+  const pathById = new Map(
+    db.prepare('SELECT finding_id, file_path FROM findings WHERE run_id = ?')
+      .all(runId)
+      .map(f => [String(f.finding_id).toUpperCase(), f.file_path]),
+  );
+  const domainByName = new Map(domains.map(d => [d.name, d]));
+
+  const scoped = [];
+  for (const agent of agents) {
+    const domain = domainByName.get(agent.domain);
+    if (!domain || !Array.isArray(agent.confirmed)) continue;
+    for (const id of agent.confirmed) {
+      // An id naming no finding in this run declares nothing. Dropping it is
+      // not merely tidiness: a typo'd or hallucinated id must never be able to
+      // vacuously "close" anything, and it cannot be owned by definition.
+      const filePath = pathById.get(String(id).toUpperCase());
+      if (filePath == null) continue;
+      // F-f347d858: normalize BEFORE matching. The raw `file_path` column can
+      // carry a leading './', a doubled/trailing slash (a path-join artifact),
+      // a backslash separator, or a case variant of the identical file — none
+      // of which matchesAnyGlob's minimatch call recognizes as equal to the
+      // canonical spelling a domain's own glob is authored in. Fails CLOSED
+      // today (an unmatched path stays unclosable, never wrongly closed), but
+      // still a reliability gap in the one function now trusted to VOUCH for
+      // closing a finding, not merely route it. Mirrors lib/fingerprint.js's
+      // own (private, unexported) normalizePath byte-for-byte; duplicated
+      // rather than imported because that helper isn't exported and this fix
+      // is scoped to this file's owned glob only — lib/fingerprint.js's
+      // honorReusedFindingIds carries the identical shape at its own
+      // matchesAnyGlob(priorFile, ...) call site, closed independently the
+      // same wave. A third copy would be the signal to promote this to a
+      // shared, exported helper instead of forking again.
+      if (matchesAnyGlob(normalizeFilePathForGlobMatch(filePath), domain.globs)) scoped.push(id);
+    }
+  }
+  return scoped;
+}
+
+/**
+ * F-f347d858: local, private normalization for a `file_path` immediately
+ * before it is matched against a domain's glob list. Same transform as
+ * lib/fingerprint.js's private normalizePath (not importable — that function
+ * is not exported): strips a leading './', collapses doubled/trailing
+ * slashes, converts backslash to forward slash, and lowercases. Domain globs
+ * are authored literals (always forward-slash, always lowercase in this
+ * repo's convention) so only the untrusted file_path side needs normalizing.
+ *
+ * @param {string} filePath
+ * @returns {string}
+ */
+function normalizeFilePathForGlobMatch(filePath) {
+  if (!filePath) return '';
+  return filePath
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/$/, '')
+    .toLowerCase();
+}
+
+/**
+ * F-67ddcd02: the shared file_claims reconciliation step BOTH collect() (this
+ * file, below) and revalidate.js's mutation pass must run before writing an
+ * agent_run's current-pass file claims.
+ *
+ * Pre-fix, both write paths were add/upsert-ONLY: a row for a file the
+ * CURRENT pass no longer even examines — because a corrected diff base
+ * landed between two collect() attempts (`swarm redrive` re-opening a wave),
+ * a domain-map recomputation narrowed the set, or the agent's edits were
+ * fully reverted before a revalidate() repair — was never revisited by
+ * either the violation-upsert or the valid-insert-or-ignore loop. A stale
+ * violation=1 row from an earlier, WRONG attempt then survived forever,
+ * corrupting `swarm status`'s violation count and any exported
+ * `swarm receipt` for a wave whose real, corrected result was clean (proven
+ * live against this run's own control-plane DB: wave 4's first, broken-diff-
+ * base collect attempt wrote 335 violation=1 rows across 6 agents; the
+ * corrected second attempt never touched them, and `swarm receipt` for wave
+ * 4 still exports all 335 as live violations today).
+ *
+ * file_claims rows are a CLAIM about what the current pass observed, not an
+ * audit event (DS-MUT-001's framing, a few lines below, for the sibling
+ * upsert) — deleting a superseded claim is the lawful write, not data loss.
+ * The audit trail for WHY an agent_run reached its current status lives in
+ * agent_state_events, untouched by this.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {number} agentRunId
+ * @param {string[]} keep — the file paths this pass's ownership check
+ *   actually examined (collect.js's filesForOwnership: reported self-report
+ *   UNION independently-observed touched files). Any EXISTING file_claims
+ *   row for this agent_run_id whose file_path is NOT in this set is
+ *   superseded and removed — regardless of whether it was violation=1 or
+ *   violation=0, since either can go stale the same way. An empty array
+ *   clears every row for this agent_run_id, which is correct for a fully-
+ *   reverted / now-empty pass.
+ */
+export function reconcileFileClaims(db, agentRunId, keep) {
+  if (keep.length === 0) {
+    db.prepare('DELETE FROM file_claims WHERE agent_run_id = ?').run(agentRunId);
+    return;
+  }
+  const placeholders = keep.map(() => '?').join(',');
+  db.prepare(`
+    DELETE FROM file_claims WHERE agent_run_id = ? AND file_path NOT IN (${placeholders})
+  `).run(agentRunId, ...keep);
+}
+
+/**
  * @param {object} opts
  * @param {string} opts.runId
  * @param {string} opts.dbPath
@@ -299,6 +463,45 @@ export function collect(opts) {
   `).all(wave.id);
   const domains = getDomains(db, opts.runId);
   const domainMap = new Map(domains.map(d => [d.name, d]));
+
+  // F-16bab049: a --domain=<name>:<path> pair whose NAME does not match any
+  // domain in this run is a CLI typo, not a missing agent — refuse loudly
+  // and BEFORE any mutation. Nothing below this point has written to the DB
+  // yet (agentRuns/domains above are reads), so the wave stays 'dispatched'
+  // and a corrected `swarm collect` re-runs immediately — no `swarm redrive`
+  // detour. Pre-fix, collect() only ever looked up
+  // `opts.outputs?.[domain.name]` (iterating FROM the domain side), so an
+  // extra/misspelled key in `opts.outputs` was silently never read: the
+  // REAL domain for that typo'd slot then had no output, got marked
+  // 'failed' downstream ('Output file not found'), and the wave flipped to
+  // 'failed' with no diagnostic naming the typo. Mirrors revalidate.js's
+  // unknown-domain refusal (revalidate.js's validation pass) for the same
+  // class of operator mistake.
+  const unknownDomains = Object.keys(opts.outputs || {}).filter(name => !domainMap.has(name));
+  if (unknownDomains.length > 0) {
+    const validDomains = domains.map(d => d.name).sort();
+    logStage('collect_unknown_domain', {
+      component: 'dogfood-swarm',
+      correlation_id: mintCorrelationId(),
+      runId: opts.runId,
+      waveId: wave.id,
+      waveNumber: wave.wave_number,
+      unknownDomains,
+      validDomains,
+    });
+    const err = new Error(
+      `collect: unknown domain(s) in --domain=<name>:<path>: ${unknownDomains.join(', ')}. ` +
+      `Valid domains for this run: ${validDomains.join(', ') || '(none)'}. ` +
+      `The wave was NOT modified — re-run \`swarm collect\` with the corrected name.`
+    );
+    err.code = 'COLLECT_UNKNOWN_DOMAIN';
+    err.runId = opts.runId;
+    err.waveId = wave.id;
+    err.unknownDomains = unknownDomains;
+    err.validDomains = validDomains;
+    err.hint = `valid domains for this run: ${validDomains.join(', ') || '(none)'}`;
+    throw err;
+  }
 
   const report = {
     waveId: wave.id,
@@ -561,19 +764,34 @@ export function collect(opts) {
     // reverted edits before reporting). When git is unavailable (no .git), we
     // fall back to the agent's self-report and surface the degradation in
     // the report.
-    // F-0e55b5ca: the non-isolated base is the PER-WAVE dispatch-time HEAD
+    // F-0e55b5ca: the base is the PER-WAVE dispatch-time HEAD
     // (waves.dispatch_sha), not runs.commit_sha — the init-time sha goes
     // stale as waves land commits, so diffing against it attributed every
     // prior wave's landed edits to this agent (false divergence alarms; the
     // prior waves' in-domain files INSERTed into file_claims under this
     // agent's identity). Legacy waves (dispatched before the v8 column) fall
-    // back to runs.commit_sha, the historical behavior.
+    // back to the per-path derivation below, the historical behavior.
+    //
+    // F-COORD-DIFFBASE: dispatch_sha is preferred on BOTH paths. F-0e55b5ca
+    // added the column and wired it into the non-isolated branch only,
+    // leaving --isolate to re-derive its base via
+    // resolveWorktreeBaseRef = `git merge-base <run.branch> HEAD`. That
+    // equals the dispatch point ONLY IF the worktrees forked from
+    // run.branch's tip; commit a wave to a feature branch and merge-base
+    // silently returns where that branch diverged from run.branch instead —
+    // re-creating F-0e55b5ca's exact stale-base failure on the path that
+    // needs the fix most (run swarm-1784091637-5127 wave 4: 335 phantom
+    // ownership violations across 6 agents; backend diffed to 114 files
+    // against the merge-base vs 6 against dispatch_sha). dispatch_sha IS the
+    // worktree fork point by construction — dispatch.js captures
+    // `git rev-parse HEAD` and lib/worktree.js's createWorktree forks from
+    // that same HEAD — so reading the recorded fact is strictly more direct
+    // than re-deriving it, and cannot drift when HEAD is off run.branch.
     if (isAmend && output.files_changed !== undefined) {
       const isolated = !!ar.worktree_path;
       const worktree = ar.worktree_path || run.local_path;
-      const baseRef = isolated
-        ? resolveWorktreeBaseRef(worktree, run.branch)
-        : (wave.dispatch_sha || run.commit_sha);
+      const baseRef = wave.dispatch_sha
+        || (isolated ? resolveWorktreeBaseRef(worktree, run.branch) : run.commit_sha);
       const actualTouched = getActualTouchedFiles(worktree, { baseRef });
       const reported = Array.isArray(output.files_changed) ? output.files_changed : [];
 
@@ -689,6 +907,14 @@ export function collect(opts) {
         });
       }
 
+      // F-67ddcd02: supersede this agent_run's PRIOR file_claims rows before
+      // writing the current pass's — see reconcileFileClaims's doc comment
+      // (above tryTransition) for the full rationale. Runs unconditionally,
+      // even when filesForOwnership is now empty, so a fully-reverted
+      // agent_run's stale claims (of either violation value) are cleared
+      // too, not just the ones this pass happens to re-examine.
+      reconcileFileClaims(db, ar.id, filesForOwnership);
+
       if (filesForOwnership.length > 0) {
         const ownership = checkOwnership(db, opts.runId, domain.name, filesForOwnership);
         if (ownership.violations.length > 0) {
@@ -751,10 +977,20 @@ export function collect(opts) {
       // folded into computeFingerprint, so this does not perturb the fingerprint.
       const stored = f.severity == null ? { ...f, severity: f.priority } : f;
       stored.fingerprint = computeFingerprint(stored, { sourceText });
+      // Domain attribution for honorReusedFindingIds' ownership gate — a
+      // declared id reuse is honored only when the DECLARING domain owns the
+      // prior's file, the same authority the confirmed[] close path enforces.
+      stored._declaringDomain = domain.name;
       allFindings.push(stored);
     }
 
     agentReport.findings_count = findings.length;
+    // The agent's own declaration of which open priors it actually checked and
+    // found gone. Audit-only: an amend wave's silence about a prior never
+    // closed anything in the first place. Carried onto the report so the
+    // classify call below can hold `fixed` to a declaration instead of
+    // inferring it from silence.
+    if (isAudit) agentReport.confirmed = Array.isArray(output.confirmed) ? output.confirmed : [];
     if (agentReport.status === 'complete') {
       tryTransition(db, ar.id, 'complete', 'Output collected and validated', domain.name);
       db.prepare('UPDATE agent_runs SET output_path = ? WHERE id = ?')
@@ -844,8 +1080,32 @@ export function collect(opts) {
     const agentBearing = domains.filter(d => d.ownership_class !== 'shared');
     const fullCoverage = agentBearing.length > 0
       && agentBearing.every(d => completedDomains.has(d.name));
+    // The union of every COMPLETE agent's `confirmed` declaration, NARROWED to
+    // the findings each agent's own domain owns. Domain coverage proves the
+    // wave read the files; only the declaration proves it looked for a given
+    // prior, which is the one thing that does not survive a lens change (a
+    // stage-d-audit agent hunting typography "covers" every file a
+    // defensive-coding finding lives in). An incomplete agent's declaration is
+    // discarded for the same reason its silence is: it did not audit its domain.
+    //
+    // Deliberately NOT `|| null`: a wave where every agent legitimately checked
+    // nothing must assert an EMPTY set (close nothing), not "no assertion"
+    // (close everything). That distinction is the whole gate — collapsing an
+    // empty declaration into the coarse reading would fail open exactly when
+    // the agents told us they looked at nothing.
+    const confirmed = scopeConfirmedToOwningDomain(
+      db, opts.runId, domains,
+      report.agents.filter(a => a.status === 'complete'),
+    );
+    // A CONFIRM-queue re-report that reuses a prior's finding id must match
+    // that prior, not mint a duplicate row — the brief promises exactly this,
+    // and content fingerprints cannot deliver it (see honorReusedFindingIds).
+    // Same helper, same position (post-fingerprint, pre-classify) as the
+    // revalidate.js caller — one definition, two callers, so the arbitration
+    // cannot fork. The frozen map rides along for the ownership gate.
+    const reconciled = honorReusedFindingIds(allFindings, priorMap, domains);
     const classified = classifyFindings(
-      allFindings, priorMap, fullCoverage ? { full: true } : null
+      reconciled, priorMap, fullCoverage ? { full: true, confirmed } : null
     );
     let stats;
     try {
@@ -866,7 +1126,7 @@ export function collect(opts) {
         findingsAttempted: allFindings.length,
       });
       throw new CollectUpsertError(
-        `upsertFindings failed for wave=${wave.wave_number} (${allFindings.length} findings attempted): ${e.message}`,
+        `upsertFindings failed for wave=${wave.wave_number} (${pluralize(allFindings.length, 'finding')} attempted): ${e.message}`,
         { cause: e, waveId: wave.id, findingsAttempted: allFindings.length }
       );
     }
@@ -974,7 +1234,7 @@ export function buildSummary(db, runId, wave, report) {
     .join('  ');
 
   const agentSummary = report.agents
-    .map(a => `  ${a.domain}: ${a.status}${a.findings_count ? ` (${a.findings_count} findings)` : ''}${a.errors.length ? ` [ERRORS: ${a.errors.length}]` : ''}`)
+    .map(a => `  ${a.domain}: ${a.status}${a.findings_count ? ` (${pluralize(a.findings_count, 'finding')})` : ''}${a.errors.length ? ` [ERRORS: ${a.errors.length}]` : ''}`)
     .join('\n');
 
   // OPF-3: surface the wave-status transition in the summary header so the

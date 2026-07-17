@@ -43,7 +43,7 @@ Two terminal states, written into every persisted record:
             (terminal)       (terminal)
 ```
 
-See [Architecture → Verifier Pipeline](../architecture/#verifier-pipeline-7-steps).
+See [Architecture → Verifier Pipeline](../architecture/#verifier-pipeline-8-steps).
 
 ### Portfolio buckets — per-repo, per-surface rollup
 

@@ -14,6 +14,8 @@ import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js
 import { FINDING_GATED_PHASES, PHASE_MAP } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
 import { formatDomainRow } from '../lib/domain-row.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { pluralize } from './lib/pluralize.js';
 
 /**
  * @param {object} opts
@@ -111,6 +113,30 @@ export function status(opts) {
   // agent_run still inflated `cnt` after `swarm resume`. Apply the same
   // helper inside the subquery — `ar` is the agent_runs alias here, so the
   // fragment slots in directly.
+  //
+  // F-87dc7b35 (LOW, wave 8): this query shares the IDENTICAL blind spot
+  // documented for lib/advance.js#checkViolations by F-9c41a2b7 / F-4220149f
+  // (that file's own header names this query as its fix's model — "mirroring
+  // commands/status.js's existing cross-wave violations aggregator" — so the
+  // two consumers cannot drift apart on this point without someone noticing
+  // one and not the other). LATEST_AGENT_RUN_PER_DOMAIN filters to the
+  // latest agent_run per (wave_id, domain_id); a REAL violation recorded on
+  // a SUPERSEDED (non-latest) agent_run — reachable within a single wave via
+  // `swarm resume` under non-isolated dispatch, not only across a wave
+  // boundary — is invisible to this count too. Unlike F-4fa7e644's original
+  // cross-wave scenario (where this aggregator's run-wide reach was a named
+  // MITIGATING factor — "commands/status.js's all-waves count still
+  // surfaces the stray violation to an operator"), that mitigation does NOT
+  // hold for the resume-within-wave shape: there is no operator-visible
+  // signal anywhere in the system for it, not even this informational count.
+  // This is an observability note, not a fix — the underlying semantics live
+  // in lib/queries/latest-agent-runs.js (LATEST_AGENT_RUN_PER_DOMAIN itself,
+  // swarm-cp-core's domain, not this file's). If that shared fragment is
+  // ever changed to close the gap (documenting the isolation-mode dependency
+  // per F-4220149f's fix option 1, or reconciling the superseded row per
+  // option 2), this query inherits the fix for free — but a change scoped
+  // only to lib/advance.js#checkViolations would leave this operator-facing
+  // count still wrong, so treat the two as one fix, not two.
   const violations = db.prepare(`
     SELECT COUNT(*) as cnt FROM file_claims
     WHERE violation = 1 AND agent_run_id IN (
@@ -161,6 +187,24 @@ export function status(opts) {
   // Timeout policy
   const timeoutPolicy = getTimeoutPolicy(db, opts.runId);
 
+  // COORD-003: read-only staleness detection. `applyTimeoutPolicy` (lib/
+  // state-machine.js) is the ONE non-test caller of the timeout policy —
+  // and it is resume.js's, which MUTATES (transitions a stale agent_run to
+  // `timed_out`). status must stay a pure read (it is the operator's
+  // inspect-only verb), so this recomputes the IDENTICAL predicate
+  // (now - started_at > timeoutMs) without calling transitionAgent — a dead
+  // agent should not have to wait for `swarm resume` to be told it is dead,
+  // and status already holds both inputs (timeoutPolicy above, started_at
+  // on every agent row) without ever doing the subtraction pre-fix.
+  // nowMs is overridable for deterministic tests, mirroring resume's own
+  // opts.nowMs. A NULL started_at is never stale — same defensive posture
+  // as applyTimeoutPolicy's own NULL-started_at skip: we cannot prove
+  // timing we do not have, so we do not guess.
+  const nowMs = opts.nowMs || Date.now();
+  const isStaleAgent = (a) => isInFlight(a.status) && !!a.started_at &&
+    (nowMs - new Date(a.started_at).getTime()) > timeoutPolicy;
+  const staleAgentCount = inFlightAgents.filter(isStaleAgent).length;
+
   // Compute advanceability + next action
   const assessment = computeAssessment(
     currentWave, currentAgents, openBySeverity, blockedAgents, inFlightAgents,
@@ -170,6 +214,7 @@ export function status(opts) {
       lastVerificationPassed: lastReceipt ? !!lastReceipt.passed : null,
       currentWaveArtifactCount,
       currentWaveFindingCount,
+      staleAgentCount,
     }
   );
 
@@ -214,12 +259,17 @@ export function status(opts) {
       started: a.started_at,
       completed: a.completed_at,
       error: a.error_message,
+      // COORD-003: computed here (not stored) — a read-only projection of
+      // the same timeout-policy subtraction resume.js's applyTimeoutPolicy
+      // performs mutably. Always `false` for a non-in-flight status.
+      stale: isStaleAgent(a),
     })),
     agentSummary: {
       total: currentAgents.length,
       complete: completeAgents.length,
       inFlight: inFlightAgents.length,
       blocked: blockedAgents.length,
+      stalePastTimeout: staleAgentCount,
     },
     findings: {
       total: allFindings.length,
@@ -284,7 +334,19 @@ export function formatStatus(s) {
       lines.push('  [!] ownership probe DEGRADED — re-dispatch with --isolate for full attribution');
     }
     if (w.history && w.history.interesting) {
-      lines.push(`  History: ${w.history.count} ${w.history.count === 1 ? 'transition' : 'transitions'}${w.history.lastReason ? ` (last reason: "${w.history.lastReason}")` : ''} — see \`swarm history ${w.id}\``);
+      // F-463c7179: escape HERE, at the render site, not inside
+      // summarizeWaveHistory/truncateReason (data layer, below) — that
+      // function's return value also feeds this same field's
+      // --format=json output (buildStatusJSON is an identity projection of
+      // the status() object), which must stay the lossless, unescaped
+      // canonical form. Escaping only at the point of text interpolation
+      // closes both the newline row-split forgery AND the quote-clause
+      // forgery (F-fa23cc37's class, reopened here via a field position
+      // that fix never reached) without touching the JSON path at all.
+      const reasonClause = w.history.lastReason
+        ? ` (last reason: "${escapeReasonForDisplay(w.history.lastReason)}")`
+        : '';
+      lines.push(`  History: ${w.history.count} ${w.history.count === 1 ? 'transition' : 'transitions'}${reasonClause} — see \`swarm history ${w.id}\``);
     }
     lines.push('');
 
@@ -292,17 +354,39 @@ export function formatStatus(s) {
     lines.push('Agents:');
     for (const a of s.agents) {
       const icon = STATUS_ICONS[a.status] || a.status;
-      const detail = a.error ? ` — ${a.error}` : '';
-      lines.push(`  [${icon}] ${a.domain}${detail}`);
+      // F-f1dae277 (wave 22): a.error is agent_runs.error_message, which for
+      // an 'ownership_violation' status agent is collect.js's `violMsg` —
+      // unescaped joined ownership.violations[].file paths. Escaped HERE,
+      // not inside status()/computeAssessment() above — that data layer's
+      // return value also feeds this same field's --format=json output
+      // (buildStatusJSON is an identity projection of the status() object),
+      // which must stay lossless. Mirrors the w.history.lastReason
+      // precedent a few lines up in this same function (F-463c7179).
+      const detail = a.error ? ` — ${escapeReasonForDisplay(a.error)}` : '';
+      // COORD-003: the ONE line an operator scanning `swarm status` reads
+      // per agent — a stale in-flight agent must be visibly distinguishable
+      // from one that is genuinely still working, not indistinguishable
+      // until `swarm resume` (a mutating verb) is run to find out.
+      const staleTag = a.stale ? ' [STALE — past timeout policy]' : '';
+      lines.push(`  [${icon}] ${a.domain}${detail}${staleTag}`);
     }
-    lines.push(`  (${s.agentSummary.complete} complete, ${s.agentSummary.inFlight} in-flight, ${s.agentSummary.blocked} blocked)`);
+    const staleSuffix = s.agentSummary.stalePastTimeout > 0
+      ? `, ${s.agentSummary.stalePastTimeout} stale (past timeout)`
+      : '';
+    lines.push(`  (${s.agentSummary.complete} complete, ${s.agentSummary.inFlight} in-flight, ${s.agentSummary.blocked} blocked${staleSuffix})`);
     lines.push('');
   }
 
   // Findings
   const f = s.findings;
   lines.push('Findings:');
-  lines.push(`  Open:  CRIT ${f.open.CRITICAL}  HIGH ${f.open.HIGH}  MED ${f.open.MEDIUM}  LOW ${f.open.LOW}  (${f.total} total)`);
+  // F-94175151: the four Open: counts sum to the OPEN population, not
+  // f.total (allFindings.length — the run's lifetime count across every
+  // status: fixed/deferred/rejected/unverified/recurring/new, restated in
+  // full on the All: line two rows down). An unlabeled "(N total)" directly
+  // after the four open counts reads as their sum; relabeling it disambiguates
+  // at the point of reading instead of relying on the reader reaching All:.
+  lines.push(`  Open:  CRIT ${f.open.CRITICAL}  HIGH ${f.open.HIGH}  MED ${f.open.MEDIUM}  LOW ${f.open.LOW}  (${f.total} total ever filed)`);
   lines.push(`  Wave:  ${f.thisWave.new} new  ${f.thisWave.recurring} recurring  ${f.thisWave.fixed} fixed`);
   if (Object.keys(f.byStatus).length > 0) {
     lines.push(`  All:   ${Object.entries(f.byStatus).map(([k, v]) => `${k}: ${v}`).join('  ')}`);
@@ -316,7 +400,7 @@ export function formatStatus(s) {
 
   if (s.lastVerification) {
     const v = s.lastVerification;
-    lines.push(`Verify: ${v.passed ? 'PASS' : 'FAIL'} (${v.repoType}${v.testCount ? `, ${v.testCount} tests` : ''})`);
+    lines.push(`Verify: ${v.passed ? 'PASS' : 'FAIL'} (${v.repoType}${v.testCount ? `, ${pluralize(v.testCount, 'test')}` : ''})`);
     lines.push('');
   }
 
@@ -337,7 +421,14 @@ export function formatStatus(s) {
   //   neutral       →  `--- LABEL ---`              (current)
   lines.push(frameAssessment(s.assessment.state));
   if (s.assessment.blockers.length > 0) {
-    for (const b of s.assessment.blockers) lines.push(`  BLOCKER: ${b}`);
+    // F-f1dae277 (wave 22): each `b` is computeAssessment()'s pre-composed
+    // `${a.domain_name}: ${a.status} — ${reason}` string, where `reason`
+    // falls back to `a.error_message` when present — the SAME
+    // ownership-violation-file-path carrier as the Agents list above.
+    // Escaped as a whole HERE, at render, not inside computeAssessment()
+    // itself: `s.assessment.blockers` is part of the same status() return
+    // value buildStatusJSON projects losslessly for --format=json.
+    for (const b of s.assessment.blockers) lines.push(`  BLOCKER: ${escapeReasonForDisplay(b)}`);
   }
   lines.push(`Next: ${s.assessment.nextAction}`);
 
@@ -478,10 +569,25 @@ export function computeAssessment(wave, agents, openBySeverity, blocked, inFligh
 
   // In-flight agents
   if (inFlight.length > 0) {
+    // COORD-002(c) + COORD-003: this hint previously told the operator to
+    // "run `swarm resume` to check timeouts" — but resume is a MUTATING
+    // redispatch verb (and, pre-COORD-002, could force-destroy uncommitted
+    // worktree work with no gate at all), not a check. status now computes
+    // staleness itself (ctx.staleAgentCount, from the read-only timeout
+    // subtraction above), so the hint can point at resume for what it
+    // actually is — redispatching agents the operator has decided are
+    // dead — instead of framing it as a safe inspection step.
+    const staleCount = ctx.staleAgentCount || 0;
+    const nextAction = staleCount > 0
+      ? `Waiting on ${inFlight.length} agent(s), ${staleCount} past the timeout policy (see [STALE] above). ` +
+        `Dead agents don't report their own death; \`swarm resume\` will redispatch them, but it force-recreates ` +
+        `each isolated worktree — uncommitted work there is destroyed unless the worktree is clean (refuses by ` +
+        `default; --force overrides). See \`swarm resume --help\`.`
+      : `Waiting on ${inFlight.length} agent(s). Run \`swarm resume\` once you believe they have finished or exceeded the timeout policy.`;
     return {
       state: 'IN PROGRESS',
       blockers,
-      nextAction: `Waiting on ${inFlight.length} agent(s). Run \`swarm resume\` to check timeouts.`,
+      nextAction,
     };
   }
 

@@ -36,6 +36,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createWorktree, mergeWorktree } from './lib/worktree.js';
+import { stripComments } from './test-support/strip-comments.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -80,11 +81,21 @@ describe('B003 — mergeWorktree routes every git call through gitArgs (source s
     // Strip comments before scanning — the live fix carries a doc comment that
     // mentions the shell-form `git()` helper in prose, and the source seal must
     // scan executable code only, not documentation that names the token.
-    const body = rawBody
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .split('\n')
-      .map(line => { const i = line.indexOf('//'); return i >= 0 ? line.slice(0, i) : line; })
-      .join('\n');
+    //
+    // F-911b18ef (wave 22): migrated off the local block-then-per-line
+    // stripper onto the shared, lexer-aware test-support/strip-comments.js.
+    // The local version has no regex-literal awareness: lib/worktree.js's
+    // OWN cleanupRunWorktrees() (a sibling function, outside this test's
+    // mergeWorktree slice) calls `.replace(/^refs\/heads\//, '')` — a regex
+    // literal whose body ends in an escaped slash immediately followed by
+    // the closing delimiter slash, i.e. the literal two-character sequence
+    // `//`, which the per-line `line.indexOf('//')` reads as a line-comment
+    // start and truncates mid-statement. Differentially confirmed this does
+    // NOT change today's verdict for the actual mergeWorktree slice this
+    // test scans (no regex literal of that shape appears there) — but the
+    // local stripper is proven unsound on this exact file, one function
+    // away from the region this test reads.
+    const body = stripComments(rawBody);
 
     // The shell-form helper is `git(` ; the argv-array helper is `gitArgs(`.
     // A naive /git\(/ would also match `gitArgs(`, so require a word boundary

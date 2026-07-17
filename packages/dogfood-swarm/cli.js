@@ -37,7 +37,10 @@ import { history, formatHistory } from './commands/history.js';
 import { rewind, formatRewind } from './commands/rewind.js';
 import { redrive, formatRedrive } from './commands/redrive.js';
 import { clean, formatClean } from './commands/clean.js';
+import { cleanClaims, formatCleanClaims } from './commands/clean-claims.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
+import { escapeReasonForDisplay, escapePathForDisplay } from './commands/lib/escape-reason.js';
+import { pluralize, pluralizeWord } from './commands/lib/pluralize.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
 import { verifyRecurring as runVerifyRecurring } from './commands/verify-recurring.js';
@@ -45,7 +48,11 @@ import { verifyUnverified as runVerifyUnverified } from './commands/verify-unver
 import { verifyApproved as runVerifyApproved } from './commands/verify-approved.js';
 import { advance as runAdvance, checkGates, getPromotions } from './lib/advance.js';
 import { persist as runPersist, formatPersist } from './commands/persist.js';
-import { runAdjudicate, formatAdjudication } from './commands/adjudicate.js';
+import {
+  runAdjudicate, formatAdjudication,
+  previewAdjudicate, formatAdjudicationPreview,
+  undoAdjudication, formatAdjudicationUndo,
+} from './commands/adjudicate.js';
 import { makeOllamaJury, LOCAL_JURY_SEATS } from './lib/case-file/ollama-jury.js';
 import { makePrismJury, PRISM_JURY_SEATS, PRISM_CLOUD_SEATS } from './lib/case-file/prism-jury.js';
 import { DEFAULT_JURY_SEATS } from './lib/case-file/adjudicate.js';
@@ -57,7 +64,18 @@ import {
   editDomain, addDomain, removeDomain, getDomainEvents,
 } from './lib/domains.js';
 import { setTimeoutPolicy, getTimeoutPolicy } from './lib/state-machine.js';
-import { buildDigest } from './lib/findings-digest.js';
+// F-19f86582: cmdFindings no longer calls the all-in-one buildDigest() —
+// it needs to attach a `.code`/`.hint` to the directory-resolution throws
+// (typed-error surface owned by THIS file, cli.js) and to annotate each
+// finding's DB-canonical id (F-ad540b83) BEFORE rendering, and neither seam
+// exists on buildDigest itself. Both are lib/findings-digest.js /
+// lib/findings-render.js concerns (swarm-cp-core's domain, not this one's),
+// so cmdFindings reassembles the SAME orchestration buildDigest already
+// does from its individually-exported pieces instead of editing that file.
+// buildDigest is untouched and still exported for lib/findings-digest.js's
+// own `node findings-digest.js <run-id>` direct-execution entry point.
+import { findLatestWave, loadDomainOutputs, buildDigestModel } from './lib/findings-digest.js';
+import { renderDigest } from './lib/findings-render.js';
 import { renderTopLevelError } from './lib/error-render.js';
 import { CliInvalidGlobsError } from './lib/errors.js';
 import { renderPhaseList, renderPhaseColumns } from './lib/phases.js';
@@ -399,10 +417,10 @@ function cmdInit(args) {
 
   console.log('Domain draft (review before freezing):');
   for (const d of result.domains) {
-    console.log(formatDomainRow(d, { trailer: `${d.matched_files} files` }));
+    console.log(formatDomainRow(d, { trailer: pluralize(d.matched_files, 'file') }));
   }
   if (result.unmatched.length > 0) {
-    console.log(`\n  ${result.unmatched.length} unmatched files (will go to "shared" or remain unassigned)`);
+    console.log(`\n  ${pluralize(result.unmatched.length, 'unmatched file')} (will go to "shared" or remain unassigned)`);
   }
   console.log(`\nNext: review domains, then run: swarm freeze ${result.runId}`);
 }
@@ -410,7 +428,7 @@ function cmdInit(args) {
 function cmdDomains(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm domains <run-id> [--freeze | --unfreeze --reason "..." | --edit <name> [opts] | --add <name> [opts] | --remove <name> | --history]');
+    console.error('Usage: swarm domains <run-id> [--freeze | --unfreeze --reason "..." [--force] | --edit <name> [opts] | --add <name> [opts] | --remove <name> | --history]');
     process.exit(1);
   }
 
@@ -443,8 +461,17 @@ function cmdDomains(args) {
       console.error('--unfreeze requires --reason "explanation"');
       process.exit(1);
     }
-    unfreezeDomains(db, runId, reason);
-    console.log(`Domains unfrozen for ${runId} (reason: ${reason})`);
+    // F-b66306c5: unfreezeDomains (lib/domains.js) refuses while a wave is
+    // in flight and its own thrown message names `{ force: true }` as the
+    // documented escape hatch for an operator who has already halted the
+    // wave by hand — but nothing here ever parsed --force, so that escape
+    // hatch was unreachable from the CLI surface that prints the message.
+    const force = args.includes('--force');
+    unfreezeDomains(db, runId, reason, { force });
+    // F-7c3e91a4 class (wave 18): immediate echo of the operator's own
+    // just-typed --reason, same family as rewind/redrive/revalidate/
+    // clean-claims's "Reason recorded" lines — see commands/lib/escape-reason.js.
+    console.log(`Domains unfrozen for ${runId} (reason: ${escapeReasonForDisplay(reason)})`);
     return;
   }
 
@@ -514,7 +541,14 @@ function cmdDomains(args) {
     }
     console.log('Domain events:');
     for (const e of events) {
-      console.log(`  ${e.created_at} | ${e.domain_name} | ${e.event_type}${e.reason ? ' — ' + e.reason : ''}`);
+      // F-7c3e91a4 class (wave 18): domain_events.reason is the SAME
+      // stored-audit-trail shape as wave_state_events/agent_state_events
+      // (clean-claims's file_claims_cleaned rows and unfreezeDomains both
+      // write here with a raw operator --reason) — a read-later verb exactly
+      // like `swarm history`/`swarm status`, so the same forged-row hazard
+      // applies. See commands/lib/escape-reason.js.
+      const reasonClause = e.reason ? ' — ' + escapeReasonForDisplay(e.reason) : '';
+      console.log(`  ${e.created_at} | ${e.domain_name} | ${e.event_type}${reasonClause}`);
     }
     return;
   }
@@ -589,7 +623,15 @@ function cmdDispatch(args) {
   if (unrouted.length > 0) {
     console.log(`\n===== [!] ${unrouted.length} APPROVED FINDING(S) ROUTED TO NO AGENT [!] =====`);
     for (const f of unrouted) {
-      console.log(`  ${f.finding_id} [${f.severity}] ${f.file_path || '(no file_path — cannot match any domain glob)'}`);
+      // F-c6f7d8fc (wave 24): f.file_path is findings.file_path -- an
+      // agent-self-reported, schema-unconstrained string (agent-output.
+      // schema.json's `findings[].file` has no format/pattern/length cap;
+      // upserted verbatim by lib/fingerprint.js). The SAME zero-privilege
+      // field family F-f1dae277 (wave 22) routed through escapePathForDisplay
+      // at eight sites, missed here: an unescaped RLO/PDF wrap visually
+      // reverses this line, and an embedded newline forges a fake second row
+      // inside this block's own urgent "[!] ... [!]" banner.
+      console.log(`  ${f.finding_id} [${f.severity}] ${f.file_path ? escapePathForDisplay(f.file_path) : '(no file_path — cannot match any domain glob)'}`);
     }
     console.log('  These findings stay OPEN and block the severity gate, but no amend agent will receive them.');
     console.log('  Close them via the coordinator_resolved path: land the fix yourself, and for anchorless (architectural/doc-level) ones attach `coordinator_resolved: true` + a one-line `verified_via_evidence` so `swarm verify-fixed <run-id>` classifies the closure as allowlist instead of unverifiable.');
@@ -606,7 +648,7 @@ function cmdDispatch(args) {
         : '';
       console.log(`  ${a.domain} (${a.ownershipClass}) → ${a.promptPath}${findings}${wt}`);
     }
-    console.log(`\nWould dispatch ${result.agents.length} agents. No control-plane write, no file write, no worktree creation.`);
+    console.log(`\nWould dispatch ${pluralize(result.agents.length, 'agent')}. No control-plane write, no file write, no worktree creation.`);
     console.log(`Re-run without --dry-run to commit the wave.`);
     return;
   }
@@ -617,7 +659,7 @@ function cmdDispatch(args) {
     const wt = a.worktreePath ? ` [worktree: ${a.worktreePath}]` : '';
     console.log(`  ${a.domain} → ${a.promptPath}${wt}`);
   }
-  console.log(`\nDispatch ${result.agents.length} agents with these prompts.`);
+  console.log(`\nDispatch ${pluralize(result.agents.length, 'agent')} with these prompts.`);
   console.log(`When done, run: swarm collect ${runId}`);
 }
 
@@ -694,7 +736,17 @@ function cmdCollect(args) {
   if (result.violations.length > 0) {
     console.log('OWNERSHIP VIOLATIONS:');
     for (const v of result.violations) {
-      console.log(`  ${v.file} — agent "${v.agent_domain}" touched file owned by "${v.actual_owner}"`);
+      // F-f1dae277 (wave 22): v.file is the SAME zero-privilege
+      // ownership.violations[].file field family F-4773fb77 (wave 20)
+      // established the escaping bar for, rendered here as a DIRECT
+      // console.log with zero escaping — this domain's own `swarm collect`
+      // output, independent of receipt.js/revalidate.js/clean-claims.js.
+      // v.agent_domain / v.actual_owner are domain NAMES from the frozen
+      // domain map (lib/domains.js), not target-repo content — the same
+      // trust tier as every other unescaped `.domain` field this package
+      // already renders bare (e.g. status.js's Agents table), so only
+      // v.file needs routing through the helper.
+      console.log(`  ${escapePathForDisplay(v.file)} — agent "${v.agent_domain}" touched file owned by "${v.actual_owner}"`);
     }
     console.log('');
   }
@@ -776,10 +828,31 @@ function cmdCollect(args) {
  * environment is usable, just sub-ideal), so warns exit 0. No run-id required:
  * doctor probes the environment + the control-plane DB path (getDbPath()),
  * which exist independent of any specific run.
+ *
+ * F-c1a49594 (Stage C): every sibling gate-shaped verb (status/runs/history/
+ * verify-*) routes `--format` through the shared parseFormatFlag helper,
+ * which enum-validates and throws CLI_INVALID_FORMAT on a bad value instead
+ * of silently ignoring it. doctor used to take `_args` (leading underscore:
+ * intentionally unused) and discard EVERY flag, including `--format=json` —
+ * runDoctor()'s own return value is already a clean, fully JSON-shaped
+ * {checks, overallStatus, exitCode} object built from structured {id,
+ * status, message, hint} check records, so the CLI wiring was the only thing
+ * missing (proven live: `--format=json` printed the identical plain-ASCII
+ * report, and a bogus `--format=yaml` was silently accepted too).
+ * `--format=json` now emits that object verbatim — the same identity-
+ * projection seam the status/runs/history sites use — and an invalid
+ * `--format` value throws the same CLI_INVALID_FORMAT the sibling verbs
+ * throw. The exit-code contract (non-zero ONLY on a hard FAIL) is unchanged
+ * in either format.
  */
-function cmdDoctor(_args) {
+function cmdDoctor(args) {
+  const format = parseFormatFlag(args);
   const report = runDoctor({ dbPath: getDbPath() });
-  console.log(formatDoctor(report));
+  if (format === 'json') {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(formatDoctor(report));
+  }
   if (report.exitCode !== 0) process.exit(report.exitCode);
 }
 
@@ -890,14 +963,23 @@ function cmdStatus(args) {
 function cmdResume(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm resume <run-id>');
+    console.error('Usage: swarm resume <run-id> [--force]');
     process.exit(1);
   }
+
+  // F-058f4d54: resume()'s COORD-002 guard (resume.js:204) refuses to
+  // redispatch over a dirty/unmerged --isolate worktree and its own error
+  // message tells the operator to pass `{ force: true } (CLI: --force)` —
+  // but until this fix nothing here ever parsed --force, so the advertised
+  // escape hatch was unreachable and the refusal fired identically every
+  // time, with the flag silently discarded.
+  const force = args.includes('--force');
 
   const r = resume({
     runId,
     dbPath: getDbPath(),
     outputDir: getOutputDir(runId),
+    force,
   });
   console.log(formatResume(r));
 
@@ -939,25 +1021,14 @@ function cmdResume(args) {
 }
 
 function cmdRewind(args) {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm rewind <save-point-tag> --reason "<text>" [--apply] [--force] [--force-arbitrary-ref]');
-    console.log('');
-    console.log('Restore the working tree to a named save-point AND lawfully abort orphaned');
-    console.log('in-flight waves/agent_runs (status -> aborted_for_rewind) with full audit');
-    console.log('visibility in wave_state_events / agent_state_events (reason prefixed with');
-    console.log('"rewind: "). Dry-run by default; --apply mutates.');
-    console.log('');
-    console.log('Required:');
-    console.log('  <save-point-tag>          A git tag (default: must match swarm-save-*)');
-    console.log('  --reason "<text>"         Non-empty audit reason (recorded in state events)');
-    console.log('');
-    console.log('Optional:');
-    console.log('  --apply                   Mutate (default: dry-run preview)');
-    console.log('  --force                   Discard uncommitted changes in the working tree');
-    console.log('  --force-arbitrary-ref     Allow tags outside the swarm-save-* glob');
-    return;
-  }
-
+  // F-264ab3aa: per-verb --help/-h used to be hand-rolled inline here (and
+  // in 4 sibling verbs — redrive/clean/clean-claims/history) while the other
+  // ~22 registered verbs had no --help handling at all, so `swarm status
+  // --help` silently consumed the literal string '--help' as a run-id and
+  // printed `ERROR: Run not found: --help`. main() now intercepts --help/-h
+  // centrally for every registered command, before any cmd* function is
+  // ever called — see the USAGE table above `const commands` for this
+  // verb's full text (moved there verbatim; nothing here was shortened).
   const savePointTag = args[0];
   if (!savePointTag || savePointTag.startsWith('--')) {
     console.error('Usage: swarm rewind <save-point-tag> --reason "<text>" [--apply] [--force] [--force-arbitrary-ref]');
@@ -1011,31 +1082,8 @@ function cmdRewind(args) {
 }
 
 function cmdRedrive(args) {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm redrive <wave-id> --reason "<text>" [--apply]');
-    console.log('');
-    console.log('Lawful Redrive: Step Functions Redrive semantics on the swarm control plane.');
-    console.log('Same wave_id, completed work preserved byte-identical, only eligible failed/');
-    console.log('unstarted agent_runs made re-dispatchable. Dry-run by default; --apply mutates.');
-    console.log('');
-    console.log('Required:');
-    console.log('  <wave-id>                 Positive integer (waves.id)');
-    console.log('  --reason "<text>"         Non-empty audit reason (recorded with redrive: prefix)');
-    console.log('');
-    console.log('Optional:');
-    console.log('  --apply                   Mutate (default: dry-run preview)');
-    console.log('');
-    console.log('Eligibility (per agent_run source status):');
-    console.log('  complete             -> PRESERVED (receipt unchanged)');
-    console.log('  pending, dispatched  -> ELIGIBLE (redriven to dispatched)');
-    console.log('  failed, timed_out    -> ELIGIBLE (redriven to dispatched)');
-    console.log('  invalid_output       -> REFUSED  (use `swarm revalidate` instead)');
-    console.log('  ownership_violation  -> REFUSED  (operator unblocks first)');
-    console.log('  aborted_for_rewind   -> REFUSED  (terminal; run a fresh wave)');
-    console.log('  running              -> REFUSED  (let timeout fire, then redrive)');
-    return;
-  }
-
+  // F-264ab3aa: --help/-h is centralized in main() now — see USAGE.redrive
+  // above `const commands` (cmdRewind's note above has the full rationale).
   const waveIdArg = args[0];
   if (!waveIdArg || waveIdArg.startsWith('--')) {
     console.error('Usage: swarm redrive <wave-id> --reason "<text>" [--apply]');
@@ -1088,34 +1136,25 @@ function cmdRedrive(args) {
 }
 
 function cmdClean(args) {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm clean <run-id> [--apply] [--format=text|json]');
-    console.log('');
-    console.log('Reclaim the stranded --isolate worktrees + swarm/* branches for a run.');
-    console.log('Under --isolate, dispatch creates a per-agent git worktree; recordPromotion');
-    console.log('tears them down on the run\'s terminal `complete` transition. A run abandoned,');
-    console.log('rewound, or interrupted before `complete` strands those worktrees on disk —');
-    console.log('`swarm clean` is the operator reclaim. Dry-run by default; --apply removes.');
-    console.log('');
-    console.log('Required:');
-    console.log('  <run-id>             The run whose worktrees to reclaim');
-    console.log('');
-    console.log('Optional:');
-    console.log('  --apply              Remove (default: dry-run preview)');
-    console.log('  --format=text|json   Output format (default: text)');
-    return;
-  }
-
+  // F-264ab3aa: --help/-h is centralized in main() now — see USAGE.clean
+  // above `const commands` (cmdRewind's note above has the full rationale).
   const runId = args[0];
   if (!runId || runId.startsWith('--')) {
-    console.error('Usage: swarm clean <run-id> [--apply] [--format=text|json]');
+    console.error('Usage: swarm clean <run-id> [--apply] [--force] [--format=text|json]');
     process.exit(1);
   }
 
   const format = parseFormatFlag(args);
   const apply = args.includes('--apply');
+  // F-d2025a4d(b): --force is required in ADDITION to --apply to remove a
+  // dirty/unmerged worktree — mirrors rewind's --force-on-top-of---apply.
+  const force = args.includes('--force');
 
-  const result = clean({ runId, dbPath: getDbPath(), apply });
+  // F-d2025a4d(a): an in-flight-wave refusal (CLEAN_WAVE_IN_FLIGHT) propagates
+  // to main()'s top-level renderTopLevelError seam, which prints the coded
+  // envelope (message + named recovery verbs) and exits 1 — same as every
+  // other typed CLI error in this file; no bespoke catch needed here.
+  const result = clean({ runId, dbPath: getDbPath(), apply, force });
 
   if (format === 'json') {
     console.log(JSON.stringify(result, null, 2));
@@ -1125,24 +1164,59 @@ function cmdClean(args) {
   process.stdout.write(formatClean(result));
 
   if (apply) {
-    console.log(`\nClean applied. ${result.removed} removed, ${result.stranded} stranded.`);
+    const skippedNote = result.skippedAtRisk > 0
+      ? `, ${result.skippedAtRisk} skipped (dirty/unmerged — re-run with --force)`
+      : '';
+    console.log(`\nClean applied. ${result.removed} removed, ${result.stranded} stranded${skippedNote}.`);
   } else {
     console.log('\nDry-run only — re-run with --apply to remove the worktrees.');
   }
 }
 
-function cmdHistory(args) {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm history <wave-id> [--format=text|json]');
-    console.log('');
-    console.log('Render the full wave_state_events transition chain for <wave-id>.');
-    console.log('Each row shows: from_status -> to_status, when, and the operator-');
-    console.log('supplied reason text (override transitions via `swarm revalidate`');
-    console.log('carry their --reason text here prefixed with `revalidate:`).');
-    console.log('--format=json emits the structured {waveId,wave,events} report.');
+function cmdCleanClaims(args) {
+  // F-264ab3aa: --help/-h is centralized in main() now — see
+  // USAGE['clean-claims'] above `const commands` (cmdRewind's note above
+  // has the full rationale).
+  const runId = args[0];
+  if (!runId || runId.startsWith('--')) {
+    console.error('Usage: swarm clean-claims <run-id> [--wave=N] [--agent-run=ID] [--apply --reason "<text>"] [--format=text|json]');
+    process.exit(1);
+  }
+
+  const format = parseFormatFlag(args);
+  const apply = args.includes('--apply');
+  const reason = parseValueFlag(args, '--reason');
+  const wave = parseValueFlag(args, '--wave');
+  const agentRun = parseValueFlag(args, '--agent-run');
+
+  if (apply && (!reason || !reason.trim())) {
+    console.error('clean-claims: --reason "<text>" is required with --apply (non-empty)');
+    process.exit(1);
+  }
+
+  // Typed errors (RUN_NOT_FOUND, WAVE_NOT_FOUND, AGENT_RUN_NOT_IN_RUN, the
+  // in-tx CLEAN_CLAIMS_* guards) propagate to main()'s renderTopLevelError
+  // seam — same posture as cmdClean.
+  const result = cleanClaims({ runId, dbPath: getDbPath(), wave, agentRun, reason, apply });
+
+  if (format === 'json') {
+    console.log(JSON.stringify(result, null, 2));
     return;
   }
 
+  process.stdout.write(formatCleanClaims(result));
+
+  if (apply) {
+    console.log(`\nClean-claims applied. ${result.totals.deleted} row(s) deleted. ` +
+      `Inspect with \`swarm status ${runId}\` / \`swarm domains ${runId} --history\`.`);
+  } else {
+    console.log('\nDry-run only — re-run with --apply --reason "<text>" to delete the eligible rows.');
+  }
+}
+
+function cmdHistory(args) {
+  // F-264ab3aa: --help/-h is centralized in main() now — see USAGE.history
+  // above `const commands` (cmdRewind's note above has the full rationale).
   const waveIdArg = args[0];
   if (!waveIdArg) {
     console.error('Usage: swarm history <wave-id> [--format=text|json]');
@@ -1216,8 +1290,29 @@ function cmdVerify(args) {
       || (failedStep
         ? `required step '${failedStep.name}' failed (exit ${failedStep.exit_code})`
         : 'not a verified pass');
+    // F-26adaf33 (LOW, wave 22): `why` is unescaped by the same reasoning
+    // commands/verify.js's formatVerify documents for this exact field
+    // (F-4773fb77, wave 20) — result.reason is runner.js's own fixed
+    // template-string output (never target-repo content), and the
+    // failedStep fallback branch interpolates only failedStep.name (always
+    // one of five hardcoded adapter step-name literals: lint/typecheck/
+    // test/build/check) and failedStep.exit_code (a number). This is a
+    // SECOND, independent render of the same invariant on the non-pass
+    // exit path — see commands/verify.js's comment above its own
+    // `if (result.reason) lines.push(...)` line for the full argument; a
+    // future change to runner.js that begins interpolating real content
+    // into `reason` must be checked against BOTH render sites, not just
+    // the one wave 20 happened to touch.
     console.error(`swarm verify: ${result.verdict.toUpperCase()} — ${why}`);
-    process.exit(1);
+    // F-5dabf101: process.exitCode + return, NOT process.exit() — exit()
+    // terminates without waiting for the pending async write of the
+    // formatVerify(result) console.log above to drain. stdout is async
+    // whenever it's a pipe (every `swarm verify ... | ...`) and, per Node's
+    // own docs, on Windows even for a TTY — this repo's own platform. Node
+    // exits naturally with the set code once stdout drains. Mirrors
+    // cmdAdjudicate, the one verb in this file that already did this right.
+    process.exitCode = 1;
+    return;
   }
 }
 
@@ -1319,7 +1414,16 @@ function cmdVerifyFixed(args) {
   // Exit with the 3-way state: 0 clean / 1 threshold exceeded /
   // 2 pipeline broken. The CLI seam preserves this signal so CI gates
   // can use `swarm verify-fixed` as a check.
-  process.exit(result.exitCode);
+  //
+  // F-5dabf101: process.exitCode + return, not process.exit() — the
+  // `console.log(result.output)` above (and the `Delta written to:`
+  // footer) are pending async stdout writes that process.exit() does not
+  // wait to drain (pipes always, Windows TTY too). A large digest exceeding
+  // the pipe buffer would truncate mid-write for every
+  // `swarm verify-fixed ... --format=json | jq` consumer — defeating the
+  // JSON-purity work this exact verb exists to protect (see the format
+  // note above cmdVerifyFixed).
+  process.exitCode = result.exitCode;
 }
 
 function cmdVerifyRecurring(args) {
@@ -1341,7 +1445,9 @@ function cmdVerifyRecurring(args) {
     console.log('');
     console.log(`Delta written to: ${result.deltaPath}`);
   }
-  process.exit(result.exitCode);
+  // F-5dabf101: process.exitCode, not process.exit() — see cmdVerifyFixed's
+  // note; identical truncation hazard on the same JSON-purity contract.
+  process.exitCode = result.exitCode;
 }
 
 function cmdVerifyUnverified(args) {
@@ -1363,7 +1469,9 @@ function cmdVerifyUnverified(args) {
     console.log('');
     console.log(`Delta written to: ${result.deltaPath}`);
   }
-  process.exit(result.exitCode);
+  // F-5dabf101: process.exitCode, not process.exit() — see cmdVerifyFixed's
+  // note; identical truncation hazard on the same JSON-purity contract.
+  process.exitCode = result.exitCode;
 }
 
 function cmdVerifyApproved(args) {
@@ -1387,7 +1495,9 @@ function cmdVerifyApproved(args) {
   }
   // Exit code 2 on broken anchor blocks subsequent amend dispatch — the
   // CLI seam carries the signal so a CI step can gate dispatch on it.
-  process.exit(result.exitCode);
+  // F-5dabf101: process.exitCode, not process.exit() — see cmdVerifyFixed's
+  // note; identical truncation hazard on the same JSON-purity contract.
+  process.exitCode = result.exitCode;
 }
 
 function cmdReceipt(args) {
@@ -1420,7 +1530,7 @@ function cmdReceipt(args) {
 
   // Store in control plane
   const db = openDb(getDbPath());
-  storeReceipt(db, receipt.wave.id, jsonPath, mdPath);
+  storeReceipt(db, runId, receipt.wave.id, jsonPath, mdPath);
 
   if (format === 'json') {
     console.log(JSON.stringify(receipt, null, 2));
@@ -1431,7 +1541,15 @@ function cmdReceipt(args) {
   console.log(`  JSON: ${jsonPath}`);
   console.log(`  MD:   ${mdPath}`);
   console.log('');
-  console.log(`Recommendation: ${receipt.recommendation.action}${receipt.recommendation.reason ? ' — ' + receipt.recommendation.reason : ''}`);
+  // F-d6cf96e4 (wave 20) class-completion: receipt.recommendation.reason is
+  // the SAME computeRecommendation() value commands/receipt.js's
+  // formatReceiptMarkdown now escapes (see that file's Recommendation
+  // section) — this is the CLI's own separate text render of that field
+  // (the --format=json branch above already returned with the raw object).
+  // Escaping only the .md artifact and leaving this stdout render bare would
+  // be exactly the single-instance-patch shape wave 19's audit exists to
+  // catch, applied to a field this wave already touched once.
+  console.log(`Recommendation: ${receipt.recommendation.action}${receipt.recommendation.reason ? ' — ' + escapeReasonForDisplay(receipt.recommendation.reason) : ''}`);
 }
 
 /**
@@ -1451,11 +1569,53 @@ function buildCheckGatesJSON(g) {
 
 async function cmdAdjudicate(args) {
   const runId = args[0];
+
+  // F-fa047531: --undo is the compensator CLI surface for
+  // lib/adjudication-store.js#deleteAdjudication — pre-fix that function
+  // was wired to NOTHING (no CLI verb reached it), so the only way an
+  // operator could invoke it was raw SQL surgery, exactly what its own
+  // docstring says the compensator exists to prevent. Checked first,
+  // before the --case-file requirement below, since undo needs no
+  // case-file. Dry-run by default like every other recovery verb.
+  const undoRaw = parseValueFlag(args, '--undo');
+  if (undoRaw !== undefined) {
+    if (!runId) {
+      console.error('Usage: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]');
+      process.exit(1);
+    }
+    const adjudicationId = Number(undoRaw);
+    if (!Number.isInteger(adjudicationId) || adjudicationId <= 0) {
+      console.error(`adjudicate --undo: <adjudication-id> must be a positive integer (got ${JSON.stringify(undoRaw)})`);
+      process.exit(1);
+    }
+    const applyUndo = args.includes('--apply');
+    const db = openDb(getDbPath());
+    // F-482629a9: forward runId so undoAdjudication can refuse a cross-run
+    // undo — pre-fix this was dropped on the floor here, so the required
+    // <run-id> positional above enforced nothing past its own presence check.
+    const undoReport = undoAdjudication(db, { adjudicationId, apply: applyUndo, runId });
+    console.log(formatAdjudicationUndo(undoReport));
+    return;
+  }
+
   const caseFilePath = parseValueFlag(args, '--case-file');
   if (!runId || !caseFilePath) {
-    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json]');
+    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]');
+    console.error('   or: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]');
     process.exit(1);
   }
+
+  // F-a7eb2d09: parse + enum-validate EVERY flag up front, before ANY work
+  // (DB open, case-file read, jury dispatch) runs — mirrors every sibling
+  // verb (cmdClean, cmdStatus, cmdHistory, parseVerifyFlags). adjudicate's
+  // own --jury/--cloud were already parsed here; --format was the lone
+  // straggler, validated AFTER runAdjudicate — a --format typo burned the
+  // entire (slow, and under --cloud BILLED) jury run and mutated the
+  // control plane before the CLI_INVALID_FORMAT throw ever fired.
+  const cloud = args.includes('--cloud');
+  const tier = parseJuryFlag(args);
+  const format = parseFormatFlag(args);
+  const dryRun = args.includes('--dry-run');
 
   const db = openDb(getDbPath());
   const caseFile = readBoundedJson(resolve(caseFilePath));
@@ -1465,14 +1625,43 @@ async function cmdAdjudicate(args) {
   // criterion, adding L3/L4 WITHIN the seat — stronger evidence, but slower and more
   // abstention-prone (prism caps a call at 30s). Both default to free seats; --cloud
   // opts into the paid cloud seats on either tier.
-  const cloud = args.includes('--cloud');
-  const tier = parseJuryFlag(args);
   const seats = tier === 'prism'
     ? (cloud ? PRISM_CLOUD_SEATS : PRISM_JURY_SEATS)
     : (cloud ? DEFAULT_JURY_SEATS : LOCAL_JURY_SEATS);
+
+  // F-fa047531: --dry-run — resolves the wave and runs the SAME fail-closed
+  // neutrality gate the apply path runs first, reporting seats/tier/billing
+  // WITHOUT dispatching the jury or persisting. The highest-value preview
+  // in the verb set: adjudicate is the only verb that spends real money.
+  if (dryRun) {
+    let preview;
+    try {
+      preview = previewAdjudicate(db, { runId, caseFile, seats, tier, cloud });
+    } catch (e) {
+      if (e instanceof CaseFileNeutralityError) {
+        console.error(`ADJUDICATION REFUSED: ${e.message}`);
+        if (e.hint) console.error(`Hint: ${e.hint}`);
+        process.exit(1);
+      }
+      throw e;
+    }
+    if (format === 'json') {
+      console.log(JSON.stringify(preview, null, 2));
+    } else {
+      console.log(formatAdjudicationPreview(preview));
+    }
+    return;
+  }
+
   const log = (m) => console.error(`  · ${m}`);
   const runJury = tier === 'prism' ? makePrismJury({ log }) : makeOllamaJury({ log });
-  const swarmDir = dirname(getDbPath());
+  // F-18a5579c: run-scoped output dir, matching every other artifact-writing
+  // verb — receipt (getOutputDir), persist, all four verify-*. Pre-fix this
+  // was dirname(getDbPath()), the swarms/ ROOT: every run's receipts piled
+  // into one flat swarms/adjudications/ dir (wave-1 receipts from every run
+  // of every repo sharing one directory), un-navigable and unreachable by
+  // run-scoped tooling like `swarm clean`.
+  const swarmDir = getOutputDir(runId);
   console.error(`Jury tier: ${tier}${cloud ? ' (--cloud: paid seats)' : ' (free seats)'}`);
 
   let out;
@@ -1490,7 +1679,6 @@ async function cmdAdjudicate(args) {
     throw e;
   }
 
-  const format = parseFormatFlag(args);
   if (format === 'json') {
     console.log(JSON.stringify(
       { adjudication_id: out.adjudicationId, receipt_path: out.receiptPath, ...out.result },
@@ -1506,10 +1694,87 @@ async function cmdAdjudicate(args) {
   process.exitCode = out.result.overall === 'corroborate' ? 0 : 1;
 }
 
+/**
+ * escapeReasonForDisplay (F-fa23cc37 / F-11f0e453 / F-7c3e91a4+F-463c7179
+ * wave-18) now lives in commands/lib/escape-reason.js — every reason-
+ * rendering site in this package (this file's formatOverrideGroups plus the
+ * `--unfreeze`/`--history` sites in cmdDomains below, history.js, status.js,
+ * rewind.js, redrive.js, revalidate.js, clean-claims.js, receipt.js) routes
+ * through that ONE shared helper so the escaping contract cannot drift
+ * between call sites again — wave 16 hardened exactly this one call site
+ * while seven near-identical siblings shipped unescaped. See that file's
+ * docstring for the full escaping-contract history and the C0/C1/line-
+ * separator control-byte class it now covers.
+ */
+
+/**
+ * Render a promotion's `overrides` (each `{gate, reason}` — recordPromotion in
+ * lib/advance.js always applies ONE --reason string to every gate an override
+ * masks) as an operator-facing tag. Groups gate names sharing an IDENTICAL
+ * reason into a single clause instead of repeating the reason once per gate:
+ * pre-fix this rendered `o.reason` alone (dropping `.gate` entirely), so two
+ * concurrently-overridden gates sharing one reason printed the SAME string
+ * twice joined by the same '; ' delimiter used elsewhere to separate DISTINCT
+ * items — indistinguishable from two different justifications, and with no
+ * way to tell which gate either one applied to (F-51fa8e13).
+ *
+ * F-fa23cc37: F-51fa8e13's fix still joined `${gates.join(', ')}: ${reason}`
+ * clauses with the SAME '; ' used as the reason's OWN internal punctuation —
+ * a reason containing the literal substrings '; ' or ': ' (unrestricted free
+ * text, no character validation) read ambiguously, indistinguishable in
+ * shape from a genuine second clause. Each reason is now visually fenced in
+ * double quotes (escapeReasonForDisplay), so the reason's own punctuation —
+ * including a raw '"' — can never be misread as clause structure: the only
+ * UNESCAPED quote in a clause is its true closing one. `--format=json`
+ * (buildPromotionsJSON) is untouched by this — it stays the lossless,
+ * unescaped canonical form; this escaping exists only in the text view.
+ *
+ * F-11f0e453: the clause-boundary escaping above stops a reason from
+ * forging fake STRUCTURE within the one line this function's output gets
+ * printed on. It does nothing about a reason forging an entire fake LINE —
+ * that hazard lives one level below clause grammar, in whether the string
+ * this function returns can itself contain a raw newline. escapeReasonForDisplay
+ * now closes that gap too (see its own docstring); this function needed no
+ * changes because it was already correctly delegating ALL reason-rendering
+ * through that one escape seam.
+ *
+ * @param {Array<{gate: string, reason: string}>} overrides
+ * @returns {string}
+ */
+function formatOverrideGroups(overrides) {
+  const gatesByReason = new Map();
+  for (const o of overrides) {
+    if (!gatesByReason.has(o.reason)) gatesByReason.set(o.reason, []);
+    gatesByReason.get(o.reason).push(o.gate);
+  }
+  return [...gatesByReason.entries()]
+    .map(([reason, gates]) => `${gates.join(', ')}: "${escapeReasonForDisplay(reason)}"`)
+    .join('; ');
+}
+
+/**
+ * Identity-projection seam for `swarm advance --history --format=json`.
+ * getPromotions() (lib/advance.js) already returns each promotion with
+ * gates_checked/overrides/finding_snapshot parsed into real arrays/objects,
+ * not JSON-string columns — this names the seam (mirroring buildCheckGatesJSON
+ * / buildRunsJSON) and pins the contract that the JSON path emits the SAME
+ * array the text formatter reads. Always an array, even when empty, matching
+ * buildRunsJSON's `[]` contract rather than the text branch's "No promotions
+ * yet." string — a scraper needs a parseable empty list. F-51fa8e13: pre-fix
+ * --history had no --format=json at all, so the only way to recover which
+ * gate(s) a past override named was raw SQL against promotions.overrides.
+ *
+ * @param {Array} promotions — the array from getPromotions()
+ * @returns {Array}
+ */
+function buildPromotionsJSON(promotions) {
+  return promotions;
+}
+
 function cmdAdvance(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm advance <run-id> [--override --reason "..."] [--check-only] [--format=json]');
+    console.error('Usage: swarm advance <run-id> [--override --reason "..."] [--check-only] [--history] [--format=json]');
     process.exit(1);
   }
 
@@ -1540,9 +1805,17 @@ function cmdAdvance(args) {
     return;
   }
 
-  // --history: show promotion history
+  // --history: show promotion history. --format=json emits the getPromotions()
+  // array as-is (buildPromotionsJSON) instead of the text table — see that
+  // function's docstring and F-51fa8e13 for why this branch previously had no
+  // machine-readable escape hatch.
   if (args.includes('--history')) {
+    const format = parseFormatFlag(args);
     const promotions = getPromotions(db, runId);
+    if (format === 'json') {
+      console.log(JSON.stringify(buildPromotionsJSON(promotions), null, 2));
+      return;
+    }
     if (promotions.length === 0) {
       console.log('No promotions yet.');
       return;
@@ -1551,8 +1824,10 @@ function cmdAdvance(args) {
     for (const p of promotions) {
       const gates = p.gates_checked.filter(g => g.passed).length;
       const total = p.gates_checked.length;
-      const override = p.overrides ? ` [OVERRIDE: ${p.overrides.map(o => o.reason).join('; ')}]` : '';
-      console.log(`  ${p.created_at} | ${p.from_phase} → ${p.to_phase} | ${gates}/${total} gates | ${p.authorized_by}${override}`);
+      // F-51fa8e13: name WHICH gate(s) each override reason consented to —
+      // pre-fix this rendered `o.reason` alone, discarding `o.gate` entirely.
+      const override = p.overrides ? ` [OVERRIDE: ${formatOverrideGroups(p.overrides)}]` : '';
+      console.log(`  ${p.created_at} | ${p.from_phase} → ${p.to_phase} | ${gates}/${total} ${pluralizeWord(total, 'gate')} | ${p.authorized_by}${override}`);
     }
     return;
   }
@@ -1583,6 +1858,27 @@ function cmdAdvance(args) {
     console.log(`Verdict: ${result.verdict}`);
     console.log(`Promotion ID: ${result.promotionId}`);
     console.log('');
+    // F-0a888394: an operator who just typed `--override --reason '...'` must
+    // see, in this SAME terminal output, exactly which named gates their
+    // reason consented to overriding — not just that promotion happened.
+    // Pre-fix this Gates breakdown only rendered in the BLOCKED/AMEND branch
+    // below; the override-ADVANCE path's gatesChecked (with `overridden: true`
+    // on the masked gates, set by the F-f33081a2 fix) was computed and
+    // durably recorded in promotions.gates_checked/overrides but never echoed
+    // here — recoverable only via a second `swarm advance <run> --history`
+    // call the operator has no prompt to run. Mirrors the BLOCKED branch's
+    // per-gate PASS/FAIL line below and adds the `overridden` tag the
+    // override path uniquely produces, so finding_severity's deliberate
+    // exclusion from an amend-reroute override (F-f33081a2) is visible at
+    // the moment of action, not just on a follow-up --history query.
+    if (result.gates && result.gates.length > 0) {
+      console.log('Gates:');
+      for (const g of result.gates) {
+        const overrideTag = g.overridden ? ' [OVERRIDDEN]' : '';
+        console.log(`  [${g.passed ? 'PASS' : 'FAIL'}] ${g.name} — ${g.reason}${overrideTag}`);
+      }
+      console.log('');
+    }
     console.log(`Next: swarm dispatch ${runId} ${result.toPhase}`);
   } else {
     console.log(`BLOCKED: ${result.verdict}`);
@@ -1637,6 +1933,15 @@ function cmdApprove(args) {
     process.exit(1);
   }
 
+  // F-ad540b83: `--ids` matches findings.finding_id CASE-INSENSITIVELY
+  // (UPPER() on both sides, not just lower-casing the input — a legacy or
+  // test-seeded finding_id is not guaranteed lowercase, only the canonical
+  // `F-${fingerprint.slice(0,8)}` mint shape is). The canonical id is always
+  // lowercase hex (lib/fingerprint.js), but an operator retyping or pasting
+  // it should not be tripped by casing, the same way a git short-hash
+  // comparison would not be.
+  const idsUpper = ids.map(s => s.toUpperCase());
+
   // cli-002 fix: record `approved` events only for findings THIS call moves
   // new/recurring → approved, not for every already-approved finding in the
   // run. finding_events is append-only with no unique constraint, so the old
@@ -1652,7 +1957,7 @@ function cmdApprove(args) {
         "SELECT id FROM findings WHERE run_id = ? AND status IN ('new', 'recurring')"
       )
     : db.prepare(
-        `SELECT id FROM findings WHERE run_id = ? AND finding_id IN (${ids.map(() => '?').join(',')}) AND status IN ('new', 'recurring')`
+        `SELECT id FROM findings WHERE run_id = ? AND UPPER(finding_id) IN (${idsUpper.map(() => '?').join(',')}) AND status IN ('new', 'recurring')`
       );
 
   const insertEvent = db.prepare(
@@ -1663,7 +1968,7 @@ function cmdApprove(args) {
   const tx = db.transaction(() => {
     const pending = approveAll
       ? selectPending.all(runId)
-      : selectPending.all(runId, ...ids);
+      : selectPending.all(runId, ...idsUpper);
 
     let updated;
     if (approveAll) {
@@ -1671,10 +1976,10 @@ function cmdApprove(args) {
         "UPDATE findings SET status = 'approved' WHERE run_id = ? AND status IN ('new', 'recurring')"
       ).run(runId);
     } else {
-      const placeholders = ids.map(() => '?').join(',');
+      const placeholders = idsUpper.map(() => '?').join(',');
       updated = db.prepare(
-        `UPDATE findings SET status = 'approved' WHERE run_id = ? AND finding_id IN (${placeholders}) AND status IN ('new', 'recurring')`
-      ).run(runId, ...ids);
+        `UPDATE findings SET status = 'approved' WHERE run_id = ? AND UPPER(finding_id) IN (${placeholders}) AND status IN ('new', 'recurring')`
+      ).run(runId, ...idsUpper);
     }
 
     for (const f of pending) insertEvent.run(f.id);
@@ -1682,7 +1987,24 @@ function cmdApprove(args) {
   });
 
   changes = tx();
-  console.log(`Approved ${changes} findings for ${runId}`);
+
+  // F-ad540b83: refuse loudly when NONE of the supplied --ids exist in this
+  // run's findings AT ALL — the exact shape of pasting a `swarm findings`
+  // digest's agent-local id (a disjoint namespace: computeFingerprint's
+  // F-<8 hex> minted at collect() time, never the raw agent-authored `id`
+  // field pre-fix) into --ids. Pre-fix this printed the textually-identical
+  // "Approved 0 findings" a legitimate no-op prints, at exit 0 — no signal
+  // an operator could act on. An id that EXISTS but is simply not currently
+  // open (already approved/deferred/rejected/fixed) is a DIFFERENT, benign
+  // case — re-approving an already-approved finding is intentionally
+  // idempotent (cli-002) and must keep exiting 0 with its own "Approved 0"
+  // line, so this check is existence, not open-match. --all matching zero
+  // (nothing pending) is a normal, expected state and is never refused.
+  if (!approveAll && changes === 0) {
+    refuseIfNoIdsExist(db, runId, ids, idsUpper);
+  }
+
+  console.log(`Approved ${pluralize(changes, 'finding')} for ${runId}`);
 }
 
 function cmdPersist(args) {
@@ -1715,13 +2037,68 @@ function cmdPersist(args) {
   // pasteable reproduce line (mirroring persist-results.js) so the operator
   // can replay the ingest with full output.
   if (ingestDogfood && !dryRun && result.dogfood && result.dogfood.ingested !== true) {
-    console.error(`ERROR [INGEST_FAILED]: dogfood ingest did not complete — ${result.dogfood.reason}`);
+    // F-bf28b667 (wave 20) class-completion: result.dogfood.reason is the
+    // SAME value commands/persist.js's formatPersist now escapes (see that
+    // file's "Ingested: NO" line) — this is cmdPersist's own SEPARATE
+    // render of it on the exit-1 error path. A local execFileSync
+    // child-process error message can legitimately be multi-line (see
+    // persist.js); escaping only the summary render and leaving this error
+    // render bare would repeat the single-instance-patch shape this wave
+    // exists to close.
+    console.error(`ERROR [INGEST_FAILED]: dogfood ingest did not complete — ${escapeReasonForDisplay(result.dogfood.reason)}`);
     if (result.artifacts?.dogfoodSubmission) {
       console.error(`  Submission: ${result.artifacts.dogfoodSubmission}`);
       console.error(`  Reproduce:  node "<repo>/packages/ingest/run.js" --provenance=stub --file "${result.artifacts.dogfoodSubmission}"`);
     }
     process.exit(1);
   }
+}
+
+/**
+ * F-ad540b83: shared zero-match refusal for the three targeted (--ids)
+ * finding-disposition verbs (`approve --ids`, `defer`, `reject`). Fires
+ * ONLY when NONE of the supplied ids exist in this run's
+ * findings.finding_id AT ALL — not when they exist but simply are not
+ * currently open (that is the ordinary, intentionally idempotent no-op the
+ * cli-002 / wave12-swarm-cp-pins defer-idempotency pins already cover: a
+ * re-run naming an already-terminal but genuinely-canonical id must keep
+ * exiting 0). Pre-fix, both cases printed the identical "N findings" (N=0)
+ * line at exit 0 — indistinguishable from "you asked to flip 0 findings on
+ * purpose". The proven-live harm this closes is specifically the id-
+ * namespace confusion: pasting a `swarm findings` digest's agent-local id
+ * (disjoint from findings.finding_id, minted by computeFingerprint at
+ * collect() time) into --ids.
+ *
+ * `idsUpper` must already be upper-cased by the caller (mirrors the
+ * UPPER(finding_id) comparison the caller's own SELECT/UPDATE used) so the
+ * existence probe agrees with the case-insensitive match that already ran.
+ */
+function refuseIfNoIdsExist(db, runId, ids, idsUpper) {
+  const existing = db.prepare(
+    `SELECT COUNT(*) as cnt FROM findings WHERE run_id = ? AND UPPER(finding_id) IN (${idsUpper.map(() => '?').join(',')})`
+  ).get(runId, ...idsUpper).cnt;
+  if (existing > 0) return;
+
+  console.error(
+    `ERROR [CLI_FINDINGS_ID_NO_MATCH]: 0 of ${ids.length} --ids value(s) matched any finding in run ${runId}.`
+  );
+  console.error(
+    '  Next: findings.finding_id is the canonical id (e.g. F-c63c7498) minted by `swarm collect` — not the ' +
+    'agent-local `id` a not-yet-collected `swarm findings` digest may still be showing from raw output.json. ' +
+    // F-1d972160: this used to also suggest `swarm status --format=json` —
+    // proven live to be a dead end: status()'s findings block (commands/
+    // status.js) is aggregate COUNTS only (total/bySeverity/byStatus/open/
+    // thisWave) and never emits an individual finding_id, in text or JSON,
+    // under any run state. `swarm findings --format=json` is the real
+    // remedy: its `id` field is annotateCanonicalFindingIds' best-effort
+    // resolution to the DB-canonical finding_id (see that function's doc
+    // comment), which now also tolerates a drifted line for a recurring
+    // finding (widened by this same fix) — so the common case this hint
+    // exists for actually resolves, not just the first-seen-this-wave case.
+    `Run \`swarm findings ${runId} --format=json\` (after collect) — its \`id\` field resolves to the real ` +
+    'finding_id whenever the match is unambiguous.'
+  );
+  process.exit(1);
 }
 
 /**
@@ -1775,15 +2152,18 @@ function disposeFindings(verb, status, label, args) {
 
   const db = openDb(getDbPath());
 
-  const placeholders = ids.map(() => '?').join(',');
+  // F-ad540b83: same case-insensitive UPPER(finding_id) matching as
+  // cmdApprove — see that call site's comment for the rationale.
+  const idsUpper = ids.map(s => s.toUpperCase());
+  const placeholders = idsUpper.map(() => '?').join(',');
   // Open statuses only — terminal fixed/deferred/rejected are skipped so the
   // flip is idempotent and never re-events an already-disposed finding.
   const selectOpen = db.prepare(
-    `SELECT id FROM findings WHERE run_id = ? AND finding_id IN (${placeholders}) ` +
+    `SELECT id FROM findings WHERE run_id = ? AND UPPER(finding_id) IN (${placeholders}) ` +
     `AND status IN ('new', 'recurring', 'approved', 'unverified')`
   );
   const update = db.prepare(
-    `UPDATE findings SET status = ? WHERE run_id = ? AND finding_id IN (${placeholders}) ` +
+    `UPDATE findings SET status = ? WHERE run_id = ? AND UPPER(finding_id) IN (${placeholders}) ` +
     `AND status IN ('new', 'recurring', 'approved', 'unverified')`
   );
   const insertEvent = db.prepare(
@@ -1791,14 +2171,22 @@ function disposeFindings(verb, status, label, args) {
   );
 
   const tx = db.transaction(() => {
-    const pending = selectOpen.all(runId, ...ids);
-    const updated = update.run(status, runId, ...ids);
+    const pending = selectOpen.all(runId, ...idsUpper);
+    const updated = update.run(status, runId, ...idsUpper);
     for (const f of pending) insertEvent.run(f.id, status, reason);
     return updated.changes;
   });
 
   const changes = tx();
-  console.log(`${label} ${changes} findings for ${runId}`);
+
+  // F-ad540b83: existence-based zero-match refusal — see
+  // refuseIfNoIdsExist's doc comment. defer/reject have no --all path, so
+  // (unlike cmdApprove) every call reaches this check when changes === 0.
+  if (changes === 0) {
+    refuseIfNoIdsExist(db, runId, ids, idsUpper);
+  }
+
+  console.log(`${label} ${pluralize(changes, 'finding')} for ${runId}`);
 }
 
 function cmdDefer(args) {
@@ -1807,6 +2195,114 @@ function cmdDefer(args) {
 
 function cmdReject(args) {
   disposeFindings('reject', 'rejected', 'Rejected', args);
+}
+
+/**
+ * F-ad540b83 (half 1/2): best-effort resolution of each digest finding's
+ * DB-canonical `finding_id`, so an id an operator copies from `swarm
+ * findings` output actually matches `swarm approve/defer/reject --ids`
+ * (which key ONLY on findings.finding_id — the fingerprint-derived id
+ * minted at collect() time, lib/fingerprint.js:672 — a namespace completely
+ * disjoint from the agent's own `id` field this digest otherwise renders
+ * straight off output.json).
+ *
+ * Resolution is by EXACT field-equality against this run+wave's collected
+ * DB rows (file_path/line_number/symbol/category/severity — the same raw
+ * fields upsertFindings() persists verbatim off the identical output.json
+ * this digest reads, lib/fingerprint.js:671-677), NOT by recomputing the
+ * fingerprint hash. Recomputing would risk silently diverging from whatever
+ * sourceText collect() actually hashed against at collect time (fp-p-005:
+ * the fingerprint folds in a source-context hash this function has no
+ * access to and must not guess at) — a WRONG resolved id would be worse
+ * than none. `description` is deliberately excluded from the match tuple:
+ * B-BACK-002's contract (d3b-006-finding-id-collision.test.js) is that
+ * description is NOT part of a finding's identity, and a RECURRING row's
+ * description stays frozen at its first-seen wording (upsertFindings'
+ * updateRecurring only bumps status/last_seen_wave) while the current
+ * wave's raw output.json may have reworded it — comparing description
+ * would false-negative on exactly the recurring findings this is meant to
+ * help with.
+ *
+ * Fails CLOSED, never wrong: a wave not yet collected has no DB rows to
+ * match against (findings keep their plain agent-local id — today's
+ * behavior, unchanged) and a field tuple shared by more than one DB row (a
+ * true duplicate — the rare case disambiguateFingerprints exists for)
+ * resolves to nothing rather than guessing. A `new` finding (first reported
+ * THIS wave) always matches the full 5-field tuple exactly, because the DB
+ * row was inserted THIS SAME collect() from THIS SAME output.json — zero
+ * drift is possible for that case.
+ *
+ * F-1d972160: a RECURRING finding's file/line/symbol CAN drift off its
+ * collect-time row — plausible whenever a nearby edit shifts a line number
+ * — and updateRecurring (lib/fingerprint.js) only ever bumps status/
+ * last_seen_wave, never the location columns, so the drift is permanent,
+ * not transient. Pre-fix the 5-field tuple then missed FOREVER and the
+ * operator was permanently stranded on the agent-local id with no CLI verb
+ * anywhere able to supply the real one (the zero-match refusal's own hint,
+ * just above this function's call site, names the dead end this caused).
+ * A second, line-DROPPED index (file/symbol/category/severity) is now
+ * tried as a fallback — ONLY when the full tuple found zero rows (an
+ * ambiguous full-tuple match is not widened further; widening can only
+ * ever grow the candidate set) — and ONLY resolves when that narrower
+ * tuple is still unambiguous. Same fails-CLOSED contract as the primary
+ * match: a ghost id is worse than none, so two-or-more rows sharing
+ * (file, symbol, category, severity) resolve to nothing, same as today.
+ */
+function annotateCanonicalFindingIds(model, { runId, waveNumber, dbPath }) {
+  if (!model.findings || model.findings.length === 0) return;
+
+  let db;
+  try {
+    db = openDb(dbPath);
+  } catch {
+    return; // control plane unreachable — leave agent-local ids as-is.
+  }
+
+  const wave = db.prepare('SELECT id FROM waves WHERE run_id = ? AND wave_number = ?').get(runId, waveNumber);
+  if (!wave) return; // this run/wave was never dispatched through THIS control plane.
+
+  const rows = db.prepare(
+    'SELECT finding_id, file_path, line_number, symbol, category, severity FROM findings WHERE run_id = ? AND last_seen_wave = ?'
+  ).all(runId, wave.id);
+  if (rows.length === 0) return;
+
+  const tupleKey = (file, line, symbol, category, severity) =>
+    JSON.stringify([file ?? null, line ?? null, symbol ?? null, category ?? null, severity ?? null]);
+  const driftedLineKey = (file, symbol, category, severity) =>
+    JSON.stringify([file ?? null, symbol ?? null, category ?? null, severity ?? null]);
+
+  const byTuple = new Map();
+  const byTupleDriftedLine = new Map();
+  for (const r of rows) {
+    const key = tupleKey(r.file_path, r.line_number, r.symbol, r.category, r.severity);
+    const bucket = byTuple.get(key);
+    if (bucket) bucket.push(r); else byTuple.set(key, [r]);
+
+    const looseKey = driftedLineKey(r.file_path, r.symbol, r.category, r.severity);
+    const looseBucket = byTupleDriftedLine.get(looseKey);
+    if (looseBucket) looseBucket.push(r); else byTupleDriftedLine.set(looseKey, [r]);
+  }
+
+  for (const f of model.findings) {
+    const file = f.file || null;
+    const symbol = f.symbol || null;
+    const category = f.category || null;
+    const severity = String(f.severity || '').toUpperCase() || null;
+
+    const key = tupleKey(file, f.line || null, symbol, category, severity);
+    const bucket = byTuple.get(key);
+    if (bucket && bucket.length === 1) {
+      f.id = bucket[0].finding_id;
+      continue;
+    }
+    if (bucket) continue; // ambiguous even with line included — do not widen.
+
+    const looseKey = driftedLineKey(file, symbol, category, severity);
+    const looseBucket = byTupleDriftedLine.get(looseKey);
+    if (looseBucket && looseBucket.length === 1) {
+      f.id = looseBucket[0].finding_id;
+    }
+  }
 }
 
 function cmdFindings(args) {
@@ -1832,18 +2328,81 @@ function cmdFindings(args) {
   // swallowing a following flag). parseFormatFlag closes both gaps.
   const format = parseFormatFlag(args.slice(1));
 
-  const { output, exitCode } = buildDigest({
-    runId,
-    waveNumber: waveArg ? parseInt(waveArg, 10) : undefined,
-    format,
-    stream: process.stdout,
-  });
+  // F-19f86582: resolve digest artifacts relative to the ACTIVE control
+  // plane (dirname(getDbPath())) — mirrors cmdCollect's --all
+  // auto-discovery (swarmDir: dirname(getDbPath()), cmdCollect's --all branch) and
+  // getOutputDir's identical derivation. Pre-fix, this was the ONE
+  // output-consuming verb that skipped the seam: buildDigest's own
+  // SWARMS_DIR default (lib/findings-digest.js) is always this installed
+  // package's build-relative swarms/ dir, independent of SWARM_DB — so a
+  // run collected against a relocated SWARM_DB was invisible here even
+  // though `swarm collect --all` under the identical SWARM_DB found the
+  // same run's artifacts fine.
+  //
+  // The directory-resolution logic below is buildDigest's own
+  // (lib/findings-digest.js:279-288, findLatestWave), reimplemented here —
+  // not wrapped — so the "Run/Wave/no-waves directory not found" throws can
+  // carry a `.code` + `.hint`. That file lives under this package's lib
+  // directory, swarm-cp-core's domain, not this one's, so the type is
+  // attached at this call site instead of editing it. Everything past
+  // directory resolution (parsing, counting, sorting, rendering) still goes
+  // through the shared, UNMODIFIED buildDigestModel/renderDigest exports —
+  // no business logic is duplicated, only the directory-existence checks.
+  const swarmsDir = dirname(getDbPath());
+  const runDir = join(swarmsDir, runId);
+  if (!existsSync(runDir)) {
+    const e = new Error(`Run directory not found: ${runDir}`);
+    e.code = 'FINDINGS_RUN_DIR_NOT_FOUND';
+    e.runId = runId;
+    e.hint = `swarm findings looks for this run's artifacts under ${swarmsDir} (dirname of $SWARM_DB, ` +
+      `or the default swarms/ dir when SWARM_DB is unset) — confirm SWARM_DB matches whatever \`swarm collect\` ` +
+      `used for this run`;
+    throw e;
+  }
+
+  let waveNumber;
+  if (waveArg) {
+    waveNumber = parseInt(waveArg, 10);
+  } else {
+    try {
+      waveNumber = findLatestWave(runDir);
+    } catch (e) {
+      if (!e.code) {
+        e.code = 'FINDINGS_NO_WAVES_FOUND';
+        e.runId = runId;
+        e.hint = `no wave-N directories exist under ${runDir} — confirm SWARM_DB (${swarmsDir}) matches ` +
+          `whatever \`swarm collect\`/\`swarm dispatch\` used for this run`;
+      }
+      throw e;
+    }
+  }
+
+  const waveDir = join(runDir, `wave-${waveNumber}`);
+  if (!existsSync(waveDir)) {
+    const e = new Error(`Wave directory not found: ${waveDir}`);
+    e.code = 'FINDINGS_WAVE_DIR_NOT_FOUND';
+    e.runId = runId;
+    e.hint = `wave ${waveNumber} has no artifacts under ${runDir} — run \`swarm status ${runId}\` to see which ` +
+      `wave numbers exist under this SWARM_DB`;
+    throw e;
+  }
+
+  const outputs = loadDomainOutputs(waveDir);
+  const model = buildDigestModel(runId, waveNumber, outputs);
+  annotateCanonicalFindingIds(model, { runId, waveNumber, dbPath: getDbPath() });
+  const output = renderDigest(model, format, process.stdout);
+
   console.log(output);
   // F-091578-034 — exit codes propagate the 3-way digest state so CI gates
   // can distinguish clean (0), findings-present (1), and audit-pipeline-broken
   // (2). Operator using `swarm findings` as a CI gate needs the machine
   // signal AND the visual signal, not just the visual.
-  process.exit(exitCode);
+  //
+  // F-5dabf101: process.exitCode, not process.exit() — the console.log(output)
+  // above renders the full findings text/markdown/JSON, exactly the
+  // large-payload case the finding names; truncation risk is identical to the
+  // four verify-* siblings.
+  process.exitCode = model.exitCode;
 }
 
 /**
@@ -1899,7 +2458,7 @@ function cmdRuns(args = []) {
     const waveCnt = db.prepare('SELECT COUNT(*) as cnt FROM waves WHERE run_id = ?').get(r.id);
     const findCnt = db.prepare('SELECT COUNT(*) as cnt FROM findings WHERE run_id = ?').get(r.id);
     console.log(`  ${r.id}`);
-    console.log(`    ${r.repo} [${r.status}] — ${waveCnt.cnt} waves, ${findCnt.cnt} findings`);
+    console.log(`    ${r.repo} [${r.status}] — ${pluralize(waveCnt.cnt, 'wave')}, ${pluralize(findCnt.cnt, 'finding')}`);
     console.log(`    Created: ${r.created_at}`);
     console.log('');
   }
@@ -1990,8 +2549,14 @@ function formatTrends(query, payload) {
       lines.push('  (none — no fingerprint has recurred across runs)');
     } else {
       for (const r of payload) {
-        lines.push(`  [${r.severity}] ${r.fingerprint} — ${r.run_count} runs`);
-        lines.push(`    ${r.description}`);
+        lines.push(`  [${r.severity}] ${r.fingerprint} — ${pluralize(r.run_count, 'run')}`);
+        // F-c6f7d8fc (wave 24) sweep: r.description is MAX(findings.description)
+        // (lib/queries/cross-run-analytics.js's queryRecurringFindings) -- the
+        // same agent-self-reported, schema-unconstrained field family as
+        // findings.file_path above, undisclosed by the original finding and
+        // found by sweeping commands/**+cli.js for every findings.file_path /
+        // findings.description render, not just the one named site.
+        lines.push(`    ${escapeReasonForDisplay(r.description)}`);
         lines.push(`    first seen ${r.first_seen} · last seen ${r.last_seen}`);
         lines.push('');
       }
@@ -2004,7 +2569,7 @@ function formatTrends(query, payload) {
     } else {
       for (const r of payload) {
         lines.push(`  ${r.run_id}  [${r.status}]`);
-        lines.push(`    ${r.repo} — ${r.wave_count} waves, ${r.finding_count} findings`);
+        lines.push(`    ${r.repo} — ${pluralize(r.wave_count, 'wave')}, ${pluralize(r.finding_count, 'finding')}`);
         lines.push(`    created ${r.created_at}`);
         lines.push('');
       }
@@ -2014,7 +2579,7 @@ function formatTrends(query, payload) {
     const pct = (payload.recurrence_rate * 100).toFixed(1);
     lines.push('Finding recurrence rate:');
     lines.push('');
-    lines.push(`  Runs considered:        ${payload.total_runs}${payload.window_days != null ? ` (last ${payload.window_days} days)` : ''}`);
+    lines.push(`  Runs considered:        ${payload.total_runs}${payload.window_days != null ? ` (last ${pluralize(payload.window_days, 'day')})` : ''}`);
     lines.push(`  Distinct fingerprints:  ${payload.distinct_fingerprints}`);
     lines.push(`  Recurring (> 1 run):    ${payload.recurring_fingerprints}`);
     lines.push(`  Recurrence rate:        ${pct}%`);
@@ -2024,7 +2589,13 @@ function formatTrends(query, payload) {
 
 // ── Dispatch ──
 
-const commands = {
+// Exported (F-264ab3aa) so wave31-4091637-5127-swarm-cp-pins.test.js can pin
+// "every registered verb has a matching USAGE entry" against the REAL
+// registry, rather than a hand-maintained second list of verb names that
+// would silently drift from this one — the exact enumeration-vs-property
+// failure this run's own culture has caught repeatedly elsewhere
+// (CONTROL_CLASS / ZALGO_RUN / DASH_CONFUSABLES).
+export const commands = {
   init: cmdInit,
   domains: cmdDomains,
   dispatch: cmdDispatch,
@@ -2034,6 +2605,7 @@ const commands = {
   rewind: cmdRewind,
   redrive: cmdRedrive,
   clean: cmdClean,
+  'clean-claims': cmdCleanClaims,
   verify: cmdVerify,
   'verify-fixed': cmdVerifyFixed,
   'verify-recurring': cmdVerifyRecurring,
@@ -2052,6 +2624,174 @@ const commands = {
   findings: cmdFindings,
   runs: cmdRuns,
   trends: cmdTrends,
+};
+
+/**
+ * F-264ab3aa: per-verb `--help`/`-h` text, keyed by verb name — ONE entry per
+ * key in `commands`, consulted by ONE check in main() (below) BEFORE any
+ * verb is dispatched.
+ *
+ * Pre-fix, only 5 of the 27 verbs registered at the time (rewind, redrive,
+ * clean, clean-claims, history) recognized `--help` at all, each via its own
+ * hand-rolled `if (args.includes('--help')) { ...; return; }` branch inside
+ * its cmd* function. `doctor` and `runs` silently ignored an unrecognized
+ * `--help` and ran their normal read-only action instead (safe, but no help
+ * text). The remaining ~20 had no handling whatsoever: each read `args[0]`
+ * (or the wave-id/adjudication-id equivalent) with no check for a
+ * `--`-prefixed token, so the literal string '--help' was silently consumed
+ * as if it were a real identifier — `swarm status --help` printed `ERROR:
+ * Run not found: --help`, `swarm findings --help` resolved it into a
+ * filesystem path and reported `FINDINGS_RUN_DIR_NOT_FOUND: ...\--help`,
+ * `swarm domains --help` opened the DB and reported "Domains for --help
+ * [DRAFT]:". None of those messages contain the words "help" or "usage" —
+ * each reads as though the operator needs to go create or locate a run/wave
+ * literally named '--help'.
+ *
+ * The five entries below that already had rich inline text (rewind, redrive,
+ * clean, clean-claims, history) are moved here VERBATIM — nothing was
+ * shortened, and the corresponding `if (args.includes('--help'))` branch
+ * inside each cmd* function was deleted (see each function's own F-264ab3aa
+ * breadcrumb comment). Every other entry reuses the SAME one-liner already
+ * used on that verb's own missing-required-argument error path (grep the
+ * function body for the identical `Usage: swarm <verb> ...` string) so the
+ * error path and the --help path can never say two different things about
+ * the same verb.
+ *
+ * wave31-4091637-5127-swarm-cp-pins.test.js pins that every key in
+ * `commands` has a matching entry here — a future verb added to `commands`
+ * with no matching USAGE entry fails that test rather than silently
+ * degrading to the generic fallback main() prints below.
+ */
+export const USAGE = {
+  init: 'Usage: swarm init <repo-path> [--repo org/name]',
+  domains: 'Usage: swarm domains <run-id> [--freeze | --unfreeze --reason "..." [--force] | --edit <name> [opts] | --add <name> [opts] | --remove <name> | --history]',
+  dispatch: 'Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview]',
+  collect: 'Usage: swarm collect <run-id> (--all | --domain=name:path [--domain=name:path ...])',
+  doctor: 'Usage: swarm doctor [--format=text|json]',
+  revalidate: 'Usage: swarm revalidate <run-id> --reason "<text>" --domain=name:path [--domain=name:path ...] [--apply]',
+  rewind: [
+    'Usage: swarm rewind <save-point-tag> --reason "<text>" [--apply] [--force] [--force-arbitrary-ref]',
+    '',
+    'Restore the working tree to a named save-point AND lawfully abort orphaned',
+    'in-flight waves/agent_runs (status -> aborted_for_rewind) with full audit',
+    'visibility in wave_state_events / agent_state_events (reason prefixed with',
+    '"rewind: "). Dry-run by default; --apply mutates.',
+    '',
+    'Required:',
+    '  <save-point-tag>          A git tag (default: must match swarm-save-*)',
+    '  --reason "<text>"         Non-empty audit reason (recorded in state events)',
+    '',
+    'Optional:',
+    '  --apply                   Mutate (default: dry-run preview)',
+    '  --force                   Discard uncommitted changes in the working tree',
+    '  --force-arbitrary-ref     Allow tags outside the swarm-save-* glob',
+  ].join('\n'),
+  redrive: [
+    'Usage: swarm redrive <wave-id> --reason "<text>" [--apply]',
+    '',
+    'Lawful Redrive: Step Functions Redrive semantics on the swarm control plane.',
+    'Same wave_id, completed work preserved byte-identical, only eligible failed/',
+    'unstarted agent_runs made re-dispatchable. Dry-run by default; --apply mutates.',
+    '',
+    'Required:',
+    '  <wave-id>                 Positive integer (waves.id)',
+    '  --reason "<text>"         Non-empty audit reason (recorded with redrive: prefix)',
+    '',
+    'Optional:',
+    '  --apply                   Mutate (default: dry-run preview)',
+    '',
+    'Eligibility (per agent_run source status):',
+    '  complete             -> PRESERVED (receipt unchanged)',
+    '  pending, dispatched  -> ELIGIBLE (redriven to dispatched)',
+    '  failed, timed_out    -> ELIGIBLE (redriven to dispatched)',
+    '  invalid_output       -> REFUSED  (use `swarm revalidate` instead)',
+    '  ownership_violation  -> REFUSED  (operator unblocks first)',
+    '  aborted_for_rewind   -> REFUSED  (terminal; run a fresh wave)',
+    '  running              -> REFUSED  (let timeout fire, then redrive)',
+  ].join('\n'),
+  clean: [
+    'Usage: swarm clean <run-id> [--apply] [--force] [--format=text|json]',
+    '',
+    'Reclaim the stranded --isolate worktrees + swarm/* branches for a run.',
+    'Under --isolate, dispatch creates a per-agent git worktree; recordPromotion',
+    'tears them down on the run\'s terminal `complete` transition. A run abandoned,',
+    'rewound, or interrupted before `complete` strands those worktrees on disk —',
+    '`swarm clean` is the operator reclaim. Dry-run by default; --apply removes.',
+    '',
+    'Required:',
+    '  <run-id>             The run whose worktrees to reclaim',
+    '',
+    'Optional:',
+    '  --apply              Remove (default: dry-run preview)',
+    '  --force              Required IN ADDITION to --apply to remove a',
+    '                       DIRTY or UNMERGED worktree (uncommitted/unpushed',
+    '                       agent work). --apply alone SKIPS those, mirroring',
+    '                       `swarm rewind`\'s --force-on-top-of---apply contract.',
+    '  --format=text|json   Output format (default: text)',
+    '',
+    '--apply refuses while this run\'s latest wave is still `dispatched`/',
+    '`collecting` — finish it first (`swarm collect` / `swarm redrive` /',
+    '`swarm rewind`) so a live agent\'s worktree is never reclaimed mid-flight.',
+  ].join('\n'),
+  'clean-claims': [
+    'Usage: swarm clean-claims <run-id> [--wave=N] [--agent-run=ID] [--apply --reason "<text>"] [--format=text|json]',
+    '',
+    'Delete phantom violation=1 file_claims rows stranded on TERMINAL waves',
+    '(advanced / aborted_for_rewind) — rows no lawful verb can revisit:',
+    'collect only runs on a dispatched wave, revalidate only repairs blocked',
+    'agents on the run\'s latest wave, redrive refuses terminal waves.',
+    '',
+    'file_claims rows are CLAIMS about what a pass observed, not audit',
+    'events — deleting a superseded claim is the lawful write. The',
+    'agent_state_events audit trail is NEVER touched. Dry-run by default;',
+    'the preview shows each agent_run\'s claims plus the state-event',
+    'evidence that supersedes them.',
+    '',
+    'Required:',
+    '  <run-id>             The run whose phantom claims to clean',
+    '',
+    'Required to mutate:',
+    '  --apply              Delete (default: dry-run preview)',
+    '  --reason "<text>"    Non-empty audit reason, required with --apply;',
+    '                       recorded in domain_events with the clean-claims:',
+    '                       prefix (one restorable audit row per domain)',
+    '',
+    'Optional:',
+    '  --wave=N             Only wave N (wave_number within this run)',
+    '  --agent-run=ID       Only this agent_runs.id (must belong to this run)',
+    '  --format=text|json   Output format (default: text)',
+    '',
+    'Scope guards: rows on non-terminal waves are REFUSED with the verb that',
+    'still owns them (collect / revalidate / redrive); violation=0 rows and',
+    'other runs\' rows are never touched (re-verified inside the delete',
+    'transaction — a violated invariant rolls everything back).',
+  ].join('\n'),
+  verify: 'Usage: swarm verify <run-id> [--adapter node|python|rust] [--probe-only]',
+  'verify-fixed': 'Usage: swarm verify-fixed <run-id> [--threshold=N] [--format=text|markdown|json] [--legacy-v1]',
+  'verify-recurring': 'Usage: swarm verify-recurring <run-id> [--threshold=N] [--format=text|markdown|json]',
+  'verify-unverified': 'Usage: swarm verify-unverified <run-id> [--threshold=N] [--format=text|markdown|json]',
+  'verify-approved': 'Usage: swarm verify-approved <run-id> [--threshold=N] [--format=text|markdown|json]',
+  receipt: 'Usage: swarm receipt <run-id> [wave-number] [--format=json]',
+  advance: 'Usage: swarm advance <run-id> [--override --reason "..."] [--check-only] [--history] [--format=json]',
+  adjudicate: 'Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]\n   or: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]',
+  status: 'Usage: swarm status <run-id> [--format=text|json]',
+  resume: 'Usage: swarm resume <run-id> [--force]',
+  history: [
+    'Usage: swarm history <wave-id> [--format=text|json]',
+    '',
+    'Render the full wave_state_events transition chain for <wave-id>.',
+    'Each row shows: from_status -> to_status, when, and the operator-',
+    'supplied reason text (override transitions via `swarm revalidate`',
+    'carry their --reason text here prefixed with `revalidate:`).',
+    '--format=json emits the structured {waveId,wave,events} report.',
+  ].join('\n'),
+  approve: 'Usage: swarm approve <run-id> [--all | --ids F-001,F-002]',
+  defer: 'Usage: swarm defer <run-id> --ids F-001,F-002 --reason "<text>"',
+  reject: 'Usage: swarm reject <run-id> --ids F-001,F-002 --reason "<text>"',
+  persist: 'Usage: swarm persist <run-id> [--ingest] [--dry-run]',
+  findings: 'Usage: swarm findings <run-id> [wave-number] [--format=text|markdown|json]',
+  runs: 'Usage: swarm runs [--format=text|json]',
+  trends: 'Usage: swarm trends --query <recurring|history|recurrence> [--format=text|json]',
 };
 
 /**
@@ -2075,20 +2815,114 @@ function isDirectExecution() {
 }
 
 /**
+ * Standard iterative Levenshtein edit distance (insert/delete/substitute,
+ * unit cost). Only used for the "did you mean" nudge on an unknown verb
+ * (F-554bcd68, below) — never on a hot path, so the O(len(a)*len(b)) DP
+ * table is fine at CLI-verb string lengths (every registered command name is
+ * under 20 chars).
+ */
+function levenshteinDistance(a, b) {
+  const m = a.length;
+  const n = b.length;
+  if (m === 0) return n;
+  if (n === 0) return m;
+  let prev = new Array(n + 1);
+  let curr = new Array(n + 1);
+  for (let j = 0; j <= n; j++) prev[j] = j;
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      curr[j] = Math.min(
+        prev[j] + 1,        // deletion
+        curr[j - 1] + 1,    // insertion
+        prev[j - 1] + cost, // substitution
+      );
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+
+/**
+ * Nearest registered verb to an unrecognized command, for the "did you mean"
+ * nudge. Returns undefined when nothing is close enough to plausibly be a
+ * typo of `command` (avoids suggesting e.g. "init" for "smoke", which shares
+ * no real shape with anything registered).
+ *
+ * @param {string} command — the unrecognized argv[2] token
+ * @param {string[]} commandNames — Object.keys(commands)
+ * @returns {string | undefined}
+ */
+function nearestCommand(command, commandNames) {
+  let best;
+  let bestDistance = Infinity;
+  for (const name of commandNames) {
+    const d = levenshteinDistance(command, name);
+    if (d < bestDistance) {
+      bestDistance = d;
+      best = name;
+    }
+  }
+  // Half-length threshold (rounded up, floor 1) — generous enough to catch a
+  // single-typo/transposition miss ('dispach' -> 'dispatch', distance 1)
+  // without suggesting an unrelated verb for a wildly different string.
+  const threshold = Math.max(1, Math.ceil(command.length / 2));
+  return bestDistance <= threshold ? best : undefined;
+}
+
+/**
  * cli-r-002: the argv dispatch body lives in main() rather than inline under
  * `if (isDirectExecution())`. The previous inline form left the help-text
  * console.log + trailing process.exit indented one level shallower than their
- * enclosing `if (!command || !commands[command])` body. Hoisting the body into
- * a named function lets every statement sit at one consistent indentation
- * level without a deep-nesting re-indent, and reads as a normal entry point.
- * Behavior is identical: main() is invoked only when cli.js is the process
- * entry point (the subprocess smoke tests still spawn `node cli.js`).
+ * enclosing guard body. Hoisting the body into a named function lets every
+ * statement sit at one consistent indentation level without a deep-nesting
+ * re-indent, and reads as a normal entry point. Behavior is identical: main()
+ * is invoked only when cli.js is the process entry point (the subprocess
+ * smoke tests still spawn `node cli.js`). See F-554bcd68 below for the
+ * three-way split (bare / explicit-help / unknown-command) the top-level
+ * guard now makes.
  */
 function main() {
   const command = process.argv[2];
   const commandArgs = process.argv.slice(3);
 
-  if (!command || !commands[command]) {
+  // F-554bcd68 (Stage C): the old single guard `if (!command ||
+  // !commands[command])` conflated three operator intents that deserve
+  // different treatment: bare invocation (orientation, not an error), an
+  // explicit --help/-h/help request (GNU/POSIX convention: universally exit
+  // 0), and a genuinely unknown/mistyped verb (an error, but not one that
+  // should look identical to a successful help request, and not one that
+  // needs the entire ~240-line reference dumped with zero acknowledgment of
+  // what was actually wrong). All three used to print the byte-identical
+  // full command reference and exit `command ? 1 : 0` — so a wrapper using
+  // the conventional `swarm --help && echo ok` idiom incorrectly reported
+  // the tool unavailable, and a typo'd verb (28 similarly-named siblings —
+  // dispatch/collect/revalidate/rewind/redrive, verify/verify-fixed/
+  // verify-recurring/verify-unverified/verify-approved) got no "unknown
+  // command" framing anywhere in ~240 lines of output.
+  //
+  // CORRECTION (F-264ab3aa, wave 31): this comment used to close with a
+  // parenthetical claiming --help "universally exit[s] 0 — the same
+  // convention this file's own per-verb --help branches, e.g. `swarm
+  // history --help`, already follow". That was false when written (wave 29):
+  // only 5 of the 27 verbs registered at the time had ANY per-verb --help
+  // handling, and the other ~22 silently misread the literal string
+  // '--help' as a real positional argument. Wave 30's audit caught the
+  // overclaim; this wave both closes the underlying gap (see the USAGE
+  // table above `const commands` + the check below) and removes the false
+  // sentence rather than leaving it to assert something this repo's own
+  // audit had already disproved.
+  const isExplicitHelp = command === '--help' || command === '-h' || command === 'help';
+
+  if (command && !isExplicitHelp && !commands[command]) {
+    const suggestion = nearestCommand(command, Object.keys(commands));
+    const hint = suggestion ? ` Did you mean \`${suggestion}\`?` : '';
+    console.error(`Unknown command: '${command}'.${hint} Run \`swarm --help\` for the full command list.`);
+    process.exit(1);
+  }
+
+  if (!command || isExplicitHelp) {
     console.log(`swarm — Truthful swarm control plane for repo work
 
 Commands:
@@ -2129,13 +2963,16 @@ Commands:
                              warning; collect proceeds with the present ones.
                              --all and --domain are mutually exclusive (an
                              explicit --domain overrides --all).
-  doctor                     Preflight environment checks (read-only). Verifies
+  doctor [--format=text|json]
+                             Preflight environment checks (read-only). Verifies
                              Node >= 22, the control-plane dir is writable +
                              hardlink-capable (the file-lock CAS needs link(2);
                              exFAT/FAT32 fail), and the on-disk control-plane.db
                              schema is not newer than this build. Structured
                              pass/warn/fail report; exits non-zero only on a
                              hard FAIL (warns exit 0). No run-id required.
+                             --format=json emits the {checks,overallStatus,
+                             exitCode} object verbatim; default is text.
   revalidate <run-id> [opts] Lawful recovery for blocked agent_runs
                              (invalid_output / ownership_violation).
                              Usage: swarm revalidate <run-id> [flags]
@@ -2182,6 +3019,21 @@ Commands:
                              Run-scoped (not repo-wide). Dry-run by default;
                              --apply removes. Reports a {removed, stranded,
                              total} rollup. --format=text|json.
+  clean-claims <run-id> [opts]
+                             Delete phantom violation=1 file_claims rows
+                             stranded on TERMINAL waves (advanced /
+                             aborted_for_rewind) — rows no lawful verb can
+                             revisit (collect: wave not dispatched; revalidate:
+                             agents not blocked on the latest wave; redrive:
+                             terminal waves refused). Claims are what a pass
+                             OBSERVED, not audit events — the agent_state_events
+                             trail is never touched. Dry-run by default (lists
+                             rows + the superseding state-event evidence);
+                             --apply --reason "<text>" deletes, writing one
+                             restorable domain_events audit row per domain.
+                             --wave=N / --agent-run=ID narrow scope; refusals
+                             name the verb that still owns the row.
+                             --format=text|json.
   verify <run-id> [opts]     Run build verification (auto-detect or --adapter)
   verify-fixed <run-id> [opts]
                              Re-audit findings marked [fixed]; classify into
@@ -2218,7 +3070,13 @@ Commands:
                              advance --check-only --format=json emits the
                              checkGates() {verdict,nextPhase,reason,gates[],
                              overridable} object for machine consumers.
-  adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json]
+                             advance --history [--format=json] lists past
+                             promotions; each [OVERRIDE: ...] tag now names
+                             the gate(s) its reason consented to, and
+                             --format=json emits the full getPromotions()
+                             array (gates_checked/overrides included) with
+                             no raw SQL needed.
+  adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]
                              Dispatch a case-file to the cross-family jury and
                              record the advisory verdict on the current wave (the
                              checkAdjudication gate reads it). Free local panel by
@@ -2229,13 +3087,29 @@ Commands:
                              slower and more abstention-prone (prism caps a call at
                              30s). Needs prism-verify importable by python
                              (PRISM_PYTHON overrides the interpreter).
+                             --dry-run: resolve the wave, run the neutrality gate,
+                             and print seats/tier/billing WITHOUT dispatching the
+                             jury or persisting — adjudicate is the only verb that
+                             spends real money, so preview before you pay.
+  adjudicate <run-id> --undo <adjudication-id> [--apply]
+                             Compensator: remove a persisted adjudication row so
+                             a mis-run or superseded verdict can be rolled back
+                             without raw SQL. Dry-run by default; the gate then
+                             falls back to the prior adjudication for the wave
+                             (or none). The full receipt artifact on disk is left
+                             in place — only the gate-readable summary row goes.
   persist <run-id> [opts]    Export canonical truth to downstream systems
   status <run-id> [--format=text|json]
                              Control plane status. --format=json emits the
                              structured status object (run/waves/agents/
                              findings/assessment) for machine consumers;
                              default is the text frame.
-  resume <run-id>            Redispatch incomplete agents
+  resume <run-id> [--force]  Redispatch incomplete agents. --force: proceed
+                             even when a redispatch candidate's --isolate
+                             worktree has uncommitted/unmerged work that
+                             recreation would destroy (default: refuse and
+                             name the at-risk worktree(s); no undo once
+                             --force accepts the loss).
   history <wave-id> [--format=text|json]
                              Render the wave_state_events transition chain for
                              a wave. Deep audit verb for the override-and-reason
@@ -2274,7 +3148,11 @@ Commands:
 Domain commands:
   domains <run-id>                          Show current map
   domains <run-id> --freeze                 Lock for the run
-  domains <run-id> --unfreeze --reason "."  Unlock (requires reason)
+  domains <run-id> --unfreeze --reason "."  Unlock (requires reason). Refuses
+                                             while a wave is in flight
+                                             (dispatched/collecting/failed);
+                                             add --force to override once
+                                             you've halted the wave by hand.
   domains <run-id> --edit <name> [opts]     Modify globs/ownership/desc
   domains <run-id> --add <name> --globs ... Add new domain
   domains <run-id> --remove <name>          Remove domain
@@ -2282,7 +3160,24 @@ Domain commands:
 
 Phases:
 ${renderPhaseColumns('  ')}`);
-    process.exit(command ? 1 : 0);
+    process.exit(0);
+  }
+
+  // F-264ab3aa: per-verb --help/-h, centralized. `command` is guaranteed to
+  // be a real key in `commands` here — the two guards above already
+  // resolved "no command", "bare --help/-h/help", and "unknown verb" and
+  // exited in each case. ONE check here, before ANY verb is dispatched,
+  // covers all 28 registered verbs today and every verb added after this
+  // line — see the USAGE table above `const commands` for the per-verb
+  // text, and wave31-4091637-5127-swarm-cp-pins.test.js for the structural
+  // pin requiring every command to have a matching entry there. Checked
+  // anywhere in commandArgs (not just position 0), matching the convention
+  // the 5 pre-existing per-verb handlers already used — `swarm rewind tag
+  // --reason --help` still surfaces the help text rather than the reason-
+  // swallow-guard error text, same as `swarm rewind --help tag` does.
+  if (commandArgs.includes('--help') || commandArgs.includes('-h')) {
+    console.log(USAGE[command] || `swarm ${command}: no detailed --help text yet — run \`swarm --help\` for the full command reference.`);
+    process.exit(0);
   }
 
   try {

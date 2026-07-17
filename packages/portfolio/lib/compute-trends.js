@@ -167,7 +167,20 @@ export function computeTrends(repoRoot, options = {}) {
   });
 
   // repo -> surface -> array of accepted run rows.
-  const bySurface = {};
+  //
+  // F-a853fcaa: Object.create(null), not {} — repo/surface below come from
+  // JSON.parse() of on-disk record files with no schema gate (same
+  // pre-check shape as rebuild-indexes.js's loadRecord()), so a
+  // hand-committed record with repo: '__proto__' would otherwise resolve
+  // `bySurface['__proto__']` to Object.prototype itself (truthy on a plain
+  // `{}`), skip the `??=` init, and land the surface-array write ON
+  // Object.prototype — global prototype pollution for the rest of the
+  // process. Identical shape to F-89b7dcd5 (rebuild-indexes.js's
+  // latestByRepo), fixed the same way there; this file was the
+  // unaudited sibling. Object.entries()/JSON.stringify() both work
+  // unchanged on a null-prototype object, so this costs nothing on the
+  // read/serialize side below.
+  const bySurface = Object.create(null);
 
   for (const filePath of recordFiles) {
     // Repo-root-relative, posixified — the same boundary normalization used for
@@ -208,7 +221,11 @@ export function computeTrends(repoRoot, options = {}) {
     for (const sr of record.scenario_results || []) {
       const surface = sr.product_surface;
       if (!surface) continue;
-      ((bySurface[repo] ??= {})[surface] ??= []).push({
+      // F-a853fcaa: per-repo bucket is ALSO Object.create(null) — see the
+      // bySurface init above for why a plain {} here reopens the same hole
+      // one level down (product_surface: '__proto__' would then set the
+      // bucket's PROTOTYPE instead of an own property).
+      ((bySurface[repo] ??= Object.create(null))[surface] ??= []).push({
         run_id: runId,
         verified,
         finished_at: finishedAt,
@@ -221,9 +238,19 @@ export function computeTrends(repoRoot, options = {}) {
   const windowMs = windowDays * 86400000;
   const windowStart = now - windowMs;
 
-  const trends = {};
+  // F-48672d32: Object.create(null) for both container maps, for a DIFFERENT
+  // reason than the bySurface fix above. This step cannot reach the shared
+  // Object.prototype (each map here is a fresh throwaway), so it is output
+  // correctness, not security: on a plain `{}`, `trends[repo] = {}` with a repo
+  // literally named '__proto__' hits the inherited accessor and sets the map's
+  // own internal prototype instead of creating a key, so the repo silently
+  // vanishes from Object.keys/entries/JSON.stringify while still reading back
+  // through the getter — invisible to every consumer that iterates. Only the
+  // two dynamically-keyed maps need this; the per-surface value below stays a
+  // plain object because its keys are fixed by this function, not by the corpus.
+  const trends = Object.create(null);
   for (const [repo, surfaces] of Object.entries(bySurface)) {
-    trends[repo] = {};
+    trends[repo] = Object.create(null);
     for (const [surface, rows] of Object.entries(surfaces)) {
       // Order oldest -> newest by ms (NaN sorts oldest). Stable for equal ms.
       const ordered = rows.slice().sort((a, b) => {

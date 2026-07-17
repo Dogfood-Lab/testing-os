@@ -69,8 +69,12 @@ function seedFixture() {
   return { tmp, dbPath };
 }
 
+// F-8ad2d58d: matches the Windows-tolerant teardown idiom established
+// elsewhere in this package (redrive.test.js, rewind.test.js, every
+// wave4/6/8/10/12-*-swarm-cp-pins.test.js) — the CLI subprocess spawned
+// above can still hold the WAL sidecar lock for a beat after it exits.
 function teardown(tmp) {
-  rmSync(tmp, { recursive: true, force: true });
+  try { rmSync(tmp, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
 }
 
 const VERBS = ['verify-fixed', 'verify-recurring', 'verify-unverified', 'verify-approved'];

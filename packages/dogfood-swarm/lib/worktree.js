@@ -30,6 +30,7 @@
 
 import { execSync, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync } from 'node:fs';
+import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { join } from 'node:path';
 import { logStage } from './log-stage.js';
 
@@ -415,7 +416,8 @@ function gitArgs(cwd, args) {
 }
 
 /**
- * Ensure .swarm/ is in the repo's .gitignore. Pure-Node fs only — no shell.
+ * Ensure .swarm/ is in the repo's .gitignore, CREATING the file if the repo
+ * has none. Pure-Node fs only — no shell.
  *
  * Originally used `execSync('cat ...')` + `execSync('echo ... >>')`, which
  * inherits the platform shell. On Windows cmd.exe `cat` does not exist, the
@@ -424,10 +426,30 @@ function gitArgs(cwd, args) {
  * a literal trailing space + CRLF that corrupts the file. Wave-1 fixed this
  * upstream; the testing-os monorepo migration regressed it. This is the
  * defense-in-depth fix carrying that wave-1 pattern into every copy.
+ *
+ * F-afe6511b: a repo with NO .gitignore used to hit `if (!existsSync(...))
+ * return;` and silently do nothing, contradicting the docstring's own
+ * contract ("Ensure .swarm/ is in the repo's .gitignore") and this module's
+ * own name-vs-behavior discipline (the exact class of bug the wave-1 fix
+ * above already exists to eliminate: "the catch in createWorktree swallows
+ * the error, and the agent runs without isolation"). Worktrees are created
+ * nested inside the repo at `<repo>/.swarm/worktrees/`, so the consequence
+ * was untracked `.swarm/` content in the operator's own tree — which then
+ * feeds getActualTouchedFiles' `git status --porcelain`, so an isolated
+ * agent's own worktree scaffolding could be misread as a phantom ownership
+ * violation. createWorktree is already mutating the repo far more invasively
+ * (a new worktree, a new branch) than writing one line to a new file, so
+ * creating the .gitignore when absent is a strictly smaller surprise than
+ * leaving the swarm's own jail untracked and undocumented.
  */
 export function ensureGitignore(repoPath) {
   const gitignorePath = join(repoPath, '.gitignore');
-  if (!existsSync(gitignorePath)) return;
+
+  if (!existsSync(gitignorePath)) {
+    logStage('gitignore_created_for_swarm', { component: 'dogfood-swarm', repoPath, gitignorePath });
+    atomicWriteFileSync(gitignorePath, '.swarm/\n', 'utf-8');
+    return;
+  }
 
   const content = readFileSync(gitignorePath, 'utf-8');
   if (content.includes('.swarm/')) return;

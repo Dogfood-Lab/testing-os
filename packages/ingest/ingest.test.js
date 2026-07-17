@@ -493,7 +493,13 @@ describe('index generator', () => {
   it('produces empty indexes for empty records dir', () => {
     setupTestRoot();
     const { latestByRepo, failing, stale } = rebuildIndexes(TEST_ROOT);
-    assert.deepEqual(latestByRepo, {});
+    // F-89b7dcd5: latestByRepo is Object.create(null)-backed (prototype-
+    // pollution hardening — see rebuild-indexes.js), so under
+    // node:assert/strict (deepEqual === deepStrictEqual, which compares
+    // [[Prototype]]) it never matches a `{}` literal directly even when
+    // empty. Spread into a plain object first — content is what this
+    // assertion cares about, not the implementation-detail prototype.
+    assert.deepEqual({ ...latestByRepo }, {});
     assert.deepEqual(failing, []);
     assert.deepEqual(stale, []);
   });

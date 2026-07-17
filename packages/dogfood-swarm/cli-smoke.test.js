@@ -31,7 +31,7 @@
  *   the operator's first `swarm` invocation.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +46,16 @@ import { transitionWave } from './lib/wave-state-machine.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const CLI_PATH = join(__dirname, 'cli.js');
+
+// Every CLI child below pins SWARM_DB off the live repo control-plane.db
+// (task_6026249b): cmdHistory opens the DB BEFORE validating its wave-id arg,
+// so even a "pure usage-error" spawn (`swarm history abc`) opened the
+// operational DB mid-suite — the WAL sidecar churn that flaked
+// stageD-output-dir-tracks-db.test.js under full-suite concurrency. The
+// live-DB isolation sweep in meta-wal-sidecar-teardown-guard.test.js enforces
+// this pin at every CLI-spawn site package-wide.
+const SAFE_DB_DIR = mkdtempSync(join(tmpdir(), 'cli-smoke-safe-db-'));
+after(() => { try { rmSync(SAFE_DB_DIR, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
 
 function stubStatus(assessmentState, nextAction = 'noop') {
   return {
@@ -79,6 +89,7 @@ function runCli(args = []) {
     cwd: __dirname,
     // Inherit env so node modules resolve; bound stdio so we capture both
     // streams without parser-load output sneaking past.
+    env: { ...process.env, SWARM_DB: join(SAFE_DB_DIR, 'control-plane.db') },
   });
 }
 
@@ -262,9 +273,15 @@ describe('CHR-2: revalidate help text surfaces required safety flags scannably',
  *      (no stack trace bleed-through).
  *   4. Non-integer wave-id exits 1 with the "must be a positive integer"
  *      message.
- *   5. Known wave-id with two transitions (dispatched -> failed then
- *      override failed -> collected) renders the full audit chain with
- *      the operator's --reason text in the second row.
+ *   5. Known wave-id with three transitions (dispatched -> failed, then
+ *      override failed -> collected, then collected -> aborted_for_rewind)
+ *      renders the full audit chain with the operator's --reason text in
+ *      each row, AND every row's WHEN/REASON columns start at the same
+ *      character offset as the header -- including the third row, whose
+ *      TO value ('aborted_for_rewind', 18 chars) overflows history.js's
+ *      fixed 12-char TO column budget (F-cb350c90). Content presence and
+ *      column alignment are asserted as two SEPARATE properties so a
+ *      content match can never stand in for an alignment check again.
  */
 describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
   let tempDir;
@@ -285,6 +302,15 @@ describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
 
     transitionWave(db, waveId, 'failed', 'collect rejected all 4 outputs');
     transitionWave(db, waveId, 'collected', 'revalidate: wave-2 schema mismatch corrected', true);
+    // F-cb350c90: a third, NORMAL-path transition (collected ->
+    // aborted_for_rewind is a direct, non-blocked entry in
+    // lib/wave-state-machine.js's TRANSITIONS table -- no override needed).
+    // 'aborted_for_rewind' is the one reachable wave-status value (18
+    // chars, the real target commands/rewind.js writes) that overflows
+    // history.js's fixed 12-char TO column; before this fix no fixture in
+    // the suite ever drove a wave through it, so the render's column-
+    // overflow path had zero test coverage anywhere in the package.
+    transitionWave(db, waveId, 'aborted_for_rewind', 'rewind: operator requested rollback to save point');
 
     closeDb(dbPath);
     return waveId;
@@ -303,7 +329,7 @@ describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
     return spawnSync(process.execPath, [CLI_PATH, 'history', ...args], {
       encoding: 'utf-8',
       cwd: __dirname,
-      env: { ...process.env, ...extraEnv },
+      env: { ...process.env, SWARM_DB: join(SAFE_DB_DIR, 'control-plane.db'), ...extraEnv },
     });
   }
 
@@ -351,7 +377,11 @@ describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
         `unknown wave-id error must NOT include a stack trace; got stderr:\n${r.stderr}`);
     } finally {
       try { closeDb(emptyDbPath); } catch { /* */ }
-      rmSync(emptyTempDir, { recursive: true, force: true });
+      // F-8ad2d58d: matches teardownFixtureDb() above — the CLI subprocess
+      // just spawned can still hold the WAL sidecar lock for a beat after it
+      // exits, so rmSync (the call that actually raises EBUSY) must be
+      // guarded too, not just closeDb.
+      try { rmSync(emptyTempDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -365,7 +395,7 @@ describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
       'non-integer wave-id must produce a positive-integer error');
   });
 
-  it('`swarm history <known-wave-id>` renders the full transition chain', () => {
+  it('`swarm history <known-wave-id>` renders the full transition chain with columns aligned to the header, including the overflow row', () => {
     const waveId = setupFixtureDb();
     try {
       const r = runHistoryCli([String(waveId)], { SWARM_DB: dbPath });
@@ -379,22 +409,64 @@ describe('swarm history <wave-id> — subprocess smoke (Phase 5B-0)', () => {
         `output must name the wave; got:\n${r.stdout}`);
 
       // Plain-ASCII column header (no ANSI/emoji).
-      assert.match(r.stdout, /FROM\s+TO\s+WHEN\s+REASON/,
-        `output must include the column header row; got:\n${r.stdout}`);
+      const lines = r.stdout.split('\n');
+      const headerLine = lines.find(l => /^FROM\s+TO\s+WHEN\s+REASON/.test(l));
+      assert.ok(headerLine, `output must include the column header row; got:\n${r.stdout}`);
 
-      // Each fixture transition must appear as a row with the operator's
-      // reason text. The override row carries `revalidate:` prefix which
-      // mirrors the canonical write at commands/revalidate.js:326. The WHEN
-      // column renders as ISO-like `YYYY-MM-DD HH:MM:SS` so the regex tolerates
-      // an internal space (no \S match for the whole timestamp).
-      assert.match(r.stdout, /dispatched +failed +\d{4}-\d{2}-\d{2} +\d{2}:\d{2}:\d{2} +collect rejected all 4 outputs/,
+      // CONTENT presence — each fixture transition appears with the
+      // operator's reason text. The override row carries the `revalidate:`
+      // prefix (commands/revalidate.js:326); the rewind row carries the
+      // `rewind:` prefix (commands/rewind.js:272). The TO token on the
+      // third row is matched as `\S+` rather than the literal
+      // 'aborted_for_rewind' string because F-4e4b88f7's companion fix
+      // (swarm-cp-verbs' domain, same wave) may render it either widened-
+      // and-intact or truncated-with-ellipsis — both are valid remediations
+      // and neither should make this content check flap.
+      //
+      // Content presence is deliberately a SEPARATE assertion from column
+      // alignment below: F-cb350c90 is precisely that the old version of
+      // this test conflated the two — a flexible ' +' regex is satisfied by
+      // a misaligned table exactly as readily as a correctly aligned one.
+      assert.match(r.stdout, /^dispatched\s+failed\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+collect rejected all 4 outputs$/m,
         `output must include the dispatched->failed row; got:\n${r.stdout}`);
-      assert.match(r.stdout, /failed +collected +\d{4}-\d{2}-\d{2} +\d{2}:\d{2}:\d{2} +revalidate: wave-2 schema mismatch corrected/,
+      assert.match(r.stdout, /^failed\s+collected\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+revalidate: wave-2 schema mismatch corrected$/m,
         `output must include the failed->collected override row with revalidate: prefix; got:\n${r.stdout}`);
+      assert.match(r.stdout, /^collected\s+\S+\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\s+rewind: operator requested rollback to save point$/m,
+        `output must include the collected->aborted_for_rewind row with rewind: prefix; got:\n${r.stdout}`);
 
-      // Summary line counts both transitions.
-      assert.match(r.stdout, /\(2 transitions\)/,
-        `output must summarize "(2 transitions)"; got:\n${r.stdout}`);
+      // ALIGNMENT — the property F-cb350c90 found completely unchecked.
+      // Every row's WHEN column must start at the SAME character offset as
+      // the header's WHEN label, and every row's REASON text must start at
+      // the SAME character offset as the header's REASON label. A regex
+      // like /dispatched +failed +.../ is satisfied by ANY amount of
+      // whitespace between fields, so a ragged table (one row's columns
+      // drifted right because a status name overflowed its fixed column
+      // budget) passes it exactly as readily as a correctly aligned one —
+      // comparing character offsets directly catches that drift.
+      const whenOffset = headerLine.indexOf('WHEN');
+      const reasonOffset = headerLine.indexOf('REASON');
+      assert.ok(whenOffset > 0 && reasonOffset > whenOffset,
+        `could not locate WHEN/REASON column offsets in header: ${JSON.stringify(headerLine)}`);
+
+      const dataRows = lines.filter(l => /\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/.test(l));
+      assert.equal(dataRows.length, 3,
+        `expected exactly 3 transition rows; got ${dataRows.length}:\n${r.stdout}`);
+      for (const row of dataRows) {
+        const ts = row.match(/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/)[0];
+        const tsOffset = row.indexOf(ts);
+        assert.equal(tsOffset, whenOffset,
+          `row's WHEN column must start at the same offset (${whenOffset}) as the header's — ` +
+          `got offset ${tsOffset} in row: ${JSON.stringify(row)}`);
+        const afterTs = tsOffset + ts.length;
+        const reasonStart = afterTs + row.slice(afterTs).search(/\S/);
+        assert.equal(reasonStart, reasonOffset,
+          `row's REASON column must start at the same offset (${reasonOffset}) as the header's — ` +
+          `got offset ${reasonStart} in row: ${JSON.stringify(row)}`);
+      }
+
+      // Summary line counts all three transitions.
+      assert.match(r.stdout, /\(3 transitions\)/,
+        `output must summarize "(3 transitions)"; got:\n${r.stdout}`);
 
       // F-eb26c327: pin "no ANSI escapes" precisely as the CSI introducer
       // ESC+[ — written with the visible \x1b escape, not a raw ESC byte

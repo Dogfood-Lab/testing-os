@@ -72,6 +72,51 @@ export function validateStepResults(scenarioResult) {
     }
   }
 
+  // F-88fb37ff: mirror of the pass-direction check above. A scenario cannot
+  // claim "fail"/"blocked" while every reported step says otherwise either —
+  // computeVerdict() (validators/verdict.js) trusts scenario_results[].verdict
+  // verbatim and never re-derives it from step_results, so without this check
+  // a self-reported "blocked" verdict backed by zero failing/blocked steps
+  // sailed through with no rejection reason at all.
+  //
+  // F-e42e8f80 (wave 20, amends F-88fb37ff): the original gate required at
+  // least one step to ACTIVELY report fail/blocked, which wrongly rejected
+  // the common honest shape "the scenario was blocked before any step could
+  // run, so every step reports 'skip'" — 'skip' and 'partial' are NEUTRAL
+  // (no evidence either way), not "evidence of no failure." Only 'pass' is an
+  // ACTIVE CONTRADICTION of a fail/blocked verdict (the step ran and claimed
+  // success). The gate now fires only when EVERY reported step actively says
+  // "pass" — a single skip/partial/fail/blocked step is enough to keep a
+  // fail/blocked verdict internally consistent.
+  //
+  // F-cc198701 (wave 22, confirming audit of F-e42e8f80): this condition and
+  // its validateRequiredSteps mirror below enumerated only 2 of the 4 legal
+  // values in scenario_results[].verdict's own schema enum (dogfood-record-
+  // submission.schema.json: ["pass","fail","blocked","partial"]) — 'partial'
+  // was never checked in either direction. A submitter could self-report
+  // verdict:'partial' with EVERY step actively 'fail' (strictly worse,
+  // more self-contradictory evidence than the fail/blocked direction already
+  // rejects) and sail through with zero rejection reason, because
+  // computeVerdict() never re-derives the verdict from step_results either —
+  // the ONLY guard against a dishonest self-report was this exact check, and
+  // it had a verdict-enum-shaped hole. Widened to also fire for 'partial',
+  // reusing the identical "all present steps actively pass" bar: 'partial'
+  // backed by zero non-pass evidence is exactly as self-contradictory as
+  // 'blocked'/'fail' backed by zero non-pass evidence. Deliberately does NOT
+  // touch the pass-direction check above (line ~59) — 'partial' backed by
+  // SOME failing steps is not inherently contradictory the way 'partial'
+  // backed by all-pass steps is.
+  if (verdict === 'fail' || verdict === 'blocked' || verdict === 'partial') {
+    const allStepsActivelyPass = step_results.every(
+      s => s != null && s.status === 'pass'
+    );
+    if (allStepsActivelyPass) {
+      errors.push(
+        `scenario verdict is "${verdict}" but no step reports status fail/blocked`
+      );
+    }
+  }
+
   return errors;
 }
 
@@ -133,6 +178,38 @@ export function validateRequiredSteps(scenarioResult, requiredSteps) {
           `[step-verdict-consistent] scenario verdict is "pass" but required step "${stepId}" has status "${result.status}"`
         );
       }
+    }
+  }
+
+  // F-88fb37ff: mirror of the pass-direction block above, scoped to REQUIRED
+  // steps (the sibling check in validateStepResults enforces the same rule
+  // over ALL reported steps regardless of which are required).
+  //
+  // F-e42e8f80 (wave 20, amends F-88fb37ff): "no required step reports
+  // fail/blocked" was too narrow a bar — a required step honestly reporting
+  // 'skip' (never ran because the scenario was blocked upstream) or 'partial'
+  // is NEUTRAL, not an active contradiction, and must not force a rejection.
+  // The gate now fires only when every PRESENT required step actively says
+  // "pass" — mirroring validateStepResults' all-pass bar. A required step
+  // that is simply MISSING is "not an active pass" exactly like skip/partial
+  // would be, so it never by itself forces this check to fire (`result !=
+  // null && result.status === 'pass'` is false for a missing step too); its
+  // absence is already rejected unconditionally by the [step-results-present]
+  // loop above, regardless of verdict, so this check deliberately does not
+  // pile a second, verdict-specific error onto the exact same gap.
+  //
+  // F-cc198701 (wave 22): mirrors the identical widening in
+  // validateStepResults above — 'partial' was the one legal scenario-verdict
+  // enum value this scoped-to-required-steps check never enumerated either.
+  if ((verdict === 'fail' || verdict === 'blocked' || verdict === 'partial') && requiredSteps.length > 0) {
+    const allPresentRequiredStepsActivelyPass = requiredSteps.every(stepId => {
+      const result = resultMap.get(stepId);
+      return result != null && result.status === 'pass';
+    });
+    if (allPresentRequiredStepsActivelyPass) {
+      errors.push(
+        `[step-verdict-consistent] scenario verdict is "${verdict}" but no required step reports status fail/blocked`
+      );
     }
   }
 

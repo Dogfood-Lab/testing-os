@@ -85,8 +85,30 @@ export function buildAuditPayload(exportData) {
   const highCount = openBySeverity.HIGH || 0;
   const openFindings = openItems.length;
 
+  // F-6859e492: this function has never special-cased run.status (see the
+  // F-5c562913 comment above) — it fell straight through to the open-findings
+  // computation regardless of whether the run actually completed. For
+  // run.status:'aborted' that meant reporting overall_status:'pass' /
+  // blocking_release:false whenever zero findings happened to be open (or all
+  // were closed), while the sibling computeRunVerdict (export.js) has always
+  // returned an unconditional 'fail' for 'aborted' — the exact "two
+  // artifacts, one call, opposite verdicts" shape F-b721038e fixed for
+  // 'complete', just relocated to the status value that fix's own comment
+  // carved out as already safe. Mirror computeRunVerdict's conservative
+  // reading here instead of loosening it there: a run that never completed
+  // is not a safe 'pass' in either artifact, no matter what findings happen
+  // to be open — "no open findings" on an aborted run means "we stopped
+  // looking," not "nothing left to find." Keep this branch ahead of the
+  // open-findings computation so no aborted run can fall through to 'pass'
+  // or 'pass_with_findings'. See export-verdict-aborted-sibling-agreement
+  // .test.js for the 4-state × both-artifacts pin.
+  const runAborted = run.status === 'aborted';
+
   let overallStatus, overallPosture;
-  if (criticalCount > 0) {
+  if (runAborted) {
+    overallStatus = 'fail';
+    overallPosture = 'critical';
+  } else if (criticalCount > 0) {
     overallStatus = 'fail';
     overallPosture = 'critical';
   } else if (openFindings > 0) {
@@ -100,6 +122,24 @@ export function buildAuditPayload(exportData) {
   // Get test count from verification
   const testCount = exportData.verification.reduce((sum, v) => sum + (v.test_count || 0), 0);
 
+  // F-be8db3ee: the aborted branch above forces overall_status/overall_posture/
+  // blocking_release to the release-blocking reading regardless of what was
+  // actually open when the run stopped — but the summary sentence used to
+  // report ONLY the raw counts ("N findings (X open critical, Y open high)"),
+  // with nothing distinguishing "we found a critical" from "we stopped
+  // looking". For an aborted run with zero (or non-critical) open findings,
+  // that summary flatly contradicted overall_posture:'critical' sitting
+  // right next to it. Naming the abort explicitly here — instead of silently
+  // forcing counts that don't match reality — keeps the counts honest while
+  // making the REASON for the critical posture legible from the sentence
+  // alone.
+  const summary = runAborted
+    ? `Swarm audit: RUN ABORTED before completion (${findingSummary.total} findings observed, ` +
+      `${criticalCount} open critical, ${highCount} open high, at time of abort). ` +
+      `${exportData.waves.length} waves, ${exportData.promotions.length} promotions.`
+    : `Swarm audit: ${findingSummary.total} findings (${criticalCount} open critical, ${highCount} open high). ` +
+      `${exportData.waves.length} waves, ${exportData.promotions.length} promotions.`;
+
   const auditRun = {
     slug: run.repo,
     commit_sha: run.commit_sha,
@@ -109,8 +149,10 @@ export function buildAuditPayload(exportData) {
     overall_status: overallStatus,
     overall_posture: overallPosture,
     domains_checked: [...domainsChecked].sort(),
-    summary: `Swarm audit: ${findingSummary.total} findings (${criticalCount} open critical, ${highCount} open high). ${exportData.waves.length} waves, ${exportData.promotions.length} promotions.`,
-    blocking_release: criticalCount > 0,
+    summary,
+    // F-6859e492: blocking_release must agree with overallStatus above — an
+    // aborted run blocks release the same way an open CRITICAL does.
+    blocking_release: runAborted || criticalCount > 0,
     started_at: run.created,
     completed_at: run.completed,
   };
@@ -118,6 +160,18 @@ export function buildAuditPayload(exportData) {
   // Severity metrics mirror the open-only gate semantics above. The full
   // per-status truth is still exported: every item in `findings` carries its
   // lifecycle status, and run.summary reports the historical total.
+  //
+  // F-be8db3ee: critical_count/high_count stay the HONEST open-finding
+  // counts even when runAborted forced overall_posture to 'critical' above —
+  // this file is written to metrics.json, a SEPARATE artifact from run.json
+  // (see commands/persist.js), so a consumer reading metrics.json alone has
+  // no access to overall_posture or the summary sentence at all. run_aborted
+  // is the signal that lets metrics.json explain itself in isolation: a
+  // reader who sees critical_count:0 next to run_aborted:true knows the
+  // release is blocked because the sweep never finished, not because a
+  // phantom critical was fabricated into the count. Always present
+  // (true/false, never omitted) so the field's absence never has to be
+  // interpreted as "false".
   const metrics = {
     critical_count: criticalCount,
     high_count: highCount,
@@ -128,7 +182,42 @@ export function buildAuditPayload(exportData) {
     controls_passed: exportData.waves.filter(w => w.status === 'advanced' || w.status === 'verified').length,
     controls_failed: exportData.waves.filter(w => w.status === 'failed').length,
     controls_total: exportData.waves.length,
+    run_aborted: runAborted,
   };
 
   return { run: auditRun, findings: auditFindings, metrics };
+}
+
+/**
+ * F-09c4777a: buildAuditPayload's aborted branch (see the F-be8db3ee comment
+ * above) keeps overall_posture inside the fixed
+ * ['healthy','needs_attention','critical'] enum persist.test.js (package
+ * root, out of this domain) already hard-pins, and the downstream
+ * repo-knowledge consumer's own schema expects the same enum — so the abort
+ * signal cannot be smuggled into that field's VALUE (a fourth value was
+ * considered and rejected by the wave-18 fix for exactly this reason).
+ *
+ * The one production consumer that reads overall_status/overall_posture in
+ * ISOLATION — `swarm persist`'s terminal output (commands/persist.js,
+ * outside this domain's owned glob) — was traced end-to-end and found to
+ * hand-format `${status} (${posture})` directly from this payload, with no
+ * access to metrics.run_aborted or run.summary. For an aborted run with zero
+ * open findings that renders a bare "fail (critical)" with nothing telling
+ * the operator a phantom critical did NOT trigger the block.
+ *
+ * This helper is the lib-owned fix for that gap: it folds metrics.run_aborted
+ * into the rendered TEXT (never the enum value), so any renderer that calls
+ * it — instead of hand-formatting the status/posture pair itself — gets the
+ * abort qualifier for free and cannot regress it by forgetting to separately
+ * check run_aborted. Wiring commands/persist.js (report.repoKnowledge +
+ * formatPersist()) to call this is a cross-domain change outside this wave's
+ * owned glob; see this wave's skipped[] entry for F-09c4777a.
+ *
+ * @param {{ run: { overall_status: string, overall_posture: string }, metrics: { run_aborted: boolean } }} auditPayload — the return of buildAuditPayload()
+ * @returns {string} e.g. "pass (healthy)" or "fail (critical) — run aborted before completion"
+ */
+export function formatAuditStatusLine(auditPayload) {
+  const { run, metrics } = auditPayload;
+  const base = `${run.overall_status} (${run.overall_posture})`;
+  return metrics.run_aborted ? `${base} — run aborted before completion` : base;
 }

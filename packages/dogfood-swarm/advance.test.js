@@ -234,14 +234,16 @@ describe('Gate checks — BLOCK verdict', () => {
 // ═══════════════════════════════════════════
 // Latest-per-domain filter — guards against stale agent_run rows
 // from prior `swarm resume` cycles silently blocking advance.
-// F-084568-005: when resume.js INSERTs a new agent_run for a redispatched
+// F-084568-005 (source comment at lib/advance.js:97 dual-labels this
+// "F-W1-BACK-005 / F-084568-005" — the mutation-side fix for checkGates'
+// agents query): when resume.js INSERTs a new agent_run for a redispatched
 // domain, the OLD failed/timed_out row stays in the table. checkGates() must
 // only look at the LATEST agent_run per (wave_id, domain_id) — otherwise the
 // stale row makes checkAgentCompletion() report "<N> agent(s) not complete"
 // even when every redispatched agent finished cleanly.
 // ═══════════════════════════════════════════
 
-describe('Gate checks — latest-per-domain filter (F-084568-005)', () => {
+describe('Gate checks — latest-per-domain filter (F-084568-005 / F-W1-BACK-005)', () => {
   let db;
 
   beforeEach(() => { db = openMemoryDb(); });
@@ -422,6 +424,20 @@ describe('Promotion records', () => {
     assert.equal(p.to_phase, 'health-audit-b');
     assert.equal(p.authorized_by, 'coordinator');
     assert.ok(Array.isArray(p.gates_checked));
+    // F-db2ed146: a bare Array.isArray check is satisfied equally by an empty
+    // array or a truncated one -- lib/advance.js's own module comment
+    // (lines 109-113) documents that this exact field previously suffered
+    // exactly that failure mode as a real, fixed defect (the "permanently-
+    // incomplete gates_checked audit trail"). checkGates() always assembles
+    // a fixed 6-entry gate set unconditionally (lib/advance.js:129), so
+    // pinning the full, sorted name set is a real, always-true invariant --
+    // matching the precise pattern rewind.test.js / redrive.test.js already
+    // use for their own `design_calls_surfaced` arrays.
+    const gateNames = p.gates_checked.map(g => g.name).sort();
+    assert.deepEqual(gateNames, [
+      'adjudication', 'agent_completion', 'finding_severity',
+      'ownership', 'verification', 'wave_status',
+    ], `checkGates() always assembles exactly these 6 gates (F-feb78e7b) -- got: ${gateNames.join(', ')}`);
     assert.ok(p.finding_snapshot);
     assert.equal(p.finding_snapshot.total, 0);
     db.close();

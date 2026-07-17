@@ -161,10 +161,12 @@ function checkSchemaVersion(dbPath) {
   }
 
   let onDisk = 0;
+  let rawValue;
   let db = null;
   try {
     db = new Database(dbPath, { readonly: true, fileMustExist: true });
     const row = db.prepare("SELECT value FROM kv WHERE key = 'schema_version'").get();
+    rawValue = row ? row.value : undefined;
     onDisk = row ? parseInt(row.value, 10) : 0;
   } catch (e) {
     // A DB we cannot even read for its version (corrupt, locked exclusively) is
@@ -178,6 +180,27 @@ function checkSchemaVersion(dbPath) {
     };
   } finally {
     if (db) { try { db.close(); } catch { /* */ } }
+  }
+
+  // F-4f7b2e53: onDisk parses from an external, hand-editable kv.value column
+  // via parseInt — exactly the same "external numeric input" shape this
+  // file's OWN checkNodeVersion (line 70) already guards with
+  // Number.isFinite, and the shape history.js:43 / redrive.js:178 guard for
+  // a CLI-supplied wave-id. Unguarded, a corrupted schema_version parses to
+  // NaN, and `NaN > SCHEMA_VERSION` is always false — the only branch
+  // capable of reporting FAIL — so the corrupted-value case fell through to
+  // a lying "pass" ("schema vNaN is understood by this build") instead of
+  // being surfaced. Reported as 'warn', matching the sibling branch just
+  // above (an unreadable DB): doctor is read-only preflight, not a repair
+  // tool, so it discloses the corruption without pretending to fail-closed
+  // for a case it cannot itself resolve.
+  if (!Number.isFinite(onDisk)) {
+    return {
+      id: 'schema-version',
+      status: 'warn',
+      message: `control-plane.db at ${dbPath} has a corrupted kv.schema_version value: ${JSON.stringify(rawValue)} — expected a finite number`,
+      hint: 'run the intended command to get the precise control-plane error, or inspect the DB file',
+    };
   }
 
   if (onDisk > SCHEMA_VERSION) {

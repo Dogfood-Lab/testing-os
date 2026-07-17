@@ -23,6 +23,9 @@ import { openDb } from '../db/connection.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { FINDING_GATED_PHASES } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
+import { logStage } from '../lib/log-stage.js';
+import { escapeReasonForDisplay, escapePathForDisplay } from './lib/escape-reason.js';
+import { pluralize } from './lib/pluralize.js';
 
 /**
  * Build a receipt object from DB truth.
@@ -249,23 +252,80 @@ export function exportReceipt(receipt, outputDir) {
 
 /**
  * Store receipt artifact paths in the control plane.
+ *
+ * F-dd3e6587: wave_receipts has UNIQUE(wave_id) (db/schema.js) and this was
+ * an unconditional INSERT OR REPLACE with zero logStage calls — unlike every
+ * other mutating verb in this domain (collect/dispatch/redrive/resume/
+ * revalidate/rewind/clean/clean-claims/verify* all call it) and unlike its
+ * own sibling verification_receipts (append-only INSERT, reader takes the
+ * latest row by created_at/id). Re-running `swarm receipt` for the SAME wave
+ * — the normal, expected usage as more state accumulates (a verify pass, an
+ * adjudication, more findings resolved) — silently deleted-and-reinserted
+ * the row: the AUTOINCREMENT id churned and created_at reset to now(), with
+ * stdout byte-identical between the first export and any later re-export.
+ *
+ * Making wave_receipts genuinely append-only (dropping UNIQUE(wave_id), the
+ * way verification_receipts already is) would require editing db/schema.js,
+ * which is outside this domain's owned globs (packages/dogfood-swarm/
+ * commands/** + cli.js) — so this fix takes the "at minimum" floor the
+ * finding names: a logStage('receipt_stored', ...) event carrying whether
+ * THIS export replaced a prior row, so a re-export is greppable even though
+ * the INSERT OR REPLACE itself stays silent. Mirrors the
+ * verify_fixed_schema_overwrite precedent (commands/verify-fixed.js,
+ * F-2f10ff78) — the same "persisted artifact silently clobbered with no
+ * durable trail" class, one file away, in the same wave.
  */
-export function storeReceipt(db, waveId, jsonPath, mdPath) {
+export function storeReceipt(db, runId, waveId, jsonPath, mdPath) {
   const hash = createHash('sha256')
     .update(JSON.stringify({ jsonPath, mdPath }))
     .digest('hex')
     .slice(0, 16);
 
+  // Read BEFORE the REPLACE below overwrites it — this is the only way to
+  // know whether this call clobbered a prior row (id churn / created_at
+  // reset) or is this wave's first receipt export.
+  const existing = db.prepare('SELECT id FROM wave_receipts WHERE wave_id = ?').get(waveId);
+
   db.prepare(`
     INSERT OR REPLACE INTO wave_receipts (wave_id, json_path, md_path, content_hash)
     VALUES (?, ?, ?, ?)
   `).run(waveId, jsonPath, mdPath, hash);
+
+  logStage('receipt_stored', {
+    component: 'dogfood-swarm',
+    runId,
+    waveId,
+    jsonPath,
+    mdPath,
+    contentHash: hash,
+    replaced: !!existing,
+  });
+}
+
+/**
+ * F-59f22202: a verification_receipts row with `passed=0` (falsy) and
+ * `exit_code` of 0 or -1 is never a real failing step — lib/verify/runner.js
+ * guarantees a failing REQUIRED step always carries a genuine nonzero (or
+ * -127 tool_missing) exit code, so that pairing can ONLY be a wave-verdict-
+ * only case (no_tests / unmeasured_tests / skip) where no step failed at
+ * all. Pre-fix persistence (commands/verify.js) stored a bare 0 for this
+ * case, so historical rows carry 0; post-fix rows carry the -1 sentinel
+ * (NO_FAILING_STEP_EXIT_CODE in verify.js) — both are handled here so this
+ * renders coherently for old and new data alike. Printing either as a bare
+ * "exit 0"/"exit -1" reads as a self-contradictory rendering bug to an
+ * operator (0 conventionally means success); naming the real condition
+ * avoids that misdiagnosis at exactly the moment the operator needs to
+ * trust the diagnostic.
+ */
+function formatExitClause(passed, exitCode) {
+  if (!passed && (exitCode === 0 || exitCode === -1)) return 'no required step failed';
+  return `exit ${exitCode}`;
 }
 
 /**
  * Format receipt as markdown.
  */
-function formatReceiptMarkdown(r) {
+export function formatReceiptMarkdown(r) {
   const lines = [];
 
   lines.push(`# Wave ${r.wave.number} Receipt — ${r.wave.phase}`);
@@ -308,7 +368,18 @@ function formatReceiptMarkdown(r) {
     // parse the boolean); only the human-readable cell shifts to surface
     // the obligation.
     const skipped = a.verification_skipped ? 'REQUIRED' : '—';
-    lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${skipped} | ${a.error || '—'} |`);
+    // F-f1dae277 (wave 22): a.error is agent_runs.error_message, which for an
+    // 'ownership_violation' status agent is collect.js's `violMsg` —
+    // 'Out-of-domain edits: <path1>, <path2>' built by joining
+    // ownership.violations[].file with zero escaping. Same zero-privilege
+    // field family the Ownership Violations section below now escapes,
+    // reached here via a different column — see escapePathForDisplay's own
+    // doc comment (commands/lib/escape-reason.js) for the full site list.
+    // escapeReasonForDisplay, not escapePathForDisplay: by the time it
+    // reaches this column it is a composite message (template prose + one
+    // or more joined paths), not a bare path.
+    const errorCell = a.error ? escapeReasonForDisplay(a.error) : '—';
+    lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${skipped} | ${errorCell} |`);
   }
   lines.push('');
 
@@ -317,7 +388,15 @@ function formatReceiptMarkdown(r) {
     lines.push('## State Transitions');
     lines.push('');
     for (const t of r.state_transitions) {
-      lines.push(`- **${t.domain}**: ${t.from} → ${t.to}${t.reason ? ` — ${t.reason}` : ''}`);
+      // F-7c3e91a4 class (wave 18): t.reason is a STORED
+      // agent_state_events.reason (built at line ~196 above from the same
+      // stateEvents this receipt's JSON export writes losslessly) —
+      // rendered here into the markdown receipt with zero escaping,
+      // pre-fix. exportReceipt's JSON path is untouched by this change: it
+      // serializes the raw `receipt` object directly, never through this
+      // formatter. See commands/lib/escape-reason.js.
+      const reasonClause = t.reason ? ` — ${escapeReasonForDisplay(t.reason)}` : '';
+      lines.push(`- **${t.domain}**: ${t.from} → ${t.to}${reasonClause}`);
     }
     lines.push('');
   }
@@ -327,7 +406,15 @@ function formatReceiptMarkdown(r) {
     lines.push('## Ownership Violations');
     lines.push('');
     for (const v of r.ownership_violations) {
-      lines.push(`- **${v.domain}**: ${v.file} (${v.claim_type})`);
+      // F-f1dae277 (wave 22): v.file (file_claims.file_path) is exactly as
+      // zero-privilege as the package.json/Cargo.toml `name` F-4773fb77
+      // (wave 20) already routed through escapeReasonForDisplay — either a
+      // name the reporting agent chose, or a path already sitting in the
+      // audited repo's own tree. Proven live, unescaped, in this exact
+      // section: an RLO/PDF-wrapped path survives byte-for-byte into this
+      // checked-in, GitHub-rendered receipt, and a raw newline forges a
+      // second, fake `- **domain**: FORGED ...` bullet.
+      lines.push(`- **${v.domain}**: ${escapePathForDisplay(v.file)} (${v.claim_type})`);
     }
     lines.push('');
   }
@@ -347,14 +434,28 @@ function formatReceiptMarkdown(r) {
   if (r.verification) {
     lines.push('## Verification');
     lines.push('');
-    lines.push(`${r.verification.passed ? 'PASS' : 'FAIL'} (${r.verification.repo_type}${r.verification.test_count ? `, ${r.verification.test_count} tests` : ''}, exit ${r.verification.exit_code})`);
+    const v = r.verification;
+    lines.push(`${v.passed ? 'PASS' : 'FAIL'} (${v.repo_type}${v.test_count ? `, ${pluralize(v.test_count, 'test')}` : ''}, ${formatExitClause(v.passed, v.exit_code)})`);
     lines.push('');
   }
 
   // Recommendation
   lines.push('## Recommendation');
   lines.push('');
-  lines.push(`**${r.recommendation.action}**${r.recommendation.reason ? ` — ${r.recommendation.reason}` : ''}`);
+  // F-d6cf96e4 (wave 20): r.recommendation.reason is computeRecommendation()'s
+  // return value — every branch builds a fixed template string interpolating
+  // only counts/statuses/internal identifiers (wave.id, adapter names,
+  // openBySeverity tallies) this function already knows, never operator or
+  // target-repo content, so the value is safe today. Escaped anyway, for two
+  // reasons: (1) reason-escaping-discipline.test.js is a FILE-level check —
+  // it already exempts this file via the escapeReasonForDisplay call at
+  // formatReceiptMarkdown's t.reason site above, so this site's absence was
+  // invisible to that gate; leaving it unescaped was a live, if safe-valued,
+  // coverage gap. (2) computeRecommendation's reason strings are hand-edited
+  // prose, not a schema-enforced enum — a future edit that interpolates a
+  // less-trusted value (a stored --reason, an adapter-derived string) would
+  // silently inherit whatever discipline this call site has today.
+  lines.push(`**${r.recommendation.action}**${r.recommendation.reason ? ` — ${escapeReasonForDisplay(r.recommendation.reason)}` : ''}`);
 
   return lines.join('\n');
 }
@@ -400,7 +501,7 @@ export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta
     return {
       action: 'VERIFY',
       reason: verification
-        ? `serial verify required (--skip-verify wave) — latest verification failed (${verification.repo_type}, exit ${verification.exit_code}); fix and re-run \`swarm verify\``
+        ? `serial verify required (--skip-verify wave) — latest verification failed (${verification.repo_type}, ${formatExitClause(verification.passed, verification.exit_code)}); fix and re-run \`swarm verify\``
         : 'serial verify required (--skip-verify wave) — no verification receipt; run `swarm verify` first',
     };
   }

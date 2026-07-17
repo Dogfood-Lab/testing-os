@@ -27,6 +27,21 @@
  *   - with two independent breaks (two tampered records), collectAllBreaks
  *     reports BOTH; the default reports only the first.
  *   - a clean chain reports zero orphans and zero breaks under both options.
+ *
+ * F-d4bcf5d0 (wave 10, HIGH) hardens collectOrphanRecords' membership check.
+ * Pre-fix it indexed the ledger by run_id AND by path, treating a disk record
+ * as accounted-for if EITHER matched. That fallback is unsound for this
+ * codebase's own data model: a single run_id can legitimately own TWO on-disk
+ * records at TWO different paths (records/_rejected/... AND records/... — the
+ * accepted-after-a-prior-rejection resubmission flow F-0f9e4077/F-4036ae25/
+ * F-f8952a50 build and test), each needing its OWN ledger line. Once ANY
+ * entry for a run_id was ledgered, the fallback silently treated EVERY LATER
+ * record sharing that run_id as accounted for too — including one at a
+ * genuinely un-ledgered path, exactly the torn-write shape this pass exists
+ * to catch. Fixed by dropping the run_id fallback and relying on path
+ * identity alone (every ledger line carries an exact `path` field — see
+ * lib/chain-manifest.js). See the 'shared run_id, different paths' test in
+ * the INGEST-PROACT-001 describe block below for the regression proof.
  */
 
 import { describe, it, afterEach } from 'node:test';
@@ -34,7 +49,7 @@ import assert from 'node:assert/strict';
 import {
   readFileSync, writeFileSync, mkdirSync, rmSync, cpSync,
 } from 'node:fs';
-import { resolve, dirname } from 'node:path';
+import { resolve, dirname, relative, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { writeRecord } from './persist.js';
@@ -118,6 +133,53 @@ describe('INGEST-PROACT-001 — orphan reconciliation', () => {
     const result = verifyChain(TEST_ROOT, { collectOrphans: true });
     assert.equal(result.ok, true);
     assert.equal(result.orphans.length, 0, 'no orphans on a clean chain');
+  });
+
+  it('shared run_id, different paths: a torn accepted-record write behind an already-ledgered rejected record for the SAME run_id is still an orphan', () => {
+    // F-d4bcf5d0: the exact proven scenario. A single run_id legitimately owns
+    // TWO on-disk records at TWO different paths — a prior rejection at
+    // records/_rejected/..., then a corrected, accepted resubmission at
+    // records/... — each with its OWN ledger line (the
+    // F-0f9e4077/F-4036ae25/F-f8952a50 resubmission flow). Simulate a crash in
+    // the torn window between the SECOND record's write and its ledger append:
+    // the accepted record's FILE lands, but its line never makes it into
+    // chain.jsonl, while the FIRST (rejected) record's ledger line for the
+    // SAME run_id is still present and correct.
+    setup();
+    const RUN_ID = 'torn-after-rejected';
+    writeRecord(buildRecord({
+      run_id: RUN_ID,
+      verification: {
+        status: 'rejected', verified_at: '2026-03-19T15:45:13Z',
+        provenance_confirmed: false, schema_valid: true, policy_valid: false,
+        rejection_reasons: ['schema: /unexpected_field must NOT be present'],
+      },
+    }), TEST_ROOT);
+    const { path: acceptedPath } = writeRecord(buildRecord({ run_id: RUN_ID }), TEST_ROOT);
+
+    const manifestPath = resolve(TEST_ROOT, 'indexes', 'integrity', 'chain.jsonl');
+    const lines = readFileSync(manifestPath, 'utf-8').trim().split('\n');
+    assert.equal(lines.length, 2, 'precondition: one ledger line per record, same run_id');
+
+    // Drop ONLY the accepted record's ledger line (seq 1), leaving its FILE
+    // on disk — the torn-write window this reconciliation pass exists to
+    // catch. The rejected record's line (seq 0, SAME run_id) survives intact.
+    writeFileSync(manifestPath, lines.slice(0, 1).join('\n') + '\n', 'utf-8');
+
+    // Pre-fix: the run_id-only fallback saw RUN_ID in the ledger (via the
+    // surviving rejected-record entry) and treated the accepted record as
+    // accounted for — a FALSE CLEAN BILL OF HEALTH. Post-fix: path identity
+    // alone decides, so the un-ledgered accepted record is caught.
+    const reconciled = verifyChain(TEST_ROOT, { collectOrphans: true });
+    assert.equal(reconciled.ok, false,
+      'a torn accepted-record write must be caught even though an EARLIER record for the same run_id is ledgered');
+    assert.equal(reconciled.orphans.length, 1, 'exactly one orphan — the accepted record, not the rejected one');
+    const orphan = reconciled.orphans[0];
+    assert.equal(orphan.run_id, RUN_ID);
+    const expectedRelPath = relative(TEST_ROOT, acceptedPath).split(sep).join('/');
+    assert.equal(orphan.path, expectedRelPath);
+    assert.ok(!orphan.path.includes('_rejected'),
+      'the flagged orphan must be the ACCEPTED record, not the still-correctly-ledgered rejected one');
   });
 });
 

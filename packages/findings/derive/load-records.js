@@ -33,7 +33,17 @@ export function loadRecordsForRepo(rootDir, repoKey) {
  * @returns {{ entries: Array<{ record: object, rejected: boolean, path: string }>, skipped: Array<{ path: string, error: string }> }}
  */
 export function loadRecordsForRepoWithSkips(rootDir, repoKey) {
-  const [org, repo] = repoKey.split('/');
+  // F-60a31e29: two-segment contract (F-916867-005 family) — mirrors
+  // persist.js:51 and load-context.js:138/333, which both enforce
+  // `segments.length !== 2` ahead of the traversal guard below. This site
+  // was the odd one out: a bare 2-way destructure silently DROPPED any
+  // third segment, so `loadRecordsForRepoWithSkips(root, 'a/b/c')` silently
+  // loaded records for the DIFFERENT repo 'a/b' instead of failing closed.
+  const segments = repoKey.split('/');
+  if (segments.length !== 2) {
+    return { entries: [], skipped: [] };
+  }
+  const [org, repo] = segments;
   // Path-traversal guard: F-916867-005. Mirrors persist.js + load-context.js
   // via the central helper at @dogfood-lab/ingest/lib/unsafe-segment.js.
   // A malformed repoKey (`..` or path-separator) would otherwise resolve

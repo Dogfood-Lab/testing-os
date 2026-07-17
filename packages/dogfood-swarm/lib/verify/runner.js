@@ -7,6 +7,8 @@
 
 import { execFileSync } from 'node:child_process';
 
+import { logStage } from '../log-stage.js';
+
 /**
  * Per-step wall-clock budget. A step that exceeds this is killed and tagged
  * `timed_out` (ve-p-005) rather than reported as an ordinary fast failure.
@@ -22,6 +24,146 @@ const STEP_TIMEOUT_MS = 300000; // 5 min per step
  * same pattern.
  */
 const MAX_STEP_OUTPUT_CHARS = 8000;
+
+/**
+ * execFileSync's stdout+stderr capture ceiling (F-8d355b64). This is a
+ * DIFFERENT concern from MAX_STEP_OUTPUT_CHARS above: that constant bounds
+ * what gets PERSISTED into the receipt; this one bounds what execFileSync
+ * will even CAPTURE before Node/libuv kills the child and throws. Left at
+ * Node's own default (~1 MiB), the throw arrives as `e.code === 'ENOBUFS'`
+ * with `e.signal === 'SIGTERM'` — empirically reproduced on this rig (Node
+ * v22.22.3): a 2 MB write overflows and throws in ~40ms, nowhere near
+ * STEP_TIMEOUT_MS. Undetected, that SIGTERM is indistinguishable from a real
+ * kill in the `timedOut` check below, so an instrument overflow gets reported
+ * as "timed out after 300000ms" — a fast, categorical misdiagnosis, not a
+ * slow one. Set well above current usage: this repo's own `npm test` output
+ * was 898,923 chars (~878 KB, ~86% of the ~1.06 MB default) at the time
+ * ve-trunc-001 was written, and the suite has grown every wave since. 64 MB
+ * matches the spirit of lib/case-file/prism-jury.js's 32 MB ceiling for the
+ * same class of large-capture site — this floor is the one gate that is
+ * "law" per this file's own header, so it gets more headroom, not less.
+ * Raising this reduces how often the classification bug below is reachable;
+ * it does not replace the classification fix, since a large enough capture
+ * can still exceed any finite ceiling.
+ */
+const MAX_BUFFER_BYTES = 64 * 1024 * 1024; // 64 MB
+
+/**
+ * Raw SWARM_VERIFY_MAX_BUFFER_BYTES values already reported via the
+ * `verify_max_buffer_env_malformed` diagnostic in THIS Set's lifetime
+ * (F-d6cfc2ad). Keyed by the raw string so a DIFFERENT malformed value
+ * later still warns on its own first appearance — only a REPEAT of a value
+ * already seen stays silent.
+ *
+ * F-d535bde5: this module-level Set is now only the DEFAULT dedup scope —
+ * used when a caller does not supply its own (see readEnvMaxBufferBytes's
+ * `seen` parameter below). runSteps() no longer relies on this default: it
+ * threads a fresh per-invocation Set instead, so dedup is scoped to "one
+ * `swarm verify`-equivalent BATCH", not to the life of the process. This
+ * module-level Set now backs only a bare, standalone runStep() call — itself
+ * a supported, documented entry point (`@dogfood-lab/dogfood-swarm`'s
+ * `"./lib/*"` package export) with no natural batch boundary of its own, so
+ * a hand-written script calling runStep() directly keeps the original
+ * process-lifetime behavior unless it opts into its own scope.
+ */
+const warnedMalformedMaxBufferValues = new Set();
+
+/**
+ * F-014c22f0: `step.maxBufferBytes` (F-3a098ded) is a real, honored override,
+ * but it is reachable ONLY from a hand-written Node script calling
+ * runStep()/runVerification() directly — `swarm verify`'s CLI surface has no
+ * flag for it anywhere on the three-layer path (runStep ← an adapter's
+ * commands(overrides) ← registry.js#runVerification's commandOverrides). The
+ * output_exceeded message told the operator to "set step.maxBufferBytes"
+ * regardless — advice as unreachable in practice from a terminal as the
+ * pre-F-3a098ded text it replaced.
+ *
+ * SWARM_VERIFY_MAX_BUFFER_BYTES closes that gap without a new CLI flag:
+ * `SWARM_VERIFY_MAX_BUFFER_BYTES=<n> swarm verify` raises (or lowers) the
+ * ceiling for every step in the run, genuinely actionable from the same
+ * terminal the output_exceeded reason is read from.
+ *
+ * Read fresh on every call — NOT cached in a module-level constant the way
+ * MAX_BUFFER_BYTES above is — mirroring log-stage.js#shouldEmitHuman's
+ * per-call env read rather than STEP_TIMEOUT_MS's build-time constant shape.
+ * A per-call read is what lets a single test process exercise "env unset",
+ * "env set to X", and "env set to Y" without re-importing the module between
+ * cases, and it costs nothing in production (one env lookup per step).
+ *
+ * Invalid input (missing, non-numeric, non-positive — execFileSync's
+ * `maxBuffer` must be a positive number) is treated as "no override": the
+ * caller's `?? MAX_BUFFER_BYTES` fallback takes over rather than handing
+ * execFileSync a value it would reject or misinterpret.
+ *
+ * F-80beae0e: "missing" and "set but malformed" both return `null` above —
+ * that part is deliberately unchanged, since falling back to the module
+ * default is the right behavior for BOTH. But they used to be
+ * INDISTINGUISHABLE to the operator too: the output_exceeded message always
+ * reads "set SWARM_VERIFY_MAX_BUFFER_BYTES above N" regardless of which case
+ * produced the fallback, so an operator who DID set the var — with a typo,
+ * or with JS-source-level numeric-separator syntax like '100_000_000' that
+ * Number() does not parse — saw the identical advice as one who never set it
+ * at all, with no signal their existing setting was silently discarded. The
+ * two cases now diverge in observability, not in the returned value: unset
+ * (the ordinary, overwhelmingly common case) stays completely silent, while
+ * SET-but-unparseable logs a structured one-line warning on the same stderr
+ * channel every other diagnostic in this package uses (grep
+ * `verify_max_buffer_env_malformed`), naming the raw value so the typo is
+ * visible without reproducing it.
+ *
+ * F-d6cfc2ad: that warning is a per-CALL diagnostic, but this function runs
+ * once per runStep() call (see "read fresh on every call" above) — an
+ * N-step `swarm verify` run with one misconfigured value emitted N
+ * byte-identical NDJSON lines, once per step, even though the
+ * misconfiguration is a single process-wide fact the operator only needs to
+ * see once. The LOG is now deduplicated by the raw string value; the env
+ * READ and the returned value are untouched — still fresh every call, still
+ * `null` on every malformed call — so the existing "picks up a newly set
+ * value on the very next call" contract still holds.
+ *
+ * F-d535bde5: the dedup scope is no longer ALWAYS module-lifetime. A real
+ * `swarm verify` invocation IS exactly one process (the CLI starts fresh
+ * each run), so module-lifetime dedup happened to equal "once per swarm
+ * verify invocation" for that one call path — but this module is also
+ * published via `@dogfood-lab/dogfood-swarm`'s `"./lib/*"` package export, a
+ * supported, documented entry point for embedding runStep/runSteps in a
+ * long-running host (e.g. a webhook/daemon process verifying many
+ * repos/tenants across many calls in one Node process — not a purely
+ * theoretical caveat). There, module-lifetime dedup meant a
+ * persistently-misconfigured tenant was warned about ONCE, EVER, for the
+ * life of the host — every later, independent verify() call for that same
+ * tenant silently fell back to the module default with no further signal,
+ * even though each call is a fresh operational event the operator arguably
+ * needs to see. `seen` lets a caller supply its own dedup scope; runSteps()
+ * below now creates a fresh one per invocation, so a persistent host gets
+ * one warning per `swarm verify`-equivalent BATCH, not one ever. A bare
+ * runStep() call with no `seen` argument keeps the original module-level,
+ * process-lifetime Set as its default — appropriate since runStep() is the
+ * lower-level primitive with no batch boundary of its own (a hand-written
+ * script calling it directly defines what "one batch" means, if anything,
+ * for its own use case).
+ *
+ * @param {Set<string>} [seen] — dedup scope for the malformed-value warning;
+ *   defaults to the module-level, process-lifetime Set. runSteps() passes a
+ *   Set scoped to its own invocation instead.
+ * @returns {number|null}
+ */
+function readEnvMaxBufferBytes(seen = warnedMalformedMaxBufferValues) {
+  const raw = process.env.SWARM_VERIFY_MAX_BUFFER_BYTES;
+  if (!raw) return null;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return n;
+  if (!seen.has(raw)) {
+    seen.add(raw);
+    logStage('verify_max_buffer_env_malformed', {
+      component: 'dogfood-swarm',
+      env_var: 'SWARM_VERIFY_MAX_BUFFER_BYTES',
+      raw_value: raw,
+      reason: 'not a finite positive number — falling back to the module default',
+    });
+  }
+  return null;
+}
 
 /**
  * Recognizes the shell's "executable not found" message across platforms.
@@ -60,15 +202,33 @@ const TOOL_NOT_FOUND_STDERR = /is not recognized as an internal or external comm
  *
  * @param {string} repoPath — cwd for the command (the only untrusted input;
  *   it is passed as `cwd`, never concatenated into the command string)
- * @param {object} step — { name, cmd, args?, optional?, timeoutMs? }. `timeoutMs`
- *   overrides the default per-step budget (ve-p-005) so build-heavy repos
- *   (large Rust workspaces) can be given more room without a misleading
- *   "failure" that is really "didn't finish in 5 min".
+ * @param {object} step — { name, cmd, args?, optional?, timeoutMs?, maxBufferBytes? }.
+ *   `timeoutMs` overrides the default per-step budget (ve-p-005) so build-heavy
+ *   repos (large Rust workspaces) can be given more room without a misleading
+ *   "failure" that is really "didn't finish in 5 min". `maxBufferBytes`
+ *   (F-3a098ded) overrides the default stdout+stderr capture ceiling
+ *   (F-8d355b64, MAX_BUFFER_BYTES) the same way, for a step whose own output
+ *   legitimately exceeds 64 MB. Both are programmatic-only (no `swarm verify`
+ *   CLI flag threads into either); `maxBufferBytes` additionally has a
+ *   terminal-reachable escape hatch (F-014c22f0) — the
+ *   `SWARM_VERIFY_MAX_BUFFER_BYTES` environment variable, read fresh per call
+ *   and applied when `step.maxBufferBytes` is absent (see
+ *   readEnvMaxBufferBytes below).
+ * @param {object} [opts]
+ * @param {Set<string>} [opts.warnedMaxBufferValues] — dedup scope for the
+ *   SWARM_VERIFY_MAX_BUFFER_BYTES malformed-value warning (F-d535bde5, see
+ *   readEnvMaxBufferBytes's `seen` param). runSteps() passes a Set scoped to
+ *   its own invocation; a bare runStep() call omits this and falls back to
+ *   readEnvMaxBufferBytes's own module-level default.
  * @returns {object} — StepResult
  */
-export function runStep(repoPath, step) {
+export function runStep(repoPath, step, opts = {}) {
   const cmdArgs = step.args || [];
   const timeoutMs = step.timeoutMs ?? STEP_TIMEOUT_MS;
+  // Most-specific-wins, mirroring step.timeoutMs's own override shape:
+  // per-step property > process-wide env override (F-014c22f0,
+  // readEnvMaxBufferBytes) > module default.
+  const maxBufferBytes = step.maxBufferBytes ?? readEnvMaxBufferBytes(opts.warnedMaxBufferValues) ?? MAX_BUFFER_BYTES;
   // `command` is the human-readable display string returned to callers and
   // asserted by callers/tests; it is NOT what executes. `execFileSync`
   // receives `step.cmd` + the argv array separately below.
@@ -81,6 +241,7 @@ export function runStep(repoPath, step) {
       encoding: 'utf-8',
       stdio: ['pipe', 'pipe', 'pipe'],
       timeout: timeoutMs,
+      maxBuffer: maxBufferBytes,
       env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
       shell: true,
     });
@@ -95,6 +256,23 @@ export function runStep(repoPath, step) {
       stdout: out.text,
       stderr: '',
       truncated: out.truncated,
+      // ve-trunc-001: MEASURE the full stream here, STORE the bounded copy.
+      // These are different concerns and the bound was destroying the former to
+      // serve the latter: runSteps used to call extractTestCount on the
+      // TRUNCATED text, so on this repo (898,923 chars of `npm test`, first
+      // summary at byte 483,236 — 112x past the 8,000 bound) the count was
+      // unfindable and a 2,853-test run was reported `no_tests`. The floor
+      // truncated the evidence and then reported that there was no evidence —
+      // in the ONE gate that cannot be overridden, so it deadlocked rather than
+      // degraded. The full text is deliberately NOT returned: the step result
+      // is the persisted receipt, and an 899 KB receipt is what the bound
+      // exists to prevent.
+      // F-8d355b64: "the full stream" measured here is itself bounded by
+      // MAX_BUFFER_BYTES above (execFileSync's `maxBuffer`) — `stdout` here
+      // can never exceed that ceiling, because Node kills the child and
+      // throws (caught below) before this line is reached. "Full" means
+      // "everything execFileSync was able to capture," not "unbounded."
+      ...measureStep(step, stdout),
       optional: !!step.optional,
     };
   } catch (e) {
@@ -109,12 +287,25 @@ export function runStep(repoPath, step) {
     // the shell runs and reports "not recognized"/"command not found" itself.
     const toolMissing = e.code === 'ENOENT' || TOOL_NOT_FOUND_STDERR.test(stderrRaw);
 
+    // F-8d355b64: a stdout+stderr capture past MAX_BUFFER_BYTES is killed by
+    // Node/libuv with e.code === 'ENOBUFS' — empirically confirmed (this rig,
+    // Node v22.22.3) to ALSO set e.signal === 'SIGTERM' unconditionally, even
+    // though the child ran for milliseconds. Detected here, before timedOut
+    // below, so that shared SIGTERM cannot be folded into a false "timed out
+    // after 300000ms" diagnosis — a misdiagnosis that sends the operator
+    // toward raising timeoutMs, which does nothing for an output-size
+    // overflow.
+    const outputExceeded = e.code === 'ENOBUFS';
+
     // ve-p-005: a 5-min hang must be distinguishable from a fast exit-1 fail.
     // Under shell:true, Node's SIGTERM hits the wrapping shell, not the real
     // grandchild, so e.killed/e.signal are erased — the reliable signal is the
     // elapsed wall clock reaching the budget. e.signal is still checked first
     // for the shell:false future where Node sets it on the real child.
-    const timedOut = !toolMissing &&
+    // outputExceeded is excluded (not merely deprioritized): left in this OR
+    // chain, its unconditional SIGTERM would satisfy timedOut on an overflow
+    // that took 40ms, regardless of duration_ms.
+    const timedOut = !toolMissing && !outputExceeded &&
       (e.signal === 'SIGTERM' || e.killed === true ||
         duration_ms >= timeoutMs - 50);
 
@@ -131,13 +322,28 @@ export function runStep(repoPath, step) {
       stdout: stdout.text,
       stderr: stderr.text,
       truncated: stdout.truncated || stderr.truncated,
+      // Measure the failure path too: a test step that exits non-zero still
+      // reports how many tests ran, and that count is real evidence.
+      ...measureStep(step, e.stdout || ''),
       tool_missing: toolMissing,
       timed_out: timedOut,
+      output_exceeded: outputExceeded,
       reason: toolMissing
         ? `tool \`${step.cmd}\` not found on PATH`
-        : timedOut
-          ? `step \`${step.name}\` timed out after ${timeoutMs}ms`
-          : undefined,
+        : outputExceeded
+          // F-3a098ded named the byte count actually enforced for THIS step
+          // (maxBufferBytes — the effective value after any override) but
+          // pointed the remedy at step.maxBufferBytes, reachable only from a
+          // hand-written Node script — no `swarm verify` CLI flag threads
+          // into it. F-014c22f0: lead with SWARM_VERIFY_MAX_BUFFER_BYTES, the
+          // env override an operator can actually set before re-running
+          // `swarm verify` from the terminal; step.maxBufferBytes remains
+          // named as the programmatic-caller equivalent (same override
+          // chain, most-specific-wins).
+          ? `step \`${step.name}\` output exceeded execFileSync's ${maxBufferBytes.toLocaleString()}-byte maxBuffer — this is NOT a timeout (the overflow kill reports SIGTERM, which duration_ms confirms was reached in ${duration_ms}ms, not near ${timeoutMs}ms); set SWARM_VERIFY_MAX_BUFFER_BYTES above ${maxBufferBytes.toLocaleString()} before re-running \`swarm verify\` (or step.maxBufferBytes for programmatic callers) or reduce step output`
+          : timedOut
+            ? `step \`${step.name}\` timed out after ${timeoutMs}ms`
+            : undefined,
       optional: !!step.optional,
     };
   }
@@ -152,26 +358,40 @@ export function runStep(repoPath, step) {
  * @param {object} [opts]
  * @param {boolean} [opts.continueOnError] — keep going after required step failure
  * @returns {object} — { steps: StepResult[], verdict, duration_ms, test_count,
- *   tests_ran, timed_out, truncated, reason? }. `verdict` is one of
- *   `pass | fail | skip | tool_missing`; adapters may further refine `pass` to
- *   `no_tests`. `reason` is present (a human-readable string) on every non-pass
- *   verdict the runner originates, absent on a plain `pass`.
+ *   tests_ran, timed_out, output_exceeded, truncated, reason? }. `verdict` is
+ *   one of `pass | fail | skip | tool_missing`; adapters may further refine
+ *   `pass` to `no_tests`. `reason` is present (a human-readable string) on
+ *   every non-pass verdict the runner originates, absent on a plain `pass`.
+ *   `output_exceeded` (F-8d355b64) is a step-level capture-overflow signal,
+ *   distinct from `timed_out` — see runStep's MAX_BUFFER_BYTES comment.
+ *   F-d535bde5: the SWARM_VERIFY_MAX_BUFFER_BYTES malformed-value warning
+ *   (see readEnvMaxBufferBytes) is deduplicated per runSteps() invocation,
+ *   not for the life of the process — a persistent host calling runSteps()
+ *   repeatedly gets one warning per call, not one ever.
  */
 export function runSteps(repoPath, steps, opts = {}) {
   const results = [];
   const totalStart = Date.now();
   let testCount = null;
+  // F-d535bde5: fresh per invocation rather than readEnvMaxBufferBytes's
+  // module-level default — see that function's header for why this is what
+  // makes "once per swarm verify invocation" hold for a persistent host
+  // embedding this module via the package's `./lib/*` export, not just for
+  // the one-shot CLI process where the two used to coincide by accident.
+  const warnedMaxBufferValues = new Set();
 
   for (const step of steps) {
     if (!step) continue; // null steps are skipped (adapter said "not applicable")
 
-    const result = runStep(repoPath, step);
+    const result = runStep(repoPath, step, { warnedMaxBufferValues });
     results.push(result);
 
-    // Try to extract test count from stdout
-    if (step.name === 'test' && result.stdout) {
-      const count = extractTestCount(result.stdout);
-      if (count != null) testCount = count;
+    // ve-trunc-001: the count is measured inside runStep against the FULL
+    // stream (see measureStep). It is NOT re-derived from `result.stdout` here
+    // — that is the bounded copy kept for the receipt, and measuring it is the
+    // bug this fixes.
+    if (step.name === 'test' && result.test_count != null) {
+      testCount = result.test_count;
     }
 
     // Stop on required failure unless configured otherwise
@@ -203,8 +423,16 @@ export function runSteps(repoPath, steps, opts = {}) {
     verdict = 'pass';
   } else if (requiredFailures.some(r => !r.tool_missing)) {
     verdict = 'fail';
+    // F-8d355b64: output_exceeded is checked first — it is the more specific,
+    // more actionable diagnosis. Without this ordering an output-overflow
+    // step would fall through to the timed_out branch below whenever it also
+    // happened to be the one `find()` picks, which is exactly the
+    // misclassification this finding fixed at the step level; ordering here
+    // keeps the wave-level `reason` honest too.
+    const outputExceeded = requiredFailures.find(r => r.output_exceeded);
     const timedOut = requiredFailures.find(r => r.timed_out);
-    if (timedOut) reason = timedOut.reason;
+    if (outputExceeded) reason = outputExceeded.reason;
+    else if (timedOut) reason = timedOut.reason;
   } else {
     // Every required failure was a missing tool. The display `command` string
     // begins with the executable name, so its first token names the tool.
@@ -236,11 +464,52 @@ export function runSteps(repoPath, steps, opts = {}) {
   // node `# tests 0` scored a clean `pass`. The node adapter still refines the
   // human-readable reason for its no-`test`-script case; the verdict decision
   // is made here, once.
+  // ve-trunc-001: `no_tests` used to conflate two OPPOSITE conditions — "the
+  // test step genuinely ran zero tests" (a defect in the WORK) and "I could not
+  // measure what ran" (a defect in the INSTRUMENT). Both produced the identical
+  // verdict, so an operator reading NO_TESTS went hunting for missing tests in
+  // a repo that has thousands. That is the instrument reporting its own
+  // blindness in the vocabulary of the subject's failure — the same flattening
+  // as an adjudication receipt turning BUDGET_EXCEEDED into
+  // insufficient_context.
+  //
+  // Both still BLOCK. Neither is a pass, and an exit-0 with no countable tests
+  // must never become one: that would trade an honest false-negative for a
+  // vacuous gate, in the only gate that is law. What changes is WHICH defect
+  // gets named, and where the operator is pointed.
+  // The discriminator is OUTPUT, not the count being null. Two ways to reach
+  // "no countable tests", and they are opposite conditions:
+  //
+  //   full_output_chars === 0  -> the step produced NOTHING. `npm test
+  //                               --if-present` with no `test` script exits 0
+  //                               and emits exactly 0 chars (measured). Nothing
+  //                               ran; `no_tests` is the honest, correct answer
+  //                               and stays exactly as it was.
+  //   output > 0, count null   -> something ran and emitted output this floor
+  //                               does not recognize. Calling that "zero tests"
+  //                               is a claim the instrument cannot support.
+  //
+  // Both still BLOCK. An exit-0 with no countable tests must never become a
+  // pass — that would trade an honest false-negative for a vacuous gate, in the
+  // only gate that is law.
+  //
+  // NOTE on scope: the condition originally scoped for this verdict —
+  // "truncated before the summary" — is now UNREACHABLE, because measureStep
+  // reads the full stream before truncation, so the bound can no longer blind
+  // the count. What remains, and what this serves, is the sibling condition:
+  // an unrecognized runner. Same principle, still live — the instrument must
+  // not report its own blindness in the vocabulary of the subject's failure.
   let noTests = false;
   if (verdict === 'pass' && testStep && testStep.passed && !testsRan) {
-    verdict = 'no_tests';
-    noTests = true;
-    reason = 'test step ran zero tests — no positive evidence the fix works; not a verified pass';
+    const fullChars = testStep.full_output_chars ?? 0;
+    if (testCount == null && fullChars > 0) {
+      verdict = 'unmeasured_tests';
+      reason = `could not measure test count — the test step produced ${fullChars} chars of output matching no known runner summary. The count is unproven, not zero.`;
+    } else {
+      verdict = 'no_tests';
+      noTests = true;
+      reason = 'test step ran zero tests — no positive evidence the fix works; not a verified pass';
+    }
   }
 
   const out = {
@@ -253,6 +522,11 @@ export function runSteps(repoPath, steps, opts = {}) {
     // can flag a hang or a truncated log at the run level without re-walking
     // every step.
     timed_out: results.some(r => r.timed_out),
+    // F-8d355b64: a distinct aggregate, mirroring timed_out immediately
+    // above — NOT folded into it, so a display layer that special-cases
+    // "hang" on timed_out cannot inherit the same false diagnosis this
+    // finding removed at the step level.
+    output_exceeded: results.some(r => r.output_exceeded),
     truncated: results.some(r => r.truncated),
   };
   if (noTests) out.no_tests = true;
@@ -263,16 +537,75 @@ export function runSteps(repoPath, steps, opts = {}) {
 }
 
 /**
+ * Measure a step's FULL stdout before the caller truncates it for storage.
+ *
+ * Returns the fields worth keeping on the (bounded) step result: the test count
+ * measured from the complete stream, and how big that stream actually was — so
+ * an operator reading a truncated receipt can see what fraction they are
+ * looking at, and a `could not measure` reason can quote real numbers instead
+ * of gesturing.
+ *
+ * Only the `test` step is measured; running the count patterns over lint/build
+ * output would be wasted work and a chance for a stray match.
+ */
+function measureStep(step, fullStdout) {
+  if (step.name !== 'test') return {};
+  return {
+    test_count: extractTestCount(fullStdout),
+    full_output_chars: fullStdout.length,
+  };
+}
+
+/**
  * Try to extract test count from various test runner outputs.
  */
 function extractTestCount(stdout) {
-  // Node test runner: "# tests 42"
-  const nodeMatch = stdout.match(/# tests? (\d+)/);
-  if (nodeMatch) return parseInt(nodeMatch[1], 10);
+  // ve-trunc-001 — three defects, all measured on this repo's real `npm test`
+  // (898,923 chars, 7 workspaces):
+  //
+  // 1. ANCHOR. The old `/# tests? (\d+)/` was unanchored, so it matched a TEST
+  //    NAME. This repo contains a test literally named
+  //    "node `# tests 0` → verdict no_tests", whose TAP line sits at byte
+  //    258,390 — BEFORE the first real summary at 483,236. The first match was
+  //    therefore `0`, meaning that even with an unbounded stream the floor
+  //    would still have reported no_tests. Fixing the truncation alone would
+  //    NOT have unblocked this repo. `^` (with /m) is what excludes indented
+  //    TAP name lines. Same disease DS-PROAC-04 fixed for the pytest branch:
+  //    output echoed by the code under test outranking the real summary.
+  //
+  // 2. SUM. `npm test --workspaces --if-present` emits ONE summary per
+  //    workspace. Taking the FIRST reported 1328 of 2853 — a silent 62%
+  //    under-count even once the stream is unbounded.
+  //
+  // 3. MIXED RUNNERS. This fan-out is 6x `node --test` + 1x vitest, and vitest
+  //    prints `  Tests  144 passed (144)` — NO colon. The old
+  //    `/Tests:\s+(\d+)\s+passed/` required one and so never matched vitest at
+  //    all; the node branch returning first hid that it was also broken.
+  //
+  // node and jest/vitest are summed TOGETHER because a real fan-out mixes them.
+  // The pytest/cargo branches below keep their existing first/last-match shape
+  // — they have the same theoretical exposure, but nothing here proves it and a
+  // blind refactor of a gate that is law is not worth the risk.
+  let total = 0;
+  let found = false;
 
-  // Jest/Vitest: "Tests: 42 passed"
-  const jestMatch = stdout.match(/Tests:\s+(\d+)\s+passed/);
-  if (jestMatch) return parseInt(jestMatch[1], 10);
+  // node --test TAP: "# tests 42" at LINE START. A nested summary or a test
+  // name is always indented, so the anchor excludes both.
+  for (const m of stdout.matchAll(/^# tests? (\d+)/gm)) {
+    total += parseInt(m[1], 10);
+    found = true;
+  }
+
+  // jest "Tests:  42 passed" / vitest "  Tests  144 passed (144)". Colon
+  // optional; indent tolerated (vitest indents), but still line-anchored — a
+  // TAP name line begins with `#`/`ok`/`not ok` after its indent, never
+  // `Tests`. `Test Files  14 passed` does not match: the literal is `Tests`.
+  for (const m of stdout.matchAll(/^\s*Tests:?\s+(\d+)\s+passed/gm)) {
+    total += parseInt(m[1], 10);
+    found = true;
+  }
+
+  if (found) return total;
 
   // pytest: the session-summary line, e.g. "===== 42 passed, 1 skipped in
   // 4.21s =====". DS-PROAC-04: a bare /(\d+)\s+passed/ grabbed the FIRST

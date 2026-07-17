@@ -10,13 +10,13 @@
 
 import { readdirSync, existsSync } from 'node:fs';
 import { resolve, dirname, join } from 'node:path';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 import { buildSubmission } from '@dogfood-lab/report/build-submission.js';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 
-import { readBoundedJson } from './lib/bounded-json-read.js';
+import { readBoundedJson, BoundedJsonError } from './lib/bounded-json-read.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../..');
@@ -38,6 +38,32 @@ function readJsonDir(dirPath) {
   return readdirSync(dirPath)
     .filter(f => f.endsWith('.json'))
     .map(f => readJson(join(dirPath, f)));
+}
+
+// F-300f63cf: every OTHER input-validation failure in this file prints
+// `ERROR: <reason>` to stderr and process.exit(2) (missing manifest.json,
+// missing required field, zero audit results) — but the three call sites
+// that read JSON off disk via readJson/readJsonDir (manifest.json, audit/*
+// via readJsonDir, remediate/* via readJsonDir) had no try/catch at all, so
+// a malformed or truncated file (the realistic "agent process killed
+// mid-write" or "disk full" shape) escaped as an uncaught BoundedJsonError
+// with a raw Node stack trace and Node's default exit code 1 — not this
+// file's own exit-2 convention. Renders the SAME structured failure through
+// this file's own convention instead of letting it escape raw, naming the
+// specific offending path (BoundedJsonError already carries `.path`) and
+// the specific failure kind (SIZE_LIMIT / READ_FAILED / PARSE_FAILED) —
+// mirroring the multi-line "header + indented detail" shape the
+// dogfood-ingest failure handler below already uses.
+function dieOnReadError(e, label) {
+  if (e instanceof BoundedJsonError) {
+    console.error(`ERROR [${e.kind}]: ${label} could not be read`);
+    console.error(`  Path:  ${e.path}`);
+    console.error(`  Cause: ${e.cause && e.cause.message ? e.cause.message : e.message}`);
+  } else {
+    console.error(`ERROR: ${label} could not be read`);
+    console.error(`  Cause: ${e && e.message ? e.message : String(e)}`);
+  }
+  process.exit(2);
 }
 
 function surfaceFromType(componentType) {
@@ -84,15 +110,62 @@ function stepResult(name, ok) {
   return { step_id: name, status: ok ? 'pass' : 'fail' };
 }
 
+// --- Shared: remediation application (F-7545196d / F-b5cd4274) ---
+
+/**
+ * The set of finding ids any remediate result claims to have fixed.
+ */
+function collectFixedIds(remediateResults) {
+  const fixedIds = new Set();
+  for (const r of remediateResults) {
+    for (const fix of (r.fixes || [])) {
+      if (fix.finding_id) fixedIds.add(fix.finding_id);
+    }
+  }
+  return fixedIds;
+}
+
+/**
+ * Apply remediation fixes to findings, returning NEW audit-result objects
+ * (and new finding objects within them) rather than writing through to the
+ * caller's arrays.
+ *
+ * F-7545196d: buildScenarioResults (Path A, the published dogfood submission)
+ * used to build a remediateMap but only consult it for the `remediate` step
+ * flag — never for `deriveVerdict`/`openFindings`, which scored the RAW
+ * pre-remediation status. buildAuditPayload (Path B, the audit DB) DID apply
+ * fixes. One CRITICAL plus a matching remediate fix produced Path A
+ * `overall_verdict: 'fail'` (a self-contradictory step_results 'remediate:
+ * pass' next to 'verify: fail') alongside Path B `overall_status: 'pass'` for
+ * the SAME data — and Path A is the one that ships to the shared records/
+ * corpus other repos read over raw.githubusercontent URLs.
+ *
+ * F-b5cd4274: buildAuditPayload additionally MUTATED the finding objects it
+ * was given in place (`f.status = 'fixed'`), and those objects are shared
+ * references into the caller's auditResults array — so which of Path A/Path B
+ * ran FIRST silently changed the other's answer. Deriving the fixed set once
+ * and mapping to brand-new objects (never `f.status = ...` through a shared
+ * reference) fixes both defects with the same edit: apply this ONCE, before
+ * either path builds anything, and pass the result to BOTH.
+ */
+function applyRemediation(auditResults, remediateResults) {
+  const fixedIds = collectFixedIds(remediateResults);
+  return auditResults.map(a => ({
+    ...a,
+    findings: (a.findings || []).map(f => (fixedIds.has(f.id) ? { ...f, status: 'fixed' } : f)),
+  }));
+}
+
 // --- Path A: Dogfood submission ---
 
 function buildScenarioResults(auditResults, remediateResults) {
+  const resolved = applyRemediation(auditResults, remediateResults);
   const remediateMap = new Map();
   for (const r of remediateResults) {
     remediateMap.set(r.component_id, r);
   }
 
-  return auditResults.map(audit => {
+  return resolved.map(audit => {
     const cid = audit.component_id;
     const remediation = remediateMap.get(cid);
     const findings = audit.findings || [];
@@ -152,19 +225,14 @@ function computeOverallVerdict(scenarioResults) {
 // --- Path B: Audit DB payload ---
 
 function buildAuditPayload(manifest, auditResults, remediateResults) {
-  const allControls = auditResults.flatMap(a => a.controls || []);
-  const allFindings = auditResults.flatMap(a => a.findings || []);
-
-  // Apply remediation fixes to findings
-  const fixedIds = new Set();
-  for (const r of remediateResults) {
-    for (const fix of (r.fixes || [])) {
-      if (fix.finding_id) fixedIds.add(fix.finding_id);
-    }
-  }
-  for (const f of allFindings) {
-    if (fixedIds.has(f.id)) f.status = 'fixed';
-  }
+  // F-b5cd4274: resolve remediation into NEW objects via the SAME helper
+  // buildScenarioResults uses, instead of mutating `f.status` through to the
+  // caller's shared finding references. Both builders are now pure functions
+  // of the same (auditResults, remediateResults) pair — the order they run
+  // in (or whether either runs at all) cannot change the other's answer.
+  const resolved = applyRemediation(auditResults, remediateResults);
+  const allControls = resolved.flatMap(a => a.controls || []);
+  const allFindings = resolved.flatMap(a => a.findings || []);
 
   const openFindings = allFindings.filter(f => f.status !== 'fixed');
   const critical = openFindings.filter(f => sevUpper(f) === 'CRITICAL').length;
@@ -231,7 +299,12 @@ if (!existsSync(manifestPath)) {
   process.exit(2);
 }
 
-const manifest = readJson(manifestPath);
+let manifest;
+try {
+  manifest = readJson(manifestPath);
+} catch (e) {
+  dieOnReadError(e, 'manifest.json');
+}
 const required = ['repo', 'commit_sha', 'branch', 'swarm_id', 'started_at', 'finished_at'];
 for (const field of required) {
   if (!manifest[field]) {
@@ -240,13 +313,23 @@ for (const field of required) {
   }
 }
 
-const auditResults = readJsonDir(join(absDir, 'audit'));
+let auditResults;
+try {
+  auditResults = readJsonDir(join(absDir, 'audit'));
+} catch (e) {
+  dieOnReadError(e, 'audit result');
+}
 if (auditResults.length === 0) {
   console.error('ERROR: no audit result files found in audit/');
   process.exit(2);
 }
 
-const remediateResults = readJsonDir(join(absDir, 'remediate'));
+let remediateResults;
+try {
+  remediateResults = readJsonDir(join(absDir, 'remediate'));
+} catch (e) {
+  dieOnReadError(e, 'remediation result');
+}
 
 // Path A: Build and ingest dogfood submission
 const scenarioResults = buildScenarioResults(auditResults, remediateResults);
@@ -272,7 +355,19 @@ console.error(`Wrote submission to ${submissionPath}`);
 // Ingest via CLI — packages/ingest/run.js after the testing-os monorepo migration.
 const ingestScript = resolve(REPO_ROOT, 'packages/ingest/run.js');
 try {
-  execSync(`node "${ingestScript}" --provenance=stub --file "${submissionPath}"`, {
+  // F-1f7f9de8: argv-array form (execFileSync), never a shell-string exec —
+  // sibling of F-21240958 (commands/persist.js:91, same shape, already
+  // fixed). `submissionPath` derives from `absDir = resolve(manifestDir)`
+  // where `manifestDir = process.argv[2]` — an operator-supplied CLI
+  // positional, unvalidated for shell metacharacters — and was previously
+  // embedded inside a double-quoted argument in a string handed to execSync,
+  // which always invokes a shell (unlike execFileSync). A `manifestDir`
+  // containing a `"` would break out of the quoted argument. execFileSync
+  // with an argv array never invokes a shell to parse arguments, so there is
+  // no quoting to get right and no metacharacter surface at all — matching
+  // every sibling git/node invocation in this package (dispatch.js's
+  // execFileSync('git', [...]), lib/worktree.js, and F-21240958's fix).
+  execFileSync('node', [ingestScript, '--provenance=stub', '--file', submissionPath], {
     stdio: ['ignore', 'inherit', 'inherit'],
     // SEED-2: forward the ingest DATA root so it stays overridable. run.js
     // honors INGEST_REPO_ROOT for the records/ + indexes/ it writes; in

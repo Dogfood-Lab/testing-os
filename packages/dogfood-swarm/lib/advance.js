@@ -103,7 +103,7 @@ export function checkGates(db, runId) {
       ${LATEST_AGENT_RUN_PER_DOMAIN}
   `).all(wave.id);
 
-  // F-feb78e7b (DESIGN RULING): evaluate ALL five gates unconditionally and
+  // F-feb78e7b (DESIGN RULING): evaluate ALL six gates unconditionally and
   // return the full array. The pre-fix code returned at the FIRST failing
   // gate, so gateResult.gates never contained the gates after it — and the
   // override branch in advance() then promoted past EVERY unevaluated gate,
@@ -114,7 +114,7 @@ export function checkGates(db, runId) {
   // can mask ONLY individually-overridable failures.
   const waveGate = { ...checkWaveStatus(wave), overridable: false };
   const agentGate = { ...checkAgentCompletion(agents), overridable: false };
-  const violationGate = { ...checkViolations(db, wave.id, agents), overridable: true };
+  const violationGate = { ...checkViolations(db, runId), overridable: true };
   const verifyGateRaw = checkVerification(db, wave);
   // The serial-verify obligation (verdict:'VERIFY') is the one deliberately
   // NON-overridable verification failure; a plain failed receipt stays
@@ -335,16 +335,17 @@ export function advance(db, runId, opts = {}) {
 
   // F-feb78e7b (DESIGN RULING): an override is consent to the NAMED,
   // individually-overridable gate failures — never a master key. checkGates
-  // now evaluates all five gates, so the failure set here is complete; the
+  // now evaluates all six gates, so the failure set here is complete; the
   // pre-fix branches keyed on the verdict of a TRUNCATED gate array and
   // promoted past every gate that was never evaluated (including the
   // non-overridable serial-verify gate). Any non-overridable failure refuses
   // the override outright; a lawful override records EVERY evaluated gate in
   // gates_checked with `overridden: true` on the masked ones.
   //
-  // F-5a251061 semantics preserved: overriding a failed finding gate (the
-  // AMEND verdict) promotes PAST the gate to the phase's `next` stage — not
-  // into the amend loop the operator explicitly chose to skip.
+  // F-5a251061 semantics preserved: overriding a SINGLE failed finding gate
+  // (the AMEND verdict, nothing else failing) promotes PAST the gate to the
+  // phase's `next` stage — not into the amend loop the operator explicitly
+  // chose to skip.
   // F-1c0188c9: an override that is REFUSED because a non-overridable gate
   // dominates must be distinguishable at the operator surface from a plain
   // block where no override was attempted. Capture the refusal here so the
@@ -356,12 +357,64 @@ export function advance(db, runId, opts = {}) {
     const nonOverridable = failedGates.filter(g => !g.overridable);
     if (failedGates.length > 0 && nonOverridable.length === 0) {
       const wave = db.prepare('SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1').get(runId);
-      const toPhase = PHASE_MAP[wave.phase]?.next || wave.phase;
-      const gatesChecked = gateResult.gates.map(g => (g.passed ? g : { ...g, overridden: true }));
+      // F-f33081a2: `toPhase` used to be `PHASE_MAP[wave.phase]?.next`
+      // UNCONDITIONALLY — so an override issued while an AMEND verdict was
+      // live (open HIGH/CRITICAL findings) rerouted PAST the amend phase
+      // whenever ANY other overridable gate (adjudication, ownership) also
+      // happened to be failing at the same time, even when the operator's
+      // stated reason targeted only that OTHER gate. Live-reproduced
+      // (HANDOFF.md promotion #8): a single `--override --reason "disposing
+      // the jury's insufficient_context verdict"` silently ALSO waived 3 open
+      // HIGH findings and jumped health-audit-a straight to health-audit-b,
+      // skipping health-amend-a — because the single boolean `opts.override`
+      // has no way to say "I consent to gate X only."
+      //
+      // DESIGN CHOICE (routing-only fix; full per-gate `--override=<names>`
+      // consent needs a new cli.js flag and is out of this domain's scope —
+      // see this wave's output notes): route along `gateResult.nextPhase`
+      // (the amend edge) whenever the AMEND verdict is live AND findingGate
+      // is NOT the only failing gate. In that shape a single reason string
+      // cannot be trusted to mean "also skip the amend loop," so the safer
+      // reading is "dispose of the OTHER gate(s); findings stay open" — the
+      // wave lands on the amend phase with the findings still gating it,
+      // exactly as an operator who wants to accept them can instead do via
+      // `swarm defer`/`swarm reject` (the lawful, per-finding disposition)
+      // before re-running advance.
+      //
+      // F-5a251061's SINGLE-gate case is preserved on purpose: when
+      // findingGate is the ONLY failure, the operator's entire override
+      // intent IS the findings, and routing to `next` (skipping the amend
+      // loop) remains correct — that direction was never the bug.
+      // A pure BLOCK override with no AMEND in play (e.g. only the advisory
+      // adjudication gate failing, findingGate passing) is unaffected either
+      // way: verdict isn't 'AMEND', so toPhase still resolves via the
+      // ordinary `next` edge, exactly as it should.
+      const findingGateIsOnlyFailure = failedGates.length === 1 && failedGates[0].name === 'finding_severity';
+      const isAmendReroute = gateResult.verdict === 'AMEND' && !findingGateIsOnlyFailure && !!gateResult.nextPhase;
+      const toPhase = isAmendReroute
+        ? gateResult.nextPhase
+        : (PHASE_MAP[wave.phase]?.next || wave.phase);
+      // In the amend-reroute case, `finding_severity` is deliberately EXCLUDED
+      // from the set of gates this override actually consents to: the wave is
+      // landing on the amend phase precisely BECAUSE it is still failing, not
+      // because the operator waived it. Every OTHER concurrently-failing
+      // overridable gate (adjudication, ownership, ...) is still masked — that
+      // is what the operator's reason is actually disposing of. This is the
+      // "OTHER named gates masked" half of the fix; true per-gate `--override=
+      // <names>` consent (letting an operator name exactly which gates a
+      // reason covers) is the bigger remaining slice — see this wave's output
+      // notes.
+      const gatesBeingOverridden = isAmendReroute
+        ? failedGates.filter(g => g.name !== 'finding_severity')
+        : failedGates;
+      const gatesChecked = gateResult.gates.map(g => {
+        if (g.passed) return g;
+        return gatesBeingOverridden.includes(g) ? { ...g, overridden: true } : g;
+      });
       const promotionId = recordPromotion(db, runId, wave.id, wave.phase, toPhase, {
         authorizedBy: opts.authorizedBy,
         gates: gatesChecked,
-        overrides: failedGates.map(g => ({ gate: g.name, reason: opts.overrideReason })),
+        overrides: gatesBeingOverridden.map(g => ({ gate: g.name, reason: opts.overrideReason })),
       });
       return {
         promoted: true,
@@ -459,20 +512,72 @@ function checkAgentCompletion(agents) {
   return { name: 'agent_completion', passed: true, reason: `All ${agents.length} agents complete` };
 }
 
-function checkViolations(db, waveId, agents) {
-  const agentIds = agents.map(a => a.id);
-  if (agentIds.length === 0) return { name: 'ownership', passed: true, reason: 'No agents' };
-
+// F-4fa7e644: RUN-WIDE, not wave-scoped. The pre-fix query counted violations
+// only among the CURRENT wave's agent_runs (the `agents` param, itself
+// LATEST_AGENT_RUN_PER_DOMAIN-filtered for the current wave_id) — so once a
+// run's latest wave advanced past a wave that recorded a real ownership
+// violation (the normal AMEND -> dispatch-nextPhase sequence), that
+// violation became permanently invisible to the gate, with no override and
+// no log entry marking the loss. This mirrors commands/status.js's existing
+// cross-wave `violations` aggregator (the one place that already queried
+// run-wide) — same LATEST_AGENT_RUN_PER_DOMAIN-per-wave semantics, just
+// applied to every wave of the run instead of one, so a stale/superseded
+// agent_run from a `swarm resume` redispatch still cannot resurrect a row
+// the surviving attempt doesn't have.
+function checkViolations(db, runId) {
   const count = db.prepare(`
     SELECT COUNT(*) as cnt FROM file_claims
-    WHERE violation = 1 AND agent_run_id IN (${agentIds.map(() => '?').join(',')})
-  `).get(...agentIds);
+    WHERE violation = 1 AND agent_run_id IN (
+      SELECT ar.id FROM agent_runs ar
+      JOIN waves w ON ar.wave_id = w.id
+      WHERE w.run_id = ?
+        ${LATEST_AGENT_RUN_PER_DOMAIN}
+    )
+  `).get(runId);
 
   if (count.cnt > 0) {
     return {
       name: 'ownership',
       passed: false,
       reason: `${count.cnt} ownership violation(s) detected`,
+    };
+  }
+
+  // F-4220149f: LATEST_AGENT_RUN_PER_DOMAIN's "the surviving row is clean"
+  // premise (see that fragment's docstring in lib/queries/latest-agent-runs.js)
+  // is proven for a CROSS-WAVE supersession by --isolate's always-wiped
+  // worktree, but is UNVERIFIED for a `swarm resume` redispatch WITHIN the
+  // current wave under non-isolated dispatch (a real, supported mode — see
+  // waves.dispatch_sha / waves.ownership_probe_degraded in db/schema.js): a
+  // failed first attempt's stray out-of-domain edit is not guaranteed to be
+  // reverted or re-examined by the resumed attempt's own collect() pass. This
+  // module has no way to tell isolated from non-isolated here, so it cannot
+  // safely BLOCK on a superseded-row violation — but silently saying "No
+  // ownership violations" when one is sitting on a superseded row is exactly
+  // the loud-not-silent principle this file's own violation-gate history
+  // (F-4fa7e644, this function's header) was written to uphold. Surface it as
+  // an informational note instead: still non-blocking (we cannot prove it is
+  // live), but no longer invisible to an operator reading the gate reason.
+  const superseded = db.prepare(`
+    -- Deliberately WITHOUT LATEST_AGENT_RUN_PER_DOMAIN (lib/queries/latest-agent-runs.js)
+    -- unlike the query above: this one needs the run-wide SUPERSET (every
+    -- agent_run, latest or not) precisely so supersededOnly below can measure
+    -- what the filter hides. Do not "fix" this by adding the fragment — that
+    -- would make this query identical to the one above and always yield 0.
+    SELECT COUNT(*) as cnt FROM file_claims
+    WHERE violation = 1 AND agent_run_id IN (
+      SELECT ar.id FROM agent_runs ar
+      JOIN waves w ON ar.wave_id = w.id
+      WHERE w.run_id = ?
+    )
+  `).get(runId);
+  const supersededOnly = superseded.cnt - count.cnt;
+
+  if (supersededOnly > 0) {
+    return {
+      name: 'ownership',
+      passed: true,
+      reason: `No ownership violations on the latest agent_run(s) — ${supersededOnly} violation(s) recorded on superseded agent_run(s) (informational; not gating — see the isolation-mode caveat on LATEST_AGENT_RUN_PER_DOMAIN in lib/queries/latest-agent-runs.js)`,
     };
   }
   return { name: 'ownership', passed: true, reason: 'No ownership violations' };

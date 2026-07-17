@@ -7,10 +7,14 @@ name: Release
 # 22 ships with npm 10.9 which can sign Sigstore provenance but cannot
 # negotiate the new trusted-publisher auth — the publish PUT goes out without
 # an OIDC token and npm returns 404 ("not in this registry"). The sandbox
-# install below shadows the system npm with npm@latest (mirrors the doctrine
-# in sovereign's release.yml, which is the proven pattern across the org).
-# In-place `npm install -g npm@latest` on Node 22's bundled npm 10.9 races
-# on its own arborist rebuild — the sandbox keeps the system npm untouched.
+# install below shadows the system npm with an exact-pinned npm version
+# (F-eb9fc4aa: corrected from this paragraph's prior claim of npm@latest,
+# which the F-c0348ff6 fix below replaced with an exact pin — see that
+# comment block for the pin rationale; the sandbox-shadow PATTERN itself
+# still mirrors the doctrine in sovereign's release.yml, which is the proven
+# pattern across the org). In-place `npm install -g npm@latest` on Node 22's
+# bundled npm 10.9 races on its own arborist rebuild — the sandbox keeps the
+# system npm untouched.
 #
 # Two triggers:
 #   - push of a v*.*.* tag → automatic publish (the future-default path)
@@ -78,11 +82,61 @@ jobs:
           # in 11.5. In-place `npm install -g npm@latest` races on Node 22's
           # bundled npm's own arborist rebuild (MODULE_NOT_FOUND: promise-retry).
           # The sandbox shadows system npm via PATH; system npm stays intact.
+          #
+          # F-c0348ff6: pinned to an EXACT version (NOT @latest), with
+          # --ignore-scripts, because this is the only job in the repo that
+          # holds `id-token: write` (npm OIDC trusted publishing) alongside
+          # `contents: write`. `npm@latest` resolves whatever npm and
+          # whatever transitive tree is newest at install time — no
+          # lockfile, no integrity pin — so any package in that tree could
+          # run lifecycle scripts inside a job that can mint an OIDC token
+          # and push to the repo. This mirrors the pa11y exact-version pin
+          # in pages.yml (npx -y pa11y@9.1.1), which the repo already
+          # applies to a cosmetic a11y check; the publish job gets the same
+          # discipline. --ignore-scripts removes arbitrary-code-execution
+          # from the install itself — the npm CLI needs no lifecycle
+          # scripts to run from the sandbox's node_modules/.bin. Floor is
+          # npm >=11.5 for OIDC; 11.5.1 is the first patch release on that
+          # floor. Bump in lockstep with Dependabot github-actions / npm
+          # sweeps (same maintenance convention as the pa11y pin).
+          #
+          # F-d7fb76ae: this is the FIRST network-dependent step in the
+          # release job and a hard prerequisite for the entire publish — OIDC
+          # trusted publishing cannot proceed without it — but pre-fix it had
+          # zero retry logic, unlike every other network call in this exact
+          # file (the npm-publish loop below retries 3x with 10s/20s backoff;
+          # the GitHub Release step tolerates a lost create-race) and its
+          # sibling workflows (ci.yml's lockfile-drift gate classifies
+          # ETIMEDOUT/ECONNRESET/etc. as non-blocking; pages.yml's
+          # deploy-verify curl loop retries 5x and its pa11y step retries
+          # 3x). A transient registry hiccup on this ONE step failed the
+          # entire release workflow at its very first step. Bounded impact
+          # either way — nothing irreversible has happened yet at this point
+          # (no packages published, no release created), so a bare re-run
+          # was always a safe recovery; this just makes the retry automatic
+          # instead of requiring an operator to notice and re-fire.
           SANDBOX="$HOME/.npm-cli-sandbox"
           mkdir -p "$SANDBOX"
           pushd "$SANDBOX" >/dev/null
           echo '{"name":"npm-cli-sandbox","version":"0.0.0","private":true}' > package.json
-          npm install --no-save --no-audit --no-fund --silent npm@latest
+
+          ok=0
+          for attempt in 1 2 3; do
+            if npm install --no-save --no-audit --no-fund --silent --ignore-scripts npm@11.5.1; then
+              ok=1
+              break
+            fi
+            if [ "$attempt" -lt 3 ]; then
+              wait_s=$((attempt * 10))
+              echo "::warning::npm@11.5.1 OIDC-sandbox install attempt ${attempt} failed — sleeping ${wait_s}s before retry (transient registry/network issue; nothing has published yet, so a retry here is always safe)."
+              sleep "$wait_s"
+            fi
+          done
+          if [ "$ok" -ne 1 ]; then
+            echo "::error::Failed to install npm@11.5.1 into the OIDC sandbox after 3 attempts. Nothing has been published yet (this is the first step of the job) — re-run the workflow once the registry/network issue clears."
+            exit 1
+          fi
+
           popd >/dev/null
           echo "$SANDBOX/node_modules/.bin" >> "$GITHUB_PATH"
           "$SANDBOX/node_modules/.bin/npm" --version

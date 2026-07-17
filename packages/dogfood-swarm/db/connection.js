@@ -10,7 +10,7 @@ import { existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { SCHEMA_SQL, SCHEMA_VERSION, MIGRATIONS_SQL } from './schema.js';
 import { migrateDb } from './migrate.js';
-import { ControlPlaneSchemaTooNewError } from '../lib/errors.js';
+import { ControlPlaneSchemaTooNewError, ControlPlaneSchemaCorruptError } from '../lib/errors.js';
 
 /** @type {Map<string, Database.Database>} */
 const pool = new Map();
@@ -67,8 +67,24 @@ export function openDb(dbPath) {
 
   applyConnectionPragmas(db, { inMemory: false });
 
-  // Apply schema idempotently
-  const version = getSchemaVersion(db);
+  // Apply schema idempotently.
+  //
+  // F-9587adda: getSchemaVersion now throws ControlPlaneSchemaCorruptError
+  // (fail-loud) instead of silently returning NaN for a corrupted kv.value —
+  // NaN made BOTH the too-new refusal below (`version > SCHEMA_VERSION`) and
+  // the bootstrap gate (`version < SCHEMA_VERSION`) false, so a corrupted
+  // schema_version silently skipped both checks. Same fail-closed cleanup as
+  // the too-new branch immediately below: close the handle and drop any pool
+  // entry before propagating, so a caller never gets back a handle attached
+  // to a DB this function refused to trust.
+  let version;
+  try {
+    version = getSchemaVersion(db, dbPath);
+  } catch (e) {
+    db.close();
+    pool.delete(dbPath);
+    throw e;
+  }
   if (version > SCHEMA_VERSION) {
     // sm-p-002: the on-disk DB was written by a NEWER build than this one.
     // Neither the create (version < 1) nor the upgrade/bootstrap path below
@@ -105,6 +121,10 @@ export function openDb(dbPath) {
   // retroactively seeds the ledger for migrations whose column/index already
   // exists WITHOUT re-running, and applies only the genuinely missing ones.
   // schema_version bump is folded into migrateDb. Idempotent on a current DB.
+  // F-1de6e6ca: `version` is passed for signature compatibility with every
+  // other caller (see migrateDb's JSDoc) but is not actually consulted —
+  // the function decides fresh-vs-upgrade per-migration via the ledger +
+  // artifactExists().
   migrateDb(db, version);
 
   pool.set(dbPath, db);
@@ -188,13 +208,34 @@ function applyMigrations(db) {
 
 // --- Internal helpers ---
 
-function getSchemaVersion(db) {
+/**
+ * @param {Database.Database} db
+ * @param {string} [dbPath] — for the thrown error's context only (log correlation)
+ * @returns {number}
+ * @throws {ControlPlaneSchemaCorruptError} F-9587adda: kv.schema_version exists
+ *   but is not a finite number (hand-edited or otherwise corrupted). Fails
+ *   loud rather than silently returning NaN — see that error class's doc for
+ *   why NaN is worse here than in most places: it makes BOTH of openDb's
+ *   version comparisons false, silently skipping the too-new refusal AND the
+ *   schema-bootstrap gate at once.
+ */
+function getSchemaVersion(db, dbPath) {
+  let row;
   try {
-    const row = db.prepare("SELECT value FROM kv WHERE key = 'schema_version'").get();
-    return row ? parseInt(row.value, 10) : 0;
+    row = db.prepare("SELECT value FROM kv WHERE key = 'schema_version'").get();
   } catch {
-    return 0; // kv table doesn't exist yet
+    return 0; // kv table doesn't exist yet — genuinely fresh DB, not corruption
   }
+  if (!row) return 0;
+  const n = Number(row.value);
+  if (!Number.isFinite(n)) {
+    throw new ControlPlaneSchemaCorruptError(
+      `control-plane.db at ${dbPath} has a corrupted kv.schema_version value: ` +
+      `${JSON.stringify(row.value)} — expected a finite number.`,
+      { rawValue: row.value, dbPath },
+    );
+  }
+  return n;
 }
 
 // F4-CP-04: the schema_version KV bump is now folded into migrateDb (db/

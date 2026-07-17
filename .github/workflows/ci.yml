@@ -37,12 +37,25 @@ on:
       - 'CLAUDE.md'
       - 'HANDOFF.md'
       - 'swarms/__schema-fixtures__/**'
-      # F-CI-001: live-run wave outputs. The agent-output-schema conformance
-      # gate exists to catch the fixes_applied-vs-fixes drift on real wave
-      # outputs, but a push touching ONLY these files triggered no CI run, so a
-      # schema-nonconformant agent output could land on main green-by-absence.
-      # Mirror the __schema-fixtures__ coverage above for the live-run tree.
-      - 'swarms/swarm-*/wave-*/outputs/**'
+      # F-CI-001 (amended by F-5d126106): this used to list
+      # 'swarms/swarm-*/wave-*/outputs/**' so a push touching ONLY live-run
+      # wave outputs would still trigger the agent-output-schema conformance
+      # gate. That trigger was DEAD from the day it was added:
+      # swarms/.gitignore ignores `swarm-*/` wholesale, so a push can never
+      # touch a path under swarms/swarm-*/ in the first place
+      # (`git ls-files 'swarms/swarm-*'` returns zero tracked files, ever) —
+      # the filter could never fire, and the comment it shipped with
+      # claimed CI coverage the config could not structurally deliver. The
+      # live-run tree IS real and IS schema-checked, but only LOCALLY via
+      # `npm run verify` (scripts/doc-drift-patterns.json's
+      # agent-output-schema check still carries the live-run glob in its
+      # `targets`, now marked `allowEmptyGlobs` so zero matches on CI reads
+      # as correct rather than config-error). Removed the dead trigger
+      # rather than leave a comment asserting coverage that does not exist;
+      # the COMMITTED fixtures under swarms/__schema-fixtures__/ are a
+      # separate, real path already covered by the dedicated
+      # 'swarms/__schema-fixtures__/**' trigger above (d6-infra-001) — that
+      # trigger is unaffected by this removal.
       # F-362d4131: runtime data dirs the test suite reads as REAL fixtures
       # (CLAUDE.md rule 6 — no mocks). setupTestRoot() copies from fixtures/;
       # dogfood/scenarios/*.test.mjs (run via test:scripts) validates dogfood/.
@@ -52,6 +65,17 @@ on:
       # scripts/stageA-check-ci-honesty-paths.test.mjs.
       - 'fixtures/**'
       - 'dogfood/**'
+      # F-41379e68: the retired swarms artifacts (tombstoned wave 6 —
+      # manifest-schema.json's RETIRED $comment, templates/'s RETIRED
+      # banners) are pinned by the retired-swarm-artifact doc-drift checks,
+      # but check-doc-drift only runs when CI runs. Without these triggers a
+      # commit editing ONLY these files (e.g. reverting the tombstone)
+      # produced no CI run at all — the same trigger-level bypass as
+      # d6-infra-001. Both paths are tracked files (not under the ignored
+      # swarm-*/), so these triggers are live. Guarded by
+      # scripts/stageA-check-ci-honesty-paths.test.mjs.
+      - 'swarms/manifest-schema.json'
+      - 'swarms/templates/**'
   pull_request:
     paths:
       - 'packages/**'
@@ -73,11 +97,17 @@ on:
       - 'CLAUDE.md'
       - 'HANDOFF.md'
       - 'swarms/__schema-fixtures__/**'
-      # F-CI-001: live-run wave outputs (see push block above).
-      - 'swarms/swarm-*/wave-*/outputs/**'
+      # F-CI-001 (amended by F-5d126106): dead 'swarms/swarm-*/wave-*/outputs/**'
+      # trigger removed — swarms/.gitignore ignores `swarm-*/` wholesale, so
+      # this path could never be touched by a push or a PR (see push block
+      # above for the full rationale).
       # F-362d4131: runtime fixture/scenario data dirs (see push block above).
       - 'fixtures/**'
       - 'dogfood/**'
+      # F-41379e68: retired swarms artifacts — tombstone-drift triggers (see
+      # push block above).
+      - 'swarms/manifest-schema.json'
+      - 'swarms/templates/**'
   workflow_dispatch:
 
 concurrency:
@@ -100,9 +130,14 @@ jobs:
     strategy:
       # Both Node legs must run to completion so the operator can tell from a
       # single CI run whether a failure is Node-version-specific (e.g. an
-      # assert.throws matcher tightened in Node 22) or a real cross-version
-      # bug. Default fail-fast: true cancels Node 22 mid-flight when Node 20
-      # fails and costs an extra retry-and-pin cycle every time.
+      # assert.throws matcher tightened in one runtime) or a real cross-
+      # version bug. Default fail-fast: true cancels one leg mid-flight when
+      # the other fails and costs an extra retry-and-pin cycle every time.
+      # F-33ff7b4b: phrased version-agnostically on purpose — a prior version
+      # of this comment named a specific pair (22 vs 20) and went stale the
+      # moment F-W1-CI-010 (a few lines below) dropped 20 from the matrix,
+      # self-contradicting within the same strategy: block. Naming no
+      # version here means the next matrix move can't repeat that drift.
       fail-fast: false
       matrix:
         # F-W1-CI-010: Node 20 hit EOL on 2026-04-30 — drop. Node 22 is

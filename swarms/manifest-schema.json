@@ -1,8 +1,9 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://dogfood-labs.local/schemas/swarm-manifest.json",
+  "$comment": "RETIRED (2026-07-15): no code reads this schema; run state lives in the SQLite control plane (swarms/control-plane.db) and is read via the swarm CLI — see swarms/PROTOCOL.md 'Run state'. Kept because paths under swarms/ are published API. Wave-6 amend F-70248de9/F-bd8b4353, run swarm-1784091637-5127.",
   "title": "Swarm Manifest",
-  "description": "Checkpoint file that tracks swarm audit progress across phases and agents.",
+  "description": "Checkpoint file that tracks swarm audit progress across phases and agents. RETIRED — see $comment.",
   "type": "object",
   "required": [
     "swarm_id",

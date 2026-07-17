@@ -40,11 +40,11 @@ class LintOperatorError extends Error {
 
 const LINT_USAGE = `dogfood-verify lint — author-time static check for a policy or scenario file
 
-USAGE:
+Usage:
   dogfood-verify lint <policy-file> [--json]
   dogfood-verify lint --scenario <scenario-file> [--json]
 
-WHAT IT CHECKS — policy mode (default, no submission needed):
+What it checks — policy mode (default, no submission needed):
   - structural validity against policy.schema.json
   - every predicate's known leading field, combinator depth, and node budget
   - an ADVISORY warning on the [] footgun (a negative op over a [] path fails open)
@@ -52,7 +52,7 @@ WHAT IT CHECKS — policy mode (default, no submission needed):
   It CANNOT statically catch a type_mismatch or a fanout_budget overrun — those depend
   on submission data. Run \`dogfood-verify --file <submission> --explain\` for that.
 
-WHAT IT CHECKS — --scenario mode (no submission needed):
+What it checks — --scenario mode (no submission needed):
   - structural validity against scenario.schema.json
   - every success_criteria.required_steps entry references a declared steps[].id
   - step ids are unique
@@ -63,12 +63,12 @@ WHAT IT CHECKS — --scenario mode (no submission needed):
   It CANNOT verify that a real submission's step_results satisfy required_steps, nor
   that the receiver can fetch the file at the attested commit — run a real ingest.
 
-OPTIONS:
+Options:
   --scenario    Lint the file as a scenario definition (default: policy).
   --json        Machine-readable result for CI.
   -h, --help    Show this help.
 
-EXIT CODES:
+Exit codes:
   0  clean or warnings-only     1  errors found     2  operator error (bad flags / IO)`;
 
 /**

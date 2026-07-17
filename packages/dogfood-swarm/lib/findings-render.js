@@ -20,7 +20,69 @@
  * findings digest must route through `renderDigest()` — there is no other
  * path. `renderMarkdown()` is preserved so CI scrapers and `>` redirects keep
  * working unchanged.
+ *
+ * F-c3d8fd7e (wave 22): the shared `truncate()` helper below only did
+ * `.replace(/\s+/g, ' ').trim()` — which incidentally neutralizes a raw
+ * embedded newline (fake-line-injection) but leaves ESC (0x1B, the ANSI
+ * cursor-erase primitive), the C1 control range, and the Trojan Source class
+ * (bidi override/isolate controls, zero-width block, combining marks)
+ * completely untouched, because none of those are `\s`. A finding's
+ * `description`/`recommendation`/summary text is written by an AUDIT AGENT
+ * auditing an arbitrary (sometimes adversarial) target repo and can echo
+ * attacker-chosen substrings from it (a crafted filename, commit message, or
+ * quoted string) — the same class of hazard commands/lib/escape-reason.js
+ * was built across waves 16-20 to close for the `--reason` CLI-flag family.
+ * Routed through that ONE canonical escaper (`escapeReasonForDisplay`)
+ * rather than forking a second copy of the same codepoint-class regex —
+ * mirrors commands/history.js's own "escape BEFORE truncate" ordering (see
+ * that file's formatHistory): escaping first means the length budget `n` is
+ * spent on the operator-VISIBLE (escaped) text, and truncation can never cut
+ * a dangerous sequence at a point that leaves it half-neutralized.
+ *
+ * LAYERING NOTE, DISCLOSED: this import inverts the package's usual
+ * commands/ → lib/ direction (no other lib/ file imports from commands/
+ * today). Deliberate, one-file exception for this wave: escape-reason.js is
+ * being actively redesigned in place by a different domain this same wave,
+ * so importing its stable export beats copy-paste-forking the control-byte/
+ * bidi class into a second implementation mid-redesign. escape-reason.js's
+ * own placement note already anticipates a future `git mv` into package-level
+ * lib/ once ownership consolidates — this import is the second cited
+ * consumer that note names as the trigger for that move.
+ *
+ * F-8e414a2b (wave 24): F-c3d8fd7e above closed the description/evidence/
+ * summary columns but left the FILE:LINE column (`loc`, built directly from
+ * `finding.file`/`finding.line`) and the `symbol` column raw in all four
+ * render functions below (renderMarkdown, renderText,
+ * renderVerifyFixedMarkdown, renderVerifyFixedText) — the identical
+ * zero-privilege origin (an audit agent quoting a possibly-adversarial
+ * target repo's own filename/symbol verbatim) F-f1dae277 already established
+ * for `file_claims.file_path` across commands/*.js. A raw ANSI cursor-erase
+ * sequence or a Unicode TAG-block payload embedded in `f.file`/`f.symbol`
+ * survived byte-for-byte into `swarm findings` / `swarm verify-fixed`
+ * output. `formatLoc()`/`formatSymbol()` below route both through the same
+ * canonical escaper truncate() already uses, so the four call sites share
+ * one implementation instead of re-deriving the same string four times (the
+ * exact duplication class this package's own history warns against — see
+ * escapePathForDisplay's own doc comment: "a count is not integrity" applies
+ * just as much to "four call sites that happen to agree today"). JSON
+ * renderers are untouched by design — `f.file`/`f.line`/`f.symbol` stay
+ * lossless on the `--format=json` path, the same invariant truncate() already
+ * holds for description/evidence.
+ *
+ * F-391f3e5d (wave 24): truncate()'s character-count slice had no awareness
+ * of escape-TOKEN boundaries and could cut a multi-character escape sequence
+ * (`\xHH`, `\uHHHH`, `\u{H+}`) in half, leaving a dangling, malformed-looking
+ * fragment (e.g. `...aaa\x…`) rather than either the complete token or a
+ * clean omission. Purely cosmetic — the security property already held
+ * (escaping runs BEFORE the slice, so a raw dangerous byte can never
+ * resurface no matter where the cut lands) — but a truncated escape TOKEN is
+ * itself confusing output. `backUpIncompleteEscape()` below detects a
+ * dangling prefix at the tail of the sliced string and backs the cut up to
+ * the last complete token boundary before the ellipsis is appended.
  */
+
+import { escapeReasonForDisplay, escapePathForDisplay } from '../commands/lib/escape-reason.js';
+import { displayWidth, sliceToDisplayWidth } from './display-width.js';
 
 const SEV_SHORT = { CRITICAL: 'CRIT', HIGH: 'HIGH', MEDIUM: 'MED', LOW: 'LOW' };
 
@@ -106,7 +168,7 @@ export function renderMarkdown(model) {
   lines.push('|-----|-----|--------|-----------|-------------|');
   for (const f of model.findings) {
     const sev = SEV_SHORT[f.severity] || f.severity || '?';
-    const loc = f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '—';
+    const loc = formatLoc(f.file, f.line);
     lines.push(
       `| ${sev} | ${f.id || '—'} | ${f.domain} | ${loc} | ${truncate(f.description, 140)} |`
     );
@@ -186,7 +248,7 @@ export function renderText(model) {
       sev: SEV_SHORT[f.severity] || f.severity || '?',
       id: f.id || '—',
       domain: f.domain,
-      loc: f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '—',
+      loc: formatLoc(f.file, f.line),
       desc: truncate(f.description, 140),
     }));
     const widths = {
@@ -290,14 +352,104 @@ function buildJsonHeadline(model) {
 
 // ── helpers ──
 
+/**
+ * F-8e414a2b: shared File:Line column formatter for all four table
+ * renderers below — a single implementation instead of the same
+ * `f.file ? ... : '—'` ternary re-derived four times (and, pre-fix, escaped
+ * in none of them). `file` is routed through escapePathForDisplay (a
+ * bare-path-shaped value); `line` is routed through the same escaper for
+ * defense in depth even though the schema types it as a number and it is
+ * therefore ordinarily inert — escaping a plain integer is a no-op, so this
+ * costs nothing on the common path and closes the gap if a malformed agent
+ * output ever put non-numeric text there.
+ */
+function formatLoc(file, line) {
+  if (!file) return '—';
+  const escapedFile = escapePathForDisplay(String(file));
+  return line ? `${escapedFile}:${escapeReasonForDisplay(String(line))}` : escapedFile;
+}
+
+/** F-8e414a2b: shared Symbol column formatter — see formatLoc's doc comment. */
+function formatSymbol(symbol) {
+  return symbol ? escapeReasonForDisplay(String(symbol)) : '—';
+}
+
+// F-391f3e5d: matches a DANGLING escape-token prefix sitting at the very end
+// of an already-escaped string — i.e. the point where a character-count
+// slice cut through the middle of one of escapeReasonForDisplay's
+// multi-character tokens instead of landing cleanly before or after it.
+// escapeReasonForDisplay only ever emits a backslash as the FIRST character
+// of a fixed-shape token (\\, \", \n, \r, \t, \v, \f, \xHH, \uHHHH, \u{H+});
+// a literal backslash in the SOURCE text is always doubled to `\\` by that
+// same function's first pass, so any backslash reaching here that does not
+// resolve to one of the closed shapes below by end-of-string is provably a
+// token the slice cut through, never a coincidental lone literal backslash.
+// Each alternative is capped one short of its complete form (`x` + 0-1 hex
+// of the required 2, `u` + 0-3 hex of the required 4, `u{` + hex with no
+// closing `}`) so a COMPLETE token immediately followed by more literal text
+// is correctly left alone — see backUpIncompleteEscape's own tests for the
+// boundary proof.
+const DANGLING_ESCAPE_TAIL = /\\(?:x[0-9a-fA-F]?|u(?:[0-9a-fA-F]{0,3}|\{[0-9a-fA-F]*)?)?$/;
+
+/**
+ * Back a truncated, already-escaped string up to the last complete
+ * escape-token boundary when the character-count slice happened to land
+ * mid-token (F-391f3e5d). Purely a display-quality fix — the security
+ * property truncate() documents below (a raw dangerous byte can never
+ * resurface) already holds regardless of where the cut lands, because
+ * escaping runs BEFORE the slice; this only prevents the ESCAPED
+ * representation itself from being sliced into a confusing half-token.
+ *
+ * @param {string} str
+ * @returns {string}
+ */
+function backUpIncompleteEscape(str) {
+  const m = DANGLING_ESCAPE_TAIL.exec(str);
+  return m ? str.slice(0, m.index) : str;
+}
+
 function truncate(s, n) {
   if (!s) return '';
-  const flat = String(s).replace(/\s+/g, ' ').trim();
-  return flat.length > n ? flat.slice(0, n - 1) + '…' : flat;
+  // F-c3d8fd7e: escape BEFORE flattening/truncating — escapeReasonForDisplay
+  // neutralizes the control-byte/bidi/zero-width class \s does not touch
+  // (ESC, C1, bidi overrides, zero-width, combining marks) by turning each
+  // into a safe multi-character literal (\n, \xHH, \uHHHH); only AFTER that
+  // is it safe to run a dumb `\s+` collapse and a dumb character-count slice
+  // on the result. Escaping raw control chars first also means a literal
+  // embedded newline/tab now shows as its visible \n/\t marker instead of
+  // silently vanishing into a collapsed space — consistent with every other
+  // escaped free-text render site in this package.
+  const escaped = escapeReasonForDisplay(String(s));
+  const flat = escaped.replace(/\s+/g, ' ').trim();
+  // F-44200377: `n` is a terminal-column budget (140 for descriptions, 240
+  // for clean-domain summaries), not a code-unit budget — a CJK-heavy string
+  // has a code-unit length far below `n` while its actual on-screen width
+  // sails past it, so the old `flat.length <= n` check let a wide-glyph
+  // string through untruncated at up to ~2x its intended column budget.
+  // displayWidth()/sliceToDisplayWidth() (lib/display-width.js) measure and
+  // cut in terminal columns instead.
+  if (displayWidth(flat) <= n) return flat;
+  // F-391f3e5d: the naive slice can land inside one of the multi-character
+  // tokens escapeReasonForDisplay just produced. Back up to the last
+  // complete boundary before appending the ellipsis so the output never
+  // ends in a dangling, malformed-looking fragment like `...aaa\x…`.
+  // sliceToDisplayWidth() only ever cuts on a code-point boundary, so the
+  // ASCII-only escape tokens it might still land inside are handled
+  // identically to before this fix.
+  return backUpIncompleteEscape(sliceToDisplayWidth(flat, n - 1)) + '…';
 }
 
 function pad(s, width) {
-  return String(s ?? '').padEnd(width, ' ');
+  // F-44200377: pad to a terminal-column target, not a code-unit target —
+  // see maxWidth() below for why `width` itself is now a column count.
+  // String#padEnd pads based on `.length` (code units), which both
+  // under-pads a wide-glyph cell (it needs FEWER trailing spaces to reach a
+  // given column count than its code-unit length suggests) and would anyway
+  // be measuring the wrong unit even if it padded correctly, so the built-in
+  // is not reusable here — this replaces it rather than wrapping it.
+  const str = String(s ?? '');
+  const w = displayWidth(str);
+  return w >= width ? str : str + ' '.repeat(width - w);
 }
 
 function dash(width) {
@@ -305,16 +457,35 @@ function dash(width) {
 }
 
 function maxWidth(rows, key, header) {
-  let w = String(header).length;
+  // F-44200377: renderText()/renderVerifyFixedText() compute a column's
+  // width from the widest CELL in that column (this file's own header
+  // comment: "aligned columns via String.padEnd matching the widest cell per
+  // column") and then pad every other cell out to that width. Measuring
+  // width with `.length` (UTF-16 code units) undercounts any East-Asian-Wide
+  // glyph (CJK ideograph, Hangul syllable, fullwidth form) or emoji, which
+  // render as 2 terminal columns but count as 1 (BMP) or 2 (astral,
+  // surrogate-pair) code units — so a row whose domain/id/file/symbol column
+  // contains such text pads short relative to its true on-screen width,
+  // throwing every column to its right out of alignment for that row.
+  // displayWidth() (lib/display-width.js) measures actual terminal columns
+  // instead, computed AFTER escapeReasonForDisplay/escapePathForDisplay have
+  // already run (via truncate()/formatLoc()/formatSymbol()) so the security
+  // property F-c3d8fd7e established is untouched — this is a measurement
+  // fix on top of already-safe text, not a change to what gets escaped.
+  let w = displayWidth(String(header));
   for (const r of rows) {
-    const len = String(r[key] ?? '').length;
+    const len = displayWidth(String(r[key] ?? ''));
     if (len > w) w = len;
   }
   return w;
 }
 
 function underline(text, char) {
-  return `${text}\n${char.repeat(text.length)}`;
+  // F-44200377: the underline must span the same number of terminal columns
+  // as `text` actually renders as, not `text.length` code units — otherwise
+  // a CJK-heavy section title (e.g. a non-ASCII runId) gets an underline
+  // shorter than the title itself.
+  return `${text}\n${char.repeat(displayWidth(text))}`;
 }
 
 // ════════════════════════════════════════════════════════════════════
@@ -410,9 +581,9 @@ export function renderVerifyFixedMarkdown(model) {
   for (const f of sorted) {
     const cls = VF_CLASS_LABEL[f.classification] || f.classification;
     const sev = SEV_SHORT[f.severity] || f.severity || '?';
-    const loc = f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '—';
+    const loc = formatLoc(f.file, f.line);
     lines.push(
-      `| ${cls} | ${f.finding_id || '—'} | ${sev} | ${loc} | ${f.symbol || '—'} | ${truncate(f.evidence, 140)} |`
+      `| ${cls} | ${f.finding_id || '—'} | ${sev} | ${loc} | ${formatSymbol(f.symbol)} | ${truncate(f.evidence, 140)} |`
     );
   }
 
@@ -454,8 +625,8 @@ export function renderVerifyFixedText(model) {
     cls: VF_CLASS_LABEL[f.classification] || f.classification,
     id: f.finding_id || '—',
     sev: SEV_SHORT[f.severity] || f.severity || '?',
-    loc: f.file ? `${f.file}${f.line ? ':' + f.line : ''}` : '—',
-    symbol: f.symbol || '—',
+    loc: formatLoc(f.file, f.line),
+    symbol: formatSymbol(f.symbol),
     evidence: truncate(f.evidence, 140),
   }));
   const widths = {

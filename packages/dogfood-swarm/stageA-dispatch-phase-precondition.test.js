@@ -75,9 +75,17 @@ describe('d5-swarm-cli-001 — dispatch validates phase BEFORE mutating the cont
 
   afterEach(() => {
     // WAL-mode handles are pooled by path; close before rmSync or Windows
-    // EBUSY's the still-open control-plane.db file.
+    // EBUSY's the still-open control-plane.db file. F-60942f46: closeDb only
+    // ever releases THIS process's own pooled connection — it cannot release
+    // the just-exited CLI-seam subprocess's (below) OS-level lock on the
+    // -wal/-shm sidecar files, so rmSync itself must also be Windows-tolerant
+    // (matches the sibling idiom F-8ad2d58d established package-wide this
+    // wave: redrive.test.js, rewind.test.js, verify-json-purity.test.js,
+    // w3-trends-and-json-output.test.js, gate-verbs-json.test.js,
+    // amend2-d3b-004-cli-globs.test.js, meta-amendB-operator-output.test.js,
+    // cli-smoke.test.js).
     closeDb(dbPath);
-    rmSync(tmpDir, { recursive: true, force: true });
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
   });
 
   it('an invalid phase throws DISPATCH_INVALID_PHASE before any DB write', () => {
@@ -165,6 +173,123 @@ describe('d5-swarm-cli-001 — dispatch validates phase BEFORE mutating the cont
     assert.equal(waves.length, 0, 'CLI seam: invalid-phase dispatch left a phantom waves row');
     const agents = db.prepare('SELECT * FROM agent_runs').all();
     assert.equal(agents.length, 0, 'CLI seam: invalid-phase dispatch left a phantom agent_run');
+    closeDb(dbPath);
+  });
+});
+
+describe('F-3c8a62f1 — dispatch refuses when there are zero AGENT domains (no agent to run)', () => {
+  // dispatch.js's `domains.length === 0` precondition (line 226) reads the
+  // RAW getDomains() list, but the agent-dispatch loop (line 470-472) skips
+  // `ownership_class === 'shared'` domains ("shared is a zone, not an
+  // agent"). Two frozen `shared` domains therefore pass the raw guard
+  // (length 2) and dispatch() proceeds: it commits a `waves` row at
+  // status='dispatched', then returns `{ agents: [] }` — a silent no-op
+  // that reports success and wedges the run (the NEXT dispatch throws
+  // DISPATCH_WAVE_IN_FLIGHT because a 'dispatched' wave already exists,
+  // and there is no agent output anyone can collect to get out of it).
+  //
+  // Per coordinator ruling: the production fix lives in commands/dispatch.js
+  // (swarm-cp-verbs' domain, assigned to verbs THIS wave) and must throw a
+  // NEW code, DISPATCH_NO_AGENT_DOMAINS — distinct from DISPATCH_NO_DOMAINS,
+  // which verbs is keeping for the genuinely-empty-domain-map case (0
+  // domains at all, checked above at line 226 today). Two different causes,
+  // two different codes; this test pins the new one, not the old one.
+  //
+  // Both halves of the invariant are pinned so this cannot become a
+  // half-guard that passes identically whether the fix landed or not: (a)
+  // all-shared refuses and commits nothing; (b) a normal MIXED owned+shared
+  // map still dispatches the owned domain and exits fine (the guard must
+  // key off "zero agent domains", not "any shared domain present").
+  let tmpDir;
+  let dbPath;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'f-3c8a62f1-'));
+    dbPath = join(tmpDir, 'control-plane.db');
+  });
+
+  afterEach(() => {
+    // F-60942f46: neither it() in this block spawns the CLI today (both (a)
+    // and (b) exercise dispatch() in-process), so this describe block is not
+    // currently exposed to the WAL-sidecar teardown race guarded above —
+    // but guarding it too removes the stylistic inconsistency and protects
+    // against a future test being added here that spawns the CLI.
+    closeDb(dbPath);
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
+  });
+
+  it('(a) all-`shared` domain map refuses with DISPATCH_NO_AGENT_DOMAINS and commits no wave', () => {
+    const ALL_SHARED_RUN_ID = 'test-f-3c8a62f1-all-shared';
+    const db = openDb(dbPath);
+    db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, branch, status)
+      VALUES (?, ?, ?, ?, 'main', 'pending')`)
+      .run(ALL_SHARED_RUN_ID, 'org/repo', '/tmp/repo', 'a'.repeat(40));
+    saveDomainDraft(db, ALL_SHARED_RUN_ID, [
+      { name: 'shared-a', globs: ['*.json'], ownership_class: 'shared' },
+      { name: 'shared-b', globs: ['*.yaml'], ownership_class: 'shared' },
+    ]);
+    freezeDomains(db, ALL_SHARED_RUN_ID);
+    closeDb(dbPath);
+
+    let threw = null;
+    try {
+      dispatch({
+        runId: ALL_SHARED_RUN_ID,
+        phase: 'health-audit-a',
+        dbPath,
+        outputDir: tmpDir,
+      });
+    } catch (e) {
+      threw = e;
+    }
+    assert.ok(threw,
+      'dispatch must refuse when every frozen domain is `shared` — there is no agent for anyone to run, ' +
+      'and the current { agents: [] } silent-success shape wedges the run on the NEXT dispatch call');
+    assert.equal(threw.code, 'DISPATCH_NO_AGENT_DOMAINS',
+      'refusal must be the NEW structured code (distinct from DISPATCH_NO_DOMAINS, which stays reserved ' +
+      'for a genuinely empty domain map) — matching the sibling DISPATCH_INVALID_PHASE shape, not a flat Error');
+
+    const after = openDb(dbPath);
+    const waves = after.prepare('SELECT * FROM waves WHERE run_id = ?').all(ALL_SHARED_RUN_ID);
+    assert.equal(waves.length, 0,
+      'F-3c8a62f1 regression: an all-shared dispatch left a phantom waves row (mirrors the phantom-agent_run assertion above)');
+    const agents = after.prepare('SELECT * FROM agent_runs').all();
+    assert.equal(agents.length, 0,
+      'F-3c8a62f1 regression: an all-shared dispatch left a phantom agent_run');
+    closeDb(dbPath);
+  });
+
+  it('(b) a normal MIXED owned+shared domain map still dispatches the owned domain and exits fine', () => {
+    // The other half of the invariant: the guard must key off the
+    // POST-FILTER agent count being zero, not off "any shared domain is
+    // present" — a repo with one real (owned) domain and one shared zone
+    // (globs/**/*.json etc.) is the common shape, not the edge case, and
+    // must keep working exactly as before.
+    const MIXED_RUN_ID = 'test-f-3c8a62f1-mixed';
+    const db = openDb(dbPath);
+    db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, branch, status)
+      VALUES (?, ?, ?, ?, 'main', 'pending')`)
+      .run(MIXED_RUN_ID, 'org/repo', '/tmp/repo', 'a'.repeat(40));
+    saveDomainDraft(db, MIXED_RUN_ID, [
+      { name: 'backend', globs: ['packages/**'], ownership_class: 'owned' },
+      { name: 'shared-config', globs: ['*.json'], ownership_class: 'shared' },
+    ]);
+    freezeDomains(db, MIXED_RUN_ID);
+    closeDb(dbPath);
+
+    const result = dispatch({
+      runId: MIXED_RUN_ID,
+      phase: 'health-audit-a',
+      dbPath,
+      outputDir: tmpDir,
+    });
+    assert.equal(result.agents.length, 1,
+      'the one owned domain must still dispatch — a fix for the all-shared case must not over-reject a mixed map');
+    assert.equal(result.agents[0].domain, 'backend');
+
+    const after = openDb(dbPath);
+    const waves = after.prepare('SELECT * FROM waves WHERE run_id = ?').all(MIXED_RUN_ID);
+    assert.equal(waves.length, 1, 'a normal mixed-domain dispatch commits its wave as usual');
     closeDb(dbPath);
   });
 });

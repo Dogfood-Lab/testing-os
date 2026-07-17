@@ -13,6 +13,21 @@
  *   repoSlug  — e.g. "repo-crawler-mcp"
  */
 
+// F-e1d45d27 (wave 12, LOW): ruleSchemaRejection/rulePolicyRejection below used
+// to hand-roll `/^schema:/` / `/^policy:/` against raw rejection_reasons
+// strings — exactly the drift parse-rejection.js's own file header exists to
+// end ("every operator discriminated failure class with hand-rolled
+// .startsWith() chains ... a fresh drift source the moment a prefix is
+// added"). `@dogfood-lab/verify` was already a TRANSITIVE dependency here (via
+// @dogfood-lab/ingest) and depends on nothing beyond @dogfood-lab/schemas +
+// js-yaml, so importing it directly adds no new workspace cycle. Routing
+// through the authoritative classifier (`.prefix === 'schema:'` / `'policy:'`)
+// is behaviorally identical today — see derive.test.js's "Regression: rules.js
+// schema:/policy: routes through parseRejectionReason (F-e1d45d27)" describe
+// block for the differential proof — and stays correct automatically if the
+// taxonomy ever grows or reorders.
+import { parseRejectionReason } from '@dogfood-lab/verify';
+
 // ─── Helpers ────────────────────────────────────────────────
 
 function hasRejectionMatching(record, pattern) {
@@ -44,6 +59,33 @@ function failedSteps(record) {
 
 function scenarioVerdict(record) {
   return record.scenario_results?.[0]?.verdict || null;
+}
+
+// F-88fb37ff: a scenario's step_results is the ONLY corroborating evidence
+// for a self-reported "blocked" (or "fail") verdict — a verifier fix closed
+// this same gap in @dogfood-lab/verify's validateStepResults, but the derive
+// pipeline reads records from BOTH records/ and records/_rejected/ (see
+// load-records.js) and never consults verification.status, so a
+// self-contradictory record still reaches every rule here with
+// scenario_results untouched. ruleScenarioStepFailure already gates on
+// failedSteps(record).length > 0 for the "fail" verdict; this mirrors that
+// same evidentiary floor for a single scenario object (rule-blocked-scenario
+// iterates scenarios directly rather than through the record-level,
+// index-0-only helpers above).
+//
+// F-e42e8f80 (wave 20, amends F-88fb37ff): renamed from hasFailOrBlockedStep
+// and its condition widened — the original "at least one step actively
+// fail/blocked" bar had the identical blind spot the verifier-level fix
+// (validateStepResults/validateRequiredSteps) closed: a genuinely blocked
+// scenario whose steps honestly report 'skip' (never ran) has ZERO
+// fail/blocked steps, so the old bar silently dropped the
+// 'verification_gap'/'missing_precondition' finding for exactly the class of
+// record most likely to deserve it. Only an ACTIVE 'pass' is a contradiction
+// of a blocked verdict; 'skip'/'partial' are neutral, like a step that never
+// ran. Mirrors the verifier-level fix's "not all pass" bar exactly.
+function hasNonPassStepEvidence(scenario) {
+  const results = scenario.step_results || [];
+  return results.some(s => s != null && s.status !== 'pass');
 }
 
 // ─── Rule 1: Surface/interface misclassification ────────────
@@ -247,12 +289,16 @@ const ruleBlockedScenario = {
   description: 'Detects scenarios that were blocked entirely, typically indicating a missing precondition or infrastructure gap.',
 
   applies(ctx) {
-    return ctx.record.scenario_results?.some(s => s.verdict === 'blocked');
+    // F-88fb37ff: require step evidence backing the self-reported verdict —
+    // otherwise a self-contradictory record (blocked verdict, every step
+    // reports pass) synthesizes a plausible-sounding but false
+    // "infrastructure gap" finding the record's own evidence contradicts.
+    return ctx.record.scenario_results?.some(s => s.verdict === 'blocked' && hasNonPassStepEvidence(s));
   },
 
   derive(ctx) {
     const { record, repoSlug } = ctx;
-    const blocked = record.scenario_results.filter(s => s.verdict === 'blocked');
+    const blocked = record.scenario_results.filter(s => s.verdict === 'blocked' && hasNonPassStepEvidence(s));
 
     return blocked.map(scenario => {
       const reason = scenario.blocking_reason || 'No blocking reason provided';
@@ -330,13 +376,13 @@ const ruleSchemaRejection = {
     // Only fire if not already covered by surface misclassification
     const reasons = ctx.record.verification?.rejection_reasons || [];
     const hasSurfaceIssue = reasons.some(r => /product_surface/.test(r));
-    const hasSchemaIssue = reasons.some(r => /^schema:/.test(r));
+    const hasSchemaIssue = reasons.some(r => parseRejectionReason(r).prefix === 'schema:');
     return hasSchemaIssue && !hasSurfaceIssue;
   },
 
   derive(ctx) {
     const { record, repoSlug } = ctx;
-    const reasons = record.verification?.rejection_reasons?.filter(r => /^schema:/.test(r)) || [];
+    const reasons = record.verification?.rejection_reasons?.filter(r => parseRejectionReason(r).prefix === 'schema:') || [];
     const surface = safeRecordSurface(record, repoSlug);
 
     return [{
@@ -369,13 +415,13 @@ const rulePolicyRejection = {
     // Only fire if not already covered by evidence policy mismatch
     const reasons = ctx.record.verification?.rejection_reasons || [];
     const hasEvidenceIssue = reasons.some(r => /evidence/.test(r));
-    const hasPolicyIssue = reasons.some(r => /^policy:/.test(r));
+    const hasPolicyIssue = reasons.some(r => parseRejectionReason(r).prefix === 'policy:');
     return hasPolicyIssue && !hasEvidenceIssue;
   },
 
   derive(ctx) {
     const { record, repoSlug } = ctx;
-    const reasons = record.verification?.rejection_reasons?.filter(r => /^policy:/.test(r)) || [];
+    const reasons = record.verification?.rejection_reasons?.filter(r => parseRejectionReason(r).prefix === 'policy:') || [];
     const surface = safeRecordSurface(record, repoSlug);
 
     return [{
@@ -397,6 +443,66 @@ const rulePolicyRejection = {
   }
 };
 
+// ─── Rule 9: Partial scenario with contradicting evidence ───
+
+const rulePartialScenarioEvidence = {
+  ruleId: 'rule-partial-scenario-evidence',
+  description: 'Detects scenarios with a self-reported "partial" verdict backed by non-pass step evidence — the derivation-layer half of the F-cc198701 fix, so a partial verdict is no longer invisible to every rule in this file.',
+
+  applies(ctx) {
+    // F-cc198701 (wave 22, confirming audit of F-88fb37ff/F-e42e8f80): this
+    // rule's two closest siblings each enumerate exactly ONE of the four
+    // legal scenario_results[].verdict enum values (dogfood-record-
+    // submission.schema.json: ["pass","fail","blocked","partial"]) —
+    // ruleBlockedScenario checks only 'blocked' (line ~296 above) and
+    // ruleScenarioStepFailure checks only 'fail' (line ~240 above). Neither
+    // ever checks 'partial', so a 'partial'-verdict scenario_result was
+    // invisible to EVERY rule in this file regardless of its step evidence:
+    // a self-contradictory record (verdict:'partial' with every step actively
+    // 'fail' — strictly worse evidence than what the other two rules already
+    // catch) generated zero corrective/diagnostic finding anywhere in the
+    // intelligence layer, on top of being a false-rejection gap at the
+    // verifier layer (see steps.js's matching F-cc198701 fix, same wave).
+    //
+    // A dedicated sibling rule — rather than widening ruleBlockedScenario's
+    // own condition, which the finding's fix note offered as an alternative —
+    // keeps that rule's "was blocked: <reason>" title/summary text honest:
+    // blocking_reason is schema-documented as "Required when verdict is
+    // blocked," so reusing 'blocked' wording for a genuinely 'partial'
+    // scenario would misdescribe it to a human reviewer.
+    return ctx.record.scenario_results?.some(s => s.verdict === 'partial' && hasNonPassStepEvidence(s));
+  },
+
+  derive(ctx) {
+    const { record, repoSlug } = ctx;
+    const partial = record.scenario_results.filter(s => s.verdict === 'partial' && hasNonPassStepEvidence(s));
+
+    return partial.map(scenario => {
+      const surface = mapToValidSurface(scenario.product_surface || 'cli', repoSlug);
+      const nonPassIds = (scenario.step_results || [])
+        .filter(s => s != null && s.status !== 'pass')
+        .map(s => s.step_id);
+
+      return {
+        issue_kind: 'verification_gap',
+        root_cause_kind: 'contract_drift',
+        remediation_kind: 'scenario_change',
+        transfer_scope: 'surface_local',
+        journey_stage: 'verification',
+        product_surface: surface,
+        slug: `${repoSlug}-partial-${scenario.scenario_id}`,
+        title: `Scenario "${scenario.scenario_id}" reported "partial" backed by non-pass step evidence`,
+        summary: `The scenario "${scenario.scenario_id}" self-reported a "partial" verdict, corroborated by non-pass step(s): ${nonPassIds.join(', ')}. A partial verdict backed by non-pass evidence may indicate an incomplete run, a scenario whose success criteria need review, or a genuinely partial pass worth surfacing to the portfolio layer.`,
+        rationale: `scenario_results contains a scenario with verdict "partial" and non-pass step evidence: [${nonPassIds.join(', ')}].`,
+        evidence: [
+          { evidence_kind: 'scenario_result', record_id: record.run_id, scenario_id: scenario.scenario_id, note: `Partial verdict corroborated by non-pass steps: ${nonPassIds.join(', ')}` },
+          { evidence_kind: 'record', record_id: record.run_id, note: 'Scenario verdict is partial with corroborating non-pass step evidence.' }
+        ]
+      };
+    });
+  }
+};
+
 // ─── Export all rules ───────────────────────────────────────
 
 export const RULES = [
@@ -407,7 +513,8 @@ export const RULES = [
   ruleBlockedScenario,
   ruleExecutionModeGap,
   ruleSchemaRejection,
-  rulePolicyRejection
+  rulePolicyRejection,
+  rulePartialScenarioEvidence
 ];
 
 export function getRuleById(ruleId) {

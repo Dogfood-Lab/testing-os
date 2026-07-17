@@ -27,7 +27,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { validatePayload } from '@dogfood-lab/schemas';
-import { buildSubmission } from '@dogfood-lab/report/build-submission.js';
+import { buildSubmission, precheckSubmission } from '@dogfood-lab/report/build-submission.js';
 
 import { buildScenarioResults, computeOverallVerdict } from './persist-results.js';
 import { buildDogfoodSubmission } from './lib/persist/dogfood-bridge.js';
@@ -174,6 +174,77 @@ describe('persist-results.js — schema conformance (C1)', () => {
       assert.fail(`dogfood-bridge submission failed schema validation:\n  ${lines.join('\n  ')}`);
     }
     assert.equal(result.valid, true);
+  });
+
+  // A wave with zero agents AND no verification receipt is reachable in
+  // production: dispatch() legitimately returns `{agents: []}` when every
+  // domain is 'shared' ownership class, and buildRunExport reads verification
+  // receipts independently of agent count (lib/persist/export.js), so neither
+  // half implies the other. F-1f8fd647 stopped such a wave from claiming a
+  // vacuous 'pass', but left the scenario carrying no evidence at all:
+  // step_results derives entirely from `w.agents` plus an optional
+  // verification step, so this shape emitted `step_results: []` — which the
+  // submission contract rejects whatever verdict label is chosen.
+  function makeZeroAgentExport() {
+    return {
+      run: {
+        id: 'run-zero-agents',
+        repo: 'mcp-tool-shop-org/test-repo',
+        branch: 'main',
+        commit_sha: COMMIT_SHA,
+        created: STARTED_AT,
+        completed: FINISHED_AT,
+      },
+      waves: [{
+        number: 1,
+        phase: 'health-audit-a',
+        status: 'collected',
+        agents: [],
+        verification: null,
+        violations: [],
+      }],
+      verification: [],
+      findings: { summary: { total: 0, by_severity: {} }, items: [] },
+      promotions: [],
+    };
+  }
+
+  it('a zero-agent wave with no verification receipt still emits step evidence (dogfood-bridge path)', () => {
+    const submission = buildDogfoodSubmission(makeZeroAgentExport(), 'partial');
+
+    const result = validatePayload('recordSubmission', submission);
+    if (!result.valid) {
+      const lines = result.errors.map(e => `${e.path || '/'} ${e.message}`);
+      assert.fail(`zero-agent wave produced a schema-invalid submission:\n  ${lines.join('\n  ')}`);
+    }
+
+    // precheckSubmission is the gate `swarm persist` actually trips on the way
+    // out (report/build-submission.js), and the central ingest verifier applies
+    // the same contract on the way in. Assert it alongside the raw schema so a
+    // schema-only pass cannot mask a rejection at the real consumer boundary.
+    const precheck = precheckSubmission(submission);
+    assert.deepEqual(precheck.errors, [], 'precheck must accept a zero-agent wave submission');
+    assert.equal(precheck.valid, true);
+  });
+
+  it('the zero-evidence step records non-execution rather than fabricating a run', () => {
+    const submission = buildDogfoodSubmission(makeZeroAgentExport(), 'partial');
+    const scenario = submission.scenario_results[0];
+
+    assert.equal(scenario.step_results.length, 1,
+      'a wave with no agents and no receipt must still emit the one step that says nothing ran');
+
+    const [step] = scenario.step_results;
+    assert.equal(step.status, 'blocked',
+      "'blocked' is the step-status enum's term for did-not-run; any other status would claim execution that never happened");
+    assert.ok(step.notes && step.notes.length > 0,
+      'the synthesized step must explain why it is blocked, or it is evidence of nothing');
+
+    // verify/validators/steps.js rejects a 'pass' verdict carrying any blocked
+    // step. The synthesized step is only emitted on the same zero-agent branch
+    // that forces the 'blocked' verdict (F-1f8fd647), so the two cannot
+    // disagree — pin that pairing rather than trusting it to stay true.
+    assert.equal(scenario.verdict, 'blocked');
   });
 
   it('full pipeline: swarm scenario_results survive buildSubmission + precheck end-to-end', () => {

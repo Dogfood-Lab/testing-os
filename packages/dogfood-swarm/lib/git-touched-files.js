@@ -83,8 +83,26 @@ export function getActualTouchedFiles(repoPath, options = {}) {
   // worktree status). A rename/copy record is special: the status field is
   // followed by the DESTINATION path in this record, then the SOURCE path as a
   // SEPARATE trailing NUL field (there is no ` -> ` separator under `-z`). We
-  // want the destination, so we consume — and discard — that extra source
-  // field when we see an R/C status.
+  // want the destination as the primary touched entry, but the source is
+  // NOT discarded (F-60a257a6): it is folded into `deleted` below.
+  //
+  // F-60a257a6: the source half of a rename/copy is a real ownership signal,
+  // not noise. `git mv other-domain/file.js src/file.js` makes the
+  // DESTINATION (src/file.js) the only path this loop used to see — which is
+  // IN this agent's domain and therefore innocuous — while the SOURCE
+  // (other-domain/file.js, a file the agent does NOT own) silently vanished
+  // from the touched set entirely, because the old code did nothing but
+  // `i++` past it. That is exactly the class of violation checkOwnership
+  // exists to catch (an agent removing a file outside its assigned domain),
+  // and the independently-computed evidence trail had no record of it — the
+  // reverse direction (moving a file OUT of the agent's own domain) was
+  // still caught, since the DESTINATION path itself would fail the
+  // domain-glob match, so only the move-in direction was blind. The source
+  // path is pushed to `deleted`, not a new bucket: from the touched-set's
+  // perspective a rename-away IS a deletion at that path (the file no
+  // longer exists there), which is the existing, correctly-named bucket for
+  // exactly that fact, and it flows into `all` (what checkOwnership
+  // consults) the same way any other `D` status already does.
   const fields = porcelain.split('\0');
   for (let i = 0; i < fields.length; i++) {
     const record = fields[i];
@@ -92,8 +110,13 @@ export function getActualTouchedFiles(repoPath, options = {}) {
     const xy = record.slice(0, 2);
     const path = record.slice(3); // skip the single space after XY
     if (xy[0] === 'R' || xy[1] === 'R' || xy[0] === 'C' || xy[1] === 'C') {
-      // The next field is the rename/copy SOURCE — consume it so it is not
-      // misread as its own record. The destination (`path`) is what we keep.
+      // The next field is the rename/copy SOURCE. Consume it as its own
+      // record (so the outer loop does not also try to parse it as an XY
+      // line) AND record it as touched — the agent moved this path out of
+      // wherever it lived, and that is ownership-relevant at the SOURCE
+      // location regardless of who owns the destination.
+      const sourcePath = fields[i + 1];
+      if (sourcePath) deleted.push(sourcePath);
       i++;
     }
     if (xy === '??') untracked.push(path);

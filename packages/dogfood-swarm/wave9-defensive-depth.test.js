@@ -389,11 +389,21 @@ describe('ensureGitignore — F-375053-001 no shell', () => {
     assert.equal(after, 'node_modules/\n.swarm/\n');
   });
 
-  it('is a no-op when .gitignore does not exist', () => {
-    // No file beforehand — ensureGitignore must NOT create one (unchanged
-    // semantics from the original wave-1 fix).
+  it('creates .gitignore when the repo has none (F-afe6511b)', () => {
+    // Behavior CHANGE, deliberate. This test previously asserted the opposite
+    // ("must NOT create one — unchanged semantics from the original wave-1
+    // fix"), but the wave-1 fix was about replacing a shell `cat`/`echo` with
+    // pure fs, NOT about create-vs-no-op; the early return was incidental and
+    // F-afe6511b identified it as the defect: the function's name and its own
+    // docstring promise "Ensure .swarm/ is in the repo's .gitignore", and
+    // createWorktree calls it unconditionally relying on that. In a repo with
+    // no .gitignore it silently established nothing, leaving the swarm's own
+    // worktree jail (<repo>/.swarm/worktrees/) untracked in the operator's
+    // tree — which getActualTouchedFiles' `git status --porcelain` then reports
+    // as a phantom ownership violation.
     ensureGitignore(tmp);
-    assert.equal(existsSync(join(tmp, '.gitignore')), false);
+    assert.equal(existsSync(join(tmp, '.gitignore')), true);
+    assert.match(readFileSync(join(tmp, '.gitignore'), 'utf-8'), /\.swarm\//);
   });
 });
 

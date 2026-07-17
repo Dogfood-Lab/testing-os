@@ -28,7 +28,7 @@
  *     CLI_INVALID_GLOBS_JSON).
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { dirname, join } from 'node:path';
@@ -44,11 +44,17 @@ const CLI_PATH = join(__dirname, 'cli.js');
 
 const RUN_ID = 'test-d3b-004';
 
+// SWARM_DB fallback pin (task_6026249b): a call site that forgets extraEnv must
+// hit a temp DB, never the live repo control-plane.db — enforced package-wide
+// by meta-wal-sidecar-teardown-guard.test.js.
+const SAFE_DB_DIR = mkdtempSync(join(tmpdir(), 'd3b-004-safe-db-'));
+after(() => { try { rmSync(SAFE_DB_DIR, { recursive: true, force: true }); } catch { /* Windows lock lag */ } });
+
 function runCli(args, extraEnv = {}) {
   return spawnSync(process.execPath, [CLI_PATH, ...args], {
     encoding: 'utf-8',
     cwd: __dirname,
-    env: { ...process.env, ...extraEnv },
+    env: { ...process.env, SWARM_DB: join(SAFE_DB_DIR, 'control-plane.db'), ...extraEnv },
   });
 }
 
@@ -63,6 +69,13 @@ function setupRun(dbPath) {
   closeDb(dbPath);
 }
 
+// F-8ad2d58d: every `finally` block below is Windows-tolerant on its rmSync
+// (matches the established sibling idiom in redrive.test.js, rewind.test.js,
+// and every wave4/6/8/10/12-*-swarm-cp-pins.test.js) — the CLI subprocess
+// each it() spawns can still hold the WAL sidecar lock for a beat after it
+// exits. closeDb(dbPath) only ever releases THIS process's own pooled
+// connection, never the just-exited child's, so guarding it alone would not
+// have protected the rmSync call that actually raises EBUSY/EPERM.
 describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
   it('--edit --globs <invalid-json> exits non-zero with CLI_INVALID_GLOBS_JSON code', () => {
     const tmpDir = mkdtempSync(join(tmpdir(), 'd3b-004-edit-bad-'));
@@ -84,7 +97,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must include an actionable Next: hint; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -103,7 +116,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must name the code CLI_INVALID_GLOBS_JSON; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -122,7 +135,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must name the code; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -141,7 +154,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must name the code; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -160,7 +173,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `stderr must name the code; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 
@@ -180,7 +193,7 @@ describe('D3B-004 — cli.js --globs JSON parse hardening', () => {
         `valid --globs must not trip the JSON-shape guard; got:\n${r.stderr}`);
     } finally {
       try { closeDb(dbPath); } catch { /* */ }
-      rmSync(tmpDir, { recursive: true, force: true });
+      try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
     }
   });
 });

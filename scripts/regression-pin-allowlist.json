@@ -1,17 +1,185 @@
 {
-  "$comment": "Allowlist for scripts/check-finding-regression-pins.mjs (W2-CI-001). Each entry is an F-id that appears in source files but has no corresponding test pin, AND has a deliberate justification. The parser is intentionally permissive — it cannot distinguish 'this comment IS a fix pin' from 'this comment MENTIONS the id' (see parse-regression-pins.js JSDoc 'permissive limitation'). Cross-references in source comments are the most common legitimate orphan; this allowlist captures them so the always-on CI gate stays green without forcing test pins for prose mentions. Adding an entry: F-id key, value is an object with at least { reason, file }. Entries should be revisited each release — if the source reference goes away, drop the allowlist entry.",
+  "$comment": "Allowlist for scripts/check-finding-regression-pins.mjs (W2-CI-001). Each entry is an F-id that appears in source files but has no declared @pins tag, AND has a deliberate justification — it is a prose cross-reference, not a fix pin (see pin-declarations.mjs's module docstring for why a declared-tag mechanism no longer needs to guess this the way the retired text-heuristic gate did). Cross-references in source comments are the most common legitimate case; this allowlist captures them so the always-on CI gate stays green without forcing a test tag for a prose mention. SCHEMA (dispatch C8, findings 21/22 — every entry requires all four fields, enforced by loadAllowlist, throws if any are missing): { reason: string (why this is not a real pin), file: string (where the mention lives), owner: string (who to ask before changing the disposition — 'coordinator' for cross-domain dispositions minted before this schema existed, the specific domain name for anything owned going forward), revalidate_by: 'YYYY-MM-DD' (a stale-but-still-applied entry is not an error — the gate reports entries past this date as due for a fresh look, per finding 21's ~50% dead-suppression base rate; this is a nudge, not a block). Adding an entry: F-id key, all four fields required. Entries should be revisited each release — if the source reference goes away, drop the allowlist entry; if a declared @pins tag lands for the id instead, the gate itself will report the entry as unused (safe to delete) rather than requiring a human to notice first.",
   "allow": {
+    "F-f0d874a7": {
+      "reason": "Cross-reference, not a fix pin. Both mentions in lib/wave-state-machine.js are prose ABOUT a deliberately-unfixed caveat, not a guard: the module docblock (:14) and an inline note (:201) record that the override branch validates toStatus against the canonical wave-status SET rather than the SPECIFIC target sanctioned for each blocked FROM state — deliberately weaker, and production-unreachable today because every override callsite (revalidate.js, rewind.js) hardcodes a literal target. There is no behavior to pin: a test asserting the weaker check would pin the caveat as correct, and a test asserting the stronger one would fail by design. The comments exist precisely so a future caller passing a VARIABLE toStatus reads the warning first — deleting them to satisfy this gate would remove the only thing standing between that caller and the hazard. Added at wave-4 integration by the coordinator, not by ci-tooling: this pin was minted in swarm-cp-core's isolated worktree and is invisible from ci-tooling's, so under --isolate the allowlist cannot be complete until merge. That is a structural property of isolation, not an oversight by either domain.",
+      "file": "packages/dogfood-swarm/lib/wave-state-machine.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-14"
+    },
     "F-693631-010": {
       "reason": "Cross-reference in scripts/build.mjs comment naming the drift class — not a fix-site pin, the pin lives in packages/dogfood-swarm where the AUDIT_PHASES enum is enforced.",
-      "file": "scripts/build.mjs"
+      "file": "scripts/build.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
     },
     "F-742440-002": {
       "reason": "Cross-reference in packages/dogfood-swarm/commands/persist.js comment pointing readers at persist-results.js for the canonical pattern. Test coverage lives with the canonical pattern.",
-      "file": "packages/dogfood-swarm/commands/persist.js"
+      "file": "packages/dogfood-swarm/commands/persist.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-14"
     },
     "F-742440-012": {
       "reason": "Cross-reference in packages/dogfood-swarm/db/schema.js naming a wave-1 sibling. Test coverage lives with the sibling fix in wave-1.",
-      "file": "packages/dogfood-swarm/db/schema.js"
+      "file": "packages/dogfood-swarm/db/schema.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-COORD-004": {
+      "reason": "Cross-reference in .github/workflows/ci.yml naming the doc-drift CLASS (error code / status enum / legacy path added without its sibling doc entry) that scripts/check-doc-drift.mjs catches generically via scripts/doc-drift-patterns.json. There is no single fix-site to pin: the check is config-driven (error-codes, statuses, and further entries in doc-drift-patterns.json), and each entry is exercised by scripts/check-doc-drift.test.mjs — including the non-vacuity 'error-codes META' test that strips an enforced code from the handbook and asserts drift fires. Real coverage lives there, not at this citation.",
+      "file": ".github/workflows/ci.yml",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-5b0996e4": {
+      "reason": "Doc-only correction in packages/dogfood-swarm/commands/dispatch.js's dispatch() header: fixes a prior version of the SAME header that wrongly claimed both worktree creation and prompt-file writes were 'EXPLICITLY outside the tx'. Worktree creation running INSIDE db.transaction() (so a thrown IsolationError rolls back all DB writes while any already-created worktree survives as an FS orphan) is exactly what packages/dogfood-swarm/amend2-d3b-002-dispatch-tx.test.js's D3B-002 suite exercises ('mid-loop failure rolls back ALL DB writes' — triggered via --isolate with no .git, i.e. IsolationError propagating out of the tx). That coverage predates and is independent of this id; the fix here is the corrected prose, not new behavior.",
+      "file": "packages/dogfood-swarm/commands/dispatch.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-113b0115": {
+      "reason": "Cross-reference in packages/portfolio/lib/parse-regression-pins.js's F-4fc233fe fix comment (wave 26), not a fix pin. F-4fc233fe scoped classifyFile's `.spec.` credit to the vitest package (schemas); the comment cites F-113b0115/F-4d5e0db4 as the prior ci-tooling fix (scripts/stageC-check-test-floor.test.mjs) of the SAME node-test-discovery class, to document that the fix existed weeks earlier and never propagated to the portfolio domain — the exact 'fix the class, not the instance' history worth preserving. The fix pin is F-4fc233fe (its own test in parse-regression-pins.test.js); these two are the prose cross-reference to the sibling fix, whose coverage lives in the ci-tooling gate.",
+      "file": "packages/portfolio/lib/parse-regression-pins.js",
+      "owner": "backend",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-4d5e0db4": {
+      "reason": "Cross-reference in packages/portfolio/lib/parse-regression-pins.js's F-4fc233fe fix comment (wave 26), not a fix pin — the sibling of F-113b0115 above. Both name the prior ci-tooling fix of the same .spec./node-test-discovery classifyFile class; the fix pin is F-4fc233fe. Coverage for the cited fix lives in its own ci-tooling gate (scripts/stageC-check-test-floor.test.mjs).",
+      "file": "packages/portfolio/lib/parse-regression-pins.js",
+      "owner": "backend",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-W1-CI-001": {
+      "reason": "Cross-reference in .github/workflows/pages.yml naming the historical id for the pa11y job-permission-isolation restructure — the same restructure the file elsewhere attributes to F-a52776d5 (both appear independently in prose, not dual-labeled at one site). Real behavioral coverage is scripts/stageC-check-pages-a11y-isolation.test.mjs's F-a52776d5/F-32c517c4 tests, which assert the a11y job is dedicated with `permissions: {}` and that pa11y does NOT run inside the elevated deploy job — the exact property this citation describes.",
+      "file": ".github/workflows/pages.yml",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-eb9fc4aa": {
+      "reason": "Doc-only correction in .github/workflows/release.yml's top-of-file header: the header narrated the pre-fix 'shadows the system npm with npm@latest' behavior as current fact even though the F-c0348ff6 fix (90-odd lines below) had already replaced that install with an exact version pin. No new behavior — the header now describes the exact-pin mechanism and points at the F-c0348ff6 comment block for the rationale. Real behavioral coverage (the install line itself must never resolve npm@latest and must pin npm@X.Y.Z) is scripts/stageC-check-release-resilience.test.mjs's 'F-c0348ff6' test, which predates and is independent of this id.",
+      "file": ".github/workflows/release.yml",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-33ff7b4b": {
+      "reason": "Doc-only correction in .github/workflows/ci.yml's fail-fast justification comment: it named a specific Node pair (22 vs 20) that F-W1-CI-010 (two comment blocks below, same strategy: block) had already dropped 20 from, self-contradicting within the same file. Reworded version-agnostically so it cannot go stale the next time the matrix moves — no new behavior. Real structural coverage (fail-fast: false and node-version: [22, 24]) is scripts/stageC-check-ci-hardening.test.mjs's 'F-W1-CI-010' test, which predates and is independent of this id.",
+      "file": ".github/workflows/ci.yml",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-e241fa61": {
+      "reason": "Doc-only correction in packages/dogfood-swarm/commands/redrive.js's AGENT_ELIGIBLE_SOURCES comment, clarifying that a WAVE-level 'failed' status (unlike an agent-level 'failed') is BLOCKED and needs the override path. The behavior itself — a failed wave redriven only via override — is exercised by packages/dogfood-swarm/redrive.test.js's 'failed wave is redriven via override path (BLOCKED source)' test (describe block 'redrive — wave-level transition paths'), which predates and is independent of this id.",
+      "file": "packages/dogfood-swarm/commands/redrive.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-L1-001": {
+      "reason": "Adjacent coverage — real coverage is the wave-9 filter sweep test at amend1-wave9-filter-discipline.test.js:204 ('every FROM agent_runs template literal in non-allowlisted files contains the wave-9 filter (per-query, not per-file)'), which genuinely exercises status.js's violations subquery (status.js is not on that test's internal ALLOWLIST array, so it is swept like any other file); same accepted shape as F-893adcd1's entry. F-L1-004 is a historical fix-up comment inside that same sweep test (line 205), NOT a test title — it never appears inside any describe()/it()/test() title anywhere in the repo. (Corrected at wave-10 ci-tooling amend, run swarm-1784091637-5127, per F-e2fc82f5: the prior wording — 'the dedicated regression test is titled under sibling id F-L1-004' — overclaimed a literal title correspondence that does not exist; the underlying disposition is unchanged from the original Wave-8 coordinator disposition, run swarm-1784091637-5127, after the F-f0339e12 structural test-pin filter surfaced this id as narrative-only: its sole test-side mention is a mid-sentence historical note inside amend1-wave9-filter-discipline.test.js's F-L1-004 comment.)",
+      "file": "packages/dogfood-swarm/commands/status.js",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-XXXXXX-001": {
+      "reason": "The parser's own documented illustrative placeholder (parse-regression-pins.js JSDoc) colliding with an unrelated test's identical illustrative string — the exact accepted false-positive class the JSDoc names. (Wave-8 coordinator disposition, run swarm-1784091637-5127. The JSDoc's 'Known accepted false positive' paragraph names this allowlist as the designated absorber; the colliding test-side string lives in d3b-006-finding-id-collision.test.js's narrative about Date.now() tails.)",
+      "file": "packages/portfolio/lib/parse-regression-pins.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-742440-007": {
+      "reason": "Historical-context mention inside wave12-observability.test.js, whose dedicated coverage is titled under sibling id F-693631-001. (Wave-8 coordinator disposition, run swarm-1784091637-5127. The source pins narrate the wave-1 silent --isolate catch history in dispatch.js/resume.js/lib/errors.js; the wave-12 re-fix F-693631-001 carries the behavioral tests.)",
+      "file": "packages/dogfood-swarm/commands/dispatch.js, packages/dogfood-swarm/commands/resume.js, packages/dogfood-swarm/lib/errors.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-c63c7498": {
+      "reason": "Illustrative canonical-id example inside cmdApprove's user-facing CLI_FINDINGS_ID_NO_MATCH hint string (cli.js) — product copy showing the operator what a fingerprint-minted finding_id looks like, deliberately hash-shaped because the hint explains the hash-format namespace. Not a fix pin; the F-ad540b83 id-namespace fix it belongs to carries its own CLI-subprocess pins in wave8-4091637-5127-swarm-cp-pins.test.js. Same accepted class as F-XXXXXX-001. (Wave-8 coordinator disposition at serial verify, run swarm-1784091637-5127: the example was minted in the verbs worktree while the stricter structural matcher was minted in ci-tooling's — invisible to each other under --isolate until merge, the same structural property F-f0d874a7's entry documents.)",
+      "file": "packages/dogfood-swarm/cli.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-100000-072": {
+      "reason": "Wave-18 pin-declarations-corpus.mjs adversarial fixture data (dispatch C9, findings 24/25/28) — a synthetic id embedded inside evasionCode/declaredCode string literals so pin-declarations.test.mjs and pin-declarations-differential.test.mjs can assert the retired regex/char-class-depth evasion shape (F-16275dfd / F-f37bb9ae) credits nothing under the new mechanism. Same accepted class as F-XXXXXX-001 (parse-regression-pins.js's own illustrative placeholder) — the parser's blind whole-file-text scan cannot distinguish a real fix pin from an id-shaped string used as test data.",
+      "file": "scripts/pin-declarations-corpus.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-100000-073": {
+      "reason": "Wave-18 pin-declarations-corpus.mjs adversarial fixture data — synthetic id for the title-prose-empty-body evasion shape (F-ec9622fd). Same accepted class as F-100000-072/F-XXXXXX-001.",
+      "file": "scripts/pin-declarations-corpus.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-100000-074": {
+      "reason": "Wave-18 pin-declarations-corpus.mjs adversarial fixture data — synthetic id for the escaped-quote-title evasion shape (F-e003b1fb). Same accepted class as F-100000-072/F-XXXXXX-001.",
+      "file": "scripts/pin-declarations-corpus.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-100000-075": {
+      "reason": "Wave-18 pin-declarations-corpus.mjs adversarial fixture data — synthetic id for the comment-prose evasion shape (F-234da564). Same accepted class as F-100000-072/F-XXXXXX-001.",
+      "file": "scripts/pin-declarations-corpus.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-100000-076": {
+      "reason": "Wave-18 pin-declarations-corpus.mjs adversarial fixture data — synthetic id for the string-prose (console.log) evasion shape (F-234da564). Same accepted class as F-100000-072/F-XXXXXX-001.",
+      "file": "scripts/pin-declarations-corpus.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-100000-077": {
+      "reason": "Wave-18 pin-declarations-corpus.mjs adversarial fixture data — synthetic id for the regex-literal-spelling-assert evasion shape (F-9c41a2b7 / F-f37bb9ae). Same accepted class as F-100000-072/F-XXXXXX-001.",
+      "file": "scripts/pin-declarations-corpus.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-100000-078": {
+      "reason": "Wave-18 pin-declarations-corpus.mjs adversarial fixture data — synthetic id for the template-literal-unindented-continuation evasion shape (F-6573391e, this wave's own HIGH finding). Same accepted class as F-100000-072/F-XXXXXX-001.",
+      "file": "scripts/pin-declarations-corpus.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-100000-079": {
+      "reason": "Wave-18 pin-declarations-corpus.mjs adversarial fixture data — synthetic id for the id-after-template-interpolation-in-title evasion shape (F-b00fb0d0, this wave's own MEDIUM finding). Same accepted class as F-100000-072/F-XXXXXX-001.",
+      "file": "scripts/pin-declarations-corpus.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-a544c1c4": {
+      "reason": "Doc-only correction in pin-declarations.mjs's module docstring (CROSS-DOMAIN FOLLOW-UP paragraph): the docstring, written in the same commit (132dc18) that shipped the fix, described a DIFFERENT final decision than the one actually shipped — it claimed the @babel/parser package.json edit had been reverted rather than landed, contradicting that commit's own diff and commit message. No new behavior: @babel/parser resolves identically either way (it was already a real, working dependency, only its DECLARED-vs-transitive status was in question), so there is nothing to test-pin — the fix corrects prose to match a state that was already true at HEAD. Same accepted class as F-eb9fc4aa/F-33ff7b4b/F-e241fa61 (doc-only corrections whose real behavioral coverage predates and is independent of the correction id).",
+      "file": "scripts/pin-declarations.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-b48cb209": {
+      "reason": "Cross-reference, not a fix pin. F-b48cb209 is the id this exact gap (the grandfather-manifest hash's undisclosed same-commit-recompute residual) was originally filed under at wave-23 triage, before it was deferred for file contention and re-opened at wave-26 as F-7428a68f once check-finding-regression-pins.mjs stabilized (commit 4ef9c88). The two ids name the SAME gap; only F-7428a68f carries the real fix and its declared regression pin (see the F-7428a68f test in check-finding-regression-pins.test.mjs). F-b48cb209 appears solely in the new DISCLOSED_GAPS docstring bullet's own history note, for audit-trail continuity — there is no separate behavior to pin under the retired id.",
+      "file": "scripts/check-finding-regression-pins.mjs",
+      "owner": "ci-tooling",
+      "revalidate_by": "2026-10-14"
+    },
+    "F-bd8b4353": {
+      "reason": "Cross-reference, not a fix pin. F-bd8b4353 is the id under which the false-fixed lie was first caught as a ONE-OFF — an earlier wave proved F-ef033db4 was marked '[fixed]' while swarms/templates/audit.md and explore.md sat byte-identical to their 2026-04-24 migration commit, and named it exactly: 'a false entry in the swarm's own fix ledger'. It was closed by correcting those two template files (the instance); the mechanism that manufactured the entry was never touched, and it went on to close 9 untouched findings on run swarm-1784091637-5127 wave 28. buildAuditPrompt's comment cites the id solely as that precedent — the argument for why the fix belongs in the brief rather than in another round of file-by-file correction. F-bd8b4353's own fix lives in the template files and is unrelated to this one; the MECHANISM fix here is behaviorally regression-tested in packages/dogfood-swarm/open-prior-confirmation-brief.test.js (real describe/it coverage of the routing behavior; that file carries no declared @pins tag for this mechanism — its one @pins mention is a comment explaining why the unrelated id F-1a877be1 deliberately has none). There is no separate behavior to pin under F-bd8b4353 in this file.",
+      "file": "packages/dogfood-swarm/lib/templates.js",
+      "owner": "swarm-cp-core",
+      "revalidate_by": "2026-10-16"
+    },
+    "F-35304e50": {
+      "reason": "Cross-reference, not a fix pin — the finding's own text says no code fix is needed. F-35304e50 (wave 28, LOW) asked only that escape-reason.js's 'Known residual' section record two things the wave-27 audit had closed live: that the \\p{Mc}-interleave generalizes across 14 codepoints rather than being a one-codepoint quirk, and that no INVISIBLE codepoint can reach the same trick (every mechanical run-breaker is visible by Unicode's own design intent, per TR44). The wave-29 amend is comment-only: verified by diffing the lane's worktree — 56 insertions, every one inside a comment block, zero non-comment lines changed. There is no behavior change to assert, so a declared @pins tag would be a dangling tag on a test that could only restate the docstring. The escaper's ACTUAL behavior for this class is already pinned by F-046d3756's property-widening tests (f-046d3756-zalgo-mark-property-widening.test.js), which wave 29 additionally strengthened from block-sampling to a structural \\p{Mn}/\\p{Me} assertion under F-1c634b2f.",
+      "file": "packages/dogfood-swarm/commands/lib/escape-reason.js",
+      "owner": "swarm-cp-verbs",
+      "revalidate_by": "2026-10-17"
+    },
+    "F-6a5eb347": {
+      "reason": "Cross-reference, not a fix pin. scopeConfirmedToOwningDomain's docstring cites F-6a5eb347 to DISCLOSE that its rule creates no new zombie class: a finding no agent-bearing domain owns cannot close by declaration, and F-6a5eb347 already behaved exactly that way BEFORE the rule existed — it went `unverified` on wave 32, ~14 minutes before the rule was committed (checked against finding_events, not the commit message), because no agent checked it, because no agent could. Its file is `packages/dogfood-swarm/package.json`, which matches ZERO domains — not even `shared`, whose globs are root-level (`package.json`, `*.json`) and do not cross a path separator without `**`. An earlier revision of this entry said 'root package.json, `shared`', conflating it with F-3af2f9c8 (which IS root package.json and DOES match shared); three lanes independently caught that by running minimatch against the real frozen map. The mention is the evidence for a disclosed boundary, not a claim to have fixed it. F-6a5eb347's own fix is packages/dogfood-swarm/test-discovery-completeness.test.js, which deliberately carries no @pins tag of its own: package.json is not a scanned source extension, so at the time that gate landed there was no source pin for a tag to match and one would have dangled (the gate's own C3 rule; F-7d4ac5ce precedent). Note the ordering trap this entry exists to avoid: this very citation is now the first source mention of the id, so a tag added to that gate today would technically resolve — but adding a source mention in an unrelated file in order to legitimize a tag elsewhere is laundering the gate with extra steps, which is precisely what the allowlist exists to keep visible instead.",
+      "file": "packages/dogfood-swarm/commands/collect.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-17"
+    },
+    "F-3af2f9c8": {
+      "reason": "Cross-reference, not a fix pin, and the twin of the F-6a5eb347 entry above. scopeConfirmedToOwningDomain's docstring names both ids because they are the canonical examples of TWO DIFFERENT unroutable-finding gaps that look identical from a distance: F-3af2f9c8 lives on the repo-root package.json, which DOES match the `shared` domain (globs: package.json, *.json) — a domain dispatch never gives an agent; F-6a5eb347 lives on packages/dogfood-swarm/package.json, which matches NO domain at all, because those same shared globs are root-level and minimatch does not cross a path separator without `**`. Conflating them is exactly the error an earlier revision of that docstring made, and three lanes caught it independently — so the paragraph names both, and the distinction is the reason it exists. F-3af2f9c8's own fix (deleting root package.json's dead `test:vitest` script) is unrelated to this file and is not pinned here; the mention is provenance for a disclosed boundary. Standing note for whoever audits this allowlist: four entries now exist because the coordinator cited an id in a source comment (F-bd8b4353, F-CI-SELF-DOGFOOD-002, F-6a5eb347, this one). The gate caught every one, which is the gate working — but the pattern is worth a look if it keeps growing, because an allowlist that only ever grows is the exact failure mode finding 21 of the pin-matcher dispatch cites (Hu et al. 2025: 50.8% of suppressions match zero live warnings).",
+      "file": "packages/dogfood-swarm/commands/collect.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-10-17"
     }
   }
 }

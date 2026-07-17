@@ -13,10 +13,55 @@
  * group as Item 4: brief-vs-frozen-state parallel authority. Pact-style
  * contract test in dispatch-prompt-schema.test.js asserts the schema
  * fragment is present in every generated prompt.
+ *
+ * F-d2d06af3 (HIGH, wave 24): buildAmendPrompt (line ~524) interpolates
+ * `f.file_path`/`f.description`/`f.recommendation` — audit-agent-authored
+ * text describing a (sometimes-adversarial) target repo, the same
+ * zero-privilege origin F-f1dae277 and F-c3d8fd7e already established for
+ * this field family elsewhere in this package — with ZERO escaping for
+ * `file_path` and only `fenceSafe`'s backtick-fence-parity guard for
+ * `description`/`recommendation`. buildAuditPrompt's `opts.priorContext`
+ * (the joined prior-findings block commands/dispatch.js hands it) has the
+ * identical gap through `fenceSafeBlock`. Neither `fenceSafe` nor
+ * `fenceSafeBlock` touch the control-byte/bidi/Tag-block class at all — they
+ * exist solely to keep a stray backtick run from breaking THIS document's
+ * own Markdown fence structure. The generated prompt is written to
+ * `swarms/<run>/wave-N/<domain>.md` and read VERBATIM as the next wave's
+ * Sonnet agent's own operating instructions, with no human review step in
+ * between — a more direct injection surface than any terminal transcript
+ * this package has already hardened, and the exact paradigm case
+ * commands/lib/escape-reason.js's own F-6540ba3d docblock names as the
+ * highest-risk audience (Graves 2026, arXiv:2603.00164: the Tag-block
+ * ASCII-Smuggling primitive is decoded PREFERENTIALLY BY ANTHROPIC MODELS).
+ *
+ * THE FIX IS DELIBERATELY NOT `escapeReasonForDisplay`: that escaper is
+ * built for a QUOTED TERMINAL surface — it doubles backslashes, escapes
+ * double-quotes, and renders `\n`/`\t` as visible two-character markers.
+ * Applied to a PROMPT an agent reads as prose/instructions, that would
+ * mangle ordinary quoted text and paths (a Windows path's backslashes would
+ * double) and fight fenceSafeBlock's own deliberate multi-line-chunk
+ * handling (F-f2dc3caf). Instead, `neutralizeInvisibleControls` (imported
+ * from commands/lib/escape-reason.js, the SAME disclosed lib→commands
+ * import seam findings-render.js's F-c3d8fd7e fix established this package,
+ * one file over) neutralizes ONLY the invisible/deception codepoint class
+ * (Default_Ignorable incl. the Tag block, bidi controls, C0/C1 non-
+ * whitespace, pathological combining-mark runs) — composed with, not
+ * replacing, fenceSafe/fenceSafeBlock, which stay scoped to their own
+ * backtick-fence job. Backslash, quote, tab, and newline all survive
+ * untouched, so ordinary prose and paths stay exactly as legible to the
+ * reading agent as before.
+ *
+ * CROSS-DOMAIN NOTE: `neutralizeInvisibleControls` is exported by
+ * commands/lib/escape-reason.js, owned this wave by swarm-cp-verbs (which is
+ * hardening that same module in parallel). This file only IMPORTS the
+ * export; it does not define or duplicate the primitive. If the export is
+ * not yet present when this file's own tests run, the import itself fails
+ * loud — see this domain's wave-24 output for the coordination note.
  */
 
 import { readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { neutralizeInvisibleControls } from '../commands/lib/escape-reason.js';
 
 // Resolve the agent-output schema the SAME way validate-agent-output.js does:
 // createRequire on @dogfood-lab/schemas's `./json/*` subpath export (fp-p-006
@@ -136,6 +181,184 @@ Each feature object (required keys: ${feature.required.join(', ')}):
 - \`use_case\`, \`evidence_base\`, \`scope[]\`, \`cross_ref\`, \`recommendation\` optional
 - \`effort\`: one of [${effortEnum}] (optional)
 `;
+}
+
+/**
+ * Neutralize CommonMark fence markers inside interpolated prose (F-019d40b2),
+ * but ONLY when the text actually carries the fence-parity hazard.
+ *
+ * Every prompt built here embeds a worked-example ```json ... ``` fence
+ * AFTER interpolating agent- or LLM-authored text (prior findings, finding
+ * descriptions/recommendations) that this function does not control. A run
+ * of 3+ literal backticks is a CommonMark fence marker; an ODD count of them
+ * inside the interpolated text flips the fence-toggle parity for the REST of
+ * the document — the real ```json opener meant to start the worked example
+ * gets consumed as the CLOSER for the wrongly-opened fence instead, so the
+ * worked example renders unfenced and the document ends still "inside" an
+ * open fence. Proven against two real findings (F-de02ea22, F-1c99c064) whose
+ * own description text was about this exact fence-parity class of bug in
+ * scripts/check-doc-drift.mjs.
+ *
+ * An EVEN count of 3+-backtick runs is NOT a hazard — it already self-closes
+ * under CommonMark's fence-toggle model, and it is the overwhelmingly common
+ * LEGITIMATE shape: a well-formed fenced code example inside a finding's
+ * free-form description/recommendation (one opening fence, one closing
+ * fence). F-01458fdb: transforming unconditionally — the pre-fix behavior —
+ * mangled that legitimate shape into garbled inline `<code>` spans (proven
+ * against a real CommonMark+GFM engine), a NEW cost this function introduced
+ * that the pre-fix text never had. Checking parity FIRST means only the
+ * actual hazard (an ODD count — a stray, unpaired run) pays the
+ * transformation cost; a well-formed paired example is left untouched and
+ * renders correctly.
+ *
+ * When the hazard IS present, the fix still interleaves a zero-width space
+ * (U+200B) between every backtick in every run of 3+, so no run of 3+
+ * CONSECUTIVE backtick characters survives to be mistaken for a fence marker
+ * by any CommonMark-conformant reader — while the visible text (a zero-width
+ * space renders as nothing) is unchanged for a human or an LLM reading it.
+ * Every template builder below that interpolates finding-authored prose
+ * ahead of its own worked-example fence must route that text through this
+ * function.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function fenceSafe(text) {
+  if (!text) return text;
+  const runs = text.match(/`{3,}/g);
+  if (!runs || runs.length % 2 === 0) return text;
+  const zeroWidthSpace = String.fromCharCode(8203);
+  return text.replace(/`{3,}/g, (run) => run.split('').join(zeroWidthSpace));
+}
+
+/**
+ * F-d2d06af3: neutralize the invisible/deception codepoint class in
+ * untrusted finding text before it is interpolated into an agent-read
+ * PROMPT — see this file's module docstring for the full rationale on why
+ * this is `neutralizeInvisibleControls`, not `escapeReasonForDisplay`.
+ * Guards falsy input the same way `fenceSafe` does immediately above, so a
+ * missing/undefined field passes through unchanged (never crashing on
+ * `String(undefined)`, never turning an absent value into the literal
+ * 4-character string "undefined").
+ *
+ * @param {string|undefined|null} text
+ * @returns {string|undefined|null}
+ */
+function neutralizeForPrompt(text) {
+  return text ? neutralizeInvisibleControls(text) : text;
+}
+
+/**
+ * Apply fenceSafe PER FINDING to an already-joined multi-finding blob, rather
+ * than once to the whole blob.
+ *
+ * F-62e467be: fenceSafe's odd/even parity check is trustworthy for ONE
+ * contiguous piece of authored prose — a single finding's own description or
+ * recommendation, F-01458fdb's contract — because within one author's text a
+ * paired (even) backtick-run count really is overwhelmingly likely to be one
+ * legitimate opening + closing fence. buildAuditPrompt's only caller
+ * (commands/dispatch.js) never hands fenceSafe one finding's text, though: it
+ * hands opts.priorContext, ALREADY joined from every prior finding's raw
+ * description into one multi-line blob (one bullet line per finding,
+ * `- [status] finding_id: description (file)`) before this module ever sees
+ * it. Two INDEPENDENT findings can each carry their own odd (hazardous)
+ * backtick-run count that happens to SUM to an even total, and a single
+ * fenceSafe(wholeBlob) call would then trust the region between them as
+ * "closed" — even though a real top-to-bottom CommonMark reader renders
+ * every OTHER finding sandwiched between the two stray runs as if it were
+ * inside an open code fence. Proven live: two findings with one stray
+ * backtick run each (2 runs total, even) left a third, unrelated finding
+ * between them rendered inside a fake open fence, while the aggregate parity
+ * check saw nothing wrong.
+ *
+ * This recovers the SAME per-finding unit buildAmendPrompt already uses
+ * without this problem — that call site never concatenates findings before
+ * calling fenceSafe; each finding's own description/recommendation gets its
+ * own separate call (see the findingsList map below). dispatch.js's bullet
+ * format is a documented, load-bearing contract (its own comment describes
+ * it as "one bullet line per finding"), so a chunk boundary is recovered by
+ * splitting on `- [` at the START of a line — the same anchor discipline
+ * runner.js#extractTestCount uses to tell a real summary line from indented
+ * continuation content. A chunk with its own legitimate, evenly-paired
+ * fenced example — which may itself embed newlines, e.g. a multi-line code
+ * block inside one finding's description — survives byte-identical, because
+ * the chunk boundary keeps that example's own opener+closer pair together in
+ * one fenceSafe call, exactly as a lone finding's text always has.
+ *
+ * Residual (honest, bounded — narrowed by F-f2dc3caf): the boundary is a
+ * heuristic anchored on dispatch.js's actual bullet format, not a
+ * structural parse — this module has no finding-boundary metadata to parse
+ * against once the caller has already joined everything into one string.
+ * F-f2dc3caf: the ORIGINAL anchor (`/^- \[/gm`, matching ANY line starting
+ * with the two literal characters `- [`) called the over-segmentation risk
+ * "vanishingly unlikely," but it was proven reachable by an entirely
+ * ordinary shape — a finding's own multi-line description embedding a GFM
+ * task-list checklist (`- [ ] step one` / `- [x] step two`) inside an
+ * otherwise legitimate, evenly-paired fenced repro-steps example. Every
+ * checklist line matched the bare anchor too, over-segmenting ONE finding
+ * into three chunks and neutralizing BOTH markers of a well-formed fence
+ * that would otherwise have survived (F-01458fdb's own protection).
+ *
+ * The anchor now requires the FULL real-bullet shape —
+ * `- [<2+ word chars>] <colon-terminated token>` — rather than the bare
+ * `- [` prefix. CommonMark/GFM task-list syntax is ALWAYS a single
+ * space/x/X inside the brackets (never 2+ word characters), so a checklist
+ * line can never satisfy the tightened anchor; it is simply never a
+ * boundary candidate, and the finding's whole chunk (fence included) is left
+ * intact for a single, whole-chunk fenceSafe() parity check — the same
+ * treatment any lone finding already receives.
+ *
+ * A fence-parity-aware scan (walk the text, toggle an "inside a fence" flag
+ * on every backtick run, and reject a `- [` candidate found while that flag
+ * is set) was considered and rejected: it cannot distinguish a fence that
+ * belongs to and re-closes WITHIN the current finding (the checklist case
+ * above) from several INDEPENDENT findings whose own individually-odd stray
+ * markers merely happen to sum to even ACROSS a finding boundary — exactly
+ * the shape F-62e467be's own pin suite (templates-fence-safe-concatenation
+ * .test.js) exists to keep splitting correctly. Collapsing that distinction
+ * would silently re-merge neighboring findings into a shared fake fence,
+ * regressing F-62e467be. Anchoring on the real bullet shape sidesteps the
+ * ambiguity: boundaries are still found unconditionally, independent of any
+ * fence state, so F-62e467be's per-finding isolation is untouched, and a
+ * checklist line is simply never a candidate in the first place.
+ *
+ * The residual left standing is narrower, not zero: a finding's own
+ * description containing a line that happens to match the FULL tightened
+ * shape — a 2+-letter bracketed word immediately followed by a
+ * colon-terminated token with no space between them, e.g. a quoted example
+ * of another finding's own bullet, or a hyphenated-key log-line sample like
+ * `- [ERROR] auth-failed: ...` — would still over-segment. That residual is
+ * smaller than the one it replaces (it requires mimicking dispatch.js's
+ * specific bullet grammar, not just two Markdown characters) and inherits
+ * the same strictly conservative failure direction: a legitimate paired
+ * fence split across an accidental boundary becomes two odd chunks and BOTH
+ * get neutralized (a fenced-code rendering the reader would otherwise have
+ * kept is lost), never the reverse (an actual hazard slipping through
+ * because a neighbor chunk happened to complete its parity). That asymmetry
+ * — safe to over-transform, never safe to under-transform — is the same
+ * "bounded, never data loss" shape fingerprint.js's disambiguateFingerprints
+ * documents for its own safety-net residual.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+function fenceSafeBlock(text) {
+  if (!text) return text;
+  // F-f2dc3caf: anchored on dispatch.js's ACTUAL bullet shape
+  // (`- [status] finding_id: description (file)`, commands/dispatch.js:494)
+  // instead of the bare `- \[` prefix — see the residual paragraph above for
+  // why a fence-parity-aware scan was considered and rejected in favor of
+  // this tightened anchor.
+  const starts = [...text.matchAll(/^- \[[a-zA-Z_]{2,}\] \S+:/gm)].map((m) => m.index);
+  if (starts.length === 0) return fenceSafe(text);
+
+  const chunks = [];
+  if (starts[0] > 0) chunks.push(text.slice(0, starts[0]));
+  for (let i = 0; i < starts.length; i++) {
+    const end = i + 1 < starts.length ? starts[i + 1] : text.length;
+    chunks.push(text.slice(starts[i], end));
+  }
+  return chunks.map(fenceSafe).join('');
 }
 
 /**
@@ -274,15 +497,73 @@ Prioritize by impact. Estimate effort (small/medium/large).`,
  * @param {number} opts.waveNumber — current wave number
  * @param {string} [opts.ownershipClass] — domain ownership class (owned/shared/bridge)
  * @param {string} [opts.domainSnapshotId] — frozen domain snapshot id
- * @param {string} [opts.priorContext] — findings from prior waves to avoid re-reporting
+ * @param {string} [opts.priorContext] — CLOSED prior findings (fixed/deferred/
+ *   rejected). Do-not-re-report material: their absence is already terminal in
+ *   classifyFindings, so nothing is inferred from an agent's silence about them.
+ * @param {string} [opts.openPriorContext] — OPEN prior findings. The agent's
+ *   confirmation queue, NOT a do-not-report list — classifyFindings infers
+ *   `fixed` from a full-coverage wave's silence about these, so the brief must
+ *   ask for the re-report that makes that silence meaningful. Keep the two
+ *   lists separate; merging them re-creates the false-fixed defect.
  * @returns {string}
  */
 export function buildAuditPrompt(opts) {
   const lens = STAGE_LENS[opts.phase];
   if (!lens) throw new Error(`Unknown audit phase: ${opts.phase}`);
 
+  // F-d2d06af3: neutralize the invisible/deception codepoint class BEFORE
+  // fenceSafeBlock's backtick-fence-parity pass — the two passes operate on
+  // disjoint codepoint sets (control/bidi/Tag-block vs. backtick runs), so
+  // order does not change either pass's own result, but neutralizing closer
+  // to the untrusted source mirrors this package's established
+  // escape-then-format discipline (findings-render.js's truncate()).
   const priorSection = opts.priorContext
-    ? `\n## Prior Findings (do NOT re-report these)\n\n${opts.priorContext}\n`
+    ? `\n## Prior Findings — already CLOSED (do NOT re-report these)\n\n${fenceSafeBlock(neutralizeForPrompt(opts.priorContext))}\n`
+    : '';
+
+  // Open priors carry the OPPOSITE instruction from closed ones, and the
+  // difference is load-bearing rather than cosmetic. classifyFindings reads a
+  // prior's ABSENCE from a full-coverage wave as positive evidence it was
+  // fixed. That inference is sound ONLY if this agent would have re-reported
+  // the defect had it still been there. This brief used to emit one flat
+  // "do NOT re-report these" list covering every prior — open ones included —
+  // which made their absence guaranteed by instruction: the evidence was
+  // manufactured by the order forbidding the evidence. On run
+  // swarm-1784091637-5127 wave 28, an audit-only wave with no amend before it,
+  // 9 untouched findings closed themselves that way. F-bd8b4353 caught the
+  // same lie once as a one-off ("a false entry in the swarm's own fix ledger")
+  // and it was closed by correcting the affected files, never the mechanism.
+  // F-8f44c67f: this heading used to read "in your scope" unconditionally, but
+  // dispatch.js builds openPriorContext ONCE per wave from the ENTIRE run's
+  // priorMap (no domain/glob filter) and splices the identical text into every
+  // domain's prompt — empirically, ~88% of a typical queue sits outside the
+  // receiving domain's own globs. "in your scope" was therefore false for most
+  // entries most of the time, for every domain simultaneously. Filtering the
+  // queue itself is commands/dispatch.js's call (out of this domain's owned
+  // globs); this section instead states the true shape — a run-wide queue,
+  // narrowed to "your scope" only as an instruction to the agent, not as a
+  // pre-filtered fact — so the claim matches what dispatch.js actually does.
+  const openPriorSection = opts.openPriorContext
+    ? `\n## Known OPEN findings across the run — CONFIRM the ones in your scope\n\n`
+      + `These are already filed and still open, from EVERY domain in this run, not\n`
+      + `just yours. This is **not** a do-not-report list — it is a confirmation queue,\n`
+      + `and your report decides the fate of the ones you can actually check:\n\n`
+      + `- **Still present?** Report it again, reusing its id from below AND keeping\n`
+      + `  its \`file\` exactly as listed there (the id+file pair is what the control\n`
+      + `  plane matches on; your description and line may be fresh). That records it\n`
+      + `  as recurring, not as a duplicate. This is wanted, not noise.\n`
+      + `- **Verified gone?** Put its id in your output's \`confirmed\` array AND omit\n`
+      + `  it from \`findings\`. That declaration is what closes it, on your authority.\n`
+      + `- **Did not check it, or it names a file outside your domain?** Leave it out of\n`
+      + `  \`confirmed\`. It stays open and the next wave re-asks — no penalty, and far\n`
+      + `  better than closing a live defect. Note the out-of-domain ones in your\n`
+      + `  \`summary\` so the coordinator can see they are waiting on a different agent.\n\n`
+      + `\`confirmed\` is a declaration, not a formality: an id you list is one you are\n`
+      + `stating you checked. Silence alone no longer closes anything — list only what\n`
+      + `you actually verified. Most of this list will name files outside the globs\n`
+      + `below; that is expected, not an error — it belongs to whichever domain owns\n`
+      + `that file, and your silence about it has no effect on its fate.\n\n`
+      + `${fenceSafeBlock(neutralizeForPrompt(opts.openPriorContext))}\n`
     : '';
 
   const domainContract = renderDomainContract(
@@ -314,7 +595,7 @@ ${opts.globs.join('\n')}
 ## Audit Lens
 
 ${lens.instruction}
-${priorSection}
+${priorSection}${openPriorSection}
 ${outputContract}
 
 ## Output Format
@@ -361,8 +642,14 @@ Be thorough. Every finding must have a severity and a concrete recommendation.`;
  * @returns {string}
  */
 export function buildAmendPrompt(opts) {
+  // F-d2d06af3: `file_path`/`description`/`recommendation` are audit-agent-
+  // authored text describing a (sometimes-adversarial) target repo. Route
+  // each through neutralizeForPrompt BEFORE fenceSafe — closing the
+  // control-byte/bidi/Tag-block gap fenceSafe was never built to cover,
+  // without disturbing its own backtick-fence-parity job. `file_path` had
+  // no escaping at all pre-fix; it gets the same treatment here.
   const findingsList = opts.findings
-    .map(f => `- [${f.severity}] ${f.finding_id}: ${f.description} (${f.file_path || 'no file'}:${f.line_number || '?'})${f.recommendation ? '\n  Fix: ' + f.recommendation : ''}`)
+    .map(f => `- [${f.severity}] ${f.finding_id}: ${fenceSafe(neutralizeForPrompt(f.description))} (${neutralizeForPrompt(f.file_path) || 'no file'}:${f.line_number || '?'})${f.recommendation ? '\n  Fix: ' + fenceSafe(neutralizeForPrompt(f.recommendation)) : ''}`)
     .join('\n');
 
   const domainContract = renderDomainContract(
@@ -482,7 +769,7 @@ the canonical contract above is load-bearing:
   "domain": "${opts.domainName}",
   "features": [
     {
-      "id": "FT-001",
+      "id": "F-001",
       "priority": "CRITICAL|HIGH|MEDIUM|LOW",
       "category": "missing-feature|ux|performance|integration|production-readiness",
       "description": "What is needed",

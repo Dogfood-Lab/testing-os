@@ -102,7 +102,18 @@ describe('rebuildIndexes — commit-group success path (W3-PIPE-002)', () => {
     const failing = JSON.parse(readFileSync(join(repoRoot, 'indexes', 'failing.json'), 'utf-8'));
     const stale = JSON.parse(readFileSync(join(repoRoot, 'indexes', 'stale.json'), 'utf-8'));
 
-    assert.deepEqual(latest, result.latestByRepo);
+    // F-89b7dcd5: result.latestByRepo (and its per-repo nested objects) are
+    // built with Object.create(null) so a hand-committed record with
+    // repo: '__proto__' can never land a write on Object.prototype (see
+    // rebuild-indexes.js's comment at the latestByRepo declaration). Under
+    // node:assert/strict, deepEqual IS deepStrictEqual, which compares
+    // [[Prototype]] — so a null-prototype object never structurally equals
+    // a plain-object literal even with identical own properties. Roundtrip
+    // through JSON before comparing: that is exactly what a real consumer
+    // reading latest-by-repo.json off disk sees (JSON has no prototype
+    // concept), so this is a MORE honest fidelity check than a bare
+    // deepEqual, not a weakened one.
+    assert.deepEqual(latest, JSON.parse(JSON.stringify(result.latestByRepo)));
     assert.deepEqual(failing, result.failing);
     assert.deepEqual(stale, result.stale);
   });

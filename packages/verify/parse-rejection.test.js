@@ -13,9 +13,10 @@
  * `class` is one of:
  *   - 'submission-bad' — the submitter must fix and resubmit
  *       (schema / policy / steps / provenance / repo /
- *        submission-contains-verifier-field / CONTRACT_SCHEMA_TOO_NEW /
- *        CONTRACT_SCHEMA_TOO_OLD)
- *   - 'operational'    — the verifier/tooling faulted (VALIDATOR_FAULT_*)
+ *        submission-contains-verifier-field / CONTRACT_SCHEMA_TOO_OLD)
+ *   - 'operational'    — the verifier/tooling faulted (VALIDATOR_FAULT_*,
+ *        CONTRACT_SCHEMA_TOO_NEW — F-be0deacd, wave 20: this build, not the
+ *        submitter, is behind)
  *   - 'ingest'         — ingest-side load fault (scenario-load)
  *   - 'unknown'        — unrecognized prefix
  *
@@ -61,9 +62,12 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
       'submission-bad',
       'submission-contains-verifier-field:',
     ],
+    // operational — F-be0deacd (wave 20): a future-major submission means
+    // THIS BUILD is behind, not the submitter — see the dedicated describe
+    // block below for the full routing-inversion proof.
     [
       'CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 but this build supports v1.0.0',
-      'submission-bad',
+      'operational',
       'CONTRACT_SCHEMA_TOO_NEW:',
     ],
     [
@@ -91,6 +95,16 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
 
     // ingest — scenario load fault (ingest/run.js)
     ['scenario-load: not_found scenario-x', 'ingest', 'scenario-load:'],
+
+    // submission-bad — F-4acd28d8: computeRecordPath's traversal guard
+    // rejected a schema-valid repo (ingest/run.js, writeRecord()'s second
+    // computeRecordPath call — see F-bbbe2e1f). The submitter's own repo
+    // identifier is the problem.
+    [
+      'unsafe-record-path: record passed schema validation but its path could not be safely computed (repo: ../etc, run_id: r1): unsafe repo segment: ../etc',
+      'submission-bad',
+      'unsafe-record-path:',
+    ],
   ];
 
   for (const [reason, expectedClass, expectedPrefix] of cases) {
@@ -101,12 +115,29 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
     });
   }
 
-  it('classifies the wave-2 CONTRACT_SCHEMA_TOO_NEW as submission-bad (not operational)', () => {
+  /** @pins F-be0deacd */
+  it('F-be0deacd (wave 20): classifies CONTRACT_SCHEMA_TOO_NEW as operational, NOT submission-bad — flips the wave-2 test this amends', () => {
+    // PROVEN pre-fix (wave-2 through wave-19): this reason classified
+    // 'submission-bad', directly contradicting schema-version.js's own JSDoc
+    // ("operator must upgrade testing-os" — see validators/schema-version.js
+    // lines 17-18) and rendering a self-contradictory CLI --explain block
+    // (see cli.test.js's "F-be0deacd" describe block for the consumer-facing
+    // proof). Only the RECEIVING build's operator can fix a too-new schema
+    // major — no resubmission, corrected or not, changes what `major >
+    // maxMajor` evaluates to.
     const parsed = parseRejectionReason(
       'CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 — upgrade testing-os',
     );
-    assert.equal(parsed.class, 'submission-bad');
+    assert.equal(parsed.class, 'operational');
     assert.equal(parsed.prefix, 'CONTRACT_SCHEMA_TOO_NEW:');
+  });
+
+  it('F-be0deacd: CONTRACT_SCHEMA_TOO_OLD stays submission-bad — the asymmetry is deliberate, not a blanket reclassification', () => {
+    const parsed = parseRejectionReason(
+      'CONTRACT_SCHEMA_TOO_OLD: recordSubmission schema v0.5.0 is below the supported floor',
+    );
+    assert.equal(parsed.class, 'submission-bad');
+    assert.equal(parsed.prefix, 'CONTRACT_SCHEMA_TOO_OLD:');
   });
 
   it('returns the detail with the prefix stripped', () => {
@@ -174,5 +205,98 @@ describe('parseRejectionReason (F1-CONTRACTS-003)', () => {
     const mod = await import('./index.js');
     assert.equal(typeof mod.parseRejectionReason, 'function');
     assert.equal(mod.parseRejectionReason('schema: x').class, 'submission-bad');
+  });
+});
+
+describe('parseRejectionReason retryable field (F-f8952a50, wave 10)', () => {
+  // packages/ingest/persist.js's isRetryableRejection() keys a same-run_id
+  // resubmission's retry eligibility off THIS field, per-prefix, not off
+  // `class` directly — `class: 'submission-bad'` alone is too coarse: it
+  // covers both shape/addressing mistakes (retryable) and rendered
+  // content-verdicts (not retryable, by design — see the file header and
+  // schema-invalid-skip-persist.test.js's "REGRESSION GUARD" /
+  // "persist-a-verdict doctrine is preserved" tests in @dogfood-lab/ingest).
+  const retryableCases = [
+    // submission-bad, retryable: "we could not even read/place/shape your
+    // submission" — a correction changes nothing about what the run did.
+    ['schema: /repo must be string', true],
+    ['policy-config: rule "bad-type": operator "gt" requires a numeric field value', true],
+    ['repo:mismatch: submission.repo (a/b) does not match source.run_url repo (c/d)', true],
+    ['submission-contains-verifier-field: verification', true],
+    ['CONTRACT_SCHEMA_TOO_OLD: recordSubmission schema v0.9.0 is below the supported floor', true],
+    ['unsafe-record-path: record passed schema validation but its path could not be safely computed (repo: ../etc, run_id: r1): unsafe repo segment: ../etc', true],
+    ['steps[step-1]: gate accumulation violated', true],
+
+    // submission-bad, NOT retryable: a rendered VERDICT on the run's own
+    // reported content — consuming the run_id is the intended anti-gaming
+    // behavior (a submitter must not launder a genuinely-bad run into an
+    // accepted one by resubmitting different self-reported content under the
+    // same run_id).
+    ['policy: forbidden tag "wip"', false],
+    ['provenance: source run could not be confirmed', false],
+
+    // operational / ingest / unknown — never retryable regardless of class
+    // nuance; only the submitter's own payload earns a retry.
+    ['provenance-fault: verification failed: GitHub API returned 503', false],
+    ['submission-malformed: submission is null or not an object', false],
+    ['VALIDATOR_FAULT_SCHEMA: ajv compile failed', false],
+    ['VALIDATOR_FAULT_POLICY: merge cycle', false],
+    ['scenario-load: not_found scenario-x', false],
+    ['gremlins: something weird happened', false],
+
+    // F-be0deacd (wave 20): CONTRACT_SCHEMA_TOO_NEW moved from submission-bad
+    // to operational — and, per the invariant this describe block's header
+    // states ("every operational... reason is retryable: false"), its
+    // retryable value flips WITH it. parseRejectionReason(...).retryable is a
+    // STATIC classification of the prefix, frozen at parse time, and stays
+    // false forever: resubmitting under the SAME still-outdated build hits
+    // the identical `major > maxMajor` comparison every time, so THIS FIELD
+    // ALONE can never turn into true.
+    //
+    // F-51780da9 (wave 22) corrects what this comment used to claim here: a
+    // testing-os upgrade is NOT what `retryable: false` itself detects or
+    // means — this flag has no way to see a later upgrade; it is computed
+    // once, from the reason string alone, with no access to the CURRENT
+    // build's supported version range. The actual unblocking, once an
+    // operator upgrades testing-os past the declared major, happens one
+    // layer up, in this field's one production consumer:
+    // packages/ingest/persist.js's isRetryableRejection() carries an
+    // additional, narrow re-check found nowhere else in the taxonomy — for
+    // this ONE prefix, it re-derives whether the STORED rejection's declared
+    // major is still above the build's CURRENT SUPPORTED_SCHEMA_VERSIONS
+    // ceiling, instead of trusting this frozen boolean. See
+    // isRetryableRejection's own doc comment and
+    // f-51780da9-contract-schema-too-new-upgrade-unblocks.test.js for the
+    // end-to-end proof that a stale TOO_NEW rejection unblocks post-upgrade
+    // even though the assertion below (this flag, in isolation) still holds.
+    ['CONTRACT_SCHEMA_TOO_NEW: recordSubmission schema v2.0.0 but this build supports v1.0.0', false],
+  ];
+
+  for (const [reason, expectedRetryable] of retryableCases) {
+    it(`"${reason.slice(0, 44)}…" → retryable: ${expectedRetryable}`, () => {
+      const parsed = parseRejectionReason(reason);
+      assert.equal(parsed.retryable, expectedRetryable, `retryable for: ${reason}`);
+    });
+  }
+
+  it('is defensive against non-string input: retryable is false', () => {
+    for (const bad of [null, undefined, 42, {}, []]) {
+      assert.equal(parseRejectionReason(bad).retryable, false);
+    }
+  });
+
+  it('the two content-verdict prefixes (policy:, provenance:) are class submission-bad but retryable:false — the split is per-prefix, not per-class', () => {
+    const policy = parseRejectionReason('policy: forbidden tag "wip"');
+    const provenance = parseRejectionReason('provenance: source run could not be confirmed');
+    const repo = parseRejectionReason('repo:mismatch: a/b vs c/d');
+
+    assert.equal(policy.class, 'submission-bad');
+    assert.equal(policy.retryable, false);
+    assert.equal(provenance.class, 'submission-bad');
+    assert.equal(provenance.retryable, false);
+    // Sibling submission-bad prefix, same class, opposite retryable value —
+    // proves retryable is a genuinely separate dimension from class.
+    assert.equal(repo.class, 'submission-bad');
+    assert.equal(repo.retryable, true);
   });
 });

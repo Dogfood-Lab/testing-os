@@ -118,6 +118,15 @@ function resolveSurfacePolicy(surface, globalPolicy, repoPolicy) {
  *   `configErrors` (VERIFY-F1) are eval-time repo custom-rule predicate faults; the
  *   caller emits them with a `policy-config:` prefix (submission-bad). A non-empty
  *   `configErrors` makes `valid` false.
+ * @throws {Error} F-3ef6b03e: a global rule declared `severity: reject` whose id
+ *   is outside {@link KNOWN_REJECT_RULE_IDS} — a maintainer-authored
+ *   global-policy.yaml gap, not a submission fault. Mirrors the GLOBAL-rule
+ *   predicate-fault throw above: `runValidator('policy', ...)` in index.js
+ *   wraps this as `VALIDATOR_FAULT_POLICY:`, which parseRejectionReason
+ *   classifies 'operational' by family match. Pre-fix this pushed into
+ *   `errors` under the `policy:` prefix, which parseRejectionReason
+ *   classifies 'submission-bad' — telling every consumer in the fleet to fix
+ *   a payload that was never the problem.
  */
 export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
   const errors = [];
@@ -196,15 +205,21 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
 
       // schema-valid, provenance-confirmed, step-results-present, step-verdict-consistent,
       // no-verdict-upgrade are enforced by other validators or the main verify() function.
-      // PROACT-VERIFY-002: a reject rule the build neither handles here NOR enforces
-      // elsewhere would otherwise pass SILENTLY — the operator's new gate never runs.
-      // Reject the submission with a diagnostic naming the unenforced rule so the gap
-      // is visible instead of failing open.
+      // PROACT-VERIFY-002 / F-3ef6b03e: a reject rule the build neither handles here NOR
+      // enforces elsewhere would otherwise pass SILENTLY — the operator's new gate never
+      // runs. THROW rather than push to `errors`: this is a maintainer-authored
+      // global-policy.yaml gap (the same class of broken-policy-file fault
+      // loadGlobalPolicy's schema gate already fails loud on), not a submission fault.
+      // Pushing to `errors` would route through the `policy:` prefix — classified
+      // 'submission-bad' by parseRejectionReason — telling the submitter to fix a
+      // payload that was never the problem, fleet-wide, for every submission until a
+      // maintainer notices. Throwing here mirrors the GLOBAL-rule predicate-fault
+      // throw above: runValidator('policy', ...) in index.js wraps it as
+      // `VALIDATOR_FAULT_POLICY:`, classified 'operational' — exit 2, nothing
+      // persisted, no run_id poisoned via the duplicate guard (F-82429f90).
       default:
         if (!KNOWN_REJECT_RULE_IDS.has(rule.id)) {
-          // No `policy:` prefix here — index.js prepends it to every policy
-          // error (mirrors the `[rule.id]` / `surface[...]` messages above).
-          errors.push(
+          throw new Error(
             `rule "${rule.id}" is declared severity:reject but has no enforcement in this build — ` +
               `add an enforcement arm in validators/policy.js or register it in KNOWN_REJECT_RULE_IDS`
           );

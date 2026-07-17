@@ -38,6 +38,7 @@ import { openDb, closeDb, openMemoryDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains } from './lib/domains.js';
 import { dispatch } from './commands/dispatch.js';
 import { collect } from './commands/collect.js';
+import { isOpenFinding } from './lib/finding-status.js';
 import { revalidate } from './commands/revalidate.js';
 import { status } from './commands/status.js';
 import { buildReceipt } from './commands/receipt.js';
@@ -478,8 +479,20 @@ describe('CP4-SCOPE-WIRING — a full-coverage re-audit can classify absent prio
     dispatch({ runId: 'r-full', phase: 'health-audit-a', dbPath, outputDir: tmp });
     const outA = join(tmp, 'a.json');
     const outB = join(tmp, 'b.json');
-    writeFileSync(outA, JSON.stringify({ domain: 'domain-a', stage: 'A', summary: 'clean', findings: [] }));
-    writeFileSync(outB, JSON.stringify({ domain: 'domain-b', stage: 'A', summary: 'clean', findings: [] }));
+    // `confirmed` is the agents' declaration of which priors they actually
+    // checked. It is REQUIRED for a close as of the lens-blindness fix: full
+    // coverage proves the wave read the files, never that it looked for a given
+    // defect — a stage-d-audit agent hunting typography "covers" every file a
+    // defensive-coding finding lives in. This test's PURPOSE is unchanged and
+    // is still scope WIRING (its own message: "pre-fix ... scope was never
+    // passed"); what changed is that the descriptor now carries a second, finer
+    // field, so the fixture declares it the way a real agent does.
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a', stage: 'A', summary: 'clean', findings: [], confirmed: ['F-P-APPR'],
+    }));
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b', stage: 'A', summary: 'clean', findings: [], confirmed: ['F-P-UNV'],
+    }));
     const report = collect({ runId: 'r-full', dbPath, outputs: { 'domain-a': outA, 'domain-b': outB } });
 
     assert.equal(report.findings.fixed, 2,
@@ -489,6 +502,74 @@ describe('CP4-SCOPE-WIRING — a full-coverage re-audit can classify absent prio
     for (const row of statuses) {
       assert.equal(row.status, 'fixed', `${row.finding_id} must flip to fixed under full coverage`);
     }
+  });
+
+  /** @pins F-18d0ef6d */
+  it('GATE RED: a domain cannot close a finding its own globs do not cover (F-18d0ef6d)', () => {
+    // The declaration replaced "silence closes a finding" with "a declaration
+    // closes a finding" — and for one wave never checked WHO was declaring.
+    // The confirmation queue is run-wide: every agent sees every domain's open
+    // findings, so any domain could close any other domain's finding by naming
+    // an id it merely READ. The brief said "an id outside your domain belongs
+    // to another agent, not to you" — prose, enforced by nothing, which is the
+    // same "nothing reads it" shape the declaration was built to kill, one
+    // layer down inside the fix itself. Proven live pre-fix at HIGH severity.
+    //
+    // domain-b owns packages/b/** ONLY. The finding lives in packages/a/**.
+    // domain-b names it anyway — the exact shape of a well-meaning agent
+    // confirming something it saw in the shared queue.
+    const db = setupRun(dbPath, repoPath, 'r-crossdomain', { findings: false });
+    db.prepare(`INSERT INTO findings
+      (run_id, finding_id, fingerprint, severity, category, file_path, description, status)
+      VALUES ('r-crossdomain', 'F-X-OWNED-BY-A', 'fp-xd-1', 'CRITICAL', 'bug', 'packages/a/x.js', 'a-owned defect', 'approved')`).run();
+
+    dispatch({ runId: 'r-crossdomain', phase: 'health-audit-a', dbPath, outputDir: tmp });
+    const outA = join(tmp, 'xa.json');
+    const outB = join(tmp, 'xb.json');
+    // domain-a — the actual owner — declares NOTHING (it never checked).
+    writeFileSync(outA, JSON.stringify({ domain: 'domain-a', stage: 'A', summary: 'clean', findings: [] }));
+    // domain-b vouches for a file it does not own.
+    writeFileSync(outB, JSON.stringify({
+      domain: 'domain-b', stage: 'A', summary: 'clean', findings: [], confirmed: ['F-X-OWNED-BY-A'],
+    }));
+    const report = collect({ runId: 'r-crossdomain', dbPath, outputs: { 'domain-a': outA, 'domain-b': outB } });
+
+    assert.equal(report.findings.fixed, 0,
+      'a declaration from a domain that does not own the file must not close it — routing and vouching answer to one rule');
+    const row = db.prepare("SELECT status FROM findings WHERE run_id = 'r-crossdomain'").get();
+    assert.notEqual(row.status, 'fixed',
+      'pre-fix this CRITICAL closed permanently on an unrelated domain\'s say-so');
+    assert.ok(isOpenFinding(row.status),
+      `the finding must stay OPEN for the domain that actually owns it (got '${row.status}')`);
+  });
+
+  it('GATE RED: full coverage WITHOUT a declaration closes nothing — silence is not evidence', () => {
+    // The other half of the wiring, which the assertion above cannot see on its
+    // own: it would pass identically if `confirmed` were ignored entirely. This
+    // is the lens-blindness case in miniature — two agents that covered every
+    // owned domain and said nothing about the priors. Pre-fix that closed both;
+    // now it closes neither, because coverage is not a claim about THIS defect.
+    const db = setupRun(dbPath, repoPath, 'r-silent', { findings: false });
+    db.prepare(`INSERT INTO findings
+      (run_id, finding_id, fingerprint, severity, category, file_path, description, status)
+      VALUES ('r-silent', 'F-S-APPR', 'fp-sil-1', 'HIGH', 'bug', 'packages/a/x.js', 'approved defect', 'approved')`).run();
+
+    dispatch({ runId: 'r-silent', phase: 'health-audit-a', dbPath, outputDir: tmp });
+    const outA = join(tmp, 'sa.json');
+    const outB = join(tmp, 'sb.json');
+    // Byte-identical to the fixture above except for the missing declaration.
+    writeFileSync(outA, JSON.stringify({ domain: 'domain-a', stage: 'A', summary: 'clean', findings: [] }));
+    writeFileSync(outB, JSON.stringify({ domain: 'domain-b', stage: 'A', summary: 'clean', findings: [] }));
+    const report = collect({ runId: 'r-silent', dbPath, outputs: { 'domain-a': outA, 'domain-b': outB } });
+
+    assert.equal(report.findings.fixed, 0,
+      'an undeclared prior must NOT close on silence, even under full coverage');
+    assert.equal(report.findings.unverified, 1);
+    assert.equal(
+      db.prepare("SELECT status FROM findings WHERE run_id = 'r-silent'").get().status,
+      'unverified',
+      'the honest state is "we do not know whether it was fixed or simply not looked at" — open, re-asked next wave',
+    );
   });
 
   it('safe default: a PARTIAL-coverage wave still classifies absent priors as unverified', () => {

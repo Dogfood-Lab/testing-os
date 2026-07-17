@@ -42,6 +42,24 @@ import { fileURLToPath } from 'node:url';
 const RECEIVER_REPO = 'dogfood-lab/testing-os';
 
 /**
+ * F-19d78ede: default per-request timeout for this module's network fetch.
+ * This file's own header states the mission: "the most dangerous adoption
+ * failure is NOT a noisy one... nothing in the consumer's own CI ever turns
+ * red." Every OTHER network call in this domain is bounded for exactly this
+ * reason (packages/verify/validators/provenance.js's
+ * GITHUB_PROVENANCE_TIMEOUT_MS / GITLAB_PROVENANCE_TIMEOUT_MS;
+ * packages/ingest/load-context.js's GITHUB_SCENARIO_FETCH_TIMEOUT_MS) — a
+ * hung API call would otherwise stall the consumer's CI step until the
+ * surrounding runner's own timeout fires (GitHub Actions default 6h),
+ * replacing this module's one guaranteed signal (a clean, structured
+ * `INDEX_UNREACHABLE`) with a generic, unhelpful runner timeout. This was
+ * the ONLY unbounded network call in the file (confirmed by grep across
+ * packages/report/: zero occurrences of 'timeout'/'AbortController'/'signal'
+ * before this fix).
+ */
+export const DEFAULT_STATUS_FETCH_TIMEOUT_MS = 30000;
+
+/**
  * Read + parse a file:// index artifact off disk, mirroring fetchJsonOrNull's
  * contract: null when the file is absent (the "not present" answer), a structured
  * {code} throw on a parse failure the caller must surface rather than misread.
@@ -92,12 +110,13 @@ export const DEFAULT_STALE_DAYS = 30;
  * a structured {code} error only on a transport/parse failure the caller should
  * surface as a hard problem rather than misread as "absent".
  *
- * @param {(url: string) => Promise<{ok:boolean,status:number,json:()=>Promise<any>}>} fetchImpl
+ * @param {(url: string, init?: {signal?: AbortSignal}) => Promise<{ok:boolean,status:number,json:()=>Promise<any>}>} fetchImpl
  * @param {string} base
  * @param {string} relPath
+ * @param {number} [timeoutMs=DEFAULT_STATUS_FETCH_TIMEOUT_MS]
  * @returns {Promise<any|null>}
  */
-async function fetchJsonOrNull(fetchImpl, base, relPath) {
+async function fetchJsonOrNull(fetchImpl, base, relPath, timeoutMs = DEFAULT_STATUS_FETCH_TIMEOUT_MS) {
   const url = new URL(relPath, base).toString();
 
   // Node's fetch() does not implement the file: scheme, but a local index mirror
@@ -107,14 +126,30 @@ async function fetchJsonOrNull(fetchImpl, base, relPath) {
     return readFileJsonOrNull(url);
   }
 
+  // F-19d78ede: bound the ONE network call this module makes so a hung
+  // raw.githubusercontent.com response fails fast with this module's own
+  // structured INDEX_UNREACHABLE instead of wedging the consumer's CI step
+  // for hours. Mirrors the AbortController pattern already established by
+  // provenance.js / load-context.js in this same domain.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
   let res;
   try {
-    res = await fetchImpl(url);
+    res = await fetchImpl(url, { signal: controller.signal });
   } catch (err) {
+    if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) {
+      const e = new Error(`served index fetch timed out after ${timeoutMs}ms: ${url}`);
+      e.code = 'INDEX_UNREACHABLE';
+      e.hint = `The request to ${url} did not complete within ${timeoutMs}ms. Check network access, or pass --index-base at a reachable mirror.`;
+      throw e;
+    }
     const e = new Error(`could not reach the served index at ${url}: ${err && err.message ? err.message : err}`);
     e.code = 'INDEX_UNREACHABLE';
     e.hint = `Confirm network access to ${base}, or pass --index-base at a reachable mirror.`;
     throw e;
+  } finally {
+    clearTimeout(timer);
   }
   if (res.status === 404 || res.ok === false) {
     if (res.status === 404) return null;
@@ -143,8 +178,10 @@ async function fetchJsonOrNull(fetchImpl, base, relPath) {
  *   surface decides accepted/fresh.
  * @param {string} [opts.indexBase=DEFAULT_INDEX_BASE]
  * @param {number} [opts.staleDays=DEFAULT_STALE_DAYS]
- * @param {(url:string)=>Promise<any>} [opts.fetchImpl=globalThis.fetch]
+ * @param {(url:string, init?: {signal?: AbortSignal})=>Promise<any>} [opts.fetchImpl=globalThis.fetch]
  * @param {number} [opts.now=Date.now()] — injectable clock for deterministic tests.
+ * @param {number} [opts.fetchTimeoutMs=DEFAULT_STATUS_FETCH_TIMEOUT_MS] — F-19d78ede:
+ *   per-request timeout for this module's network fetch(es).
  * @returns {Promise<{repo,surface,recorded,accepted,fresh,verified,finishedAt,reasons,message,exitCode}>}
  */
 export async function runStatus(opts) {
@@ -153,6 +190,7 @@ export async function runStatus(opts) {
   const staleDays = Number.isFinite(opts.staleDays) ? opts.staleDays : DEFAULT_STALE_DAYS;
   const fetchImpl = opts.fetchImpl || globalThis.fetch;
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const fetchTimeoutMs = Number.isFinite(opts.fetchTimeoutMs) ? opts.fetchTimeoutMs : DEFAULT_STATUS_FETCH_TIMEOUT_MS;
 
   if (!fetchImpl) {
     const e = new Error('no fetch implementation available (Node < 18?) and none injected');
@@ -161,7 +199,7 @@ export async function runStatus(opts) {
     throw e;
   }
 
-  const index = await fetchJsonOrNull(fetchImpl, indexBase, 'indexes/latest-by-repo.json');
+  const index = await fetchJsonOrNull(fetchImpl, indexBase, 'indexes/latest-by-repo.json', fetchTimeoutMs);
   const surfaces = index && index[repo] ? index[repo] : null;
 
   const base = {
@@ -232,7 +270,7 @@ export async function runStatus(opts) {
     let reasons = [];
     if (entry.path) {
       try {
-        const record = await fetchJsonOrNull(fetchImpl, indexBase, entry.path);
+        const record = await fetchJsonOrNull(fetchImpl, indexBase, entry.path, fetchTimeoutMs);
         reasons = record?.verification?.rejection_reasons ?? [];
       } catch {
         // A record we cannot fetch does not flip the verdict — the index entry's

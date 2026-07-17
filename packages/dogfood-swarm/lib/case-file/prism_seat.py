@@ -38,8 +38,18 @@ _REASON_INVALID = "INVALID_ARTIFACT"
 
 
 def _emit(payload: dict[str, Any]) -> None:
-    json.dump(payload, sys.stdout, default=str)
-    sys.stdout.write("\n")
+    # Write BYTES we encoded ourselves rather than text through sys.stdout,
+    # whose encoding is the platform locale (cp1252 on Windows, UTF-8 on Linux)
+    # — the same locale dependence that corrupted the stdin path.
+    #
+    # Honest scope note: unlike stdin, this was NOT a live bug. json.dumps
+    # defaults to ensure_ascii=True, so the payload was already pure ASCII and
+    # even a cp1252 stdout encoded it losslessly. This pins the property
+    # explicitly instead of resting it on an unstated default that a future
+    # ensure_ascii=False would silently break.
+    data = json.dumps(payload, default=str).encode("utf-8")
+    sys.stdout.buffer.write(data + b"\n")
+    sys.stdout.buffer.flush()
 
 
 def _fail(reason: str, detail: str) -> int:
@@ -49,7 +59,23 @@ def _fail(reason: str, detail: str) -> int:
 
 def main() -> int:
     try:
-        req = json.load(sys.stdin)
+        # Read BYTES and let json decode them as UTF-8 (RFC 8259), rather than
+        # json.load(sys.stdin), which decodes using sys.stdin.encoding — the
+        # platform LOCALE. On Linux that is UTF-8 and this is invisible; on
+        # Windows it is cp1252, and every multi-byte character in the request
+        # arrived corrupted. Measured on-rig: an em-dash (U+2014, 3 UTF-8 bytes)
+        # read as cp1252 becomes 3 CHARACTERS, inflating each by 2 — a JS intent
+        # measuring 3997 arrived as 4001 and was rejected by prism's
+        # max_length=4000 as INVALID_ARTIFACT, so every seat abstained
+        # (pass 0 / fail 0 / insufficient 4) while the panel silently judged
+        # mojibake'd text on the criteria that DID fit.
+        #
+        # This is the primary fix and it depends on NO environment variable:
+        # sys.stdin.buffer is the raw byte stream, so PYTHONIOENCODING cannot
+        # affect it. The caller also sets PYTHONIOENCODING=utf-8 as defense in
+        # depth, but a shim that is only correct because its caller configured
+        # it is one env change away from silently regressing.
+        req = json.loads(sys.stdin.buffer.read())
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
         return _fail(_REASON_INVALID, f"seat request is not valid JSON: {exc}")
 

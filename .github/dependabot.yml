@@ -4,18 +4,30 @@
 # mechanism that does not require a human to remember to look. Pattern
 # mirrors ollama-intern-mcp's config: group minor + patch into one PR per
 # ecosystem, leave majors as their own PRs for migration review.
+#
+# F-7881db1c: the schedule cadence and PR cap below were copied verbatim from
+# the mirrored ollama-intern-mcp config above (a weekly cadence, a cap of 5 on
+# both npm entries) without reconciling against THIS org's own Non-Negotiable
+# Dependabot rule in .claude/rules/github-actions.md, which requires the
+# slower monthly cadence and a cap of 3. The drift was reachable, not
+# cosmetic: package.json and package-lock.json both sit in ci.yml's paths
+# filters, so every Dependabot PR triggers a full 2-leg Node 22+24 CI run
+# through every verify gate — the faster cadence was ~4x the CI-minutes
+# spend the rule intends. All three ecosystem entries now use the slower
+# cadence; both npm entries' cap is now 3 (the github-actions entry was
+# already compliant). Pinned by scripts/stageC-check-dependabot-config.test.mjs.
 
 version: 2
 updates:
   - package-ecosystem: npm
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       non-major:
         patterns: ["*"]
         update-types: ["minor", "patch"]
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
 
   - package-ecosystem: npm
     # site/ is a separate npm subtree (Astro Starlight handbook, not a
@@ -23,17 +35,17 @@ updates:
     # root monorepo lockfile and needs its own Dependabot scope.
     directory: "/site"
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       non-major:
         patterns: ["*"]
         update-types: ["minor", "patch"]
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
 
   - package-ecosystem: github-actions
     directory: "/"
     schedule:
-      interval: weekly
+      interval: monthly
     groups:
       actions-non-major:
         patterns: ["*"]

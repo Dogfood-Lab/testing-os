@@ -74,29 +74,49 @@ describe('readBoundedJson — H5', () => {
     assert.match(err.message, /MB/);
   });
 
-  it('does NOT hang or OOM on a >limit file (the bug shape)', () => {
+  it('does NOT hang or OOM on a >limit file (the bug shape) — structural proof, not a timing proof', () => {
     // The bug shape this fix prevents: JSON.parse on a multi-GB file would
-    // block the event loop. The size gate catches it before parse begins.
-    // We use a relatively large limit-buster (10 MB file with a 1 MB cap)
-    // to keep the test fast but still exercise the bypass-parse path.
+    // block the event loop. This test used to prove the fast stat-gate path
+    // was taken by timing the rejection (`ms < 1000`) — real, but a
+    // wall-clock assertion is a flake surface on a loaded/throttled CI
+    // runner (F-c2e91eea): a queued stat() syscall could push elapsed time
+    // past the budget without the fix actually regressing, producing a
+    // false failure indistinguishable from a real one.
+    //
+    // The exact property under test — "the slow parse-then-fail path never
+    // ran" — is provable directly and exactly instead of approximately:
+    // lib/bounded-json-read.js's readBoundedJson() calls readBoundedBuffer()
+    // FIRST, which throws BoundedJsonError(SIZE_LIMIT) before `JSON.parse`
+    // is ever reached (the size gate is a statSync fast-path reject — see
+    // that file's readBoundedBuffer). Spying on JSON.parse and asserting it
+    // was never invoked proves the fast path was taken with certainty, not
+    // a >1000ms margin of confidence — no wall clock involved, so nothing
+    // here can flake under CI load.
     const p = join(tmp, 'avoids-hang.json');
     writeFileSync(p, 'x'.repeat(10 * 1024 * 1024), 'utf-8');
 
-    const start = Date.now();
+    const originalParse = JSON.parse;
+    let parseCalls = 0;
+    JSON.parse = (...args) => {
+      parseCalls += 1;
+      return originalParse(...args);
+    };
+
     let err = null;
     try {
       readBoundedJson(p, { maxBytes: 1024 * 1024 });
     } catch (e) {
       err = e;
+    } finally {
+      JSON.parse = originalParse;
     }
-    const ms = Date.now() - start;
+
     assert.ok(err);
     assert.equal(err.kind, 'SIZE_LIMIT');
-    // Sanity: rejecting on stat must take <1s even on a slow CI box. The
-    // bug-shape rejection (via JSON.parse blocking) would take much longer
-    // or hit the test timeout.
-    assert.ok(ms < 1000,
-      `bounded-json must reject via stat-gate fast (took ${ms}ms — did JSON.parse block?)`);
+    assert.equal(parseCalls, 0,
+      'JSON.parse must never be invoked when the stat-gate rejects — a nonzero count here means '
+        + 'the fast path was bypassed and the slow parse-then-fail path ran instead (the exact bug '
+        + 'shape this file exists to prevent)');
   });
 
   it('surfaces kind PARSE_FAILED on malformed JSON under the size limit', () => {

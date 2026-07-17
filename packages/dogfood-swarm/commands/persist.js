@@ -12,12 +12,13 @@
 import { mkdirSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { execSync } from 'node:child_process';
+import { execFileSync } from 'node:child_process';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
 import { buildRunExport, computeRunVerdict } from '../lib/persist/export.js';
 import { buildDogfoodSubmission } from '../lib/persist/dogfood-bridge.js';
-import { buildAuditPayload } from '../lib/persist/repoknowledge-bridge.js';
+import { buildAuditPayload, formatAuditStatusLine } from '../lib/persist/repoknowledge-bridge.js';
+import { escapeReasonForDisplay } from './lib/escape-reason.js';
 
 // Resolve REPO_ROOT off this file (commands/persist.js → packages/dogfood-swarm → repo root).
 // Mirrors the pattern in persist-results.js so the ingest path survives the consumer's cwd.
@@ -79,7 +80,26 @@ export function persist(opts) {
       // See persist-results.js:222 for the canonical pattern. F-742440-002.
       const ingestScript = resolve(REPO_ROOT, 'packages/ingest/run.js');
       if (existsSync(ingestScript)) {
-        execSync(`node "${ingestScript}" --provenance=stub --file "${submissionPath}"`, {
+        // F-21240958: argv-array form (execFileSync), never a shell-string
+        // exec. `submissionPath` carries the operator-settable SWARM_DB env
+        // var AND the <run-id> CLI positional (neither shell-metacharacter-
+        // validated), and `ingestScript` derives from the install path.
+        // execFileSync never invokes a shell, so there is no quoting to get
+        // right and no metacharacter surface at all — matching every
+        // sibling git/node invocation in this package (dispatch.js's
+        // execFileSync('git', [...]), lib/worktree.js, and — as of
+        // F-264bd9d2, wave 20 — commands/init.js's git() helper).
+        //
+        // F-264bd9d2 (wave 20): this comment previously claimed to be "the
+        // only shell-string exec in the package's command layer". That was
+        // inaccurate when written — persist-results.js's sibling instance
+        // (F-1f7f9de8) and init.js's git() helper (fixed this wave) both
+        // predated it — and it is not a claim this file can verify on its
+        // own: there is still no mechanical gate (e.g. a meta-test grepping
+        // commands/**+cli.js for `execSync(` with a template-literal
+        // argument) preventing a future instance from reintroducing the
+        // pattern elsewhere in this package.
+        execFileSync('node', [ingestScript, '--provenance=stub', '--file', submissionPath], {
           stdio: ['ignore', 'pipe', 'pipe'],
           encoding: 'utf-8',
           // SEED-2: forward the ingest DATA root so it stays overridable. run.js
@@ -117,6 +137,14 @@ export function persist(opts) {
     path: auditDir,
     status: auditPayload.run.overall_status,
     posture: auditPayload.run.overall_posture,
+    // F-882ed6c0 (routed to swarm-cp-core; wired here since commands/persist.js
+    // is outside that domain's owned glob): carried alongside the existing
+    // flattened status/posture fields (kept as-is — additive only, nothing
+    // reads this report shape via --format=json, but no reason to narrow an
+    // existing field either) so formatPersist() below can reconstruct the
+    // auditPayload shape formatAuditStatusLine() expects without threading
+    // the whole auditPayload object through the report.
+    runAborted: auditPayload.metrics.run_aborted,
   };
 
   return report;
@@ -142,7 +170,17 @@ export function formatPersist(r) {
   if (r.dogfood?.ingested) {
     lines.push(`  Ingested: YES`);
   } else {
-    lines.push(`  Ingested: NO — ${r.dogfood?.reason}`);
+    // F-bf28b667 (wave 20): r.dogfood.reason is not adversary-controlled
+    // (it is either a fixed literal — 'Dry run' / 'Not requested' / 'Ingest
+    // script not found' — or, on a failed ingest, a local execFileSync
+    // child-process error message: `Command failed: <cmd>\n<stderr>`, per
+    // Node's own child_process error shape), but that stderr CAN legitimately
+    // be multi-line (packages/ingest/run.js's own validation output). Escaped
+    // for display robustness so a multi-line ingest failure renders as one
+    // summary line instead of visually fragmenting into several, matching
+    // this package's escaping convention for every other reason-shaped
+    // render site rather than leaving this one as a silent exception.
+    lines.push(`  Ingested: NO — ${escapeReasonForDisplay(r.dogfood?.reason)}`);
   }
   lines.push('');
 
@@ -150,11 +188,24 @@ export function formatPersist(r) {
   // fp-p-004: distinguish "artifacts written locally" from "submitted to the
   // repo-knowledge DB". The submission is the coordinator's downstream step;
   // say so rather than implying it already happened.
+  // F-882ed6c0 (routed to swarm-cp-core, wired here — see the field comment
+  // on report.repoKnowledge in persist() above): both lines used to
+  // hand-format `${status} (${posture})` directly, exactly the render
+  // formatAuditStatusLine() exists to standardize — an aborted run with zero
+  // open findings rendered a bare "fail (critical)" with nothing telling the
+  // operator a phantom critical did NOT trigger the block. Reconstructing the
+  // auditPayload shape from the flattened report fields rather than
+  // threading the whole object through keeps report.repoKnowledge's
+  // existing shape stable for any other reader.
+  const auditStatusLine = formatAuditStatusLine({
+    run: { overall_status: r.repoKnowledge?.status, overall_posture: r.repoKnowledge?.posture },
+    metrics: { run_aborted: r.repoKnowledge?.runAborted },
+  });
   if (r.repoKnowledge?.submitted) {
-    lines.push(`  Submitted: YES — status ${r.repoKnowledge?.status} (${r.repoKnowledge?.posture})`);
+    lines.push(`  Submitted: YES — status ${auditStatusLine}`);
   } else {
     lines.push(`  Submitted: NO — artifacts written, run \`rk audit import <path>\` to submit`);
-    lines.push(`  Status (pending): ${r.repoKnowledge?.status} (${r.repoKnowledge?.posture})`);
+    lines.push(`  Status (pending): ${auditStatusLine}`);
   }
   lines.push(`  Path:   ${r.repoKnowledge?.path}`);
 

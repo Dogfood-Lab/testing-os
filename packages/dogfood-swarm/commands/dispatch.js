@@ -20,6 +20,7 @@ import { openDb } from '../db/connection.js';
 import { getDomains, aredomainsFrozen, freezeDomains, takeDomainSnapshot } from '../lib/domains.js';
 import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../lib/templates.js';
 import { buildPriorMap } from '../lib/fingerprint.js';
+import { isOpenFinding } from '../lib/finding-status.js';
 import { createWorktree, runShortOf } from '../lib/worktree.js';
 import { findingsForDomain } from '../lib/findings-filter.js';
 import { transitionAgent } from '../lib/state-machine.js';
@@ -124,14 +125,45 @@ function previewWorktree(repoPath, waveNumber, domainName, runId) {
  *   state rolls back to pre-dispatch (no half-built wave, no orphan
  *   agent_runs rows, no runs.status flip).
  *
- *   Filesystem-side effects (worktree creation via createWorktree + prompt
- *   files via atomicWriteFileSync) are EXPLICITLY outside the tx and are
- *   NOT rolled back on failure. The trade-off: on rollback any prompts /
- *   worktrees written for already-completed iterations become FS orphans
- *   the operator can grep with `find <outputDir> -name '*.md'` and re-
- *   dispatch (or clean with `git worktree prune`). FS orphans are the
- *   better failure than a DB row that promises agents which never got
- *   their prompts.
+ *   F-5b0996e4: filesystem-side effects split ACROSS the tx boundary, and
+ *   the two halves are NOT symmetric — worktree creation (createWorktree,
+ *   called inside the per-domain loop below) runs INSIDE the tx; prompt-
+ *   file writes (atomicWriteFileSync, the loop after buildWave() returns)
+ *   run OUTSIDE it. This corrects an earlier version of this header, which
+ *   claimed BOTH were "EXPLICITLY outside the tx" — worktree creation never
+ *   was; the inline note at the createWorktree call site (below) already
+ *   described the true behavior ('a thrown IsolationError now propagates
+ *   OUT of the surrounding db.transaction(), triggering full DB rollback.
+ *   Worktrees successfully created before the failure remain on disk as FS
+ *   orphans') ten lines apart from the header's contradicting claim.
+ *
+ *   Neither half is rolled back by a DB-tx abort: better-sqlite3 undoes SQL
+ *   writes on a thrown transaction function, not filesystem writes a
+ *   thrown IsolationError already performed. The trade-off: on a mid-loop
+ *   IsolationError, every DB row rolls back (waves/agent_runs never
+ *   existed), but worktrees already created for earlier domains in the
+ *   SAME failed loop remain on disk as FS orphans — THIS is the actual
+ *   source of the FS-orphan case, not the prompt loop (prompts are written
+ *   only AFTER the tx has already committed, so a prompt-write failure
+ *   never coincides with a DB rollback in the first place). The operator
+ *   reclaims stranded worktrees with `swarm clean <run-id> --apply`, or
+ *   finds any FS-orphaned prompt files from a later, successful-tx failure
+ *   path with `find <outputDir> -name '*.md'` and re-dispatches. FS orphans
+ *   are the better failure than a DB row that promises agents which never
+ *   got their prompts.
+ *
+ *   Evaluated and deliberately NOT done in this pass: hoisting the
+ *   createWorktree loop above buildWave() so the tx only ever INSERTs rows
+ *   referencing already-created worktrees (which would make the header's
+ *   original claim true, and shrink the write-lock hold time — the tx
+ *   would no longer pay for N git subprocesses). Rejected here because it
+ *   does not change the orphan-risk SHAPE (a hoisted loop that fails on
+ *   domain K still leaves worktrees 1..K-1 on disk with no DB rows
+ *   referencing them — same class of orphan, different phase) and it is a
+ *   structural reorder that touches every dispatch-tx regression pin
+ *   (amend2-d3b-002-dispatch-tx, dispatch-state-machine, dispatch-amend-
+ *   filter, dispatch-prompt-schema) — a follow-up with its own dedicated
+ *   verification pass, not a LOW-severity doc fix.
  *
  *   better-sqlite3 nests transactions cleanly — the inner
  *   `transitionAgent → executeTransition` self-wrap from Wave-A1 H9
@@ -236,6 +268,45 @@ export function dispatch(opts) {
       phase: opts.phase,
       hint: `run \`swarm domains ${opts.runId} --add <name> --globs "[...]"\` then --freeze`,
     });
+  }
+
+  // F-3c8a62f1: the guard above checks the PRE-filter domain list; the
+  // per-domain loop below (and the dry-run preview mirror of it) acts on
+  // the POST-filter list — `shared` is a zone, not an agent, and is
+  // `continue`d past every place an agent gets created. A domain map that
+  // is non-empty but ALL `shared` (a real `swarm init` outcome on a repo
+  // with no .md/src/lib/packages/tests — see F-6a78ffdd's reachability
+  // note) sailed past `domains.length === 0`, then the loop created ZERO
+  // agents, committed a wave with agentCount: 0, and exited 0 reporting
+  // success — the exact same class of bug as this wave's own
+  // F-a5f6b585 (redrive.js): a guard that polices a DIFFERENT set than the
+  // one the code actually acts on. The wedge compounds: the next dispatch
+  // then throws DISPATCH_WAVE_IN_FLIGHT ('still dispatched') PERMANENTLY,
+  // since the zero-agent wave can never collect. Distinct code from
+  // DISPATCH_NO_DOMAINS — two different causes ('no domains at all' vs
+  // 'domains exist but none are agent-bearing') get two different
+  // diagnostics, so the message names the real condition instead of
+  // collapsing back into the same "doesn't name the actual cause" failure
+  // one layer up.
+  const agentBearingDomains = domains.filter(d => d.ownership_class !== 'shared');
+  if (agentBearingDomains.length === 0) {
+    emitPreconditionFailed({
+      runId: opts.runId,
+      phase: opts.phase,
+      code: 'DISPATCH_NO_AGENT_DOMAINS',
+      message: `Every domain in the frozen map (${domains.length}) is class 'shared'; shared is a zone, not an agent`,
+    });
+    throw new DispatchPreconditionError(
+      `Every domain in the frozen map (${domains.length}) is class 'shared' — shared is a zone, not an agent. ` +
+      `Dispatching would create zero agent_runs, commit a wave reporting success, and permanently block future ` +
+      `dispatch on DISPATCH_WAVE_IN_FLIGHT (the zero-agent wave can never collect).`,
+      {
+        code: 'DISPATCH_NO_AGENT_DOMAINS',
+        runId: opts.runId,
+        phase: opts.phase,
+        hint: `run \`swarm domains ${opts.runId} --edit <name> --ownership owned\` (or --add a new owned/bridge domain) so at least one domain can carry an agent`,
+      }
+    );
   }
 
   // F-cf8b7a6c: refuse to open a NEW wave while another wave of this run is
@@ -415,15 +486,29 @@ export function dispatch(opts) {
   const promptDir = promptDirPath;
   if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
 
+  // CLOSED and OPEN priors go to the agent as SEPARATE lists carrying opposite
+  // instructions. classifyFindings closes an absent prior as `fixed` when the
+  // wave had full coverage — an inference that holds only if the agent would
+  // have re-reported a defect that was still there. Emitting one flat
+  // "do NOT re-report these" list (what this did before) made that impossible
+  // for OPEN priors and turned their absence into self-fulfilling evidence:
+  // wave 28 of run swarm-1784091637-5127 closed 9 untouched findings that way,
+  // with no amend wave anywhere between them and the prior audit. Closed priors
+  // are unaffected — classifyFindings already treats them as terminal-when-
+  // absent, so nothing is ever inferred from silence about them.
   let priorContext = '';
+  let openPriorContext = '';
   if (isAudit) {
     const priorMap = buildPriorMap(db, opts.runId);
     if (priorMap.size > 0) {
-      const lines = [];
-      for (const [fp, f] of priorMap) {
-        lines.push(`- [${f.status}] ${f.finding_id}: ${f.description} (${f.file_path || '?'})`);
+      const closedLines = [];
+      const openLines = [];
+      for (const [, f] of priorMap) {
+        const line = `- [${f.status}] ${f.finding_id}: ${f.description} (${f.file_path || '?'})`;
+        (isOpenFinding(f.status) ? openLines : closedLines).push(line);
       }
-      priorContext = lines.join('\n');
+      priorContext = closedLines.join('\n');
+      openPriorContext = openLines.join('\n');
     }
   }
 
@@ -568,7 +653,7 @@ export function dispatch(opts) {
       if (opts.phase === 'feature-audit') {
         prompt = buildFeatureAuditPrompt(promptOpts);
       } else {
-        prompt = buildAuditPrompt({ ...promptOpts, priorContext });
+        prompt = buildAuditPrompt({ ...promptOpts, priorContext, openPriorContext });
       }
     } else if (isAmend) {
       // Filter approved findings by the agent's owned globs. An empty result is

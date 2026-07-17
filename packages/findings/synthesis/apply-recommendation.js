@@ -95,8 +95,24 @@ export function applyRecommendation(rootDir, params) {
   // org/repo carrying `..` or a separator would escape the policies tree on
   // BOTH the dry-run (path leaked in preview) and write (file touched) paths,
   // so reject here before either branch resolves a path.
+  //
+  // F-853dbce9: the two-segment repo contract (F-54e5fde7 / V2-CROSS-BO-003)
+  // was NOT enforced here — the bare 2-way destructure silently DROPS every
+  // segment past the second, so `--policy group/subgroup/project` yielded
+  // pOrg='group', pRepo='subgroup' and resolved a DIFFERENT repo's policy
+  // file than the operator named, with no error on either the dry-run
+  // preview or the --write path. Matches persist.js:51's `segments.length
+  // !== 2` guard verbatim so the family reads identically.
   if (params.policyRepo) {
-    const [pOrg, pRepo] = String(params.policyRepo).split('/');
+    const segments = String(params.policyRepo).split('/');
+    if (segments.length !== 2) {
+      return structuredError(
+        'RECOMMENDATION_UNSAFE_POLICY',
+        `policy repo "${params.policyRepo}" is not a two-segment org/repo slug`,
+        'Nested GitLab subgroups are unsupported — pass --policy <org>/<repo>.'
+      );
+    }
+    const [pOrg, pRepo] = segments;
     if (!pOrg || !pRepo || isUnsafeSegment(pOrg) || isUnsafeSegment(pRepo)) {
       return structuredError(
         'RECOMMENDATION_UNSAFE_POLICY',
@@ -196,7 +212,18 @@ export function applyRecommendation(rootDir, params) {
   }
 
   // Apply the structured intent: add target to surfaces.<surface>.required_scenarios.
-  if (!policy.surfaces) policy.surfaces = {};
+  //
+  // F-5dfddcb5: policy.surfaces is a dynamic-key container (`[surface]`,
+  // below) built from a value this module does not itself constrain to a
+  // safe enum — Object.create(null) so a `surface` value of '__proto__'
+  // reassigns an own data property instead of the object's [[Prototype]].
+  // Mirrors the identical fix already shipped in this domain for the same
+  // assignment shape: packages/ingest/rebuild-indexes.js (F-89b7dcd5),
+  // packages/portfolio/lib/compute-trends.js (F-a853fcaa). Not reachable
+  // today — `surface` comes from `rec.applies_to.product_surfaces`, which is
+  // schema-enum-constrained — but this is the same defense-in-depth posture
+  // the sibling fixes already established for this pattern.
+  if (!policy.surfaces) policy.surfaces = Object.create(null);
   if (!policy.surfaces[surface]) policy.surfaces[surface] = {};
   if (!Array.isArray(policy.surfaces[surface].required_scenarios)) {
     policy.surfaces[surface].required_scenarios = [];
@@ -209,7 +236,28 @@ export function applyRecommendation(rootDir, params) {
   // logic field. Stored under a dedicated `applied_recommendations` map keyed by
   // the scenario id so it is auditable but never interpreted by the policy
   // engine. The free-text details live here as a human note, never as a rule.
-  if (!policy.applied_recommendations) policy.applied_recommendations = {};
+  //
+  // F-5dfddcb5: Object.create(null), not {} — action.target is FREE TEXT
+  // (≤100 chars, no enum constraint, per this file's own header docstring)
+  // used as the dynamic key immediately below. On a plain {}, the bracket
+  // assignment `container['__proto__'] = provenance` does not create an own
+  // '__proto__' data property — it invokes Object.prototype's __proto__
+  // SETTER, which reassigns the CONTAINER's own [[Prototype]] to the
+  // provenance object. The write silently vanishes (Object.keys() stays [])
+  // and the container starts inheriting provenance's own properties instead
+  // — confirmed with a standalone probe matching this exact single-assignment
+  // shape. (This is scoped to the one container object, not a write onto the
+  // shared, global Object.prototype — that stronger form needs a read-then-
+  // write through an unguarded lookup, which is a different pattern.)
+  // Object.create(null) removes the [[Prototype]] chain entirely, so
+  // '__proto__' is just an ordinary key. NOT reachable from untrusted input
+  // today — the only current producer (recommendation-derivation.js's
+  // selectTemplate()) emits hardcoded literal targets — but a future
+  // template letting action.target reflect free-form scenario-id-shaped text
+  // must not silently reopen this class. Mirrors the identical fix already
+  // shipped for this pattern: packages/ingest/rebuild-indexes.js
+  // (F-89b7dcd5), packages/portfolio/lib/compute-trends.js (F-a853fcaa).
+  if (!policy.applied_recommendations) policy.applied_recommendations = Object.create(null);
   const provenance = {
     recommendation_id: id,
     action_type: action.type,
@@ -252,8 +300,23 @@ export function applyRecommendation(rootDir, params) {
   };
 }
 
-/** Resolve the on-disk path for a repo policy under rootDir. */
+/**
+ * Resolve the on-disk path for a repo policy under rootDir.
+ *
+ * F-853dbce9: fails closed on the same two-segment invariant the guard above
+ * enforces, rather than trusting every caller to have checked first —
+ * mirrors persist.js's computeRecordPath, which owns this same invariant at
+ * the write layer instead of trusting its own callers. Both of this
+ * function's current callers (the dry-run preview and the --write path) are
+ * already gated by the guard above, so this throw is defense-in-depth, not
+ * the primary enforcement point — but a future call site that skips the
+ * guard must fail loud here, not silently resolve a different repo's file.
+ */
 function policyPathFor(rootDir, orgRepo) {
-  const [org, repo] = orgRepo.split('/');
+  const segments = String(orgRepo).split('/');
+  if (segments.length !== 2 || !segments[0] || !segments[1]) {
+    throw new Error(`policy repo "${orgRepo}" is not a two-segment org/repo slug`);
+  }
+  const [org, repo] = segments;
   return resolve(rootDir, 'policies', 'repos', org, `${repo}.yaml`);
 }

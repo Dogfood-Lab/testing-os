@@ -73,23 +73,6 @@ export class CollectUpsertError extends Error {
 }
 
 /**
- * Thrown by transitionAgent when a state-machine transition is rejected.
- *
- * Pre-fix history (F-091578-002): the rejection path threw a bare
- * `new Error('Illegal transition: ${check.reason}')`, leaking internal
- * state-machine vocabulary ("`complete` is terminal — no transitions
- * allowed") to operators with no class differentiator and no actionable
- * hint. An operator hitting this had no way to tell whether the rejection
- * was their problem (BLOCKED — needs override), the program's problem
- * (TERMINAL — caller bug), or a missing edge in TRANSITIONS (INVALID —
- * legitimate disallowed transition).
- *
- * The wave-17 fix routes every rejection through this typed error with a
- * `code` field (`BLOCKED` / `TERMINAL` / `INVALID`) so the CLI's top-level
- * handler can render a code-specific actionable hint. Sibling concept to
- * IsolationError + CollectUpsertError: structured shape > prose-only.
- */
-/**
  * Thrown when a `swarm dispatch` precondition fails (missing run, frozen-
  * domain check, missing domains).
  *
@@ -201,6 +184,123 @@ export class ControlPlaneSchemaTooNewError extends Error {
   }
 }
 
+/**
+ * Thrown by openDb (via getSchemaVersion) when the on-disk control-plane.db's
+ * `kv.schema_version` value is not a finite number.
+ *
+ * F-9587adda: getSchemaVersion() used to `parseInt(row.value, 10)` and return
+ * whatever that produced, including NaN for a non-numeric value. Both
+ * downstream comparisons in openDb — `version > SCHEMA_VERSION` (the
+ * too-new refusal above) and `version < SCHEMA_VERSION` (the schema-bootstrap
+ * gate) — are FALSE for NaN, so a corrupted schema_version silently skipped
+ * BOTH: the too-new refusal never fired, and `db.exec(SCHEMA_SQL)` never ran,
+ * contradicting this same module's own fail-loud-not-silent discipline
+ * (already applied above for the too-new case, and for the dead-handle
+ * sentinel in openDb).
+ *
+ * Recovery is NOT "pull the latest build" (that is ControlPlaneSchemaTooNewError's
+ * remedy, for a DIFFERENT condition — a value this build understands perfectly
+ * well but that belongs to a newer one). A corrupt kv.value means the row
+ * itself is wrong: restore from a known-good backup, or start a fresh control
+ * plane at this dbPath if none exists. The two conditions get distinct codes
+ * so a caller (or an operator scanning logs) is never told to "upgrade" a DB
+ * that is actually just damaged, or vice versa.
+ */
+export class ControlPlaneSchemaCorruptError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} opts
+   * @param {string} opts.rawValue — the unparseable kv.schema_version value read from disk
+   * @param {string} [opts.dbPath] — the refused DB path (log correlation)
+   * @param {string} [opts.hint]   — override the default corruption hint
+   */
+  constructor(message, opts) {
+    super(message);
+    this.name = 'ControlPlaneSchemaCorruptError';
+    this.code = 'CONTROL_PLANE_SCHEMA_CORRUPT';
+    this.rawValue = opts.rawValue;
+    if (opts.dbPath != null) this.dbPath = opts.dbPath;
+    this.hint = opts.hint
+      || 'kv.schema_version is not a finite number — the control-plane.db is corrupted or was hand-edited, not merely older/newer. Restore control-plane.db from a known-good backup, or remove it to bootstrap a fresh one (only if this run\'s history is not needed) — do not hand-write schema_version without reading db/migrate.js\'s ledger first.';
+  }
+}
+
+/**
+ * Thrown by buildCriterionIntent (lib/case-file/prism-jury.js) when the
+ * MANDATORY head section (rubric.objective + the criterion under test) alone
+ * exceeds prism's 4000-char intent cap, before any optional section (evidence,
+ * out-of-scope) is even considered.
+ *
+ * Pre-fix history (F-ca495e53): fits() only ever measured `[head, ...parts]`,
+ * so head was a fixed cost the budget was spent against but never itself
+ * checked. When head alone overflowed, fits() returned false for every
+ * candidate, body stayed empty, and the function returned `intent: head` —
+ * still over the cap — while `omitted` reported {evidence:0, out_of_scope:0},
+ * i.e. affirmatively claiming nothing was dropped. prism's pydantic
+ * max_length=4000 then rejected the request, every seat abstained uniformly,
+ * and the operator was told the jury could not reach the artifact
+ * (insufficient_context, Director disposition) when the actual cause was a
+ * deterministic, locally-detectable input error: their rubric objective (or
+ * one criterion's check text) was too long. This directly contradicts the
+ * module's own stated discipline: "Anything that does not fit is REPORTED,
+ * not silently dropped." An over-cap head was neither reported nor dropped.
+ *
+ * Fail fast at the case-file boundary instead: this is knowable without
+ * spending a single ~27s seat call.
+ */
+export class CriterionIntentOverflowError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} opts
+   * @param {string} opts.criterionId — the criterion under test when the overflow was found
+   * @param {number} opts.headLength — the mandatory section's actual length
+   * @param {number} opts.maxChars — prism's intent cap (MAX_INTENT_CHARS)
+   * @param {string} [opts.hint] — override the default remediation hint
+   */
+  constructor(message, opts) {
+    super(message);
+    this.name = 'CriterionIntentOverflowError';
+    this.code = 'CRITERION_INTENT_OVERFLOW';
+    this.criterionId = opts.criterionId;
+    this.headLength = opts.headLength;
+    this.maxChars = opts.maxChars;
+    // F-4b72faf9: this class never set `.hint`, so renderTopLevelError printed
+    // no "Next:" line even though the thrown `message` embeds the same
+    // remediation text inline — every sibling typed error in this file with a
+    // self-contained one-line remedy (e.g. ControlPlaneSchemaTooNewError)
+    // surfaces it through `.hint` instead of leaving operators to parse it out
+    // of the message. Default only; a future throw site can still override.
+    this.hint = opts.hint
+      || `criterion '${opts.criterionId}': mandatory section is ${opts.headLength} chars ` +
+         `(cap ${opts.maxChars}) — shorten the objective, split the criterion, or trim the out-of-scope list`;
+  }
+}
+
+/**
+ * Thrown by transitionAgent when a state-machine transition is rejected.
+ *
+ * Pre-fix history (F-091578-002): the rejection path threw a bare
+ * `new Error('Illegal transition: ${check.reason}')`, leaking internal
+ * state-machine vocabulary ("`complete` is terminal — no transitions
+ * allowed") to operators with no class differentiator and no actionable
+ * hint. An operator hitting this had no way to tell whether the rejection
+ * was their problem (BLOCKED — needs override), the program's problem
+ * (TERMINAL — caller bug), or a missing edge in TRANSITIONS (INVALID —
+ * legitimate disallowed transition).
+ *
+ * The wave-17 fix routes every rejection through this typed error with a
+ * `code` field (`BLOCKED` / `TERMINAL` / `INVALID`) so the CLI's top-level
+ * handler can render a code-specific actionable hint. Sibling concept to
+ * IsolationError + CollectUpsertError: structured shape > prose-only.
+ *
+ * F-e0fb3761 (Wave 18): this doc block previously sat above
+ * DispatchPreconditionError instead of above this class — an
+ * insertion-ordering slip (DispatchPreconditionError's own comment+class
+ * pair was added between this doc and its class, and this class was later
+ * relocated to the bottom of the file without its comment following it).
+ * Moved here, directly above the class it actually documents. Zero runtime
+ * effect either way; see errors-orphaned-jsdoc-placement.test.js.
+ */
 export class StateMachineRejectionError extends Error {
   /**
    * @param {string} message
@@ -208,7 +308,13 @@ export class StateMachineRejectionError extends Error {
    * @param {'BLOCKED' | 'TERMINAL' | 'INVALID'} opts.kind
    * @param {string} opts.from
    * @param {string} opts.to
-   * @param {number|string} [opts.agentRunId]
+   * @param {number|string} [opts.agentRunId] — set by transitionAgent (lib/state-machine.js) rejections
+   * @param {number|string} [opts.waveId] — set by transitionWave (lib/wave-state-machine.js)
+   *   rejections (F-f4a64538). Mirrors CollectUpsertError's existing `waveId` field so
+   *   error-render.js's already-correct `e.waveId` branch renders "Wave: N" instead of
+   *   mislabeling a wave id as an agent-run id — the two are separate AUTOINCREMENT
+   *   sequences in the same DB. A single throw site should set exactly one of
+   *   agentRunId/waveId, matching whichever state machine actually rejected the transition.
    * @param {string} [opts.hint] — actionable next-step text
    * @param {string[]} [opts.allowedTransitions] — legal `to` set from `from`
    */
@@ -220,6 +326,7 @@ export class StateMachineRejectionError extends Error {
     this.from = opts.from;
     this.to = opts.to;
     if (opts.agentRunId != null) this.agentRunId = opts.agentRunId;
+    if (opts.waveId != null) this.waveId = opts.waveId;
     if (opts.hint) this.hint = opts.hint;
     if (opts.allowedTransitions) this.allowedTransitions = opts.allowedTransitions;
   }

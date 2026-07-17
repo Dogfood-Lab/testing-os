@@ -110,6 +110,56 @@ describe('featF-INTEL-003: applicability gate', () => {
   });
 });
 
+describe('F-853dbce9: the two-segment --policy contract is enforced (nested GitLab subgroups rejected, not truncated)', () => {
+  beforeEach(setupTestRoot);
+  after(teardown);
+
+  it('dry-run: --policy "a/b/c" (3 segments) refuses with RECOMMENDATION_UNSAFE_POLICY, not a silently truncated a/b lookup', () => {
+    writeRecFile('drec-featf-003', makeRec());
+    // Deletion/emptiness proof: this is the exact vulnerable shape — a
+    // REAL policy exists at the truncated 2-segment path a/b.yaml. Reverting
+    // the guard back to a bare `const [pOrg, pRepo] = policyRepo.split('/')`
+    // makes this test go red not by throwing, but WORSE — it silently
+    // succeeds and previews a/b.yaml as if the operator had asked for it.
+    writePolicy('a/b', basePolicy());
+
+    const res = applyRecommendation(TEST_ROOT, { id: 'drec-featf-003', mode: 'dry-run', policyRepo: 'a/b/c' });
+    assert.equal(res.success, false, `expected refusal; got ${JSON.stringify(res)}`);
+    assert.equal(res.error.code, 'RECOMMENDATION_UNSAFE_POLICY');
+    assert.match(res.error.message, /two-segment/);
+    assert.ok(res.error.hint);
+  });
+
+  it('write: --policy "a/b/c" (3 segments) refuses with RECOMMENDATION_UNSAFE_POLICY and does NOT mutate a/b.yaml', () => {
+    writeRecFile('drec-featf-003', makeRec());
+    writePolicy('a/b', basePolicy());
+
+    const res = applyRecommendation(TEST_ROOT, { id: 'drec-featf-003', mode: 'write', actor: 'mike', policyRepo: 'a/b/c' });
+    assert.equal(res.success, false, `expected refusal; got ${JSON.stringify(res)}`);
+    assert.equal(res.error.code, 'RECOMMENDATION_UNSAFE_POLICY');
+
+    // The unrelated a/b policy must be untouched — pre-fix this is exactly
+    // the record that silently gained an unrequested required_scenario.
+    const policy = readPolicy('a/b');
+    assert.deepEqual(policy.surfaces.cli.required_scenarios, ['install-and-run']);
+    assert.equal(policy.applied_recommendations, undefined);
+  });
+
+  it('a nested 4-segment slug is refused the same way', () => {
+    writeRecFile('drec-featf-003', makeRec());
+    const res = applyRecommendation(TEST_ROOT, { id: 'drec-featf-003', mode: 'write', actor: 'mike', policyRepo: 'group/subgroup/nested/project' });
+    assert.equal(res.success, false);
+    assert.equal(res.error.code, 'RECOMMENDATION_UNSAFE_POLICY');
+  });
+
+  it('a well-formed two-segment slug is unaffected (no false positive)', () => {
+    writeRecFile('drec-featf-003', makeRec());
+    writePolicy('mcp-tool-shop-org/widget', basePolicy());
+    const res = applyRecommendation(TEST_ROOT, { id: 'drec-featf-003', mode: 'dry-run', policyRepo: 'mcp-tool-shop-org/widget' });
+    assert.equal(res.success, true, JSON.stringify(res.error));
+  });
+});
+
 describe('featF-INTEL-003: dry-run preview (writes nothing)', () => {
   beforeEach(setupTestRoot);
   after(teardown);

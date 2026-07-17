@@ -281,13 +281,29 @@ export function rebuildIndexes(repoRoot, options = {}) {
 
   // --- latest-by-repo.json ---
   // Keyed by repo, then product_surface. Only accepted records count.
-  const latestByRepo = {};
+  //
+  // F-89b7dcd5: `record.repo` and `sr.product_surface` come from loadRecord()
+  // (JSON.parse only, no schema gate — see its JSDoc) rather than validated
+  // submission input, so a hand-committed record with repo: '__proto__' would
+  // otherwise resolve `latestByRepo['__proto__']` to Object.prototype itself
+  // (truthy, on a plain `{}`), skip the init branch below, and land the
+  // surface write ON Object.prototype — real global prototype pollution for
+  // the rest of this process. Object.create(null) removes the prototype
+  // chain entirely: `latestByRepo['__proto__']` is a plain (absent) data
+  // property, not the special accessor. JSON.stringify (below, at the
+  // commitGroupRename call) serializes a null-prototype object identically
+  // to a plain one, so this costs nothing on the write side. Not reachable
+  // from the ingest write path today (writeRecord's validateRecord() gate
+  // constrains repo's shape before persist.js ever writes a file), so this
+  // is defense-in-depth against a hand-committed or otherwise out-of-band
+  // record file, not a live vulnerability.
+  const latestByRepo = Object.create(null);
 
   for (const record of allRecords) {
     if (record.verification?.status !== 'accepted') continue;
 
     const repo = record.repo;
-    if (!latestByRepo[repo]) latestByRepo[repo] = {};
+    if (!latestByRepo[repo]) latestByRepo[repo] = Object.create(null);
 
     for (const sr of record.scenario_results || []) {
       const surface = sr.product_surface;

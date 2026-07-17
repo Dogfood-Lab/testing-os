@@ -156,6 +156,60 @@ export function queryPerRepoRunHistory(db, repoPattern) {
  * }}
  */
 export function queryFindingRecurrenceRate(db, windowDays) {
+  // F-36327af8: validate BEFORE windowDays reaches the SQL date-modifier
+  // string below. Number(windowDays) on a malformed value (the realistic
+  // operator typo '30days', or 'abc') is NaN, and SQLite's datetime() returns
+  // NULL for an unparseable modifier like '-NaN days' rather than throwing —
+  // so the WHERE clause silently matched zero rows and this function
+  // returned the SAME clean, all-zero shape a genuinely empty run population
+  // produces, with no error and no warning. Not reachable via the shipped
+  // `swarm trends` CLI (cli.js already validates --window-days against a
+  // strict ^\d+$ regex before calling here) but IS reachable via this
+  // package's documented public surface (package.json's "./lib/*" export) —
+  // mirrors this package's own established discipline elsewhere of not
+  // trusting a single call site to be the only guard for a shared, exported
+  // function (see lib/verify/runner.js's readEnvMaxBufferBytes, which
+  // validates with the same Number.isFinite check rather than trusting its
+  // one caller).
+  // F-b5fd9887: `Number('') === 0`, a well-known JS coercion quirk, so an
+  // empty/whitespace-only windowDays (an unfilled form field, or an unset
+  // query-string param forwarded verbatim as `?windowDays=`) passed
+  // Number.isFinite cleanly and was silently treated as a valid "window = 0
+  // days" request — the exact "plausible result masking malformed input"
+  // shape F-36327af8 already named, just for a narrower value that guard
+  // didn't reach. Checked BEFORE the Number.isFinite fallback so a
+  // non-numeric-looking string never gets a chance to coerce to a number at
+  // all; a genuine numeric string ('30', '3650') has no leading/trailing-only
+  // whitespace content and is untouched by this clause.
+  // F-93cd78d3: a NEGATIVE finite number (`-5`, or the string `'-5'`) passed
+  // BOTH clauses above cleanly — `Number.isFinite(-5)` is true and
+  // `String(-5).trim()` is `'-5'`, not empty — and reached the SQL
+  // date-modifier template literal at line ~209 unguarded. `` `-${Number(-5)}
+  // days` `` renders the literal string '--5 days', which SQLite's
+  // datetime() treats as an unparseable modifier and silently returns NULL
+  // (confirmed directly: `SELECT datetime(<ts>, '--5 days')` → NULL) — the
+  // WHERE clause then matches zero rows, and this function returns the SAME
+  // clean, plausible all-zero shape a genuinely quiet run history produces.
+  // The exact "unparseable modifier -> silent NULL -> zero rows -> plausible
+  // clean result" mechanism F-36327af8/F-b5fd9887 already named, for a third
+  // input shape neither guard reached. windowDays is a trailing-window
+  // length; a negative one has no valid meaning (unlike '0', which the
+  // existing tests correctly protect as a real, deliberate "anchor run
+  // only" value — 0 is a valid boundary, negative is not).
+  if (
+    windowDays !== undefined && windowDays !== null
+    && (String(windowDays).trim() === '' || !Number.isFinite(Number(windowDays)) || Number(windowDays) < 0)
+  ) {
+    throw new Error(
+      // The "must be a finite number" substring is preserved verbatim
+      // (rather than e.g. "finite, non-negative number") because
+      // F-36327af8/F-b5fd9887's own existing tests assert against it with
+      // `/windowDays must be a finite number/` — this fix extends the same
+      // guard and must not require editing those two siblings' tests.
+      `queryFindingRecurrenceRate: windowDays must be a finite number that is not negative, or omitted/null for "all runs" — got ${JSON.stringify(windowDays)}`,
+    );
+  }
+
   // Resolve the in-window run id set. Without a window, all runs are in scope.
   let runIds;
   if (windowDays === undefined || windowDays === null) {

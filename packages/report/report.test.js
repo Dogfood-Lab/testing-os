@@ -98,6 +98,32 @@ describe('submission builder', () => {
   });
 });
 
+// F-fc1bbffa — providerRunId was missing from buildSubmission's required-param
+// check, the one param among {providerRunId, workflow, runUrl} whose omission
+// did not fail loud: it is coerced via String(providerRunId), and
+// String(undefined) === "undefined" is a real, non-empty, schema-conformant
+// string that survives precheckSubmission silently instead of failing at
+// build time.
+describe('submission builder — required params (F-fc1bbffa)', () => {
+  it('throws when providerRunId is missing, instead of coercing to the literal string "undefined"', () => {
+    const { providerRunId, ...rest } = BASE_PARAMS;
+    // Deletion proof: remove providerRunId from the `required` object in
+    // build-submission.js and this goes red — buildSubmission(rest) returns
+    // a submission with source.provider_run_id === "undefined" instead of
+    // throwing.
+    assert.throws(
+      () => buildSubmission(rest),
+      /buildSubmission: missing required param "providerRunId"/,
+      'buildSubmission must reject a missing providerRunId at build time, not coerce it'
+    );
+  });
+
+  it('still builds normally when providerRunId is present (no false positive)', () => {
+    const sub = buildSubmission(BASE_PARAMS);
+    assert.equal(sub.source.provider_run_id, '12345');
+  });
+});
+
 // F-882513-002 — duration_ms must be omitted (never null) when timing is invalid,
 // so the result satisfies dogfood-record-submission.schema.json's
 // `duration_ms: { type: 'integer', minimum: 0 }` contract.

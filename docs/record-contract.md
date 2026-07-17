@@ -18,6 +18,7 @@ The submission is what the source repo emits. The persisted record is what the v
 ## Trust Boundary
 
 Source repos author:
+- `schema_version` — **required, and the first entry in the submission schema's `required` array** (see [Compatibility](#compatibility) below)
 - `run_id`, `repo`, `ref`, `source`, `timing`
 - `ci_checks[]` (machine-evaluated)
 - `scenario_results[]` with `step_results[]` (dogfood evidence)
@@ -31,6 +32,17 @@ The verifier authors:
 - `overall_verdict.downgraded` and `downgrade_reasons`
 
 A source submission that includes verifier-owned fields is rejected.
+
+## Compatibility
+
+`schema_version` is **major-version gated**, so a submission that is otherwise perfect is still rejected if its major sits outside the range this build accepts. `SUPPORTED_SCHEMA_VERSIONS` (`packages/schemas/src/schema-versions.ts`) is the single source of truth for that range, per contract; the verifier compares the declared major against it and the two failure directions are deliberately distinct, because **they name different people to act**:
+
+| Condition | Code | Who fixes it |
+|-----------|------|--------------|
+| major **above** the ceiling | `CONTRACT_SCHEMA_TOO_NEW` | The **operator** of this build — the submission is from the future; upgrade `testing-os`. |
+| major **below** the floor | `CONTRACT_SCHEMA_TOO_OLD` | The **submitter** — regenerate against a supported schema. |
+
+Both codes carry the declared version and the supported range in the message, so the rejection tells you which way to move rather than just that you failed. Full matrix and per-contract ranges: [handbook → Schema versioning & compatibility matrix](https://dogfood-lab.github.io/testing-os/handbook/contracts/#schema-versioning--compatibility-matrix).
 
 ## Verdict Rules
 
@@ -53,5 +65,6 @@ Every `scenario_results[]` item must include `step_results[]` with at least one 
 The verifier enforces:
 - Every `required_steps[]` in the scenario definition has a matching `step_results[]` entry
 - A scenario cannot have `verdict: pass` if any required step has `status: fail` or `status: blocked`
+- A scenario cannot have a non-pass verdict (`fail`, `blocked`, or `partial`) when every reported step actively has `status: pass` — a self-contradictory downgrade claim is rejected in both directions, not just the inflation direction. `skip` and `partial` *step* statuses are neutral evidence for this check (they neither justify nor contradict a non-pass verdict), so partial evidence under a `fail`/`blocked`/`partial` verdict is accepted. Before wave 22 (F-cc198701) `partial` scenario verdicts were exempt from this check entirely — an unchecked 2-of-4-rank verdict-inflation path.
 
 Both checks require the scenario *definition* to be resolvable at verify time: they run for `github`-provenance submissions (the scenario file is fetched from the submitting repo at the attested commit) and whenever a scenarios map is supplied to `verify()` directly. For `gitlab` submissions scenario fetching is not yet implemented, so these two checks are skipped there — a documented gap, not a silent one.

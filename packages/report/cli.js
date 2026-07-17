@@ -114,10 +114,32 @@ function emitError(code, message, hint) {
  * Parse argv into a flag map. Throws a {code, message, hint} usage error for
  * unknown flags or value-flags missing their value, so the caller can map every
  * argument problem to exit 2 in one place rather than scattering process.exit.
+ *
+ * F-e0bcbc47 / F-418f507c (sibling sweep, Stage C humanization): this
+ * docstring already CLAIMED "unknown flags" throw, but the implementation
+ * did not — any `--flag`-shaped token was accepted into `flags` unconditionally,
+ * with no check against a known-flag allowlist. A REQUIRED flag typo (e.g.
+ * `--reop` instead of `--repo`) was already caught downstream by the
+ * "missing required flag" check, but an OPTIONAL flag typo (e.g. `--nots`
+ * instead of `--notes`) silently built a submission missing the intended
+ * field, with zero error or warning. This is the SAME class of "unrecognized
+ * argument silently absorbed" defect F-e0bcbc47 (packages/ingest/run.js) and
+ * F-418f507c (packages/portfolio/generate.js) fix in this same wave, found
+ * here via those findings' own "sweep for every sibling" discipline — this
+ * file was not named by either finding's text. `packages/report/init.js`
+ * (see init.test.js's own "--bogus" coverage) already rejects an unknown
+ * flag correctly; this brings `cli.js` in line with that sibling.
  */
 function parseArgs(argv) {
   // Boolean flags take no value; everything else consumes the next token.
   const booleans = new Set(['--precheck', '--no-precheck', '--status', '-h', '--help']);
+  // The full set of value-taking flags this CLI documents in USAGE above.
+  const valueFlags = new Set([
+    '--scenario-file', '--repo', '--commit', '--branch', '--version',
+    '--workflow', '--provider-run-id', '--run-url', '--attempt', '--actor',
+    '--started-at', '--finished-at', '--verdict', '--notes', '--output',
+    '--surface', '--index-base', '--format',
+  ]);
   const flags = {};
 
   for (let i = 0; i < argv.length; i++) {
@@ -131,6 +153,12 @@ function parseArgs(argv) {
     if (booleans.has(arg)) {
       flags[arg] = true;
       continue;
+    }
+    if (!valueFlags.has(arg)) {
+      const err = new Error(`unknown flag "${arg}"`);
+      err.code = 'BAD_ARGS';
+      err.hint = 'Run --help for the list of supported flags.';
+      throw err;
     }
     const value = argv[i + 1];
     // A value flag at the end of argv, or immediately followed by another flag,

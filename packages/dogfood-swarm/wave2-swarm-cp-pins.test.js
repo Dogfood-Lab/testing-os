@@ -639,9 +639,22 @@ describe('F-6c5ee5dd — a zero-findings audit wave reclassifies prior findings'
     // (pre-CP4 it landed `unverified` because collect never passed a scope).
     // The original F-6c5ee5dd property — a clean wave still RECLASSIFIES
     // priors instead of skipping the pass — is unchanged.
+    //
+    // The lens-blindness fix refines that expectation a SECOND time, the same
+    // way and for the same kind of reason: full coverage proves the wave read
+    // the files, never that it looked for THIS defect (a stage-d-audit agent
+    // hunting typography covers every file a bug lives in). So `fixed` now also
+    // requires the agent to DECLARE the id in `confirmed`, and the fixture
+    // declares it the way a real agent does. Unchanged again: the property this
+    // pin exists for — a clean wave reclassifies rather than skipping the pass,
+    // and leaves an audit-trail event. The undeclared direction is pinned
+    // separately (wave4-swarm-cp-pins.test.js, "GATE RED: full coverage WITHOUT
+    // a declaration closes nothing").
     const outA = join(tmp, 'a.json');
     const outB = join(tmp, 'b.json');
-    writeFileSync(outA, JSON.stringify({ domain: 'domain-a', stage: 'A', summary: 'clean', findings: [] }));
+    writeFileSync(outA, JSON.stringify({
+      domain: 'domain-a', stage: 'A', summary: 'clean', findings: [], confirmed: ['F-P-001'],
+    }));
     writeFileSync(outB, JSON.stringify({ domain: 'domain-b', stage: 'A', summary: 'clean', findings: [] }));
     const report = collect({ runId: 'r-clean', dbPath, outputs: { 'domain-a': outA, 'domain-b': outB } });
     assert.equal(report.findings.fixed, 1,
@@ -1162,6 +1175,17 @@ describe('V2-CONTRACT-003 / V2-INVARIAN-006 — a degraded committed-delta probe
     // resolveWorktreeBaseRef(worktree, 'ghost-branch') → merge-base fails → null.
     db.prepare("UPDATE runs SET branch = 'ghost-branch' WHERE id = 'r-ghost'").run();
     dispatch({ runId: 'r-ghost', phase: 'health-amend-a', dbPath, outputDir: tmp, isolate: true });
+    // F-COORD-DIFFBASE made ISOLATED collect prefer the per-wave dispatch_sha
+    // too; NULL it out to simulate the LEGACY wave this fallback (and this
+    // degradation surface) still serves — the identical treatment F-0e55b5ca
+    // applied to this test's non-isolated sibling above, for the identical
+    // reason. With a dispatch_sha recorded there is no unresolvable fork point
+    // to report: dispatch_sha IS the fork point, the committed-delta diff runs
+    // against it, and firing the note would assert that committed edits are
+    // invisible when they are fully visible. The degradation is only real —
+    // and must still be loud — when NO recorded base exists AND merge-base
+    // cannot derive one, which is exactly what this fixture now builds.
+    openDb(dbPath).prepare("UPDATE waves SET dispatch_sha = NULL WHERE run_id = 'r-ghost'").run();
     const report = collectBoth('r-ghost');
     const a = report.agents.find(x => x.domain === 'domain-a');
     assert.ok(a.base_diff_unavailable,
@@ -1173,10 +1197,15 @@ describe('V2-CONTRACT-003 / V2-INVARIAN-006 — a degraded committed-delta probe
     setupRun(dbPath, repoPath, 'r-goodbase', { commitSha: sha });
     dispatch({ runId: 'r-goodbase', phase: 'health-amend-a', dbPath, outputDir: tmp });
     const report = collectBoth('r-goodbase');
-    for (const a of report.agents) {
-      assert.equal(a.base_diff_unavailable, undefined,
-        'a healthy probe must not carry the degradation note');
-    }
+    // F-dcb00802: an unguarded `for` over an empty report.agents would pass
+    // vacuously, and `assert.equal(a.base_diff_unavailable, undefined)` would
+    // pass on ANY absent property (surviving a rename of the field itself).
+    // Mirror the RED siblings above: assert population, then dereference by
+    // domain so a missing/renamed agent throws instead of passing silently.
+    assert.equal(report.agents.length, 2, 'both frozen domains reported');
+    const a = report.agents.find(x => x.domain === 'domain-a');
+    assert.ok(!('base_diff_unavailable' in a),
+      'a healthy probe must not carry the degradation note');
   });
 });
 

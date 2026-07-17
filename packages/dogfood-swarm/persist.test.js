@@ -10,7 +10,8 @@ import { saveDomainDraft, freezeDomains } from './lib/domains.js';
 import { buildRunExport, computeRunVerdict, EXPORT_VERSION } from './lib/persist/export.js';
 import { SCHEMA_VERSION } from './db/schema.js';
 import { buildDogfoodSubmission } from './lib/persist/dogfood-bridge.js';
-import { buildAuditPayload } from './lib/persist/repoknowledge-bridge.js';
+import { buildAuditPayload, formatAuditStatusLine } from './lib/persist/repoknowledge-bridge.js';
+import { formatPersist } from './commands/persist.js';
 
 // ═══════════════════════════════════════════
 // Helper: build a complete run in-memory
@@ -183,6 +184,11 @@ describe('Run verdict', () => {
 
   it('pass for complete run', () => {
     buildCompleteRun(db, { status: 'complete' });
+    // buildCompleteRun always seeds an open MEDIUM (F-002); close it so this
+    // fixture is genuinely all-clean — computeRunVerdict now counts open
+    // findings even for a complete run (F-b721038e), so a real open finding
+    // would correctly make this 'partial'. Mirrors the all-fixed fixture below.
+    db.prepare("UPDATE findings SET status = 'fixed' WHERE finding_id = 'F-002' AND run_id = 'r1'").run();
     const exp = buildRunExport(db, 'r1');
     assert.equal(computeRunVerdict(exp), 'pass');
     db.close();
@@ -342,5 +348,47 @@ describe('Repo-knowledge bridge', () => {
     assert.equal(payload.run.overall_status, 'pass');
     assert.equal(payload.run.overall_posture, 'healthy');
     db.close();
+  });
+});
+
+// ═══════════════════════════════════════════
+// F-882ed6c0 — formatPersist wires formatAuditStatusLine (wave 22)
+// ═══════════════════════════════════════════
+
+/** @pins F-882ed6c0 */
+describe('formatPersist renders repo-knowledge status via formatAuditStatusLine (F-882ed6c0)', () => {
+  const baseReport = (repoKnowledge) => ({
+    runId: 'r-f882',
+    verdict: 'pass',
+    artifacts: { export: '/tmp/e.json', dogfoodSubmission: '/tmp/d.json', audit: '/tmp/audit' },
+    dogfood: { ingested: false, reason: 'Not requested' },
+    repoKnowledge: { artifactsWritten: true, submitted: false, path: '/tmp/audit', ...repoKnowledge },
+  });
+
+  it('aborted run renders the helper output, never the bare hand-format', () => {
+    const rk = { status: 'fail', posture: 'critical', runAborted: true };
+    const out = formatPersist(baseReport(rk));
+    const helper = formatAuditStatusLine({
+      run: { overall_status: rk.status, overall_posture: rk.posture },
+      metrics: { run_aborted: rk.runAborted },
+    });
+    // Differential against the canonical helper: whatever it renders for an
+    // aborted run must appear verbatim, and must not collapse back to the
+    // pre-fix hand-format (which carried no aborted qualifier at all).
+    assert.ok(out.includes(helper),
+      `formatPersist must render the helper's aborted-run line verbatim; got:\n${out}`);
+    assert.notEqual(helper, `${rk.status} (${rk.posture})`,
+      'helper must qualify an aborted run beyond the bare status (posture) hand-format');
+  });
+
+  it('normal run still renders the helper output for status/posture', () => {
+    const rk = { status: 'pass', posture: 'healthy', runAborted: false };
+    const out = formatPersist(baseReport(rk));
+    const helper = formatAuditStatusLine({
+      run: { overall_status: rk.status, overall_posture: rk.posture },
+      metrics: { run_aborted: rk.runAborted },
+    });
+    assert.ok(out.includes(helper),
+      `formatPersist must render the helper's line for a normal run too; got:\n${out}`);
   });
 });

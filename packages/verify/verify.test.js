@@ -311,6 +311,63 @@ describe('verdict computation', () => {
     assert.equal(result.verified, 'blocked');
     assert.equal(result.downgraded, true);
   });
+
+  // F-937733ee: family sibling of F-2965699b/F-7ce07baa — VERDICT_RANK is a
+  // lookup table keyed by external strings (scenario_results[].verdict and
+  // the proposed overall_verdict). Currently unreachable from untrusted
+  // input (index.js only ever passes schema-enum-valid verdicts into
+  // scenarioResults, and the early-return at computeVerdict's top forces
+  // 'fail' for any invalid schema regardless of `proposed`), but sealed here
+  // — via Object.create(null) — so a future caller that skips the schema
+  // gate cannot silently reopen the class. Deletion/emptiness proof: revert
+  // VERDICT_RANK to a plain `{ fail: 0, ... }` literal and both tests below
+  // go red — `Object.prototype.constructor` and `.toString` are truthy, so
+  // the `== null` / `rank == null` "unrecognized verdict" guards stop firing
+  // and an Object.prototype method flows into the rank arithmetic instead.
+  it('an Object.prototype-key scenario verdict is treated as unrecognized (floors to fail), not as a rank', () => {
+    const result = computeVerdict('pass', {
+      schemaValid: true,
+      policyValid: true,
+      provenanceConfirmed: true,
+      scenarioResults: [{ verdict: 'constructor' }],
+      reasons: []
+    });
+    assert.equal(result.verified, 'fail');
+    assert.ok(
+      result.downgrade_reasons.some(r => r.includes('unrecognized scenario verdict')),
+      `expected an unrecognized-verdict diagnostic; got ${JSON.stringify(result.downgrade_reasons)}`
+    );
+  });
+
+  it('an Object.prototype-key PROPOSED verdict is treated IDENTICALLY to ordinary unrecognized garbage (e.g. "bogus")', () => {
+    // Not asserting a specific `verified` value here — computeVerdict's
+    // "echo the raw proposed string when the floor isn't worse" behavior
+    // (see the `verified = proposed || 'fail'` branch) is a PRE-EXISTING
+    // design choice orthogonal to F-937733ee, reproducible with plain
+    // garbage like 'bogus' and unrelated to prototype safety. What
+    // F-937733ee actually claims — the thing worth proving — is PARITY: an
+    // Object.prototype key must be treated by the `== null` unrecognized-
+    // verdict guard exactly like any other unrecognized string, not
+    // resolved as a truthy inherited rank that skips the guard.
+    const args = (proposed) => ({
+      schemaValid: true, policyValid: true, provenanceConfirmed: true,
+      scenarioResults: [{ verdict: 'pass' }], reasons: []
+    });
+    const poisoned = computeVerdict('toString', args());
+    const ordinary = computeVerdict('bogus', args());
+
+    const normalize = (r) => ({
+      downgraded: r.downgraded,
+      reasons: r.downgrade_reasons.map(m => m.replace(/"[^"]*"/, '"<x>"')),
+    });
+    assert.deepEqual(normalize(poisoned), normalize(ordinary),
+      `an Object.prototype key must be diagnosed exactly like ordinary unrecognized input; ` +
+        `poisoned=${JSON.stringify(poisoned)} ordinary=${JSON.stringify(ordinary)}`);
+    assert.ok(
+      poisoned.downgrade_reasons.some(r => r.includes('unrecognized proposed verdict')),
+      `expected an unrecognized-proposed-verdict diagnostic; got ${JSON.stringify(poisoned.downgrade_reasons)}`
+    );
+  });
 });
 
 // ── Full Verifier Pipeline (Pilot 0) ──────────────────────────
@@ -624,6 +681,123 @@ describe('null submission produces persistable rejection record', () => {
       assert.equal(record.verification.status, 'rejected');
       assert.equal(record._skipPersist, true);
     }
+  });
+});
+
+// ── _skipPersist narrowed to unfilable submissions only (F-4036ae25) ──
+//
+// Wave-2 marked EVERY schema-invalid submission `_skipPersist`, not only the
+// subset whose repo/run_id/timing.finished_at (the fields computeRecordPath
+// needs) are themselves the invalid fields. That discarded the fleet-wide
+// audit trail for the common case: a filable record with an unrelated schema
+// violation. hasFilablePathIdentity() re-derives filability from `submission`
+// directly instead of trusting WHICH schema rule fired.
+
+describe('_skipPersist fires only when repo/run_id/timing.finished_at are unfilable (F-4036ae25)', () => {
+  it('does NOT set _skipPersist when the schema violation is on an unrelated field', async () => {
+    const bad = structuredClone(pilot0);
+    bad.ref.commit_sha = 'not-a-sha'; // schema-invalid, but repo/run_id/timing are fine
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.schema_valid, false);
+    assert.equal(record.verification.status, 'rejected');
+    assert.equal(record._skipPersist, undefined,
+      'a filable record must not be skip-persisted just because SOME field failed schema');
+  });
+
+  it('sets _skipPersist when repo itself is unfilable (wrong segment count)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.repo = 'a/b/c';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.schema_valid, false);
+    assert.equal(record._skipPersist, true,
+      'computeRecordPath cannot place a 3-segment repo — must stay skip-persisted');
+  });
+
+  it('sets _skipPersist when repo itself is unfilable (no slash)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.repo = 'noslash';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record._skipPersist, true);
+  });
+
+  it('sets _skipPersist when run_id itself is unfilable (unsafe chars)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.run_id = 'bad id!';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record._skipPersist, true);
+  });
+
+  it('sets _skipPersist when timing.finished_at itself is unfilable (not a date)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.timing.finished_at = 'xyz';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record._skipPersist, true);
+  });
+
+  it('does NOT set _skipPersist for an unexpected top-level property (additionalProperties)', async () => {
+    const bad = structuredClone(pilot0);
+    bad.unexpected_field = 'oops';
+
+    const record = await verify(bad, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+
+    assert.equal(record.verification.schema_valid, false);
+    assert.equal(record._skipPersist, undefined);
+    // verify() only ever copies the known allowlisted fields into the
+    // persisted record, so the extra property never reaches the record shape
+    // — this is the one class of schema violation that can go on to persist
+    // cleanly through writeRecord()'s own validateRecord() gate too.
+    assert.equal('unexpected_field' in record, false);
+  });
+
+  it('still never sets _skipPersist for a fully schema-valid submission (unchanged)', async () => {
+    const record = await verify(pilot0, {
+      globalPolicy,
+      repoPolicy,
+      provenance: stubProvenance,
+      policyVersion: '1.0.0'
+    });
+    assert.equal(record.verification.schema_valid, true);
+    assert.equal(record._skipPersist, undefined);
   });
 });
 

@@ -10,7 +10,7 @@ sidebar:
 <figure>
   <img
     src="/testing-os/diagrams/architecture.svg"
-    alt="testing-os ingestion data flow: source-repo workflow builds a JSON submission, dispatches it to testing-os via repository_dispatch, the verifier runs seven steps (schema, field guard, provenance, step results, policy, verdict, record assembly), persistence routes accepted records to records/<org>/<repo>/YYYY/MM/DD/ and rejected records to records/_rejected/, the index rebuilder regenerates latest-by-repo.json / failing.json / stale.json, and read-only consumers (shipcheck Gate F, repo-knowledge sync-dogfood, the portfolio generator, role-os advice bundles) query those indexes via the GitHub raw CDN."
+    alt="testing-os ingestion data flow: source-repo workflow builds a JSON submission, dispatches it to testing-os via repository_dispatch, the verifier runs eight steps (repo binding, schema, field guard, provenance, step results, policy, verdict, record assembly), persistence routes accepted records to records/<org>/<repo>/YYYY/MM/DD/ and rejected records to records/_rejected/, the index rebuilder regenerates latest-by-repo.json / failing.json / stale.json, and read-only consumers (shipcheck Gate F, repo-knowledge sync-dogfood, the portfolio generator, role-os advice bundles) query those indexes via the GitHub raw CDN."
     style="width: 100%; height: auto;"
   />
   <figcaption>End-to-end ingestion data flow. Accepted-path arrows are solid green; the rejected branch is dashed red. Consumers (bottom row) read indexes only — testing-os is the sole write authority.</figcaption>
@@ -67,17 +67,18 @@ Records are stored at `records/<org>/<repo>/YYYY/MM/DD/<run-id>.json`. This prov
 | Submission builder | `packages/report/` | Canonical submission assembly for source repos |
 | Portfolio | `packages/portfolio/` | Org-level summary generation |
 
-### Verifier Pipeline (7 steps)
+### Verifier Pipeline (8 steps)
 
-The verifier (`packages/verify/index.js`) processes each submission through seven stages in order:
+The verifier (`packages/verify/index.js`) processes each submission through eight stages in order:
 
-1. **Schema validation** -- validates the submission against `dogfood-record-submission.schema.json` using AJV.
-2. **Verifier-owned field guard** -- rejects submissions that include fields only the verifier may set (`policy_version`, `verification`, or `overall_verdict` as an object).
-3. **Provenance check** -- confirms the source workflow run actually exists via the GitHub Actions API (or a stub adapter in tests).
-4. **Step results validation** -- checks that each scenario's required steps have matching results and that verdicts are internally consistent.
-5. **Policy evaluation** -- evaluates enforcement tier, required scenarios, freshness, and execution-mode constraints from the repo or global policy. When a policy names required scenarios, their definitions are supplied by the ingestion layer, which for a `github` submission performs a read-only fetch of the submitting repo's `dogfood/scenarios/<scenario_id>.yaml` at the attested commit (size-capped and schema-validated; an absent file leaves required-steps enforcement off with a visible `required_steps unenforced` warning). This read and the step-3 provenance check are the pipeline's two routine calls to the GitHub API -- the same surface disclosed in the README security section and the [Error Code Reference](../error-codes/).
-6. **Verdict computation** -- computes the final verdict. The source proposes a verdict string; the verifier may confirm or downgrade, never upgrade. Verdict severity from highest to lowest: fail, blocked, partial, pass.
-7. **Record assembly** -- builds the persisted record with verifier-owned fields (`verification.status`, `verification.verified_at`, `overall_verdict.verified`, `overall_verdict.downgraded`).
+1. **Repo-binding cross-field guard** -- runs first, before schema validation: rejects a submission whose `submission.repo` does not match the owner/repo encoded in `source.run_url` (`validators/repo-binding.js`). Without it, a submitter could claim `submission.repo = "victim-org/victim-repo"` while supplying a `run_url` for a real run from their own repo -- provenance would confirm the run exists and persistence would file the forged "pass" under the victim's path. This is a first-class trust-boundary stage with its own parser module and provider-lockstep CI test, not part of step 2's schema check.
+2. **Schema validation** -- validates the submission against `dogfood-record-submission.schema.json` using AJV.
+3. **Verifier-owned field guard** -- rejects submissions that include fields only the verifier may set (`policy_version`, `verification`, or `overall_verdict` as an object).
+4. **Provenance check** -- confirms the source workflow run actually exists via the GitHub Actions API (or a stub adapter in tests).
+5. **Step results validation** -- checks that each scenario's required steps have matching results and that verdicts are internally consistent.
+6. **Policy evaluation** -- evaluates enforcement tier, required scenarios, freshness, and execution-mode constraints from the repo or global policy. When a policy names required scenarios, their definitions are supplied by the ingestion layer, which for a `github` submission performs a read-only fetch of the submitting repo's `dogfood/scenarios/<scenario_id>.yaml` at the attested commit (size-capped and schema-validated; an absent file leaves required-steps enforcement off with a visible `required_steps unenforced` warning). This read and the provenance check are the pipeline's two routine calls to the GitHub API -- the same surface disclosed in the README security section and the [Error Code Reference](../error-codes/).
+7. **Verdict computation** -- computes the final verdict. The source proposes a verdict string; the verifier may confirm or downgrade, never upgrade. Verdict severity from highest to lowest: fail, blocked, partial, pass.
+8. **Record assembly** -- builds the persisted record with verifier-owned fields (`verification.status`, `verification.verified_at`, `overall_verdict.verified`, `overall_verdict.downgraded`).
 
 ### Generated Indexes
 

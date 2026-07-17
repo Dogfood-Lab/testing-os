@@ -57,9 +57,87 @@ so no verdict-shaped field can be smuggled in.
 | `objective` | ✓ | What the artifact must accomplish — the goal, never whether it was met. |
 | `artifact_under_test` | ✓ | `{ kind, ref, content? }` — the single object judged. `content` must be free of the producer's reasoning trace. |
 | `acceptance_criteria[]` | ✓ | `{ id, check, source? }` — falsifiable checks that define a pass. `from-tests` is the strongest, most-grounded form. |
-| `context[]` | | `{ claim, source, ref? }` — the RAG-style grounding pack, each claim provenance-tagged. |
-| `out_of_scope[]` | | What the jury should NOT flag. A floor on scrutiny, not a ceiling. |
+| `context[]` | | `{ claim, source, ref?, criterion_ids? }` — the RAG-style grounding pack, each claim provenance-tagged. `criterion_ids[]` **scopes** a claim to the criteria it actually grounds; **absent means global** (grounds every criterion). See [Scoping evidence](#scoping-evidence-criterion_ids) — on a capped tier this is the difference between a jury that can decide and one that starves. |
+| `out_of_scope[]` | | What the jury should NOT flag. A floor on scrutiny, not a ceiling. **Mandatory in the prism tier's assembly** — see the honest-boundary table. |
 | `prepared_by`, `correlation_id`, `notes` | | Provenance only — no authority, no verdict. |
+
+### Scoping evidence: `criterion_ids`
+
+A `context[]` claim with no `criterion_ids` is **global** — it is assembled into every
+criterion's brief. That is the default and it is backward-compatible, but on the
+`--jury=prism` tier it is also how a brief starves: the tier sends one call per
+(seat × criterion), and a global pack means every claim competes for one 4 000-char
+budget on **every** call, most of them irrelevant to the criterion at hand. Measured on
+the wave-2 case-file, a 15-claim global pack delivered **5 of 15** to nine criteria and 6 of 15 to
+one — the delivered count is not uniform, because each criterion's own `check` text is charged to
+the same budget.
+`AC-yaml-merge-inert` does not need the seat-env allowlist's evidence; it was
+nonetheless spending that budget.
+
+`criterion_ids` lets the clerk send each criterion **its own** claims. Absent → global;
+present → that claim reaches only the listed criteria.
+
+**The trap, and why the lint carries it:** `criterion_ids` naming a criterion that does
+not exist is **structurally valid** — cross-field validity is not expressible in JSON
+Schema — and would silently drop the claim from **every** brief. A typo becomes evidence
+starvation with no symptom. `lint.js` therefore raises an **error** (not a warning) for
+any `criterion_ids` entry that does not match an `acceptance_criteria[].id`: silence is
+the failure mode here, so the gate has to be loud.
+
+`criterion_ids` is a **routing** field, not a judging input. It never reaches the jury —
+the rendered evidence line stays `{ claim, source, ref }`, because provenance is a
+judging input and routing is not. Both tiers render by explicit field access, so that
+property holds **structurally**, not by discipline.
+
+A malformed `criterion_ids` (not an array) degrades to **global** rather than to
+withheld: an assembler that cannot understand a value must fail toward *delivering*
+evidence, never toward silently starving a criterion. An explicit `[]` is the one
+exception — it is unambiguous, means nothing, and the lint rejects it.
+
+**The local tier ignores it.** `--jury=local` sends one call per seat over all criteria
+with no cap, so it reads the whole pack regardless. The two tiers legitimately read
+different briefs; that asymmetry is documented in the honest-boundary table rather than
+papered over.
+
+#### The budget ceiling (measured, not derived)
+
+On the wave-2 case-file, `head + out_of_scope` — the mandatory part of every prism call —
+consumed **2 415 of the 4 000-char budget (60%)**, leaving room for roughly **5 evidence
+claims per criterion**. So scoping works *iff* a criterion needs **≤5** claims; 3–4 is
+comfortable, and a criterion that genuinely needs 8 will still starve.
+
+That number is empirical and it moves. **Widening the `objective`, or adding an
+`out_of_scope` entry, spends the evidence budget** — the mandatory sections are charged
+first and evidence takes what is left. Anyone editing either should re-measure rather
+than assume the headroom is still there.
+
+#### The gap this does NOT close
+
+The lint catches a `criterion_ids` entry naming a criterion that does not exist. It
+**cannot** tell you that a criterion nobody scoped is one nobody *meant* to leave
+unscoped. A criterion with no reachable evidence is judged from the artifact alone —
+which is sometimes exactly right, and sometimes an accident that looks identical. The
+lint therefore raises a **warning**, never an error: an error would force the clerk to
+manufacture `fable-inference` grounding to satisfy a gate, which is the extraction floor
+inverted — a check against fabricated evidence coercing fabricated evidence. The
+judgment stays with the clerk and the reader, the way `insufficient_context` does.
+
+The condition is narrower than it first looks, and the narrowness is the whole point:
+
+> Warn on criterion X **iff** `context[]` is non-empty **AND** `reachable(X) = ∅`,
+> where `reachable(X)` = { global claims } ∪ { claims naming X }.
+
+Starvation is *"nothing reaches this criterion"* — **not** *"nothing was scoped to it."*
+A global claim reaches everything, so **no criterion can starve while any global claim
+exists**. So: a fully-global case-file never warns (the legacy shape stays clean), a
+mixed scoped+global case-file never warns, and an all-scoped case-file warns on exactly
+the unnamed criteria. An empty `context[]` belongs to the grounding lint, not here.
+
+The cheaper-looking condition — *"fire whenever scoping is in use"* — is **wrong**, and
+was caught in review before it shipped: on a mixed case-file it warns about criteria the
+global claims already brief in full. A gate that fires when nothing is wrong teaches its
+reader to ignore it, which is the same defect class as a gate that cannot fire at all,
+pointed the other way.
 
 `source` provenance enum: `from-spec | from-ticket | from-tests | from-code |
 fable-inference`. The four `from-*` values are **extracted** (lifted from a
@@ -149,8 +227,16 @@ case-file (or the spec) has a gap to fill.
 | Planner + **clerk** | **Fable** | assembles the case-file; **renders no verdict** — advisory |
 | Executor | Sonnet | generates the artifact |
 | Scout / screen | Haiku | recon, dedup, cheap refutation |
-| **Jury** | `--jury=local`: mistral/granite/qwen/gemma/hermes · `--jury=prism`: the same non-Claude seats, each adjudicated by prism per criterion (`--cloud` adds gpt-oss/glm) | family-different, reasoning-stripped; multi-lens + submodularity on the prism tier — **strong evidence** |
+| **Jury** | `--jury=local` (**5 seats**): mistral-small:24b · granite4.1:30b · qwen2.5:7b · gemma4:31b · hermes3:8b · `--jury=prism` (**3 seats**): mistral-small:24b · qwen2.5:7b · hermes3:8b, each adjudicated by prism per criterion (`--cloud`: the local tier switches to DEFAULT_JURY_SEATS — the same five local seats plus gpt-oss:120b-cloud and glm-4.6:cloud, seven in all, comment-pinned in lockstep with LOCAL_JURY_SEATS and guarded by a parity test — while the prism tier appends gpt-oss:120b-cloud only) | family-different, reasoning-stripped; multi-lens + submodularity on the prism tier — **strong evidence** |
 | **Floor** | `swarm verify` (tests) + prism retrieval/numeric floors | deterministic — **law** |
+
+**The two jury rosters are NOT the same set, and the difference is load-bearing.** `--jury=prism`
+seats **3** of the local tier's 5: `granite4.1:30b` and `gemma4:31b` are deliberately excluded
+because prism's `Budget.max_latency_ms` is capped at 30 000 by construction and they overrun it
+(see [the honest boundary](#the-honest-boundary-what-this-tier-does-not-give-you)). A seat that
+does not fit returns `BUDGET_EXCEEDED` and abstains, so a roster chosen for size rather than fit
+would silently shrink its own panel. The prism roster is chosen for **fit**; it is not a copy of
+the local one, and any doc or table implying otherwise is wrong.
 
 Only the deterministic floor is law; every model verdict — the clerk's (there is
 none), the jury's — is evidence, weighted by independence.
@@ -201,7 +287,11 @@ The `runJury` boundary is injected, and **two tiers now plug into it** (see [The
 jury tiers](#the-two-jury-tiers) below), selected with `--jury=local|prism`. The
 default is the **free local-Ollama panel** (`lib/case-file/ollama-jury.js` —
 Mistral/Granite/Qwen/Gemma/Hermes, all non-Claude, zero cost); `--cloud` opts into the
-paid gpt-oss/glm seats on either tier. The verb exits `0` only on corroborate
+paid seats — the local tier selects `DEFAULT_JURY_SEATS`, the five local seats plus
+gpt-oss:120b-cloud and glm-4.6:cloud (seven seats; the two rosters are comment-pinned
+in lockstep and guarded by a parity test after an earlier unintentional drift), while
+the prism tier appends gpt-oss:120b-cloud only (`PRISM_CLOUD_SEATS`, never glm).
+The verb exits `0` only on corroborate
 (mirroring `swarm verify`), writes the full per-criterion receipt under
 `swarms/<run>/adjudications/`, and persists the gate-readable summary row.
 
@@ -257,12 +347,29 @@ the first call on each seat carries the load (13.3s / 6.0s / 9.9s), the rest are
 | **No out-of-brief findings.** | prism's response has no per-criterion channel and its `Finding` is free text (`{file,line,category,evidence,severity}`), so findings are scoped to the criterion-intent that produced them. Classifying them as "out of brief" would be invention, and would double-count one finding once per criterion. | They are preserved verbatim in each verdict's `prism` detail for a human, and never reach the aggregator. The rubric-is-a-floor property is **weaker** here than on the local tier, which asks for out-of-brief explicitly. |
 | **The abstention rubric is not delivered to the model.** | prism owns its lens prompts; this tier only controls `intent`. `ABSTENTION_RUBRIC` therefore does not reach the juror. | Abstention on this tier is **structural, not instructed** — it comes from prism's own `UNCERTAIN → ESCALATE` lens outcome. That is arguably stronger (a mechanism, not a request), but it is a different mechanism, and a seat can still under-abstain: the smoke's 7B seat returned a confident `refuse` on a criterion the diff satisfies, rather than `insufficient_context`. The under-abstention failure this contract exists to fix is **mitigated, not eliminated**. |
 | **A hard 30s ceiling per call.** | prism's `Budget.max_latency_ms` is capped at 30 000 by construction (the local tier uses a 180s timeout and cannot here). | Seats must FIT the ceiling; one that overruns returns `BUDGET_EXCEEDED` and abstains on that criterion. The roster is chosen for fit, not size — larger local models (`granite4.1:30b`, `gemma4:31b`) are excluded for this reason, so the prism roster is deliberately **not** a copy of the local one. |
-| **The brief can be trimmed.** | prism caps `intent` at 4 000 chars. | Assembly is priority-ordered (objective + criterion mandatory, then evidence, then out-of-scope) and anything dropped is **reported**, never silent. A large evidence pack reaches this tier thinner than it reaches the local one. |
+| **The brief can be trimmed — severely.** | prism caps `intent` at 4 000 chars. | Assembly is priority-ordered — `objective + criterion + out_of_scope` are **mandatory** (their cost is inside every `fits()` check, though the floor is still *emitted* last to preserve the documented reading order), and only the evidence pack yields. Every drop is recorded per-criterion on the receipt as `criteria[].brief_omitted`, not merely printed. **Do not read this as "slightly thinner."** On the wave-2 case-file the floor alone was **1 093 chars — 27% of the whole budget** — and the tier delivered **5 of 15 evidence claims to nine criteria, 6 of 15 to one** (the count varies because each criterion's own `check` text is charged to the same budget). The prism tier judges on roughly **one third** of the evidence the local tier reads. |
+
+> **Why `out_of_scope` is mandatory (earned 2026-07-15, run `swarm-1784091637-5127`).** It used to be assembled *last*, which made it the *first* thing the cap sacrificed — it was dropped on **100% of criteria**, every time, while 9 of 15 evidence claims survived. A tier that reliably discards its own scrutiny floor is a tier that manufactures false failures, and the effect was measured on one case-file across both tiers:
+>
+> | tier | evidence | `out_of_scope` | result |
+> |---|---|---|---|
+> | local (no cap) | 15/15 | 6/6 | pass 2 / **fail 0** / insufficient 4 |
+> | prism (pre-fix) | 9/15 | **0/6** | pass 1 / **fail 2–3** |
+>
+> Same artifact, same criteria, same clerk. Given the whole brief the panel never once failed the work; given a brief with no scrutiny floor, the same models failed it. **That is this document's own documented under-abstention failure being caused by our assembly order rather than by the models** — the rubric-is-a-floor property silently inverted into a ceiling. `out_of_scope` is a handful of short lines; the evidence pack is the bulk. The bulk yields.
+>
+> The same run corrected a second over-claim here: "anything dropped is **reported**, never silent" was true only for whoever was watching the terminal. `normalizeAdjudication` discarded the `omitted` block at fusion, so a signed artifact attested a verdict while omitting the one fact that most undermined it. Reported now means *on the receipt* — `criteria[].brief_omitted`, aggregated worst-across-seats, with an absent field distinguishing "no cap applied" from an explicit `{0,0}` "dropped nothing."
+>
+> **And a third, which is the one that matters.** The ruling that ordered this fix argued the floor was "~6 short lines" and that evidence was the bulk that should yield. Measured, the floor was **1 093 chars** and guaranteeing it moved evidence from 9/15 to **5/15**. The fix is still correct — an uncapped panel on this same case-file returned **zero fails**, so the floor demonstrably matters more than the marginal claims it displaces — but the honest conclusion is not "the floor now fits." It is: **the 4 000-char cap cannot carry a real amend wave's brief, and this tier reads about a third of the evidence the local tier does.** Two candidate remedies, neither yet built: per-criterion evidence budgeting (the clerk's `context[]` is global, so all 15 claims are sent to all 10 criteria — most of them irrelevant to any given one), or stop implying the two tiers read the same brief. Until one lands, `brief_omitted` is the only thing that makes a `contested` verdict from this tier interpretable.
 
 A `contested` verdict from a weak seat is the panel working as designed, not a defect:
 2-pass/1-fail is genuine disagreement, and the tier surfaces it rather than averaging
 it away. The cost is a Director disposition on an artifact that may be fine — which is
 the honest price of a free, diverse, deliberately-not-tuned panel.
+
+**But read a `contested` against the receipt's `criteria[].brief_omitted` before disposing.** A panel that failed a criterion on a brief stripped of its evidence is not disagreeing with the work — it is reporting that it was under-briefed, in the one vocabulary this tier gives it. The distinction is only visible if the omission is on the receipt, which is why it is.
+
+Two field names, deliberately, at two levels — grep the right one: **`criteria[].brief_omitted`** is the fused, receipt-level record (worst-across-seats) and is what an operator wants; **`omitted`** is the per-seat detail inside `prism.criteria[]` that the fusion reads to build it.
 
 ### The transport (why a Python shim, not `prism verify`)
 

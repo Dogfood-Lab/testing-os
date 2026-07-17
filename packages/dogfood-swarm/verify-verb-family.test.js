@@ -135,6 +135,12 @@ describe('verify-recurring — multi-wave fixed-event detection', () => {
       runId: 'r1', dbPath: env.dbPath, outputDir: env.outputDir,
       threshold: 0, format: 'json', stream: pipe(),
     });
+    // Found hunting F-6a78ffdd's family: unguarded loop — an empty
+    // result.delta.findings (e.g. a regression in loadRecurringFindings'
+    // WHERE clause) would report every entry tagged with zero entries checked.
+    // The fixture (setupTempRun) yields exactly one recurring finding, per
+    // the sibling test above.
+    assert.equal(result.delta.findings.length, 1);
     for (const f of result.delta.findings) {
       assert.ok(typeof f.verified_via === 'string', `verified_via missing on ${f.finding_id}`);
     }
@@ -200,6 +206,11 @@ describe('verify-unverified — re-classify deferred findings', () => {
   it('joins the most recent unverified-event wave_number', () => {
     const db = openDb(env.dbPath);
     const rows = loadUnverifiedFindings(db, 'r1');
+    // Found hunting F-6a78ffdd's family: unguarded loop. The fixture seeds
+    // two status='unverified' findings (F-U1, F-U2 — see the sibling test
+    // above), so an empty `rows` here would be a real regression, not a
+    // legitimate empty result.
+    assert.equal(rows.length, 2);
     for (const r of rows) {
       assert.equal(r.deferred_wave_number, 7);
     }

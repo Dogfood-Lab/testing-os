@@ -167,35 +167,73 @@ describe('H9 — executeTransition + applyTimeoutPolicy atomicity', () => {
   });
 });
 
+/**
+ * F-20b5987a: isolate the ACTUAL callback body passed to `db.transaction(`
+ * by brace-depth matching from its own opening `{` to its own closing `}`,
+ * rather than comparing string-index ORDERING against where
+ * `db.transaction(` happens to start. Ordering only proves "appears
+ * somewhere after the substring `db.transaction(`", which is satisfied by
+ * code shaped as
+ *   db.transaction(() => { unrelated })();
+ *   db.prepare('UPDATE agent_runs...').run();
+ *   db.prepare('INSERT INTO agent_state_events...').run();
+ * — both writes sit textually after `txStart` while living completely
+ * OUTSIDE any transaction. True containment requires the writes to be
+ * inside the isolated callback substring, not merely after its start index.
+ */
+function extractTransactionCallbackBody(fnBody) {
+  const openParenIdx = fnBody.indexOf('db.transaction(');
+  if (openParenIdx === -1) return null;
+  const openBraceIdx = fnBody.indexOf('{', openParenIdx + 'db.transaction('.length);
+  if (openBraceIdx === -1) return null;
+  let depth = 0, i = openBraceIdx;
+  for (; i < fnBody.length; i++) {
+    if (fnBody[i] === '{') depth++;
+    else if (fnBody[i] === '}') { depth--; if (depth === 0) break; }
+  }
+  if (depth !== 0) return null; // unbalanced — extraction failed, caller must treat as not-found
+  return fnBody.slice(openBraceIdx, i + 1);
+}
+
 describe('H9 — tx discipline mechanical guard', () => {
   it('executeTransition wraps both writes inside ONE db.transaction', () => {
     // Source-level guard. Walk the file, find executeTransition body, and
     // assert:
     //   - exactly one `db.transaction(` opens
     //   - both an `UPDATE agent_runs` and an `INSERT INTO agent_state_events`
-    //     appear inside the same body
-    //   - neither appears outside the transaction in the function
+    //     appear INSIDE that transaction's own callback body (containment,
+    //     not textual ordering — see extractTransactionCallbackBody above)
+    //   - neither appears a second time outside the callback in the function
     const fnMatch = STATE_MACHINE_SRC.match(
       /function executeTransition\([^)]*\) \{([\s\S]*?)\n\}/
     );
     assert.ok(fnMatch);
     const body = fnMatch[1];
 
-    assert.ok(body.includes('db.transaction('),
-      'executeTransition must wrap in db.transaction()');
-    assert.ok(body.match(/UPDATE\s+agent_runs/),
-      'executeTransition must UPDATE agent_runs');
-    assert.ok(body.match(/INSERT\s+INTO\s+agent_state_events/),
-      'executeTransition must INSERT into agent_state_events');
+    assert.equal((body.match(/db\.transaction\(/g) || []).length, 1,
+      'executeTransition must open db.transaction( exactly once');
 
-    // Find the section after `db.transaction(`. The UPDATE + INSERT must
-    // BOTH appear before the matching closing of the tx() function arg.
-    const txStart = body.indexOf('db.transaction(');
-    const updIdx = body.search(/UPDATE\s+agent_runs/);
-    const insIdx = body.search(/INSERT\s+INTO\s+agent_state_events/);
-    assert.ok(updIdx > txStart,
-      'UPDATE agent_runs must appear inside the db.transaction() body');
-    assert.ok(insIdx > txStart,
-      'INSERT INTO agent_state_events must appear inside the db.transaction() body');
+    const txBody = extractTransactionCallbackBody(body);
+    assert.ok(txBody, 'must be able to isolate the db.transaction( callback body');
+
+    assert.ok(/UPDATE\s+agent_runs/.test(txBody),
+      'UPDATE agent_runs must appear INSIDE the db.transaction() callback body — ' +
+      'appearing merely after db.transaction( opens is not sufficient');
+    assert.ok(/INSERT\s+INTO\s+agent_state_events/.test(txBody),
+      'INSERT INTO agent_state_events must appear INSIDE the db.transaction() callback body — ' +
+      'appearing merely after db.transaction( opens is not sufficient');
+
+    // Containment, not just presence: neither write may ALSO occur a second
+    // time outside the callback (e.g. a stray raw UPDATE once the
+    // transaction has already closed) — the callback-scoped occurrence
+    // count must equal the whole-function occurrence count.
+    assert.equal(
+      (body.match(/UPDATE\s+agent_runs/g) || []).length,
+      (txBody.match(/UPDATE\s+agent_runs/g) || []).length,
+      'UPDATE agent_runs must not appear anywhere in executeTransition OUTSIDE the transaction callback');
+    assert.equal(
+      (body.match(/INSERT\s+INTO\s+agent_state_events/g) || []).length,
+      (txBody.match(/INSERT\s+INTO\s+agent_state_events/g) || []).length,
+      'INSERT INTO agent_state_events must not appear anywhere in executeTransition OUTSIDE the transaction callback');
   });
 });

@@ -7,20 +7,32 @@
  * a new reject rule to global-policy.yaml got ZERO signal that the rule was
  * never enforced — the submission passed policy as if the rule did not exist.
  *
- * The fix keeps behavior IDENTICAL for known ids (locally-handled +
- * enforced-elsewhere) but, for an UNKNOWN id declared `severity: reject`, pushes
- * an actionable diagnostic naming the offending rule id so the gap is
- * operator-visible. The submission still rejects (a reject rule the build can't
- * enforce must not silently pass), and the message tells the operator exactly
- * which rule has no enforcement in this build.
+ * F-3ef6b03e (this file's second fix): the FIRST fix (below, unchanged) pushed
+ * an actionable diagnostic into `errors` for an UNKNOWN severity:reject id —
+ * good, the gap became visible — but `errors` flows through index.js's `policy:`
+ * prefix, which parseRejectionReason classifies 'submission-bad'. That is wrong
+ * for THIS diagnostic: it fires because a MAINTAINER's global-policy.yaml
+ * declares a rule the build cannot enforce, not because the submitter sent a
+ * bad payload. Every submission in the fleet would reject with the submitter
+ * told to "fix your payload and resubmit" for a fault that is not theirs.
  *
- * Invariant (RED before the fix — an unknown reject rule silently no-op'd and
- * the submission was policy_valid; GREEN after — an actionable reason names it):
- *   1. unknown id + severity reject → an actionable `rule "<id>"` diagnostic.
- *   2. a known locally-handled id (scenario-minimum) is unaffected.
- *   3. an enforced-elsewhere id (provenance-confirmed) does NOT trip the
+ * The corrected fix THROWS instead of pushing to `errors` — mirroring the
+ * sibling GLOBAL-rule predicate-fault throw in verify-f1-custom-rules.test.js.
+ * `runValidator('policy', ...)` in index.js wraps any throw from validatePolicy
+ * as `VALIDATOR_FAULT_POLICY:`, which parseRejectionReason classifies
+ * 'operational' by family match — exit 2, nothing persisted, no run_id
+ * poisoned via the duplicate guard (F-82429f90's discipline, applied for free).
+ *
+ * Invariant (RED before the F-3ef6b03e fix — the diagnostic landed in `errors`,
+ * a normal return, not a throw; GREEN after — validatePolicy throws and the
+ * caught error still names the offending rule):
+ *   1. unknown id + severity reject → validatePolicy THROWS naming the rule.
+ *   2. the thrown message survives VALIDATOR_FAULT_POLICY: wrapping and
+ *      classifies 'operational', never 'submission-bad'.
+ *   3. a known locally-handled id (scenario-minimum) is unaffected (no throw).
+ *   4. an enforced-elsewhere id (provenance-confirmed) does NOT trip the
  *      diagnostic (it is enforced by the verifier, not this validator).
- *   4. an unknown id with severity != reject is ignored (no diagnostic).
+ *   5. an unknown id with severity != reject is ignored (no diagnostic, no throw).
  */
 
 import { describe, it, before } from 'node:test';
@@ -30,6 +42,7 @@ import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { validatePolicy } from './validators/policy.js';
+import { parseRejectionReason } from './parse-rejection.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = resolve(__dirname, 'fixtures');
@@ -44,23 +57,50 @@ function policyWithRules(rules) {
   return { defaults: {}, global_rules: rules };
 }
 
-describe('PROACT-VERIFY-002: unenforced severity:reject rule surfaces a diagnostic', () => {
-  it('an UNKNOWN reject rule id pushes an actionable diagnostic naming the rule', () => {
+describe('PROACT-VERIFY-002 / F-3ef6b03e: unenforced severity:reject rule throws operational, not submission-bad', () => {
+  it('an UNKNOWN reject rule id THROWS an actionable diagnostic naming the rule (not a returned error)', () => {
     const submission = structuredClone(pilot0);
-    const { valid, errors } = validatePolicy(submission, {
-      globalPolicy: policyWithRules([
-        { id: 'totally-new-gate', severity: 'reject', description: 'a brand-new gate' }
-      ]),
-      repoPolicy: null
-    });
 
-    const diag = errors.find(e => e.includes('totally-new-gate'));
-    assert.ok(
-      diag,
-      `expected a diagnostic naming the unenforced rule; errors=${JSON.stringify(errors)}`
+    // Deletion/emptiness proof: revert the `default:` arm from `throw` back to
+    // `errors.push(...)` and this goes red — validatePolicy would return
+    // normally instead of throwing.
+    assert.throws(
+      () => validatePolicy(submission, {
+        globalPolicy: policyWithRules([
+          { id: 'totally-new-gate', severity: 'reject', description: 'a brand-new gate' }
+        ]),
+        repoPolicy: null
+      }),
+      (e) => {
+        assert.match(e.message, /totally-new-gate/, `thrown message must name the rule; got ${e.message}`);
+        assert.match(e.message, /no enforcement/i, 'thrown message must say the rule has no enforcement in this build');
+        return true;
+      }
     );
-    assert.match(diag, /no enforcement/i, 'diagnostic must say the rule has no enforcement in this build');
-    assert.equal(valid, false, 'an unenforceable reject rule must not silently pass policy');
+  });
+
+  it('the thrown diagnostic, wrapped as VALIDATOR_FAULT_POLICY:, classifies operational — never submission-bad', () => {
+    const submission = structuredClone(pilot0);
+    let caught = null;
+    try {
+      validatePolicy(submission, {
+        globalPolicy: policyWithRules([
+          { id: 'totally-new-gate', severity: 'reject', description: 'a brand-new gate' }
+        ]),
+        repoPolicy: null
+      });
+    } catch (e) {
+      caught = e;
+    }
+    assert.ok(caught, 'validatePolicy must throw for an unenforced reject rule');
+
+    // Reproduce runValidator's wrapping exactly (verify/index.js:76-87) so this
+    // test is sensitive to the actual classification a real ingest run would
+    // see, not just to validatePolicy's raw throw.
+    const wrapped = `VALIDATOR_FAULT_POLICY: ${caught.message}`;
+    const parsed = parseRejectionReason(wrapped);
+    assert.equal(parsed.class, 'operational',
+      `an unenforced global rule is a maintainer fault, not a submitter fault; got class="${parsed.class}"`);
   });
 
   it('a known locally-handled id (scenario-minimum) does NOT trip the diagnostic', () => {

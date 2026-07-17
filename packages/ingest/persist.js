@@ -6,7 +6,7 @@
  * duplicate detection by run_id, directory creation.
  */
 
-import { existsSync, mkdirSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, writeFileSync, renameSync, openSync, closeSync, unlinkSync, readFileSync } from 'node:fs';
 import { join, dirname, relative, sep } from 'node:path';
 import { randomBytes } from 'node:crypto';
 
@@ -14,6 +14,8 @@ import { validateRecord } from './validate-record.js';
 import { isUnsafeSegment } from './lib/unsafe-segment.js';
 import { submissionDigest } from './lib/integrity.js';
 import { readChainHead, appendChainEntry } from './lib/chain-manifest.js';
+import { parseRejectionReason } from '@dogfood-lab/verify';
+import { SUPPORTED_SCHEMA_VERSIONS } from '@dogfood-lab/schemas';
 
 /**
  * Error thrown when writeRecord loses a TOCTOU race for the same canonical path.
@@ -26,6 +28,40 @@ export class DuplicateRunIdError extends Error {
     this.code = 'DUPLICATE_RUN_ID';
     this.runId = runId;
     this.path = path;
+  }
+}
+
+/**
+ * Error thrown when writeRecord's SECOND computeRecordPath() call — the one
+ * that computes the real write target, reached only AFTER validateRecord()
+ * has already confirmed the record is schema-valid — still cannot produce a
+ * safe path.
+ *
+ * F-bbbe2e1f: computeRecordPath()'s isUnsafeSegment check (lib/unsafe-segment.js)
+ * is STRICTER than the record schema's own repo pattern
+ * (`^[a-zA-Z0-9_.-]+/[a-zA-Z0-9_.-]+$`), which permits an embedded `..` or a
+ * lone `.` segment (e.g. `../etc`). A record can therefore pass
+ * validateRecord() above and still fail here — this is never a schema
+ * problem, it is the traversal backstop firing on schema-valid input. Pre-fix
+ * that let a bare, unclassified computeRecordPath Error (no `.code`) escape
+ * uncaught — the exact shape F-a37d36f5 eliminated at the FIRST
+ * computeRecordPath call (the isDuplicate probe below) but not this second
+ * one, three lines after validateRecord(). Classifying it here matches
+ * RecordValidationError's discipline and stays fail-closed: nothing below
+ * this point has touched the filesystem yet (mkdirSync/openSync/writeFileSync
+ * all come after), so no partial write is possible either way.
+ */
+export class UnsafeRecordPathError extends Error {
+  constructor(record, cause) {
+    super(
+      `record passed schema validation but its path could not be safely computed ` +
+      `(repo: ${record.repo}, run_id: ${record.run_id}): ${cause.message}`,
+      { cause }
+    );
+    this.name = 'UnsafeRecordPathError';
+    this.code = 'UNSAFE_RECORD_PATH';
+    this.repo = record.repo;
+    this.runId = record.run_id;
   }
 }
 
@@ -89,7 +125,178 @@ export function computeRecordPath(record, repoRoot) {
 }
 
 /**
+ * F-4036ae25: a prior `_rejected` record whose rejection_reasons are ALL
+ * retryable-class is "the submitter can fix this and resubmit", not an
+ * unappealable verdict about the run — the same doctrine that already exempts
+ * an unfilable (`_skipPersist`) rejection from consuming its run_id. Narrowing
+ * `_skipPersist` in verify/index.js means a filable-but-rejected submission
+ * now DOES persist (the fleet-wide audit trail F-4036ae25 restores), so this
+ * is the other half of that fix: persisting the evidence must not resurrect
+ * the exact run_id-poisoning pathology F-82429f90 eliminated for
+ * validator-crash faults.
+ *
+ * F-f8952a50 (wave 10): this used to check `parseRejectionReason(r).prefix
+ * === 'schema:'` — ONE of the ten prefixes parse-rejection.js's own "Prefix
+ * taxonomy" documents under `class: 'submission-bad'` ("the submitter fixes
+ * the payload and resubmits"). Proven live with `repo:mismatch` (a pure
+ * identity/addressing mistake — the run happened, only the repo/run_url
+ * pairing was mis-stated): a corrected resubmission's payload never even
+ * reached verify() a second time, because both isDuplicate() call sites
+ * treated the stale `repo:` rejection as an unconditional block — see
+ * f-0f9e4077-retry-collision-duplicate-rejection.test.js's 'F-f8952a50'
+ * describe block for the end-to-end proof.
+ *
+ * The fix reads `parseRejectionReason(r).retryable` — the classifier's OWN
+ * per-prefix routing decision (see parse-rejection.js's file header for the
+ * full split) — instead of re-deriving a prefix allowlist here. A future
+ * prefix parse-rejection.js adds is automatically retryable or not with no
+ * edit to this file. This is intentionally NARROWER than "every submission-bad
+ * class": `retryable` is false for `policy:` and `provenance:` even though
+ * both are class `submission-bad` — those two prefixes are a rendered VERDICT
+ * on the run's own reported content (see parse-rejection.js), and letting a
+ * resubmission retry past one would let a submitter launder a genuinely-bad
+ * run into an accepted one by resubmitting different self-reported content
+ * under the same run_id. That boundary is independently pinned end-to-end by
+ * schema-invalid-skip-persist.test.js's "REGRESSION GUARD" test and the
+ * "persist-a-verdict doctrine is preserved" describe block — this fix must
+ * not (and, via the per-prefix flag, does not) touch it.
+ *
+ * `'operational'` / `'ingest'` / `'unknown'`-class reasons are always
+ * `retryable: false` too (see parse-rejection.js). Most `'operational'`-class
+ * reasons are not actually reachable here in production (F-82429f90 and its
+ * provenance-fault:/scenario-fetch-fault: siblings THROW instead of
+ * persisting a `_rejected` record — see runValidator in verify/index.js).
+ *
+ * F-51780da9 (wave 22, confirming audit of F-be0deacd): `CONTRACT_SCHEMA_TOO_NEW:`
+ * is the one documented exception where the frozen `retryable: false` is NOT
+ * the whole story. `validators/schema-version.js` RETURNS it as an ordinary
+ * rejection string rather than throwing, so a too-new-major submission
+ * genuinely does persist to `_rejected/` and IS read by this function.
+ * `retryable` is a STATIC per-prefix classification stamped at parse time —
+ * it has no way to observe that testing-os has SINCE been upgraded past the
+ * declared major, so trusting it alone lets one stale TOO_NEW rejection
+ * permanently poison a run_id even after the exact condition it was
+ * rejecting no longer holds (proven live: seed a `_rejected` record with a
+ * TOO_NEW reason declaring a major the CURRENT build already understands —
+ * pre-fix this function still returns `false` forever, because it never asks
+ * whether the stored major is still actually too new). `reevaluateTooNewRetry`
+ * below is the correction: for this ONE prefix, re-derive whether the STORED
+ * rejection's declared major is still above the CURRENT build's
+ * `SUPPORTED_SCHEMA_VERSIONS.<contract>.maxMajor`, instead of trusting the
+ * frozen boolean. The other nine prefixes were swept for the same trap (any
+ * retryable semantics that depend on mutable environment rather than the
+ * submission itself) and none qualify: schema:/policy-config:/repo:/
+ * submission-contains-verifier-field:/unsafe-record-path:/steps[<id>]:/
+ * CONTRACT_SCHEMA_TOO_OLD: are already retryable:true (an already-permissive
+ * prefix has no "stuck forever" direction to fix); policy:/provenance: are a
+ * DELIBERATE, permanent anti-gaming verdict on the run's own reported
+ * content, not an environment-dependent snapshot that goes stale;
+ * provenance-fault:/scenario-fetch-fault:/submission-malformed:/
+ * VALIDATOR_FAULT_*: all throw rather than persist (never reach this
+ * function); scenario-load: is evaluated against an immutable git
+ * commit_sha, not a build-version boundary, so the same committed content at
+ * the same ref parses the same way forever — there is no analogous integer
+ * ceiling to re-derive the way TOO_NEW's `maxMajor` comparison allows.
+ *
+ * Any read/parse failure fails closed (blocking): a corrupted or unreadable
+ * evidence file must never silently unblock a path collision. The same
+ * failure mode covers a CONTRACT_SCHEMA_TOO_NEW: reason whose shape
+ * `reevaluateTooNewRetry` cannot parse, or whose contract key is no longer
+ * registered in `SUPPORTED_SCHEMA_VERSIONS` — both fail closed to "still
+ * blocking" rather than guessing.
+ *
+ * @param {string} rejectedPath - Absolute path already confirmed to exist.
+ * @returns {boolean} true when every rejection reason is individually
+ *   retryable (see parseRejectionReason's `retryable` field), OR — for
+ *   CONTRACT_SCHEMA_TOO_NEW: specifically — no longer applicable because
+ *   testing-os has since been upgraded past the declared major.
+ */
+
+/**
+ * F-51780da9: matches a `CONTRACT_SCHEMA_TOO_NEW:` reason string emitted by
+ * `validators/schema-version.js` — `CONTRACT_SCHEMA_TOO_NEW: <contract>
+ * schema v<major>.<minor>.<patch> ...` — capturing the contract key and the
+ * declared MAJOR, the two pieces of information needed to re-ask, against
+ * the CURRENT build, the exact question the stored rejection answered
+ * against a possibly-older one. Anchored to the literal TOO_NEW prefix only
+ * (never TOO_OLD:, a distinct literal) and requires a trailing space after
+ * the three-part version so it matches both the full production message
+ * (`... but this build supports v...`) and a shortened test fixture
+ * (`... — upgrade testing-os`) without over-matching a malformed variant.
+ */
+const TOO_NEW_DECLARED_VERSION = /^CONTRACT_SCHEMA_TOO_NEW: (\S+) schema v(\d+)\.\d+\.\d+ /;
+
+/**
+ * F-51780da9: re-evaluate a single STORED `CONTRACT_SCHEMA_TOO_NEW:` reason
+ * against the CURRENT build's `SUPPORTED_SCHEMA_VERSIONS`, instead of
+ * trusting the frozen `retryable: false` parse-rejection.js stamps on this
+ * prefix. `validators/schema-version.js` emits this prefix precisely when
+ * `declaredMajor > supported.maxMajor`; this re-runs that identical
+ * comparison against whatever `maxMajor` is TODAY, which a testing-os
+ * upgrade may have since raised past the stored declared major.
+ *
+ * @param {string} reason - a single rejection_reasons[] entry.
+ * @returns {boolean} `true` when the declared major is no longer above the
+ *   current build's supported ceiling (the rejection has been resolved by a
+ *   since-applied upgrade); `false` when it is still genuinely too new, the
+ *   contract key is unrecognized, or `reason` is not a
+ *   CONTRACT_SCHEMA_TOO_NEW: reason at all — every non-match fails closed to
+ *   "still blocking" rather than guessing.
+ */
+function reevaluateTooNewRetry(reason) {
+  const match = typeof reason === 'string' ? reason.match(TOO_NEW_DECLARED_VERSION) : null;
+  if (!match) return false;
+  const [, contract, declaredMajorStr] = match;
+  const supported = SUPPORTED_SCHEMA_VERSIONS[contract];
+  if (!supported) return false;
+  return Number(declaredMajorStr) <= supported.maxMajor;
+}
+
+function isRetryableRejection(rejectedPath) {
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(rejectedPath, 'utf-8'));
+  } catch {
+    return false;
+  }
+  const reasons = parsed?.verification?.rejection_reasons;
+  if (parsed?.verification?.status !== 'rejected' || !Array.isArray(reasons) || reasons.length === 0) {
+    return false;
+  }
+  // F-51780da9: a reason counts as retryable either via the classifier's own
+  // static per-prefix flag, or — for CONTRACT_SCHEMA_TOO_NEW: specifically —
+  // via the re-derived, current-environment check above. Every other prefix
+  // is unaffected: reevaluateTooNewRetry returns false for any reason it
+  // does not recognize, so `.every()`'s existing behavior is unchanged for
+  // schema:/policy:/repo:/provenance:/etc.
+  return reasons.every(r => parseRejectionReason(r).retryable === true || reevaluateTooNewRetry(r));
+}
+
+/**
  * Check if a record with this run_id already exists (accepted or rejected).
+ *
+ * F-0f9e4077 (wave-6 regression, fixed wave-8): computeRecordPath() is keyed
+ * on (run_id, date, accepted|rejected) — never on rejection_reasons content.
+ * So once a `_rejected` record occupies a path, ANY new record whose OWN
+ * status is STILL 'rejected' is headed to that exact same path no matter
+ * which violation it reports (an unexpected field with a different name, a
+ * different value, even a byte-identical resubmission all collide
+ * identically — computeRecordPath never looks at content). The
+ * isRetryableRejection carve-out below exists so a stale retryable-class
+ * rejection (F-f8952a50: any prefix parse-rejection.js's taxonomy flags
+ * `retryable: true` — shape/addressing mistakes, not just schema:) does not
+ * block a DIFFERENT-status (now accepted) record from reaching ITS OWN,
+ * different path — it was never a promise that the
+ * REJECTED path specifically is free. Pre-fix, skipping the status check let
+ * an uncorrected retry fall through as "not a duplicate," reach
+ * writeRecord()'s exclusive-create, and throw DuplicateRunIdError — a
+ * purely sequential, single-writer collision masquerading as the two-writer
+ * TOCTOU race that error class exists for. Gating on
+ * `record.verification.status === 'accepted'` restores the carve-out to
+ * exactly the case it can actually help (a record now headed elsewhere)
+ * while making a still-rejected collision an unconditional, ordinary
+ * duplicate — so writeRecord() short-circuits before ever attempting the
+ * write, and no throw is reachable for this class anymore.
  *
  * @param {string} runId
  * @param {object} record - The record (used for repo/timing to compute path)
@@ -105,7 +312,14 @@ export function isDuplicate(runId, record, repoRoot) {
   // Check rejected path
   const rejectedRecord = { ...record, verification: { ...record.verification, status: 'rejected' } };
   const rejectedPath = computeRecordPath(rejectedRecord, repoRoot);
-  if (existsSync(rejectedPath)) return true;
+  if (existsSync(rejectedPath)) {
+    // A record that is itself still rejected can only ever land at THIS
+    // path — asking whether the OLD occupant is retryable is moot when the
+    // NEW attempt has nowhere else to go. Only a record now bound for the
+    // accepted path (real forward progress) gets to ask that question.
+    if (record.verification?.status !== 'accepted') return true;
+    return !isRetryableRejection(rejectedPath);
+  }
 
   return false;
 }
@@ -130,7 +344,21 @@ export function isDuplicate(runId, record, repoRoot) {
  * @throws {DuplicateRunIdError} when a concurrent writer won the race
  */
 export function writeRecord(record, repoRoot) {
-  if (isDuplicate(record.run_id, record, repoRoot)) {
+  // F-a37d36f5: family sibling of the ingest.js pre-check fix — writeRecord
+  // carries its OWN premature isDuplicate call, reached even when the
+  // caller's own duplicate check was skipped or already cleared. A record
+  // whose repo/run_id computeRecordPath rejects (invalid format, unsafe
+  // segment) cannot possibly collide with an existing file, so treating the
+  // throw as "not a duplicate" here is the same semantically-free
+  // short-circuit as the run.js fix — it lets validateRecord() below be the
+  // authoritative judge instead of a raw path-computation throw.
+  let duplicate;
+  try {
+    duplicate = isDuplicate(record.run_id, record, repoRoot);
+  } catch {
+    duplicate = false;
+  }
+  if (duplicate) {
     const path = computeRecordPath(record, repoRoot);
     return { path, written: false };
   }
@@ -160,7 +388,16 @@ export function writeRecord(record, repoRoot) {
   // schema is the contract every downstream consumer relies on.
   validateRecord(record);
 
-  const path = computeRecordPath(record, repoRoot);
+  // F-bbbe2e1f: see UnsafeRecordPathError's doc comment. Wrap this SECOND
+  // computeRecordPath() call — the first is inside isDuplicate() above,
+  // already guarded by F-a37d36f5 — so a schema-valid-but-unsafe repo (e.g.
+  // `../etc`) throws a classified error instead of a bare one.
+  let path;
+  try {
+    path = computeRecordPath(record, repoRoot);
+  } catch (err) {
+    throw new UnsafeRecordPathError(record, err);
+  }
   const dir = dirname(path);
 
   mkdirSync(dir, { recursive: true });

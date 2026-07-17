@@ -55,6 +55,79 @@ describe('F_ID_PATTERN', () => {
     assert.equal(matches, null,
       `none of those should match the strict pattern, got ${JSON.stringify(matches)}`);
   });
+
+  // F-3ec5b54f: the gate this pattern feeds cannot see a finding id it
+  // cannot match. This repo mints THREE id shapes — legacy, hash, and
+  // prefixed (see F_ID_PATTERN's own JSDoc for the full account) — and
+  // the pre-fix pattern matched only the first. These are the widening's
+  // load-bearing positive cases.
+  describe('F-3ec5b54f: hash-style ids (F-xxxxxxxx, 8 lowercase hex)', () => {
+    it('matches a standalone hash id', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.deepEqual('fixed in F-42e57a77 today'.match(F_ID_PATTERN), ['F-42e57a77']);
+    });
+
+    it('matches multiple distinct hash ids in one string', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      const text = 'F-2965699b and F-7ce07baa and F-a37d36f5 all landed together';
+      assert.deepEqual(text.match(F_ID_PATTERN), ['F-2965699b', 'F-7ce07baa', 'F-a37d36f5']);
+    });
+
+    it('does NOT truncate a 9-hex-char run into a false 8-char match', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.equal('F-42e57a77b'.match(F_ID_PATTERN), null,
+        'a 9th hex char means this is not a valid 8-char hash id — must not partially match');
+    });
+
+    it('does NOT match a bare 6-digit numeric run (that is a legacy id\'s first segment, not a hash id)', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      // '000000' is only 6 chars — 2 short of the 8 the hash branch requires —
+      // and legacy's own branch requires the '-NNN' tail to complete a match.
+      assert.equal('F-000000'.match(F_ID_PATTERN), null);
+    });
+  });
+
+  describe('F-3ec5b54f: prefixed ids (F-AAA[-AAA...]-NNN)', () => {
+    it('matches a single-segment prefix', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.deepEqual('F-CI-001'.match(F_ID_PATTERN), ['F-CI-001']);
+    });
+
+    it('matches an alphanumeric segment (letters + digits, e.g. W1)', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.deepEqual('F-WAVE29-001'.match(F_ID_PATTERN), ['F-WAVE29-001']);
+    });
+
+    it('matches a multi-segment prefix (F-CI-SELF-DOGFOOD-001)', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.deepEqual('F-CI-SELF-DOGFOOD-001'.match(F_ID_PATTERN), ['F-CI-SELF-DOGFOOD-001']);
+    });
+
+    it('does NOT truncate a 4-digit suffix into a false 3-digit match', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      assert.equal('F-CI-0011'.match(F_ID_PATTERN), null,
+        'a 4th trailing digit means the real suffix is not 3 digits — must not partially match');
+    });
+
+    it('does NOT match a lowercase continuation after an uppercase prefix (F-XXX-yyy stays excluded)', () => {
+      F_ID_PATTERN.lastIndex = 0;
+      // Regression guard: confirms the widened pattern did not accidentally
+      // relax the EXISTING F-XXX-yyy exclusion above while adding prefixed
+      // support — 'XXX' alone satisfies the uppercase-prefix shape, but the
+      // lowercase 'yyy' tail cannot complete either the prefix-continuation
+      // or the digit-suffix branch.
+      assert.equal('F-XXX-yyy'.match(F_ID_PATTERN), null);
+    });
+  });
+
+  it('F-5eafee44: extension widening does not change WHAT counts as a pin — only which files are scanned', () => {
+    // The pattern itself is extension-agnostic; walkSourceFiles' extension
+    // filter is the actual F-5eafee44 fix (covered in the walkSourceFiles
+    // describe block below). This test just pins that expectation in one
+    // place so a reader of F_ID_PATTERN's tests sees the split explicitly.
+    F_ID_PATTERN.lastIndex = 0;
+    assert.deepEqual('# F-CI-SELF-DOGFOOD-001 — pinned in YAML'.match(F_ID_PATTERN), ['F-CI-SELF-DOGFOOD-001']);
+  });
 });
 
 describe('classifyFile', () => {
@@ -64,14 +137,31 @@ describe('classifyFile', () => {
     assert.equal(classifyFile('/repo/packages/schemas/test/validate.test.ts'), 'test');
   });
 
-  it('classifies *.spec.ts paths as test', () => {
-    assert.equal(classifyFile('/repo/lib/foo.spec.ts'), 'test');
+  // F-4fc233fe (wave 26) scoped this: `.spec.` only means 'test' within
+  // packages/schemas, the one package whose own runner is vitest — a bare
+  // `node --test` package never discovers `.spec.` naming. See the
+  // "F-4fc233fe" describe block below for the non-schemas negative case
+  // this test used to (incorrectly) assert for ANY `.spec.` path repo-wide.
+  it('classifies *.spec.ts paths as test within packages/schemas (real vitest discovery)', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/foo.spec.ts'), 'test');
   });
 
-  it('classifies anything in a /test/ or /tests/ dir as test', () => {
-    assert.equal(classifyFile('/repo/packages/schemas/test/helpers.ts'), 'test');
-    assert.equal(classifyFile('/repo/tests/integration/runner.js'), 'test');
-    assert.equal(classifyFile('/repo/__tests__/snapshot.js'), 'test');
+  // F-92a8d0bb narrowed this: a plain-named file under /test/ (singular) is
+  // still 'test' (real node --test discovery), but /tests/ (plural) and
+  // /__tests__/ no longer get the same blanket credit — see the
+  // "F-92a8d0bb" describe block below for why, and for the reclassified
+  // /tests/ and /__tests__/ cases this test used to (incorrectly) assert.
+  //
+  // F-dbcabec2: this example used to be `/repo/packages/schemas/test/
+  // helpers.ts` — WRONG, because packages/schemas runs vitest, not
+  // node --test, and vitest never auto-collects a plain-named file. That
+  // was the exact false-grant F-dbcabec2 fixed; see the "F-dbcabec2"
+  // describe block below for the corrected (now 'source') assertion on
+  // that same path. This test's actual claim — real node --test discovery
+  // credits ANY plain-named file under /test/ — is still true outside
+  // packages/schemas, which is what this now asserts.
+  it('classifies a plain-named file under /test/ (singular) as test', () => {
+    assert.equal(classifyFile('/repo/packages/report/test/helpers.ts'), 'test');
   });
 
   it('classifies plain source files as source', () => {
@@ -82,7 +172,227 @@ describe('classifyFile', () => {
 
   it('uses POSIX-normalised match logic so Windows backslashes still classify', () => {
     assert.equal(classifyFile('C:\\repo\\packages\\report\\report.test.js'), 'test');
-    assert.equal(classifyFile('C:\\repo\\packages\\schemas\\test\\helpers.ts'), 'test');
+    // F-dbcabec2: was `packages\\schemas\\test\\helpers.ts` asserting 'test' —
+    // wrong (see the F-dbcabec2 describe block below). A non-schemas /test/
+    // path still correctly classifies 'test' on Windows separators.
+    assert.equal(classifyFile('C:\\repo\\packages\\report\\test\\helpers.ts'), 'test');
+  });
+
+  /** @pins F-a27680f9 */
+  describe('F-a27680f9: node --test\'s non-dot discovery forms (-test./_test./bare test.)', () => {
+    it('classifies "foo-test.js" (dash suffix) as test', () => {
+      assert.equal(classifyFile('/repo/packages/report/report-test.js'), 'test');
+    });
+
+    it('classifies "foo_test.js" (underscore suffix) as test', () => {
+      assert.equal(classifyFile('/repo/packages/report/report_test.js'), 'test');
+    });
+
+    it('classifies a bare "test.js" (exact basename) as test', () => {
+      assert.equal(classifyFile('/repo/packages/report/test.js'), 'test');
+      assert.equal(classifyFile('/repo/packages/report/test.mjs'), 'test');
+    });
+
+    it('classifies the .ts/.mjs/.cjs/.jsx/.tsx variants of each new form as test', () => {
+      assert.equal(classifyFile('/repo/lib/foo-test.ts'), 'test');
+      assert.equal(classifyFile('/repo/lib/foo_test.mjs'), 'test');
+      assert.equal(classifyFile('/repo/lib/foo-test.tsx'), 'test');
+    });
+
+    it('does NOT double-match the already-handled dot form (foo.test.js has "." not "-"/"_" before "test.")', () => {
+      // Regression guard: the new pattern must not change WHY foo.test.js
+      // classifies as test (it already did, via the dot-form regex above) —
+      // this only proves the new branch does not mis-fire on it either.
+      assert.equal(classifyFile('/repo/lib/foo.test.js'), 'test');
+    });
+
+    it('does NOT match an unrelated substring like "protest.js" (no separator before "test.")', () => {
+      assert.equal(classifyFile('/repo/lib/protest.js'), 'source');
+    });
+
+    it('does NOT match "test.js" appearing mid-path as a directory name, only as the final segment', () => {
+      // "test.js" here is a DIRECTORY, not the file basename — the file is
+      // "helper.js", which matches none of the test forms.
+      assert.equal(classifyFile('/repo/test.js/helper.js'), 'source');
+    });
+
+    it('uses POSIX-normalised match logic so Windows backslashes still classify the new forms', () => {
+      assert.equal(classifyFile('C:\\repo\\packages\\report\\report-test.js'), 'test');
+      assert.equal(classifyFile('C:\\repo\\packages\\report\\test.js'), 'test');
+    });
+
+    // F-d01977e5 (LOW, wave 22, confirming audit of F-a27680f9): a FOURTH
+    // default-discovery shape distinct from the three above — a leading
+    // `test-` PREFIX component (`test-foo.js`), empirically confirmed to run
+    // under a bare `node --test` (v22.22.3) while `test_foo.js` (underscore)
+    // and `testFoo.js` (no separator) do not. None of the three suffix forms
+    // above match a LEADING "test-" — they only match "test." as a TRAILING
+    // component — so this is a genuinely separate glob, not a duplicate of
+    // the bare-"test.js" case.
+    /** @pins F-d01977e5 */
+    describe('F-d01977e5: node --test\'s fourth default-discovery form — a leading "test-" PREFIX component', () => {
+      it('classifies "test-foo.js" (dash PREFIX) as test', () => {
+        assert.equal(classifyFile('/repo/packages/report/test-foo.js'), 'test');
+      });
+
+      it('classifies the .ts/.mjs/.cjs/.jsx/.tsx variants of the prefix form as test', () => {
+        assert.equal(classifyFile('/repo/lib/test-foo.ts'), 'test');
+        assert.equal(classifyFile('/repo/lib/test-foo.mjs'), 'test');
+        assert.equal(classifyFile('/repo/lib/test-foo.cjs'), 'test');
+        assert.equal(classifyFile('/repo/lib/test-foo.jsx'), 'test');
+        assert.equal(classifyFile('/repo/lib/test-foo.tsx'), 'test');
+      });
+
+      it('does NOT match "test_foo.js" (underscore prefix) — empirically confirmed NOT collected by node --test, unlike the dash form', () => {
+        assert.equal(classifyFile('/repo/lib/test_foo.js'), 'source');
+      });
+
+      it('does NOT match "testFoo.js" (no separator at all) — empirically confirmed NOT collected by node --test', () => {
+        assert.equal(classifyFile('/repo/lib/testFoo.js'), 'source');
+      });
+
+      it('does NOT match a "test-" substring that is not at a path boundary (e.g. "protest-foo.js")', () => {
+        assert.equal(classifyFile('/repo/lib/protest-foo.js'), 'source');
+      });
+
+      it('does NOT match "test-foo.js" appearing mid-path as a directory name, only as the final segment', () => {
+        // Mirrors the bare-"test.js" directory-vs-file boundary test above —
+        // "test-foo.js" here is a DIRECTORY, the file is "helper.js".
+        assert.equal(classifyFile('/repo/test-foo.js/helper.js'), 'source');
+      });
+
+      it('uses POSIX-normalised match logic so Windows backslashes still classify the prefix form', () => {
+        assert.equal(classifyFile('C:\\repo\\packages\\report\\test-foo.js'), 'test');
+      });
+    });
+  });
+
+  /** @pins F-92a8d0bb */
+  describe('F-92a8d0bb: /tests/ and /__tests__/ do NOT get the /test/-singular blanket credit', () => {
+    it('does NOT classify a plain-named file under /tests/ (plural) as test — node --test does not auto-collect it', () => {
+      assert.equal(classifyFile('/repo/tests/integration/runner.js'), 'source');
+    });
+
+    it('does NOT classify a plain-named file under /__tests__/ as test — node --test does not auto-collect it', () => {
+      assert.equal(classifyFile('/repo/__tests__/snapshot.js'), 'source');
+    });
+
+    it('still classifies a plain-named file under /test/ (singular) as test, at any nesting depth — this IS real node --test discovery, unchanged by this fix', () => {
+      // F-dbcabec2: the first assertion here used to be
+      // `/repo/packages/schemas/test/helpers.ts` — WRONG, because
+      // packages/schemas runs vitest, which this blanket credit is NOT
+      // real evidence for (see the "F-dbcabec2" describe block below).
+      // The other two paths are outside packages/schemas, where the
+      // blanket credit IS real node --test discovery and is genuinely
+      // "unchanged by this fix" as the test name says.
+      assert.equal(classifyFile('/repo/lib/deep/nested/test/helpers.ts'), 'test');
+      assert.equal(classifyFile('/repo/test/deeper/helpers.ts'), 'test');
+    });
+
+    it('does NOT reclassify /tests/ or /__tests__/ at deeper nesting either — the blanket credit is fully removed, not just at the top level', () => {
+      assert.equal(classifyFile('/repo/nested/tests/helpers.ts'), 'source');
+      assert.equal(classifyFile('/repo/nested/__tests__/helpers.ts'), 'source');
+    });
+
+    it('a suffix/prefix-matching basename under /tests/ or /__tests__/ still classifies test — caught by the upstream checks, untouched by this fix', () => {
+      assert.equal(classifyFile('/repo/tests/foo.test.js'), 'test');
+      assert.equal(classifyFile('/repo/tests/foo-test.js'), 'test');
+      // A `.spec.js` example (e.g. '/repo/__tests__/foo.spec.js') used to sit
+      // here as a third "still classifies test" case — F-4fc233fe (wave 26)
+      // scoped the `.spec.` upstream check itself to packages/schemas, so a
+      // non-schemas `.spec.` path is no longer "caught by the upstream
+      // check" the way `.test.`/`-test.` still are here. See the
+      // "F-4fc233fe" describe block below for the corrected assertion.
+    });
+
+    it('uses POSIX-normalised match logic so Windows backslashes still classify /tests/ and /__tests__/ as source', () => {
+      assert.equal(classifyFile('C:\\repo\\tests\\integration\\runner.js'), 'source');
+      assert.equal(classifyFile('C:\\repo\\__tests__\\snapshot.js'), 'source');
+    });
+  });
+});
+
+/** @pins F-4fc233fe */
+describe('F-4fc233fe: `.spec.` only means "test" within packages/schemas (the vitest package)', () => {
+  it('classifies a *.spec.js file directly under packages/schemas as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/foo.spec.js'), 'test');
+  });
+
+  it('classifies a *.spec.ts file nested under packages/schemas/test as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/test/foo.spec.ts'), 'test');
+  });
+
+  it('does NOT classify a *.spec.ts file outside packages/schemas as test — bare `node --test` never discovers `.spec.` naming', () => {
+    assert.equal(classifyFile('/repo/lib/foo.spec.ts'), 'source');
+    assert.equal(classifyFile('/repo/packages/portfolio/foo.spec.js'), 'source');
+    assert.equal(classifyFile('/repo/packages/verify/sub/foo.spec.js'), 'source');
+  });
+
+  it('does NOT classify a *.spec.js file under /tests/ or /__tests__/ outside packages/schemas as test either — no other rule reaches it', () => {
+    assert.equal(classifyFile('/repo/tests/foo.spec.js'), 'source');
+    assert.equal(classifyFile('/repo/__tests__/foo.spec.js'), 'source');
+  });
+
+  it('still classifies a *.spec.js file under packages/schemas/tests or packages/schemas/__tests__ as test — the schemas SCOPE, not the directory name, is what now matters', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/tests/foo.spec.js'), 'test');
+    assert.equal(classifyFile('/repo/packages/schemas/__tests__/foo.spec.js'), 'test');
+  });
+
+  it('does NOT credit a package merely PREFIXED with "schemas" (e.g. packages/schemasx) — path-boundary match, not substring', () => {
+    assert.equal(classifyFile('/repo/packages/schemasx/foo.spec.js'), 'source');
+  });
+
+  it('control: a sibling *.test.js file in the same non-schemas location is unaffected by this scoping', () => {
+    assert.equal(classifyFile('/repo/packages/portfolio/foo.test.js'), 'test');
+  });
+
+  it('uses POSIX-normalised match logic so Windows backslashes still scope correctly', () => {
+    assert.equal(classifyFile('C:\\repo\\packages\\schemas\\src\\foo.spec.ts'), 'test');
+    assert.equal(classifyFile('C:\\repo\\packages\\portfolio\\foo.spec.js'), 'source');
+  });
+});
+
+/** @pins F-dbcabec2 */
+describe('F-dbcabec2: node --test-only discovery rules (NODE_TEST_SUFFIX_PATTERN + /test/-singular) also scope OUT of packages/schemas', () => {
+  // Confirming-audit sibling of the F-4fc233fe block above: that fix scoped
+  // `.spec.` credit INTO packages/schemas; this fix scopes the two
+  // node-test-SPECIFIC rules (NODE_TEST_SUFFIX_PATTERN, /test/-singular)
+  // OUT of packages/schemas, since vitest (that package's real runner)
+  // collects neither shape regardless of directory.
+
+  it('does NOT classify a plain-named file under packages/schemas/test/ as test — vitest does not auto-collect it (was the false grant; this path was previously cited, wrongly, as proof of "real node --test discovery")', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/test/helpers.ts'), 'source');
+  });
+
+  it('does NOT classify packages/schemas/src/test-foo.js (dash-prefix node-test shape) as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/test-foo.js'), 'source');
+  });
+
+  it('does NOT classify packages/schemas/src/foo-test.js (dash-suffix node-test shape) as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/foo-test.js'), 'source');
+  });
+
+  it('does NOT classify packages/schemas/src/foo_test.js (underscore-suffix node-test shape) as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/foo_test.js'), 'source');
+  });
+
+  it('does NOT classify a bare packages/schemas/src/test.js as test', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/src/test.js'), 'source');
+  });
+
+  it('control: the SAME node-test shapes still classify test OUTSIDE packages/schemas — this fix narrows, it does not remove, the rule', () => {
+    assert.equal(classifyFile('/repo/packages/report/src/test-foo.js'), 'test');
+    assert.equal(classifyFile('/repo/packages/report/src/foo-test.js'), 'test');
+    assert.equal(classifyFile('/repo/packages/report/test/helpers.ts'), 'test');
+  });
+
+  it('control: a real packages/schemas/*.test.ts file (the dot-form, unscoped) still classifies test — only the node-test-SPECIFIC rules are scoped, not the dot-test-form every runner shares', () => {
+    assert.equal(classifyFile('/repo/packages/schemas/test/helpers.test.ts'), 'test');
+  });
+
+  it('uses POSIX-normalised match logic so Windows backslashes still scope both rules out of packages/schemas', () => {
+    assert.equal(classifyFile('C:\\repo\\packages\\schemas\\test\\helpers.ts'), 'source');
+    assert.equal(classifyFile('C:\\repo\\packages\\schemas\\src\\test-foo.js'), 'source');
   });
 });
 
@@ -178,6 +488,26 @@ describe('walkSourceFiles', () => {
       assert.equal(files.length, 1);
       assert.ok(files[0].endsWith('a.js'),
         `only src/a.js should survive the skip set, got ${files[0]}`);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('F-5eafee44: finds .yml and .yaml files alongside the JS/TS extensions', () => {
+    const root = makeFixture({
+      'src/a.js': '// F-100000-001',
+      '.github/workflows/example.yml': '# F-CI-SELF-DOGFOOD-001',
+      'policies/global-policy.yaml': '# F-200000-002',
+      'd.txt': 'no F-id here please',
+    });
+    try {
+      // Deletion/emptiness proof: this is the exact fixture shape ci-tooling's
+      // F-5eafee44 META test in scripts/check-finding-regression-pins.test.mjs
+      // uses. Revert DEFAULT_SOURCE_EXTENSIONS to drop .yml/.yaml and both
+      // YAML files vanish from the walk — files.length would drop to 1.
+      const files = walkSourceFiles(root);
+      const names = files.map(f => f.split(/[\\/]/).pop()).sort();
+      assert.deepEqual(names, ['a.js', 'example.yml', 'global-policy.yaml']);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

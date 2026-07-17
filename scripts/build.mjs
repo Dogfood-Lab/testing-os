@@ -82,22 +82,42 @@ export function hasRealPackage(packagesDir) {
 
 /**
  * Drift gate: every packages/<name>/tsconfig.json must be registered in the
- * root tsconfig.json `references` array. Same drift class as STATUS.run /
- * AUDIT_PHASES (F-693631-010 / F-375053-005) — a hand-maintained list
- * duplicating an authoritative source. A new TS package added without updating
- * root tsconfig.json would otherwise silently skip type-check from the root.
+ * root tsconfig.json `references` array, AND every root reference must point
+ * at a packages/<name> that still has a tsconfig.json. Same drift class as
+ * STATUS.run / AUDIT_PHASES (F-693631-010 / F-375053-005) — a hand-maintained
+ * list duplicating an authoritative source. A new TS package added without
+ * updating root tsconfig.json would otherwise silently skip type-check from
+ * the root (the `missing` direction); a package renamed or removed without
+ * updating root tsconfig.json leaves a dangling reference (the `stale`
+ * direction, F-af5e8919).
+ *
+ * F-af5e8919: pre-fix, this function only computed `missing` (forward
+ * direction) — a root reference pointing at a packages/<name> directory that
+ * no longer has a tsconfig.json (package rename/removal, an ordinary future
+ * event for a growing monorepo) reported ZERO drift. `tsc --build` itself
+ * still catches this (fails with `TS5083: Cannot read file '.../tsconfig.json'`,
+ * a non-zero exit, no false green) — the gap was diagnostic QUALITY, not
+ * silence: the dedicated gate this file exists to give BETTER guidance than
+ * raw tsc output never fired for this direction, so the operator got a
+ * generic TS5083 plus a "fix the reported type errors" hint that is actively
+ * wrong for this specific failure (the real fix is removing a stale
+ * references[] entry, not fixing a type error). `stale` is reported and
+ * acted on BEFORE ever reaching `execSync('tsc --build', ...)` — see the CLI
+ * entry block below — so this direction gets the same operator-friendly
+ * message the forward direction already had.
  *
  * Reference paths are canonicalized on BOTH sides (`posix.normalize` plus a
  * trailing-slash strip) so all three valid tsconfig reference spellings —
  * `packages/x`, `./packages/x`, and `packages/x/` — match the discovered
  * `packages/x`. `posix.normalize` alone collapses `./` and `//` but PRESERVES
  * a trailing slash, so a `packages/x/` reference would otherwise false-positive
- * as drift; `normalizeRef` strips it.
+ * as drift; `normalizeRef` strips it. Applies identically to both directions —
+ * `stale` reuses the same normalized `referenced` list `missing` already did.
  *
  * @param {object} opts
  * @param {string} opts.packagesDir — absolute path to packages/
  * @param {string} opts.rootTsconfigPath — absolute path to root tsconfig.json
- * @returns {{ tsPackages: string[], referenced: string[], missing: string[] }}
+ * @returns {{ tsPackages: string[], referenced: string[], missing: string[], stale: string[] }}
  */
 export function findTsconfigReferenceDrift({ packagesDir, rootTsconfigPath }) {
   const tsPackages = readdirSync(packagesDir)
@@ -111,9 +131,16 @@ export function findTsconfigReferenceDrift({ packagesDir, rootTsconfigPath }) {
   const rootTsconfig = JSON.parse(readFileSync(rootTsconfigPath, 'utf8'));
   const referenced = (rootTsconfig.references ?? []).map((r) => normalizeRef(r.path));
   const referencedSet = new Set(referenced);
+  const tsPackagesSet = new Set(tsPackages);
   const missing = tsPackages.filter((p) => !referencedSet.has(p));
+  // F-af5e8919: the reverse direction. Scoped to references that at least
+  // LOOK like a packages/<name> path (the only shape this gate has any
+  // authority over) — a root tsconfig.json could in principle reference
+  // something outside packages/ entirely, which is not this gate's concern
+  // and must not be reported as a false "stale" drift.
+  const stale = referenced.filter((r) => r.startsWith('packages/') && !tsPackagesSet.has(r));
 
-  return { tsPackages, referenced, missing };
+  return { tsPackages, referenced, missing, stale };
 }
 
 /**
@@ -148,7 +175,33 @@ if (isMain) {
   }
 
   const rootTsconfigPath = resolve(repoRoot, 'tsconfig.json');
-  const { missing } = findTsconfigReferenceDrift({ packagesDir, rootTsconfigPath });
+  // Sibling of F-016e7a8c (scripts/check-doc-drift.mjs), found sweeping this
+  // domain's unguarded-JSON.parse class: findTsconfigReferenceDrift's own
+  // JSON.parse(readFileSync(rootTsconfigPath, ...)) is unguarded. A malformed
+  // root tsconfig.json (an ordinary hand-edit slip) is exactly the kind of
+  // drift this file's OWN docstring says a growing monorepo will eventually
+  // hit — pre-fix it crashed `npm run build` with a raw, uncaught SyntaxError
+  // stack (JSON.parse / findTsconfigReferenceDrift / ModuleJob.run frames),
+  // the one failure mode every OTHER branch in this file (isReadableDirectory,
+  // the missing/stale reports below, the execSync catch) already avoids via a
+  // structured '[testing-os build] ...' message. Caught at the call site
+  // (not inside the pure function itself) so findTsconfigReferenceDrift's
+  // tested contract — a function of its inputs, throws on malformed JSON,
+  // exercised directly by scripts/build.test.mjs — is unchanged; only the
+  // real CLI entry point gets the humanized failure.
+  let driftResult;
+  try {
+    driftResult = findTsconfigReferenceDrift({ packagesDir, rootTsconfigPath });
+  } catch (err) {
+    console.error(
+      `[testing-os build] failed to read/parse root tsconfig.json for the references drift gate: ${err.message}`
+    );
+    console.error(
+      'Check tsconfig.json for a JSON syntax error (trailing comma, unclosed bracket), then re-run `npm run build`.'
+    );
+    process.exit(1);
+  }
+  const { missing, stale } = driftResult;
 
   if (missing.length > 0) {
     console.error(
@@ -160,5 +213,35 @@ if (isMain) {
     process.exit(1);
   }
 
-  execSync('tsc --build', { stdio: 'inherit', cwd: repoRoot });
+  // F-af5e8919: the reverse direction — a root reference whose
+  // packages/<name>/tsconfig.json no longer exists (rename/removal). Checked
+  // BEFORE ever reaching execSync('tsc --build', ...) below so the operator
+  // gets this gate's own operator-friendly guidance instead of a generic
+  // `tsc --build`-produced TS5083 "Cannot read file" plus a "fix the reported
+  // type errors" hint that is actively wrong for this specific failure (the
+  // real fix is removing the stale references[] entry, not fixing a type error).
+  if (stale.length > 0) {
+    console.error(
+      `[testing-os build] tsconfig.json references a package that no longer exists: ${stale.join(', ')} — remove ${stale.length === 1 ? 'it' : 'them'} from the references array.`
+    );
+    process.exit(1);
+  }
+
+  // F-b27d6c0c: every other failure path in this file prints a structured
+  // '[testing-os build] ...' message with a concrete remediation before
+  // exiting non-zero (see the tsconfig reference-drift gate above and
+  // isReadableDirectory's fs-error humanization). An uncaught execSync
+  // throw here would instead surface a raw 'Error: Command failed: tsc
+  // --build' Node stack on top of tsc's own diagnostics — noise, not signal,
+  // since stdio: 'inherit' has already streamed the real diagnostics to the
+  // operator. Swallowing the error object is correct: nothing it carries is
+  // more useful than what tsc already printed.
+  try {
+    execSync('tsc --build', { stdio: 'inherit', cwd: repoRoot });
+  } catch {
+    console.error(
+      '[testing-os build] tsc --build failed — see the TypeScript diagnostics above. Fix the reported type errors, then re-run `npm run build`.'
+    );
+    process.exit(1);
+  }
 }

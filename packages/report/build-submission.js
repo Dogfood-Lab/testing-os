@@ -19,8 +19,6 @@
  *   import { buildSubmission } from './build-submission.js'
  */
 
-import { readFileSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { validatePayload, SUPPORTED_SCHEMA_VERSIONS } from '@dogfood-lab/schemas';
 
@@ -81,7 +79,17 @@ export function buildSubmission(params) {
     notes
   } = params;
 
-  const required = { repo, commitSha, startedAt, finishedAt, scenarioResults };
+  // F-fc1bbffa: providerRunId was the one required param this check missed —
+  // workflow/runUrl are effectively (if accidentally) protected too: an
+  // omitted value stays `undefined`, JSON.stringify drops the key entirely,
+  // and precheckSubmission's schema gate catches the resulting missing
+  // source.workflow/source.run_url downstream. providerRunId instead gets
+  // COERCED below (`String(providerRunId)`), and `String(undefined)` is the
+  // real, non-empty, 9-character string "undefined" — schema-conformant
+  // (provider_run_id is typed string only, no pattern/minLength) and
+  // therefore silent all the way to the real verifier, where it fails as a
+  // GitHub API 404 on run id "undefined" instead of a clear build-time error.
+  const required = { repo, commitSha, startedAt, finishedAt, scenarioResults, providerRunId };
   for (const [name, value] of Object.entries(required)) {
     if (value == null) throw new Error(`buildSubmission: missing required param "${name}"`);
   }
@@ -191,70 +199,25 @@ export function precheckSubmission(submission) {
 }
 
 // --- CLI entrypoint ---
-
+//
+// F-a9d91e67: this module used to carry its own inline arg parser here — a
+// second, less-hardened front door to the operation cli.js (the installed
+// `dogfood-report`/`report` bin) already provides: no -h/--help, no try/catch
+// around the buildSubmission() call (an ordinary flag typo like --reop
+// surfaced a raw uncaught stack, the "no raw stacks" class SHIP_GATE hard
+// gate B exists to catch), and exit codes that disagreed with cli.js's
+// documented contract. The public handbook names
+// `node packages/report/build-submission.js ...` as a consumer's first
+// command, so the entry point must keep working — it now delegates to
+// cli.js's run(), leaving exactly ONE parser, one USAGE block, one
+// `ERROR [<CODE>]:` envelope, and one exit-code contract (2 usage /
+// 1 precheck) to keep in parity. The import is dynamic so importing this
+// module as the package main never loads the CLI layer, and so there is no
+// static import cycle (cli.js imports this module's exports).
 const isMain = process.argv[1]?.endsWith('build-submission.js');
 
 if (isMain) {
-  const args = process.argv.slice(2);
-  const get = (flag) => {
-    const idx = args.indexOf(flag);
-    return idx >= 0 && args[idx + 1] ? args[idx + 1] : null;
-  };
-
-  const scenarioFile = get('--scenario-file');
-  if (!scenarioFile) {
-    console.error('Usage: node build-submission.js --scenario-file <path> [--output <path>] ...');
-    process.exit(1);
-  }
-
-  // F-id d3-ingest-B004 (Stage C humanization) — read+parse the scenario file
-  // through a structured guard. Pre-fix a missing file (ENOENT), unreadable
-  // file (EACCES/EISDIR), or malformed JSON threw a raw stack and exited 1 with
-  // no hint — inconsistent with this file's own precheckSubmission, which
-  // returns a clean {valid, errors} shape (F-721047-001), and with run.js's
-  // emitCliErrorEvent discipline for --file read failures (cli_read_file
-  // stage). The operator now sees WHICH file and WHAT went wrong, not a raw
-  // ENOENT/SyntaxError stack.
-  const scenarioPath = resolve(scenarioFile);
-  let scenarioResults;
-  try {
-    scenarioResults = JSON.parse(readFileSync(scenarioPath, 'utf-8'));
-  } catch (err) {
-    const reason = err && err.message ? err.message : String(err);
-    console.error(`Could not read/parse --scenario-file ${scenarioPath}: ${reason}`);
-    process.exit(1);
-  }
-
-  const submission = buildSubmission({
-    repo: get('--repo') || process.env.GITHUB_REPOSITORY,
-    commitSha: get('--commit') || process.env.GITHUB_SHA,
-    branch: get('--branch') || process.env.GITHUB_REF_NAME,
-    workflow: get('--workflow') || process.env.GITHUB_WORKFLOW,
-    providerRunId: get('--provider-run-id') || process.env.GITHUB_RUN_ID,
-    runUrl: get('--run-url') || `https://github.com/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`,
-    attempt: Number(get('--attempt') || process.env.GITHUB_RUN_ATTEMPT || 1),
-    actor: get('--actor') || process.env.GITHUB_ACTOR,
-    startedAt: get('--started-at') || new Date().toISOString(),
-    finishedAt: get('--finished-at') || new Date().toISOString(),
-    scenarioResults: Array.isArray(scenarioResults) ? scenarioResults : [scenarioResults],
-    overallVerdict: get('--verdict') || 'pass',
-    notes: get('--notes')
-  });
-
-  const precheck = precheckSubmission(submission);
-  if (!precheck.valid) {
-    console.error('Precheck failed:');
-    for (const e of precheck.errors) console.error(`  - ${e}`);
-    process.exit(1);
-  }
-
-  const output = get('--output') || '-';
-  const json = JSON.stringify(submission, null, 2) + '\n';
-
-  if (output === '-') {
-    process.stdout.write(json);
-  } else {
-    writeFileSync(resolve(output), json, 'utf-8');
-    console.error(`Wrote submission to ${output}`);
-  }
+  import('./cli.js')
+    .then(({ run }) => run(process.argv.slice(2)))
+    .then((code) => process.exit(code));
 }

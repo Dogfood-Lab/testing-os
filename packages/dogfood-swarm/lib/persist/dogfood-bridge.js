@@ -23,6 +23,14 @@ export function buildDogfoodSubmission(exportData, overallVerdict) {
 
   // Each wave becomes a scenario result
   const scenarioResults = waves.map(w => {
+    // F-8451abe4: hoisted above the step-synthesis block below so both that
+    // block and the wave-verdict computation branch on the SAME condition.
+    // Previously the step synthesis guarded on `agentSteps.length === 0`
+    // (an easy-to-conflate but DIFFERENT condition — see below) while the
+    // verdict already used `noAgentsDispatched`; declaring one flag up front
+    // makes it structurally impossible for the two to drift apart again.
+    const noAgentsDispatched = w.agents.length === 0;
+
     const agentSteps = w.agents.map(a => ({
       step_id: `agent-${a.domain}`,
       status: a.status === 'complete' ? 'pass' :
@@ -40,10 +48,56 @@ export function buildDogfoodSubmission(exportData, overallVerdict) {
       });
     }
 
-    // Determine wave verdict
-    const allAgentsPass = w.agents.every(a => a.status === 'complete');
+    // A wave with zero dispatched agents leaves step_results without any
+    // agent-* step, which both submission gates reject on their own terms —
+    // the schema's minItems:1 and verify/validators/steps.js's own "at least
+    // one entry" check behind the step-results-present rule. Emit the truth
+    // instead: 'blocked' is the step-status enum's term for did-not-run, so
+    // this records non-execution rather than fabricating a run.
+    //
+    // F-8451abe4: this used to guard on `agentSteps.length === 0`, which is a
+    // DIFFERENT condition than `noAgentsDispatched` (below, driving
+    // waveVerdict) whenever the verification push above already ran — a wave
+    // with zero agents but a real verification receipt got a 'blocked'
+    // verdict backed ONLY by that receipt's step, e.g. {verdict:'blocked',
+    // step_results:[{step_id:'verification', status:'pass', ...}]} — a
+    // 'blocked' record with no blocked/fail step anywhere in it, silently
+    // falsifying this comment's prior claim that the synthesized step
+    // "agrees with the blocked wave verdict below... the two are only ever
+    // emitted together" (that claim was simply false whenever a verification
+    // receipt coexisted with zero agents). Guard on `noAgentsDispatched`
+    // instead, so a 'blocked' verdict ALWAYS carries this step regardless of
+    // what an unrelated verification receipt already pushed — dispatching
+    // zero agents and holding a verification receipt for the wave are
+    // independent facts; one does not explain away the other.
+    if (noAgentsDispatched) {
+      agentSteps.push({
+        step_id: 'dispatch',
+        status: 'blocked',
+        notes: w.verification
+          ? `wave ${w.number} (${w.phase}) dispatched zero agents — the verification receipt exists but does not substitute for agent dispatch evidence`
+          : `wave ${w.number} (${w.phase}) dispatched zero agents and recorded no verification receipt`,
+      });
+    }
+
+    // Determine wave verdict.
+    //
+    // F-1f8fd647: `w.agents.every(...)` is vacuously TRUE on an empty array,
+    // so a wave that dispatched ZERO agents (the already-established
+    // all-domains-'shared' 0-agent dispatch shape — buildRunExport's
+    // `agents: agents.map(...)` in export.js carries an empty array straight
+    // through with no guard) fell through to allAgentsPass:true and reported
+    // a clean 'pass' scenario_result with an empty step_results array —
+    // success claimed with literally zero evidence behind it. Guard the
+    // empty case explicitly, before the vacuous-truth `.every()` ever runs:
+    // zero agents is never a pass on its own terms, regardless of what
+    // `.every()` returns for it. 'blocked' (paired with `blocking_reason`
+    // below) is the schema's own vocabulary for "could not verify", and is
+    // more honest here than 'partial', which implies some evidence exists.
+    const allAgentsPass = !noAgentsDispatched && w.agents.every(a => a.status === 'complete');
     const verifyPass = !w.verification || w.verification.passed;
-    const waveVerdict = allAgentsPass && verifyPass ? 'pass' :
+    const waveVerdict = noAgentsDispatched ? 'blocked' :
+                        allAgentsPass && verifyPass ? 'pass' :
                         w.violations.length > 0 ? 'fail' : 'partial';
 
     // Determine product surface from domain structure
@@ -56,6 +110,21 @@ export function buildDogfoodSubmission(exportData, overallVerdict) {
       product_surface: surface,
       execution_mode: 'bot',
       verdict: waveVerdict,
+      // dogfood-record-submission.schema.json documents blocking_reason as
+      // "Required when verdict is blocked" and packages/verify/validators/
+      // policy.js enforces that pairing — set it here so the artifact is
+      // never a 'blocked' verdict with a silently-missing reason.
+      //
+      // F-8451abe4: "no evidence to verify" was always true when
+      // w.verification was absent, but false — and self-contradictory next to
+      // a passing verification step_result — whenever a verification receipt
+      // existed for a zero-agent wave. Match the wording to the dispatch
+      // step's own notes above so the reason and the evidence never disagree.
+      ...(noAgentsDispatched ? {
+        blocking_reason: w.verification
+          ? `wave ${w.number} (${w.phase}) dispatched zero agents — a verification receipt exists but is not agent dispatch evidence`
+          : `wave ${w.number} (${w.phase}) dispatched zero agents — no evidence to verify`,
+      } : {}),
       step_results: agentSteps,
       evidence: w.violations.length > 0 ? [{
         kind: 'artifact',

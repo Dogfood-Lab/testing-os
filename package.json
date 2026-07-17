@@ -14,7 +14,6 @@
     "build": "node scripts/build.mjs",
     "clean": "tsc --build --clean",
     "test": "npm test --workspaces --if-present",
-    "test:vitest": "vitest run",
     "test:scripts": "node --test \"scripts/*.test.mjs\" \"dogfood/scenarios/*.test.mjs\" \"site/src/components/*.test.mjs\"",
     "test:floor": "node --test scripts/stageC-check-test-floor.test.mjs",
     "verify": "npm run sync-version:check && npm run check-doc-drift && npm run check-regression-pins && npm run build && npm run test:scripts && npm run test",
@@ -34,6 +33,7 @@
   "author": "mcp-tool-shop",
   "license": "MIT",
   "devDependencies": {
+    "@babel/parser": "^7.29.3",
     "@types/node": "^26.1.0",
     "@vitest/coverage-v8": "^4.1.9",
     "typescript": "^6.0.3",
@@ -41,8 +41,5 @@
   },
   "overrides": {
     "fast-uri": "^3.1.2"
-  },
-  "dependencies": {
-    "testing-os": "file:"
   }
 }

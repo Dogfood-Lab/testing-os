@@ -42,6 +42,21 @@ describe('V2-CONTRACT-004 — preview documents the required_steps enforcement g
     assert.match(stdout(), NOTE);
   });
 
+  /** @pins F-e0c3fa21 */
+  it('the "Not checked in preview" section does not restate its own header as a redundant body lead-in', async () => {
+    // Pre-fix: the "Not checked in preview:" header line was immediately
+    // followed by a body line restating the identical phrase, lowercased, as
+    // its own lead-in ("  not checked in preview: required_steps ..."), in
+    // wording that had already drifted slightly from PREVIEW_GAP_NOTE. The
+    // fix interpolates PREVIEW_GAP_NOTE directly, so the phrase now appears
+    // exactly once — a second occurrence is the duplication bug back.
+    const { io, stdout } = captureIo();
+    await run(['--help'], io);
+    const occurrences = (stdout().match(/not checked in preview/gi) || []).length;
+    assert.equal(occurrences, 1,
+      `"not checked in preview" must appear exactly once in --help (found ${occurrences})`);
+  });
+
   it('renderExplain carries the note on an ACCEPTED record', () => {
     const accepted = {
       verification: {

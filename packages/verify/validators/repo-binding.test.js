@@ -29,6 +29,19 @@ const schemaPath = require.resolve(
 const submissionSchema = JSON.parse(readFileSync(schemaPath, 'utf-8'));
 const PROVIDER_ENUM = submissionSchema.properties.source.properties.provider.enum;
 
+/**
+ * F-a2fb624f: sibling table to provenance-registry.test.js's — the pre-fix
+ * tripwire here ('returns null for a provider with no parser') only probed
+ * 'bitbucket', a NON-prototype key, so it gave zero coverage for the actual
+ * F-7ce07baa defect class (every Object.prototype own-property name, which
+ * `RUN_URL_PARSERS[provider]` resolved as a truthy inherited method before
+ * the Object.hasOwn fix).
+ */
+const OBJECT_PROTOTYPE_KEYS = [
+  'constructor', 'toString', 'valueOf', '__proto__',
+  'hasOwnProperty', 'isPrototypeOf', 'propertyIsEnumerable', 'toLocaleString',
+];
+
 describe('repo-binding guard coverage (verify-B-001)', () => {
   it('exposes the provider enum it is meant to cover (sanity)', () => {
     assert.ok(Array.isArray(PROVIDER_ENUM) && PROVIDER_ENUM.length > 0);
@@ -114,5 +127,32 @@ describe('repo-binding guard coverage (verify-B-001)', () => {
 
   it('returns null for a provider with no parser (no throw)', () => {
     assert.equal(parseRunUrlRepo('bitbucket', 'https://bitbucket.org/a/b/pipelines/1'), null);
+  });
+
+  describe('F-7ce07baa: parseRunUrlRepo never resolves an inherited Object.prototype key', () => {
+    for (const key of OBJECT_PROTOTYPE_KEYS) {
+      it(`returns null (not the inherited method) for provider="${key}"`, () => {
+        // Deletion/emptiness proof: revert parseRunUrlRepo to a bare
+        // `RUN_URL_PARSERS[provider]` lookup and this goes red for every key
+        // here — each currently resolves a truthy inherited Object.prototype
+        // value the `if (!parser)` guard cannot catch, and `parser(runUrl)`
+        // then calls an unrelated built-in method.
+        assert.equal(
+          parseRunUrlRepo(key, 'https://github.com/acme/widget/actions/runs/1'),
+          null,
+          `provider="${key}" must resolve to null, not an inherited Object.prototype member`
+        );
+      });
+    }
+
+    it('a non-string provider (object, number, null, undefined) never throws and returns null', () => {
+      for (const bad of [{}, 42, null, undefined, ['github']]) {
+        assert.equal(
+          parseRunUrlRepo(bad, 'https://github.com/acme/widget/actions/runs/1'),
+          null,
+          `provider=${JSON.stringify(bad)} must resolve to null`
+        );
+      }
+    });
   });
 });

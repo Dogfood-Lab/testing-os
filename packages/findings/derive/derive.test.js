@@ -271,6 +271,86 @@ describe('Rule: blocked scenario', () => {
   });
 });
 
+// ============================================================
+// Rule: partial scenario evidence (F-cc198701 regression)
+// ============================================================
+//
+// Confirming audit of F-88fb37ff/F-e42e8f80 (steps.js) found the identical
+// blind spot one layer up: ruleBlockedScenario checks only verdict==='blocked'
+// and ruleScenarioStepFailure checks only verdict==='fail' — 'partial' (the
+// third of the four legal scenario_results[].verdict enum values) was
+// invisible to EVERY rule in this file regardless of its step evidence, so a
+// self-contradictory record (verdict:'partial', every step actively 'fail')
+// generated zero corrective/diagnostic finding anywhere in the intelligence
+// layer. Fix: rulePartialScenarioEvidence, a dedicated sibling rule (not a
+// widened ruleBlockedScenario — that rule's "was blocked: <reason>" wording
+// would misdescribe a 'partial' scenario, since blocking_reason is only ever
+// populated for a genuinely 'blocked' one).
+
+/** Record with a partial scenario corroborated by non-pass step evidence. */
+function makePartialWithEvidenceRecord() {
+  return makePassingRecord({
+    run_id: 'test-partial-001',
+    repo: 'mcp-tool-shop-org/test-cli',
+    scenario_results: [{
+      scenario_id: 'partial-evidence-scenario',
+      product_surface: 'cli',
+      execution_mode: 'bot',
+      verdict: 'partial',
+      step_results: [
+        { step_id: 'run-help', status: 'fail' },
+        { step_id: 'run-init', status: 'fail' }
+      ],
+      evidence: [{ kind: 'log', url: 'https://example.com/log' }]
+    }],
+    overall_verdict: { proposed: 'partial', verified: 'partial', downgraded: false }
+  });
+}
+
+describe('Rule: partial scenario evidence (F-cc198701)', () => {
+  /** @pins F-cc198701 */
+  it('fires on a "partial" verdict corroborated by non-pass step evidence (pre-fix: zero rules fired for this shape)', () => {
+    const candidates = deriveFromRecord(makePartialWithEvidenceRecord());
+    const match = candidates.find(c => c.derived.rule_id === 'rule-partial-scenario-evidence');
+    assert.ok(match, 'Should emit a partial-scenario-evidence finding');
+    assert.ok(match.summary.includes('run-help'), `expected the non-pass step ids in the summary, got: ${match.summary}`);
+    assert.equal(match.issue_kind, 'verification_gap');
+  });
+
+  it('does NOT fire on a passing record (verdict "pass", no partial scenario at all)', () => {
+    const candidates = deriveFromRecord(makePassingRecord());
+    const match = candidates.find(c => c.derived.rule_id === 'rule-partial-scenario-evidence');
+    assert.equal(match, undefined);
+  });
+
+  it('does NOT fire on "partial" backed by ZERO non-pass evidence (every step actively pass) — that shape is steps.js\'s job to reject at ingest, not this rule\'s job to diagnose post-hoc', () => {
+    const record = makePassingRecord({
+      run_id: 'test-partial-allpass-001',
+      scenario_results: [{
+        scenario_id: 'partial-allpass-scenario',
+        product_surface: 'cli',
+        execution_mode: 'bot',
+        verdict: 'partial',
+        step_results: [{ step_id: 'run-help', status: 'pass' }],
+        evidence: [{ kind: 'log', url: 'https://example.com/log' }]
+      }]
+    });
+    const candidates = deriveFromRecord(record);
+    const match = candidates.find(c => c.derived.rule_id === 'rule-partial-scenario-evidence');
+    assert.equal(match, undefined,
+      'a partial verdict with zero non-pass step evidence has no non-pass step ids to diagnose — hasNonPassStepEvidence must be false for this shape');
+  });
+
+  it('does NOT fire on "blocked"/"fail" verdicts — those stay owned by their own sibling rules', () => {
+    const candidates = [
+      ...deriveFromRecord(makeBlockedRecord()),
+      ...deriveFromRecord(makeStepFailureRecord())
+    ];
+    const match = candidates.find(c => c.derived.rule_id === 'rule-partial-scenario-evidence');
+    assert.equal(match, undefined);
+  });
+});
+
 describe('Rule: execution mode attestation gap', () => {
   it('fires on mixed mode without attested_by', () => {
     const candidates = deriveFromRecord(makeMissingAttestationRecord());
@@ -487,7 +567,10 @@ describe('Schema validity of derived candidates', () => {
     { name: 'verdict-downgrade', factory: makeDowngradeRecord, opts: { rejected: true } },
     { name: 'step-failure', factory: makeStepFailureRecord, opts: {} },
     { name: 'blocked', factory: makeBlockedRecord, opts: {} },
-    { name: 'attestation-gap', factory: makeMissingAttestationRecord, opts: {} }
+    { name: 'attestation-gap', factory: makeMissingAttestationRecord, opts: {} },
+    // F-cc198701: partial-scenario-evidence's candidate output goes through
+    // the same schema-validity floor as every other rule's.
+    { name: 'partial-evidence', factory: makePartialWithEvidenceRecord, opts: {} }
   ];
 
   for (const { name, factory, opts } of testRecords) {
@@ -535,6 +618,24 @@ describe('Dedupe key computation', () => {
     const a = computeDedupeKey({ repo: 'org/a', issue_kind: 'x', root_cause_kind: 'y', journey_stage: 'z', slug: 's' });
     const b = computeDedupeKey({ repo: 'org/b', issue_kind: 'x', root_cause_kind: 'y', journey_stage: 'z', slug: 's' });
     assert.notEqual(a, b);
+  });
+
+  it('a "::" inside a field value cannot forge a false boundary between two different tuples (F-112c88a4)', () => {
+    // Sibling of generateFindingId's own boundary-collision fix
+    // (findings-A-002, see ids.js): a naive '::'-joined key lets a
+    // delimiter-shaped VALUE in one field masquerade as the join between two
+    // DIFFERENT fields. These two tuples disagree on issue_kind/
+    // root_cause_kind but both flatten to the identical string
+    // 'org/repo::x::y::z::w::s' under a plain '::'.join() — the exact class
+    // generateFindingId's boundaryHash() was built to close.
+    const a = computeDedupeKey({
+      repo: 'org/repo', issue_kind: 'x::y', root_cause_kind: 'z', journey_stage: 'w', slug: 's'
+    });
+    const b = computeDedupeKey({
+      repo: 'org/repo', issue_kind: 'x', root_cause_kind: 'y::z', journey_stage: 'w', slug: 's'
+    });
+    assert.notEqual(a, b,
+      'a "::" inside a field value must not be able to forge a false component boundary');
   });
 });
 
@@ -1019,5 +1120,155 @@ describe('Multi-scenario derivation (F-375053-007)', () => {
     assert.equal(stepFail.product_surface, 'cli');
     assert.equal(stepFail.execution_mode, 'bot');
     assert.deepEqual(stepFail.scenario_ids, ['cli-full-test']);
+  });
+});
+
+import { parseRejectionReason } from '@dogfood-lab/verify';
+
+// ============================================================
+// Regression: F-e1d45d27 — schema:/policy: routed through
+// parseRejectionReason instead of hand-rolled regex
+// ============================================================
+//
+// ruleSchemaRejection.applies/derive and rulePolicyRejection.applies/derive
+// (rules.js:347/353/386/392) used to test rejection_reasons entries with
+// `/^schema:/.test(r)` / `/^policy:/.test(r)` directly instead of importing
+// parse-rejection.js's authoritative classifier — the exact "hand-rolled
+// .startsWith() chain" drift source parse-rejection.js's own file header
+// names as its reason for existing. Fix imports `parseRejectionReason` from
+// `@dogfood-lab/verify` (already a transitive dependency via
+// @dogfood-lab/ingest; now direct) and reads `.prefix === 'schema:'` /
+// `'policy:'`.
+//
+// This is a differential-equivalence proof, not just a "still fires" smoke
+// test: `oldMatch` below is the two retired regexes, lifted verbatim, and the
+// matrix proves the new classifier-based check agrees with them on every
+// case — including the `policy-config:` adjacency the finding's own evidence
+// cites (a longer, unrelated prefix that must NOT collide with the bare
+// `policy:` match). A pure behavior test alone cannot catch a future
+// reversion to hand-rolled regex (today the two mechanisms agree on every
+// input), so the final test in this block source-scans rules.js for the
+// retired call shape as a structural pin.
+
+describe('Regression: rules.js schema:/policy: routes through parseRejectionReason (F-e1d45d27)', () => {
+  const schemaRule = getRuleById('rule-schema-rejection');
+  const policyRule = getRuleById('rule-policy-rejection');
+
+  // The retired oracle: rules.js's pre-fix hand-rolled matchers, verbatim.
+  const oldSchemaMatch = (r) => /^schema:/.test(r);
+  const oldPolicyMatch = (r) => /^policy:/.test(r);
+
+  // [reason, expected old-schema-match, expected old-policy-match]
+  const CASES = [
+    ['schema: /repo must be string', true, false],
+    ['schema:no-space-variant', true, false],
+    ['policy: forbidden tag "wip"', false, true],
+    ['policy:no-space-variant', false, true],
+    // Adjacency: policy-config: (VERIFY-F1's repo-custom-rule-predicate-fault
+    // prefix) must NOT satisfy the policy: match.
+    ['policy-config: predicate crashed evaluating custom rule', false, false],
+    // A prefix sharing no token with either.
+    ['provenance: source run could not be confirmed', false, false],
+  ];
+
+  for (const [reason, expectSchema, expectPolicy] of CASES) {
+    it(`parseRejectionReason agrees with the retired regex for ${JSON.stringify(reason)}`, () => {
+      const parsed = parseRejectionReason(reason);
+      assert.equal(parsed.prefix === 'schema:', oldSchemaMatch(reason),
+        `schema: classification must match the retired /^schema:/ regex for ${reason}`);
+      assert.equal(parsed.prefix === 'policy:', oldPolicyMatch(reason),
+        `policy: classification must match the retired /^policy:/ regex for ${reason}`);
+      // Sanity-anchor the table itself against what the retired oracle says,
+      // so a typo in CASES fails loudly here rather than masking a real gap.
+      assert.equal(oldSchemaMatch(reason), expectSchema);
+      assert.equal(oldPolicyMatch(reason), expectPolicy);
+    });
+  }
+
+  it('ruleSchemaRejection.applies still fires on a schema: rejection (behaviorally unchanged)', () => {
+    const ctx = {
+      record: { verification: { schema_valid: false, rejection_reasons: ['schema: /repo must be string'] } },
+      rejected: true,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(schemaRule.applies(ctx), true);
+  });
+
+  it('rulePolicyRejection.applies still fires on a policy: rejection (behaviorally unchanged)', () => {
+    const ctx = {
+      record: { verification: { policy_valid: false, rejection_reasons: ['policy: forbidden tag "wip"'] } },
+      rejected: true,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(policyRule.applies(ctx), true);
+  });
+
+  it('ruleSchemaRejection.applies does NOT fire on a policy-config: rejection (no adjacency collision)', () => {
+    const ctx = {
+      record: { verification: { schema_valid: false, rejection_reasons: ['policy-config: predicate crashed'] } },
+      rejected: true,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(schemaRule.applies(ctx), false);
+  });
+
+  it('rulePolicyRejection.applies does NOT fire on a policy-config: rejection (no adjacency collision)', () => {
+    const ctx = {
+      record: { verification: { policy_valid: false, rejection_reasons: ['policy-config: predicate crashed'] } },
+      rejected: true,
+      repoSlug: 'test-repo'
+    };
+    assert.equal(policyRule.applies(ctx), false);
+  });
+
+  it('ruleSchemaRejection.derive filters reasons to only the schema: subset via the classifier', () => {
+    const record = {
+      run_id: 'e1d45d27-schema-filter',
+      verification: {
+        schema_valid: false,
+        rejection_reasons: [
+          'schema: /repo must be string',
+          'policy: forbidden tag "wip"',
+          'schema: /timing/started_at must match format "date-time"'
+        ]
+      }
+    };
+    const [finding] = schemaRule.derive({ record, repoSlug: 'test-repo' });
+    assert.match(finding.summary, /\/repo must be string/);
+    assert.match(finding.summary, /started_at must match format/);
+    assert.doesNotMatch(finding.summary, /forbidden tag/);
+  });
+
+  it('rulePolicyRejection.derive filters reasons to only the policy: subset via the classifier', () => {
+    const record = {
+      run_id: 'e1d45d27-policy-filter',
+      verification: {
+        policy_valid: false,
+        rejection_reasons: [
+          'policy: forbidden tag "wip"',
+          'schema: /repo must be string',
+          'policy: surface[cli]: requires 2 evidence items, got 1'
+        ]
+      }
+    };
+    const [finding] = policyRule.derive({ record, repoSlug: 'test-repo' });
+    assert.match(finding.summary, /forbidden tag/);
+    assert.match(finding.summary, /requires 2 evidence items/);
+    assert.doesNotMatch(finding.summary, /\/repo must be string/);
+  });
+
+  it('structural pin: rules.js imports the classifier and no longer hand-rolls /^schema:/ or /^policy:/ regex tests', () => {
+    // A behavioral differential test cannot catch a reversion to hand-rolled
+    // regex, because the two mechanisms agree on every input today (that IS
+    // the fix's own correctness claim). This is the only test in the file
+    // that actually pins "uses the shared classifier" rather than "produces
+    // the same answer the classifier would have produced."
+    const source = readFileSync(resolve(__dirname, 'rules.js'), 'utf-8');
+    assert.doesNotMatch(source, /\/\^schema:\/\.test\(/,
+      'rules.js must not reintroduce a hand-rolled /^schema:/.test(...) — use parseRejectionReason(r).prefix instead');
+    assert.doesNotMatch(source, /\/\^policy:\/\.test\(/,
+      'rules.js must not reintroduce a hand-rolled /^policy:/.test(...) — use parseRejectionReason(r).prefix instead');
+    assert.match(source, /from ['"]@dogfood-lab\/verify['"]/,
+      'rules.js must import the authoritative classifier from @dogfood-lab/verify');
   });
 });

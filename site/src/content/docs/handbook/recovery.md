@@ -152,3 +152,4 @@ The audit chain is the canonical record. Direct DB intervention is universally l
 - Wave transition history inspection: [`swarm history <wave-id>`](../swarm-history/)
 - Agent run lifecycle and the BLOCKED override primitive: [State Machines](../state-machines/)
 - CLI error codes surfaced by these verbs: [Error Code Reference](../error-codes/)
+- Phantom `violation=1` file_claims stranded on terminal waves — the repair class the Three R's cannot reach: [`swarm clean-claims`](../cli-reference/#swarm-clean-claims)

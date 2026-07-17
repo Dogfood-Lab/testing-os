@@ -181,9 +181,28 @@ jobs:
             fi
             # `// empty` so an absent field yields '' rather than the literal
             # string 'null' leaking into the step outputs.
-            STATUS=$(jq -r '.status // empty' /tmp/ingest-result.json)
-            RUN_ID=$(jq -r '.run_id // empty' /tmp/ingest-result.json)
-            WRITTEN=$(jq -r '.written // empty' /tmp/ingest-result.json)
+            # F-b68c7e52: `tr -d '\n\r'` at extraction, not just `// empty`.
+            # These three values are read from run.js's stdout, which is
+            # derived from untrusted repository_dispatch client_payload — a
+            # newline embedded in run_id (or status/written) would let the
+            # single-line `key=value` GITHUB_OUTPUT form parse every line
+            # after the first as an ADDITIONAL step output (GitHub's
+            # documented output-injection class), letting a crafted value
+            # forge/suppress the badge-regen, commit, and deferred-fail
+            # gates below that key off these outputs. persist.js's
+            # /^[\w-]+$/ run_id guard makes this unreachable today, but this
+            # workflow's own header rationale for env-hoisting run_id at the
+            # commit step (a few lines down) says hardening here should not
+            # depend on a guard in a different package — the same reasoning
+            # applies to the write, not just the later read. The sibling
+            # writes elsewhere in this file (`fault=$rc`, `parse_failed=true`)
+            # are NOT touched: they write only shell-local values (a captured
+            # numeric exit code, a hardcoded literal), never raw text
+            # extracted from the untrusted payload, so the injection class
+            # does not apply to them.
+            STATUS=$(jq -r '.status // empty' /tmp/ingest-result.json | tr -d '\n\r')
+            RUN_ID=$(jq -r '.run_id // empty' /tmp/ingest-result.json | tr -d '\n\r')
+            WRITTEN=$(jq -r '.written // empty' /tmp/ingest-result.json | tr -d '\n\r')
             echo "status=$STATUS" >> "$GITHUB_OUTPUT"
             echo "run_id=$RUN_ID" >> "$GITHUB_OUTPUT"
             echo "written=$WRITTEN" >> "$GITHUB_OUTPUT"
@@ -204,7 +223,28 @@ jobs:
         # same evidence-loss class d6-infra-B001 closed for the rejected-exit
         # path. The generator is deterministic and re-runs on every ingest, so
         # a skipped regeneration self-heals; a dropped record does not.
-        if: steps.result.outputs.written == 'true'
+        # F-703e5eac: also fires on parse_failed == 'true'. 'Read result'
+        # exits 0 before ever reaching the written= extraction when run.js's
+        # stdout is unparseable, so `written` stays unset even though a record
+        # may already be sitting on the runner's working tree — the exact
+        # scenario the very next step's own condition already accounts for
+        # (see its `if:` a few lines down). Without this disjunct the record
+        # still commits but the served badge/trends endpoints silently go
+        # stale with no operator-visible signal.
+        # F-e03646c0: also fires on either ingestion leg's deferred pipeline
+        # fault (steps.ingest_rd.outputs.fault / steps.ingest_wd.outputs.fault
+        # != ''). F-42e57a77 added these two disjuncts to the 'Commit records
+        # and indexes' step below (a run.js exit>=2 fault can fire AFTER a
+        # record was already persisted to the runner working tree) but never
+        # propagated them here — the same incomplete-propagation shape
+        # F-703e5eac closed for parse_failed, one line above. Without this,
+        # a deferred fault after a persist still committed the record
+        # correctly (the Commit step's condition already covered it) but
+        # silently skipped badges/trends regeneration with none of the
+        # ::warning::/$GITHUB_STEP_SUMMARY signal the parse_failed sibling
+        # gets. This condition must stay byte-identical to the Commit step's
+        # (pinned in scripts/stageC-check-ingest-stale-index-warn.test.mjs).
+        if: steps.result.outputs.written == 'true' || steps.result.outputs.parse_failed == 'true' || steps.ingest_rd.outputs.fault != '' || steps.ingest_wd.outputs.fault != ''
         run: |
           # F-f05363e2: on the non-fatal fallback, the inline ::warning:: is the
           # only signal — an operator scanning the run SUMMARY page (not the step

@@ -109,7 +109,7 @@ export function assertCaseFileClean(caseFile) {
  * @returns {{
  *   artifact: { kind: string, ref: string, content?: string },
  *   rubric: { objective: string, acceptance_criteria: Array<{id: string, check: string}>, out_of_scope: string[] },
- *   evidence: Array<{claim: string, source: string, ref?: string}>,
+ *   evidence: Array<{claim: string, source: string, ref?: string, criterion_ids?: string[]}>,
  *   abstention: string,
  *   neutrality: { verdict_free: true, reasoning_stripped: true, gated_by: string, warnings: number }
  * }}
@@ -132,10 +132,18 @@ export function toJuryRequest(caseFile) {
       acceptance_criteria: cf.acceptance_criteria.map(c => ({ id: c.id, check: c.check })),
       out_of_scope: Array.isArray(cf.out_of_scope) ? cf.out_of_scope.slice() : [],
     },
+    // `criterion_ids` is a ROUTING field, not a judging input: it tells the
+    // prism tier's assembler which criteria a claim grounds so a capped brief
+    // sends each criterion its OWN relevant evidence instead of all of it. It
+    // is never rendered — both tiers build their evidence line by explicit
+    // field access (`- [${source}] ${claim} (${ref})`), so no juror can see it.
+    // Contrast `claim`/`source`/`ref`, which ARE judging inputs (provenance is
+    // what the groundedness lens weights). Absent => the claim is global.
     evidence: (Array.isArray(cf.context) ? cf.context : []).map(c => ({
       claim: c.claim,
       source: c.source,
       ...(typeof c.ref === 'string' ? { ref: c.ref } : {}),
+      ...(Array.isArray(c.criterion_ids) ? { criterion_ids: c.criterion_ids.slice() } : {}),
     })),
     abstention: ABSTENTION_RUBRIC,
     neutrality: {

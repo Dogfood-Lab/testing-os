@@ -53,6 +53,7 @@ import { openDb, closeDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains } from './lib/domains.js';
 import { dispatch } from './commands/dispatch.js';
 import { redrive } from './commands/redrive.js';
+import { stripComments } from './test-support/strip-comments.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REDRIVE_SRC = readFileSync(join(__dirname, 'commands/redrive.js'), 'utf-8');
@@ -72,10 +73,14 @@ function setupRun(dbPath) {
 
 describe('D3B-013 — redrive.js same-status raw INSERT lives inside db.transaction()', () => {
   it('the raw INSERT INTO agent_state_events in redrive.js appears after a db.transaction( open', () => {
-    // Strip JSDoc to avoid prose-mention false positives.
-    const code = REDRIVE_SRC
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/[^\n]*/g, '');
+    // F-911b18ef (wave 22): migrated off a local two-step regex stripper
+    // (.replace(/\/\*...\*\//g).replace(/\/\/.../g)) onto the shared,
+    // lexer-aware test-support/strip-comments.js — the naive pair has no
+    // string/template/regex-literal awareness, unlike the shared module
+    // (hardened for exactly that in wave-9's F-001/F-002). Differentially
+    // checked against this file's real target (redrive.js): identical
+    // output today, so this is a hygiene migration, not a behavior change.
+    const code = stripComments(REDRIVE_SRC);
     const txOpenIdx = code.indexOf('db.transaction(');
     const rawInsertIdx = code.indexOf('INSERT INTO agent_state_events');
     assert.ok(txOpenIdx >= 0, 'redrive.js must declare db.transaction(');
@@ -87,9 +92,9 @@ describe('D3B-013 — redrive.js same-status raw INSERT lives inside db.transact
     // Scan: find db.transaction(() => { ... });
     // and assert the raw INSERT INTO agent_state_events appears between
     // the opening brace of the arrow body and the matching closing brace.
-    const code = REDRIVE_SRC
-      .replace(/\/\*[\s\S]*?\*\//g, '')
-      .replace(/\/\/[^\n]*/g, '');
+    // F-911b18ef (wave 22): same shared-stripper migration as the sibling
+    // test above.
+    const code = stripComments(REDRIVE_SRC);
     const txMatch = code.match(/db\.transaction\(\s*\(\)\s*=>\s*\{/);
     assert.ok(txMatch, 'expected db.transaction(() => { in redrive.js apply path');
     const bodyStart = code.indexOf('{', txMatch.index + txMatch[0].length - 1);

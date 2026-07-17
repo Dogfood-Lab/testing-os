@@ -11,6 +11,18 @@
  * Every wave status change SHOULD go through transitionWave(). Legal
  * transitions are derived empirically from the production callsites:
  *
+ * F-f0d874a7: the override branch below (see `override && BLOCKED_STATUSES`)
+ * validates `toStatus` against the canonical wave-status SET (TRANSITIONS'
+ * keys), not against the SPECIFIC target sanctioned for the blocked FROM
+ * state — every callsite listed below that passes `override=true` hardcodes
+ * a literal target today (revalidate.js → 'collected', rewind.js →
+ * 'aborted_for_rewind', redrive.js → 'dispatched'), so this gap is unreached
+ * in production. A FUTURE override caller that accepts a variable target
+ * (e.g. a hypothetical `swarm force-status`) would need a per-`from`
+ * allowlist (a `RECOVERY_TARGETS` map keyed by blocked status) added to that
+ * branch FIRST — inherit this discipline rather than relying on the weaker
+ * canonical-set check alone.
+ *
  *   commands/dispatch.js     — INSERT-time at 'dispatched' (initial state).
  *                              No transition pair; the wave is born at
  *                              'dispatched'. Tracked here for documentation
@@ -34,16 +46,43 @@
  * on transitionWave(... override=true) existing. Phase 5A leaves the verbs
  * unbuilt by design.
  *
- * Legacy-state notes (kept for documentation; explicit design call):
+ * Legacy-state notes (kept for documentation — F-017409f3 corrected 2026-07,
+ * see below for what changed):
  *   - 'pending' is the SQL DEFAULT for waves.status but no production writer
  *     ever transitions a wave TO 'pending'. dispatch.js INSERTs new waves
  *     directly at 'dispatched'. Some test fixtures still rely on the default
  *     (the column accepts whatever the DEFAULT clause emits at INSERT time).
- *     We KEEP 'pending' as a known source state with no outbound edges in
- *     TRANSITIONS so a legacy fixture-driven wave is observable but immovable
- *     without explicit override. Migrating fixtures is out of scope for 5A.
- *   - 'collecting' is in STATUS.wave but no writer uses it. Same KEEP/document
- *     stance; no outbound edges.
+ *   - 'collecting' is in STATUS.wave but no production writer uses it.
+ *
+ * Both are legacy/unwritten SOURCE states — no writer ever transitions a wave
+ * TO either one — but as of Phase 5B-2 (redrive) BOTH have outbound edges in
+ * TRANSITIONS, same as every other non-terminal source: 'dispatched' (a
+ * fixture-driven wave IS movable via `swarm redrive`) and 'aborted_for_rewind'
+ * (via `swarm rewind`). This section previously claimed the opposite —
+ * "no outbound edges... immovable without explicit override" — which was
+ * true at Phase 5A but was never reconciled when 5B-2 gave every non-terminal
+ * source those two edges (see the Phase 5B-1/5B-2 notes below, which ARE
+ * accurate: "every non-terminal source can reach it" / "every non-terminal
+ * source gains a transition back to 'dispatched'"). The TABLE was always
+ * correct; this prose drifted.
+ *
+ * F-88b6ba71: the line above previously claimed this prose was "pinned by
+ * wave-state-machine.test.js so the two cannot silently diverge again" —
+ * overclaiming what that test actually protects. wave-state-machine.test.js
+ * pins TRANSITIONS.pending/collecting's actual VALUES (a table regression
+ * — e.g. dropping 'aborted_for_rewind' from either array — is caught), but
+ * no test parses or asserts against this comment's TEXT, so an edit that
+ * reverts only the PROSE (leaving TRANSITIONS untouched) would silently
+ * reintroduce the exact false claim this fix removed, with nothing here to
+ * catch it. wave-state-machine-header-drift.test.js (this domain, lib/)
+ * closes that gap directly: it reads this file's own source and asserts the
+ * two-Phase-5A-era claims quoted two paragraphs above never resurface
+ * OUTSIDE that quotation's own "previously claimed the opposite" framing —
+ * the same class of check scripts/check-doc-drift.mjs performs for other
+ * surfaces. Deliberately paraphrased rather than re-quoted here so this
+ * very sentence cannot itself trip that guard. Keep this prose in sync by
+ * hand when TRANSITIONS changes; the table is pinned by value, this
+ * paragraph is pinned by phrase.
  *
  * BLOCKED_STATUSES require explicit override + reason to leave. 'failed' is
  * the canonical blocked source — recovery to 'collected' MUST carry an
@@ -159,6 +198,10 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
     // F-3771ff90 (sibling): validate the override TARGET against the
     // canonical wave-status set — SQLite has no enum enforcement, so an
     // unvalidated override could write any string into waves.status.
+    // F-f0d874a7: this is deliberately weaker than "the SPECIFIC target
+    // sanctioned for this blocked FROM state" — see the header note above
+    // this function's module docblock before adding a caller that passes a
+    // variable (non-hardcoded) `toStatus` here.
     if (!Object.prototype.hasOwnProperty.call(TRANSITIONS, toStatus)) {
       throw new StateMachineRejectionError(
         `Override transition '${from}' → '${toStatus}' refused: '${toStatus}' is not a canonical wave status.`,
@@ -166,7 +209,7 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
           kind: 'INVALID',
           from,
           to: toStatus,
-          agentRunId: waveId,
+          waveId,
           hint: `canonical statuses: ${Object.keys(TRANSITIONS).join(' | ')}`,
         }
       );
@@ -185,7 +228,7 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
           kind: 'TERMINAL',
           from,
           to: toStatus,
-          agentRunId: waveId,
+          waveId,
           hint: `file a bug — check the call site for a missing 'wave is already advanced' guard before transitionWave(${waveId}, '${toStatus}')`,
         }
       );
@@ -198,7 +241,7 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
           kind: 'BLOCKED',
           from,
           to: toStatus,
-          agentRunId: waveId,
+          waveId,
           hint: `wave ${waveId} is blocked ('${from}'); the canonical recovery is \`swarm revalidate <run-id> --reason "<text>" --apply\`, which calls transitionWave(... override=true, reason) under the hood and writes the audit row.`,
         }
       );
@@ -211,7 +254,7 @@ export function transitionWave(db, waveId, toStatus, reason, override = false) {
         kind: 'INVALID',
         from,
         to: toStatus,
-        agentRunId: waveId,
+        waveId,
         allowedTransitions: allowed,
         hint: allowed.length > 0
           ? `pick a legal target: ${allowed.join(' | ')}`

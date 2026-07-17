@@ -116,3 +116,60 @@ test('F-bc123f41: no `run:` body in pages.yml inline-interpolates a ${{ }} expre
     `pages.yml run: bodies must not inline-interpolate \${{ }} — hoist through env: instead (CWE-78 discipline, F-bc123f41):\n${offenders.join('\n')}`,
   );
 });
+
+test('F-W1-CI-011: the build job is guarded so workflow_dispatch cannot run it against a non-main branch', () => {
+  // `branches: [main]` on the push trigger does NOT apply to
+  // workflow_dispatch — a common misreading. workflow_dispatch can run on
+  // any branch where the workflow file exists, so without this guard a
+  // workflow_dispatch caller against a non-main branch could push a
+  // malicious site/ change and consume Actions minutes (or, worse, produce
+  // an artifact the deploy job then consumes). The push-trigger leg is
+  // already main-only; the guard adds nothing to that leg but closes the
+  // workflow_dispatch gap.
+  const yaml = readFileSync(pagesPath, 'utf8');
+  const build = extractJob(yaml, 'build');
+  assert.match(
+    build,
+    /^\s*if:\s*github\.event_name == 'push' \|\| github\.ref == 'refs\/heads\/main'\s*$/m,
+    "the build job must carry `if: github.event_name == 'push' || github.ref == 'refs/heads/main'` — a workflow_dispatch caller off main must be refused (F-W1-CI-011)",
+  );
+});
+
+test('F-827321-030: the pa11y step retries each page on failure with backoff (Stage D amend FX5)', () => {
+  // Pre-amend, each page's pa11y invocation ran ONCE — a transient chromium-
+  // mirror blip during `npx -y`'s install broke an otherwise-successful
+  // deploy. Each page now gets up to 3 attempts with a 10s/20s backoff
+  // between them (the deploy job's own 'Verify deployed site returns 200'
+  // step already used a comparable retry loop; this closed the asymmetry).
+  const yaml = readFileSync(pagesPath, 'utf8');
+  const a11y = extractJob(yaml, 'a11y');
+  assert.match(
+    a11y,
+    /for attempt in 1 2 3;\s*do/,
+    'each page must be probed up to 3 times, not once (F-827321-030 / Stage D amend FX5)',
+  );
+  assert.match(
+    a11y,
+    /wait_s=\$\(\(attempt \* 10\)\)/,
+    'retry attempts must back off (10s, then 20s) between tries, not retry immediately (F-827321-030 / Stage D amend FX5)',
+  );
+});
+
+test('F-827321-030: pa11y coverage is broadened beyond a single canary page (Stage D amend FX6)', () => {
+  // Pre-amend, only the error-codes/ page was probed; 13 of 14 deployed
+  // pages had no a11y gate at all. The curated (not glob-swept) target list
+  // now covers 5 pages spanning distinct a11y surface area (severity
+  // callouts, figure+caption alt text, complex tables, dense code blocks).
+  const yaml = readFileSync(pagesPath, 'utf8');
+  const a11y = extractJob(yaml, 'a11y');
+  const targetLines = (a11y.match(/"\$\{base\}[^"]*"/g) ?? []);
+  assert.ok(
+    targetLines.length >= 4,
+    `expected at least 4 curated pa11y target pages (broadened beyond the single error-codes/ canary) — found ${targetLines.length}: ${targetLines.join(', ')} (F-827321-030 / Stage D amend FX6)`,
+  );
+  assert.match(
+    a11y,
+    /"\$\{base\}handbook\/error-codes\/"/,
+    'the original error-codes/ canary page must still be covered (F-827321-030)',
+  );
+});
