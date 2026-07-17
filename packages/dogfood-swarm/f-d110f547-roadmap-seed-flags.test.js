@@ -119,30 +119,34 @@ function a3ArtifactFor(sourceRunId, repo) {
 }
 
 /**
- * Writes an A3-shaped artifact directly to dogfood/roadmap/, bypassing the
- * compile.js seam entirely (matching this domain's established
- * seam-avoidance pattern). Also writes latest.json pointing at it, and
- * COMMITS both — `swarm init` refuses a dirty working tree, and this
- * fixture must not leave the repo dirty for that check.
+ * Writes production's real 3-file roadmap shape to dogfood/roadmap/ and
+ * COMMITS it (`swarm init` refuses a dirty tree). This mirrors
+ * compiler.js#writeRoadmapArtifact exactly:
+ *   - the SEQUENCED history file (`<run-id>.1.json`) carries `sequence` — it
+ *     is what `latest.json` points at AND what an explicit
+ *     `--seed-from-roadmap=<run-id>` resolves;
+ *   - the sequence-free MIRROR (`<run-id>.json`) is content-only and NEVER
+ *     carries `sequence` (F-feeaef78 cross-compile byte-identity).
  *
- * Valid for BOTH dispatch-side and init-side tests since the wave-43 merge:
- * the schemas domain's A3 reshape landed, so production's own
- * buildRoadmapArtifact output validates against the real schema. (Pre-merge,
- * init-side tests needed a separate wave-41-shaped fixture writer because
- * this worktree's schema copy was pre-A3 — the dedicated SEAM describe
- * block below proved that gap explicitly and self-retires now that the
- * seam is closed.)
+ * F-f0865cdf: the earlier version of this helper spliced `sequence` into the
+ * mirror and pointed `latest.json` at the mirror — a shape production never
+ * writes. That fixture false-greened the explicit-id subtest while the real
+ * feature failed 100% against a real compiler's output. Writing the true
+ * 3-file shape is what makes the explicit-id test exercise the actual code
+ * path.
  */
 function writeArtifactFixture(repoDir, sourceRunId, repo) {
   const roadmapDir = join(repoDir, 'dogfood', 'roadmap');
   mkdirSync(roadmapDir, { recursive: true });
-  const artifact = { ...a3ArtifactFor(sourceRunId, repo), sequence: 1 };
-  const relPath = `dogfood/roadmap/${sourceRunId}.json`;
-  writeFileSync(join(repoDir, relPath), JSON.stringify(artifact, null, 2));
-  writeFileSync(join(roadmapDir, 'latest.json'), JSON.stringify({ run_id: sourceRunId, sequence: 1, path: relPath }, null, 2));
+  const body = a3ArtifactFor(sourceRunId, repo); // buildRoadmapArtifact output — no `sequence` (writeRoadmapArtifact stamps it)
+  const seqRel = `dogfood/roadmap/${sourceRunId}.1.json`;
+  const sequenced = { ...body, sequence: 1 };
+  writeFileSync(join(repoDir, seqRel), JSON.stringify(sequenced, null, 2));
+  writeFileSync(join(roadmapDir, `${sourceRunId}.json`), JSON.stringify(body, null, 2));
+  writeFileSync(join(roadmapDir, 'latest.json'), JSON.stringify({ run_id: sourceRunId, sequence: 1, path: seqRel }, null, 2));
   git(repoDir, ['add', '.']);
   git(repoDir, ['commit', '-q', '-m', `fixture: roadmap artifact for ${sourceRunId}`]);
-  return artifact;
+  return sequenced;
 }
 
 /** @pins F-d110f547 */
@@ -167,7 +171,11 @@ describe('F-d110f547 — swarm init --seed-from-roadmap', () => {
     const dbPath = join(dbDir, 'control-plane.db');
     const repoDir = makeGitRepo();
     mkdirSync(join(repoDir, 'dogfood', 'roadmap'), { recursive: true });
-    writeFileSync(join(repoDir, 'dogfood', 'roadmap', 'broken-run.json'), '{ not valid json');
+    // The explicit-id resolver reads the newest SEQUENCED history file
+    // (`<run-id>.<N>.json`), so the malformed content must live there to reach
+    // the JSON-parse/schema branch — a malformed sequence-free mirror would
+    // resolve to NOT_FOUND (no history file) instead, testing a different path.
+    writeFileSync(join(repoDir, 'dogfood', 'roadmap', 'broken-run.1.json'), '{ not valid json');
     // `swarm init` checks a CLEAN working tree before anything else — commit
     // the fixture so the seed-resolution failure (not the unrelated dirty-
     // tree guard) is what this test actually exercises.
@@ -179,6 +187,7 @@ describe('F-d110f547 — swarm init --seed-from-roadmap', () => {
     assert.match(result.stderr + result.stdout, /ROADMAP_SEED_SCHEMA_INVALID/);
   });
 
+  /** @pins F-f0865cdf */
   it('succeeds with an explicit --seed-from-roadmap=<run-id> and stamps durable lineage (kv table)', () => {
     const dbDir = makeTmpDir('seed-init-ok-db-');
     const dbPath = join(dbDir, 'control-plane.db');

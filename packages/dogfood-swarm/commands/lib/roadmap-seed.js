@@ -25,7 +25,7 @@
  * DURABLE lineage must fail loud instead — F-d110f547's own words).
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 // H5 bounded-read discipline: every from-disk JSON read routes through the
 // shared bounded reader — a seed artifact is repo-tree data an operator can
 // point anywhere, so it gets the same cap agent outputs do.
@@ -126,7 +126,39 @@ export function resolveRoadmapSeed(repoPath, requested) {
     }
     relPath = pointer.path;
   } else {
-    relPath = `dogfood/roadmap/${requested}.json`;
+    // F-f0865cdf: an explicit --seed-from-roadmap=<run-id> must resolve the
+    // NEWEST SEQUENCED history file (`<run-id>.<N>.json`), never the
+    // sequence-free content mirror (`<run-id>.json`). The mirror deliberately
+    // omits `sequence` to preserve F-feeaef78's cross-compile byte-identity,
+    // so it can never satisfy the schema's required `sequence` — reading it
+    // made the explicit form fail ROADMAP_SEED_SCHEMA_INVALID against every
+    // real artifact, unconditionally. Every history file carries `sequence` by
+    // construction (T5: history is append-only, nothing rewrites), so this is
+    // the same shape the `latest.json` pointer already resolves for the bare
+    // form. Prefix/suffix match rather than a regex so the run-id needs no
+    // escaping; the `\d+` middle segment excludes the mirror itself (whose
+    // middle segment is empty).
+    let bestSeq = -1;
+    let bestFile = null;
+    if (existsSync(roadmapDir)) {
+      const prefix = `${requested}.`;
+      for (const entry of readdirSync(roadmapDir)) {
+        if (!entry.startsWith(prefix) || !entry.endsWith('.json')) continue;
+        const middle = entry.slice(prefix.length, entry.length - '.json'.length);
+        if (!/^\d+$/.test(middle)) continue;
+        const n = Number(middle);
+        if (n > bestSeq) { bestSeq = n; bestFile = entry; }
+      }
+    }
+    if (!bestFile) {
+      throw roadmapError(
+        'ROADMAP_SEED_NOT_FOUND',
+        `--seed-from-roadmap=${requested}: no compiled roadmap history file dogfood/roadmap/${requested}.<N>.json exists in ${repoPath}`,
+        `run \`swarm roadmap compile ${requested}\` against this checkout first, or check \`swarm roadmap show ${requested}\` for the sequences that exist`,
+        { repoPath }
+      );
+    }
+    relPath = `dogfood/roadmap/${bestFile}`;
   }
 
   const absPath = resolvePath(repoPath, relPath);

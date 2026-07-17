@@ -36,7 +36,7 @@ Compiled sections — all queries, regenerated on every compile:
 | Section | Source |
 |---|---|
 | Open / deferred / approved queues | `findings` table, live statuses |
-| Drain queue | grandfathered-pin manifest + deferred findings, with per-entry provenance (`reason`, `owner`, `revalidate_by`) — entries past cadence surface first |
+| Drain queue | two populations with **distinct entry shapes** (Amendment 3.2): the authored `drain_queue` is **runs-ordinal** (`id`, `owner`, `cadence_runs`, `runs_since_review`, `overdue`), matching the shipped `compileAuthoredDrainState`; `grandfathered_drain.outstanding` is **date-cadenced** (`id`, `owner`, `revalidate_by`), matching the frozen pin manifest's own fields. Each shape follows its live producer rather than one shared shape; entries past cadence surface first. |
 | Recurrence stats | the same cross-run analytics `swarm trends` reads |
 | Attention list | the advisory heuristic below |
 | Operator notes | the one authored section, validated at compile |
@@ -66,10 +66,13 @@ At most **seven** notes, each typed:
   without an enforcement pointer is not persisted as a lesson; long-horizon agent
   deployments show narrative corrections alone do not hold.
 
-Every note carries `expires` (a run count or date). The compiler **drops expired
-notes loudly** — they are listed as expired in the compile output, never silently
-omitted and never silently kept. Only the near horizon is specific; anything
-farther out belongs in an `open-question`, not a plan.
+Every note carries `expires`. Today only an **ISO-8601 date** is honored — the
+`<N runs>` shorthand the design envisioned is not yet implemented, and `expires`
+values the compiler cannot parse as a date are treated as non-expiring (kept, with
+that limitation disclosed in `error-codes.md`) rather than dropped. For a
+date-valued note the compiler **drops it loudly once past** — listed as expired in
+the compile output, never silently omitted. Only the near horizon is specific;
+anything farther out belongs in an `open-question`, not a plan.
 
 ## Consumption is explicit
 
