@@ -548,8 +548,10 @@ export function buildAuditPrompt(opts) {
       + `These are already filed and still open, from EVERY domain in this run, not\n`
       + `just yours. This is **not** a do-not-report list — it is a confirmation queue,\n`
       + `and your report decides the fate of the ones you can actually check:\n\n`
-      + `- **Still present?** Report it again, reusing its id from below. That records\n`
-      + `  it as recurring, not as a duplicate. This is wanted, not noise.\n`
+      + `- **Still present?** Report it again, reusing its id from below AND keeping\n`
+      + `  its \`file\` exactly as listed there (the id+file pair is what the control\n`
+      + `  plane matches on; your description and line may be fresh). That records it\n`
+      + `  as recurring, not as a duplicate. This is wanted, not noise.\n`
       + `- **Verified gone?** Put its id in your output's \`confirmed\` array AND omit\n`
       + `  it from \`findings\`. That declaration is what closes it, on your authority.\n`
       + `- **Did not check it, or it names a file outside your domain?** Leave it out of\n`

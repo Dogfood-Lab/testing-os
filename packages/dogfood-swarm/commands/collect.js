@@ -20,7 +20,7 @@ import { getDomains, checkOwnership, narrowToExclusivelyOwned } from '../lib/dom
 import { minimatch } from 'minimatch';
 import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from '../lib/output-schema.js';
 import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate-agent-output.js';
-import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
+import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings, honorReusedFindingIds } from '../lib/fingerprint.js';
 import { matchesAnyGlob } from '../lib/findings-filter.js';
 import { transitionAgent, canTransition } from '../lib/state-machine.js';
 import { transitionWave } from '../lib/wave-state-machine.js';
@@ -940,6 +940,10 @@ export function collect(opts) {
       // folded into computeFingerprint, so this does not perturb the fingerprint.
       const stored = f.severity == null ? { ...f, severity: f.priority } : f;
       stored.fingerprint = computeFingerprint(stored, { sourceText });
+      // Domain attribution for honorReusedFindingIds' ownership gate — a
+      // declared id reuse is honored only when the DECLARING domain owns the
+      // prior's file, the same authority the confirmed[] close path enforces.
+      stored._declaringDomain = domain.name;
       allFindings.push(stored);
     }
 
@@ -1056,8 +1060,15 @@ export function collect(opts) {
       db, opts.runId, domains,
       report.agents.filter(a => a.status === 'complete'),
     );
+    // A CONFIRM-queue re-report that reuses a prior's finding id must match
+    // that prior, not mint a duplicate row — the brief promises exactly this,
+    // and content fingerprints cannot deliver it (see honorReusedFindingIds).
+    // Same helper, same position (post-fingerprint, pre-classify) as the
+    // revalidate.js caller — one definition, two callers, so the arbitration
+    // cannot fork. The frozen map rides along for the ownership gate.
+    const reconciled = honorReusedFindingIds(allFindings, priorMap, domains);
     const classified = classifyFindings(
-      allFindings, priorMap, fullCoverage ? { full: true, confirmed } : null
+      reconciled, priorMap, fullCoverage ? { full: true, confirmed } : null
     );
     let stats;
     try {

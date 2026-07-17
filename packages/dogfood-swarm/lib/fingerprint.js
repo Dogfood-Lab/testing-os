@@ -57,6 +57,7 @@
 import { createHash } from 'node:crypto';
 
 import { logStage } from './log-stage.js';
+import { matchesAnyGlob } from './findings-filter.js';
 
 /**
  * Normalize a file path for fingerprinting.
@@ -586,6 +587,17 @@ function shouldSaltCrossWaveCollision(finding, priorRow) {
  * - Without a prior row: the first member under the stable content sort.
  */
 function chooseBareKeeper(base, members, priorRow) {
+  // A DECLARED id reuse (honorReusedFindingIds) is authoritative over content
+  // heuristics: without this, a same-wave sibling that coincidentally shares
+  // the prior's base fingerprint could win the keeper slot on description
+  // sort, merging the UNRELATED sibling into the prior (stale description,
+  // severity bumped) while the true re-report gets salted into a duplicate —
+  // proven live pre-ship, and strictly worse than the pre-helper baseline.
+  // Two honored members (two agents declaring one id) is degenerate input;
+  // fall through to the deterministic content heuristics for that.
+  const honored = members.filter((m) => m._idReuseHonored === true);
+  if (honored.length === 1) return honored[0];
+
   if (priorRow) {
     const priorDesc = normalizeDescription(priorRow.description);
     const descMatches = members.filter((m) => normalizeDescription(m.description) === priorDesc);
@@ -805,6 +817,167 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
   }
 
   return result;
+}
+
+/**
+ * Honor a CONFIRM-queue re-report's declared finding id.
+ *
+ * The audit brief's confirmation queue tells an agent: "Still present? Report
+ * it again, reusing its id from below. That records it as recurring, not as a
+ * duplicate." Before this helper, that promise was not mechanical: the
+ * agent-supplied `id` was never read — matching ran purely on the content
+ * fingerprint, whose inputs (category, rule_id, symbol, line-context) the
+ * queue does not even show the agent. A faithful re-report with a rewritten
+ * description and a re-derived line landed as a NEW row, duplicating a
+ * still-open prior (10 of 14 intended re-reports did exactly that in one
+ * wave), while the prior stayed open as unverified — a state no lawful verb
+ * can route to an amend. Content matching also cannot be made reliable here
+ * even in principle: the context-hash LOCATION component is computed from the
+ * CURRENT source at each collect, so any edit near the finding between waves
+ * shifts the window and breaks the match.
+ *
+ * The declared id is the stable handle built for exactly this (D3B-006), so:
+ * when a current finding's `id` exactly matches an OPEN prior's finding_id
+ * (case-insensitive, same UPPER() convention as `swarm approve --ids`) AND
+ * the finding names the SAME file as that prior (normalizePath equality —
+ * an id typo'd onto an unrelated file must not inherit the prior's identity),
+ * the finding takes the prior's fingerprint and the prior's RAW file spelling.
+ *
+ * The raw-spelling alignment matters: shouldSaltCrossWaveCollision treats a
+ * raw-file mismatch + rewritten description as evidence of a coincidental
+ * collision and would salt the re-report right back into a new row. A
+ * deliberate, declared id reuse is the opposite of coincidence, so the
+ * mapping removes the mismatch instead of fighting the salt logic.
+ *
+ * Deliberately NOT new policy: this changes only HOW a prior is matched
+ * (declared id instead of content luck). WHAT happens on the match stays with
+ * classifyFindings' existing branches — recurring for open priors, regression
+ * reopen for fixed ones, recurred_while_closed for deferred (rejected rows
+ * are not in the prior map at all, so a reused rejected id falls through to
+ * the INSERT-conflict path unchanged). A mismatched or unknown id changes
+ * nothing and is logged, never guessed.
+ *
+ * Two authority rules, both adversarially earned pre-ship (the first review
+ * of this helper returned DO-NOT-SHIP with live PoCs for each):
+ *
+ *   - OWNERSHIP. The CONFIRM queue is run-wide: every domain's brief shows
+ *     every open finding, so "the agent knew the id and the file" proves it
+ *     can read its own prompt, nothing more. Without an ownership gate, any
+ *     domain could recur / severity-escalate / regression-reopen a finding it
+ *     never read — proven live through the real collect(): a packages/b/**
+ *     domain flipped a packages/a/** finding to recurring and LOW→CRITICAL by
+ *     echoing its own prompt. That is F-18d0ef6d's cross-domain-vouching
+ *     shape on the recur path, so it takes the same rule the confirmed[]
+ *     close path takes: the DECLARING domain's globs must cover the prior's
+ *     file (matchesAnyGlob — routing, closing, and now recurring answer to
+ *     one authority). A finding with no domain attribution fails closed.
+ *
+ *   - THE APPROVED WINDOW. `approved` means "queued for amend": between
+ *     `swarm approve` and the amend landing, the defect is KNOWN present, so
+ *     an honest re-confirmation proves nothing new — but updateRecurring
+ *     would flip approved → recurring, silently dropping the finding out of
+ *     findingsForDomain's amend routing and undoing the coordinator's verb.
+ *     Proven live through collect(). An approved prior is therefore never
+ *     honored (logged, so the re-confirmation is visible, not swallowed).
+ *     The content-fingerprint path's pre-existing behavior for approved rows
+ *     is deliberately not widened by this helper.
+ *
+ * @param {Array} findings — current-wave findings (before classifyFindings);
+ *   each entry may carry `_declaringDomain` (stamped by the collecting
+ *   caller from the agent that reported it)
+ * @param {Map<string, object>} priorFingerprints — buildPriorMap output
+ * @param {Array<{name: string, globs: string[]}>} [domains] — the frozen map
+ *   (the same rows scopeConfirmedToOwningDomain takes). Omitted/empty →
+ *   nothing can be honored (fail closed).
+ * @returns {Array} new array; entries are replaced (not mutated) only when a
+ *   declared id reuse is honored. Honored entries carry
+ *   `_idReuseHonored: true`, which chooseBareKeeper treats as authoritative
+ *   over content heuristics in a same-wave collision group.
+ */
+export function honorReusedFindingIds(findings, priorFingerprints, domains = []) {
+  if (!(priorFingerprints instanceof Map) || priorFingerprints.size === 0) {
+    return findings;
+  }
+  const byId = new Map();
+  for (const row of priorFingerprints.values()) {
+    if (row && row.finding_id) byId.set(String(row.finding_id).toUpperCase(), row);
+  }
+  if (byId.size === 0) return findings;
+  const domainByName = new Map(
+    (Array.isArray(domains) ? domains : []).map((d) => [d.name, d]),
+  );
+
+  return findings.map((raw) => {
+    // `_idReuseHonored` is trust metadata only this helper may mint: the
+    // agent-output schema leaves findings additionalProperties-open, so an
+    // agent can ship the flag in its own JSON, and chooseBareKeeper consumes
+    // it DOWNSTREAM of the ownership gate — a forged copy hijacks collision-
+    // group keeper selection and re-opens the exact cross-domain escalation
+    // the gate closed (proven live by the pre-ship review's PoC). Stripping
+    // it here, before any logic, is what makes the flag mean "this helper
+    // honored a declared reuse" and nothing else. `_declaringDomain` is the
+    // opposite case — INPUT metadata whose integrity the callers own by
+    // assigning it unconditionally AFTER their spread of the agent object
+    // (forge attempt proven squashed through the real collect()).
+    let finding = raw;
+    if (raw && Object.hasOwn(raw, '_idReuseHonored')) {
+      const { _idReuseHonored, ...rest } = raw;
+      finding = rest;
+    }
+    const declaredId = finding && finding.id ? String(finding.id).toUpperCase() : '';
+    if (!declaredId) return finding;
+    const prior = byId.get(declaredId);
+    if (!prior) return finding;
+
+    if (prior.status === 'approved') {
+      logStage('confirm_id_reuse_skipped_approved', {
+        component: 'dogfood-swarm',
+        declared_id: finding.id,
+        declaring_domain: finding._declaringDomain || null,
+        file: prior.file_path || prior.file || null,
+      });
+      return finding;
+    }
+
+    const priorFile = prior.file_path || prior.file || '';
+    if (normalizePath(finding.file) !== normalizePath(priorFile)) {
+      logStage('confirm_id_reuse_file_mismatch', {
+        component: 'dogfood-swarm',
+        declared_id: finding.id,
+        declaring_domain: finding._declaringDomain || null,
+        finding_file: finding.file || null,
+        prior_file: priorFile || null,
+        prior_status: prior.status || null,
+      });
+      return finding;
+    }
+
+    const declaringDomain = domainByName.get(finding._declaringDomain);
+    if (!declaringDomain || !matchesAnyGlob(priorFile, declaringDomain.globs)) {
+      logStage('confirm_id_reuse_unowned', {
+        component: 'dogfood-swarm',
+        declared_id: finding.id,
+        declaring_domain: finding._declaringDomain || null,
+        prior_file: priorFile || null,
+        prior_status: prior.status || null,
+      });
+      return finding;
+    }
+
+    if (finding.fingerprint === prior.fingerprint && (finding.file || '') === priorFile) {
+      return { ...finding, _idReuseHonored: true };
+    }
+    logStage('confirm_id_reuse_applied', {
+      component: 'dogfood-swarm',
+      declared_id: finding.id,
+      declaring_domain: finding._declaringDomain || null,
+      prior_status: prior.status || null,
+      prior_fingerprint: prior.fingerprint,
+      replaced_fingerprint: finding.fingerprint || null,
+      file: priorFile || null,
+    });
+    return { ...finding, fingerprint: prior.fingerprint, file: priorFile || finding.file, _idReuseHonored: true };
+  });
 }
 
 /**

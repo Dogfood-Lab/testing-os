@@ -55,7 +55,7 @@ import { transitionWave } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { readBoundedJson } from '../lib/bounded-json-read.js';
-import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings } from '../lib/fingerprint.js';
+import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings, honorReusedFindingIds } from '../lib/fingerprint.js';
 import { getActualTouchedFiles, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
 // F-67ddcd02: the file_claims reconciliation step is shared with collect.js
 // (both write paths superseded the SAME way) — see reconcileFileClaims's own
@@ -459,6 +459,9 @@ export function revalidate(opts) {
           for (const f of findings) {
             const sourceText = readFindingSource(sourceRoot, f.file);
             f.fingerprint = computeFingerprint(f, { sourceText });
+            // Same domain attribution collect.js stamps — the id-reuse
+            // ownership gate must hold on the repair path too.
+            f._declaringDomain = r.domain;
             repairedFindings.push(f);
           }
         }
@@ -488,7 +491,13 @@ export function revalidate(opts) {
       // already ingested by the failed collect and must keep their statuses.
       if (isAudit && repairedFindings.length > 0) {
         const priorMap = buildPriorMap(db, runId);
-        const classified = classifyFindings(repairedFindings, priorMap);
+        // Same declared-id reconciliation as collect.js's classify call — the
+        // repaired output is the same CONFIRM-queue contract arriving through
+        // the recovery path, and the wave-31 lesson is that this file is where
+        // a collect-only sweep goes to die. One definition, two callers, one
+        // ownership authority (the frozen map).
+        const reconciled = honorReusedFindingIds(repairedFindings, priorMap, domains);
+        const classified = classifyFindings(reconciled, priorMap);
         const stats = upsertFindings(db, runId, wave.id, {
           new: classified.new,
           recurring: classified.recurring,
