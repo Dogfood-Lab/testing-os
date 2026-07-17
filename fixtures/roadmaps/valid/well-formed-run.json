@@ -1,0 +1,86 @@
+{
+  "run_id": "swarm-1784091637-5127",
+  "sequence": 1,
+  "compiled_at": "2026-07-17T18:00:00Z",
+  "repo": "dogfood-lab/testing-os",
+  "compiled_from": {
+    "commit_sha": "0406b989434956f8c8a89d93c008204aa1bd6edd"
+  },
+  "open_summary": {
+    "open": 12,
+    "deferred": 4,
+    "approved": 41,
+    "fixed": 162,
+    "rejected": 9,
+    "recurring": 1
+  },
+  "grandfathered_drain": {
+    "frozen_total": 256,
+    "drained": 18,
+    "outstanding": [
+      {
+        "id": "gf-manifest-0032",
+        "reason": "Pre-Class-#14 regression-pin heuristic grant; awaiting AST-based re-derivation.",
+        "owner": "coordinator",
+        "added_at": "2026-06-02T00:00:00Z",
+        "cadence_runs": 10,
+        "due_at_run": 12
+      }
+    ]
+  },
+  "recurrence_stats": {
+    "top_recurring": [
+      {
+        "fingerprint": "f3a9c21e7d5b4801",
+        "description": "Regression-pin gate accepts a prose match with no declared AST tag.",
+        "run_count": 3,
+        "severity": "HIGH",
+        "first_seen": "2026-05-20T00:00:00Z",
+        "last_seen": "2026-07-10T00:00:00Z"
+      }
+    ]
+  },
+  "attention": {
+    "advisory": true,
+    "items": [
+      {
+        "file": "packages/dogfood-swarm/lib/fingerprint.js",
+        "score": 0.82,
+        "components": { "churn": 0.6, "recency": 0.9, "fragmentation": 0.75 }
+      },
+      {
+        "file": "packages/findings/review/transitions.js",
+        "score": 0.41,
+        "components": { "churn": 0.2, "recency": 0.5, "fragmentation": 0.3 }
+      }
+    ]
+  },
+  "operator_notes": [
+    {
+      "kind": "invariant",
+      "text": "Every regression-pin grant must trace to a real AST-declared tag, never a prose match.",
+      "expires": 20,
+      "enforced_by": "scripts/check-finding-regression-pins.mjs"
+    },
+    {
+      "kind": "theme",
+      "text": "Recent waves keep re-discovering un-cross-referenced parallel taxonomies across packages.",
+      "expires": "2026-12-31"
+    },
+    {
+      "kind": "open-question",
+      "text": "Should verified_how eventually cite evidence_kind directly, or stay a deliberately separate axis?",
+      "expires": 6
+    }
+  ],
+  "drain_queue": [
+    {
+      "id": "dfind-testing-os-deferred-001",
+      "reason": "Cross-domain fix requires a core-lane edit; deferred to next feature pass.",
+      "owner": "core-lane",
+      "added_at": "2026-07-10T00:00:00Z",
+      "cadence_runs": 5,
+      "due_at_run": 6
+    }
+  ]
+}

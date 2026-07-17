@@ -58,6 +58,18 @@ import { createHash } from 'node:crypto';
 
 import { logStage } from './log-stage.js';
 import { matchesAnyGlob } from './findings-filter.js';
+// F-d656acc4 / F-swarmcpcore-008: this was a private, unexported function
+// here, byte-identical to commands/collect.js's own private
+// normalizeFilePathForGlobMatch() — confirmed duplicated debt, now extracted
+// to the shared leaf helper. Aliased back to the local name `normalizePath`
+// so every call site below (chooseBareKeeper, stableContentSort,
+// saltByContent, rawFileIdentityDiffers, classifyFindings,
+// honorReusedFindingIds) is unchanged — this is a pure extraction, not a
+// behavior change. See lib/normalize-path.js's header for why the shared
+// export is named after collect.js's local name rather than the finding's
+// literal `normalizePathForMatch` suggestion (that name is already taken by
+// a differently-scoped function in commands/rewind.js).
+import { normalizeFilePathForGlobMatch as normalizePath } from './normalize-path.js';
 
 /**
  * Normalize a file path for fingerprinting.
@@ -74,17 +86,10 @@ import { matchesAnyGlob } from './findings-filter.js';
  * description-exclusion in this file's header was written to prevent.
  * Collapsing repeated slashes BEFORE stripping the leading './' also
  * normalizes a leading './/', which a strict single-slash leading-dot strip
- * alone would otherwise leave as a stray '/'.
+ * alone would otherwise leave as a stray '/'. Implementation now lives in
+ * ./normalize-path.js (imported above as `normalizePath`) — see that file's
+ * header for the extraction rationale.
  */
-function normalizePath(filePath) {
-  if (!filePath) return '';
-  return filePath
-    .replace(/\\/g, '/')
-    .replace(/\/{2,}/g, '/')
-    .replace(/^\.\//, '')
-    .replace(/\/$/, '')
-    .toLowerCase();
-}
 
 /**
  * Normalize a span (line range or single line) to a stable bucket.
@@ -1063,8 +1068,8 @@ export function upsertFindings(db, runId, waveId, classified) {
   const insertFinding = db.prepare(`
     INSERT OR IGNORE INTO findings (run_id, finding_id, fingerprint, severity, category,
       file_path, line_number, symbol, description, recommendation,
-      status, first_seen_wave, last_seen_wave)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)
+      status, first_seen_wave, last_seen_wave, filed_by_domain)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?, ?)
   `);
 
   const insertEvent = db.prepare(`
@@ -1121,10 +1126,20 @@ export function upsertFindings(db, runId, waveId, classified) {
     //     silently double-inserting under the same id.
     for (const f of classified.new) {
       const fid = `F-${String(f.fingerprint).slice(0, 8)}`;
+      // v10 (C3 amendment): filed_by_domain is a FIRST-FILED fact, stamped
+      // once at insert like first_seen_wave (never updated on recurrence,
+      // unlike last_seen_wave) — it answers "who filed this," not "who last
+      // touched it." Sourced from `_declaringDomain`, which collect.js
+      // (stored._declaringDomain = domain.name) and revalidate.js
+      // (f._declaringDomain = r.domain) both stamp onto every finding object
+      // before it reaches classifyFindings/upsertFindings; absent here only
+      // for a caller that has not threaded that attribution through, in
+      // which case this stays NULL rather than guessing.
       const result = insertFinding.run(
         runId, fid, f.fingerprint, f.severity, f.category,
         f.file || null, f.line || null, f.symbol || null,
-        f.description, f.recommendation || null, waveId, waveId
+        f.description, f.recommendation || null, waveId, waveId,
+        f._declaringDomain || null,
       );
       if (result.changes === 0) {
         // INSERT OR IGNORE skipped this row on a unique-index conflict. With

@@ -362,6 +362,142 @@ function fenceSafeBlock(text) {
 }
 
 /**
+ * Render the CLOSED-priors section — do-not-re-report material. Shared by
+ * buildAuditPrompt and buildFeatureAuditPrompt (F-f86e42eb) so the two
+ * callers cannot independently drift on this treatment the way
+ * lib/fingerprint.js's and commands/collect.js's normalizePath copies did
+ * (F-swarmcpcore-008) — one function, every call site.
+ *
+ * @param {string} [priorContext] — CLOSED prior findings (fixed/deferred/
+ *   rejected). Their absence is already terminal in classifyFindings, so
+ *   nothing is inferred from an agent's silence about them.
+ * @returns {string}
+ */
+function renderPriorSection(priorContext) {
+  // F-d2d06af3: neutralize the invisible/deception codepoint class BEFORE
+  // fenceSafeBlock's backtick-fence-parity pass — the two passes operate on
+  // disjoint codepoint sets (control/bidi/Tag-block vs. backtick runs), so
+  // order does not change either pass's own result, but neutralizing closer
+  // to the untrusted source mirrors this package's established
+  // escape-then-format discipline (findings-render.js's truncate()).
+  return priorContext
+    ? `\n## Prior Findings — already CLOSED (do NOT re-report these)\n\n${fenceSafeBlock(neutralizeForPrompt(priorContext))}\n`
+    : '';
+}
+
+/**
+ * Render the OPEN-priors CONFIRM-queue section. Shared by buildAuditPrompt
+ * and buildFeatureAuditPrompt (F-f86e42eb) — see renderPriorSection's header
+ * for why this is a shared function rather than two independently-typed
+ * copies.
+ *
+ * Open priors carry the OPPOSITE instruction from closed ones, and the
+ * difference is load-bearing rather than cosmetic. classifyFindings reads a
+ * prior's ABSENCE from a full-coverage wave as positive evidence it was
+ * fixed. That inference is sound ONLY if this agent would have re-reported
+ * the defect had it still been there. This brief used to emit one flat
+ * "do NOT re-report these" list covering every prior — open ones included —
+ * which made their absence guaranteed by instruction: the evidence was
+ * manufactured by the order forbidding the evidence. On run
+ * swarm-1784091637-5127 wave 28, an audit-only wave with no amend before it,
+ * 9 untouched findings closed themselves that way. F-bd8b4353 caught the
+ * same lie once as a one-off ("a false entry in the swarm's own fix ledger")
+ * and it was closed by correcting the affected files, never the mechanism.
+ * F-8f44c67f: this heading used to read "in your scope" unconditionally, but
+ * dispatch.js builds openPriorContext ONCE per wave from the ENTIRE run's
+ * priorMap (no domain/glob filter) and splices the identical text into every
+ * domain's prompt — empirically, ~88% of a typical queue sits outside the
+ * receiving domain's own globs. "in your scope" was therefore false for most
+ * entries most of the time, for every domain simultaneously. Filtering the
+ * queue itself is commands/dispatch.js's call (out of this domain's owned
+ * globs); this section instead states the true shape — a run-wide queue,
+ * narrowed to "your scope" only as an instruction to the agent, not as a
+ * pre-filtered fact — so the claim matches what dispatch.js actually does.
+ *
+ * F-f86e42eb: before this function existed, `buildFeatureAuditPrompt` never
+ * rendered this section at all — a feature-audit brief had no 'Known OPEN
+ * findings' section and its worked example never mentioned `confirmed`,
+ * even though the CONSUMPTION side (collect.js's AUDIT_PHASES array includes
+ * 'feature-audit'; classifyFindings/scopeConfirmedToOwningDomain read
+ * `agent.confirmed` generically) already treated feature-audit as a
+ * first-class audit phase. The mechanism to CLOSE a prior via a
+ * feature-audit wave's declaration worked end-to-end; no feature-audit brief
+ * ever told the agent the mechanism existed. Sharing this function with
+ * buildFeatureAuditPrompt closes that gap at the template level instead of
+ * a per-wave coordinator instance patch.
+ *
+ * @param {string} [openPriorContext] — OPEN prior findings/features. The
+ *   agent's confirmation queue, NOT a do-not-report list — classifyFindings
+ *   infers `fixed` from a full-coverage wave's silence about these, so the
+ *   brief must ask for the re-report that makes that silence meaningful.
+ * @returns {string}
+ */
+function renderOpenPriorSection(openPriorContext) {
+  return openPriorContext
+    ? `\n## Known OPEN findings across the run — CONFIRM the ones in your scope\n\n`
+      + `These are already filed and still open, from EVERY domain in this run, not\n`
+      + `just yours. This is **not** a do-not-report list — it is a confirmation queue,\n`
+      + `and your report decides the fate of the ones you can actually check:\n\n`
+      + `- **Still present?** Report it again, reusing its id from below AND keeping\n`
+      + `  its \`file\` exactly as listed there (the id+file pair is what the control\n`
+      + `  plane matches on; your description and line may be fresh). That records it\n`
+      + `  as recurring, not as a duplicate. This is wanted, not noise.\n`
+      + `- **Verified gone?** Put its id in your output's \`confirmed\` array AND omit\n`
+      + `  it from \`findings\`. That declaration is what closes it, on your authority.\n`
+      + `- **Did not check it, or it names a file outside your domain?** Leave it out of\n`
+      + `  \`confirmed\`. It stays open and the next wave re-asks — no penalty, and far\n`
+      + `  better than closing a live defect. Note the out-of-domain ones in your\n`
+      + `  \`summary\` so the coordinator can see they are waiting on a different agent.\n\n`
+      + `\`confirmed\` is a declaration, not a formality: an id you list is one you are\n`
+      + `stating you checked. Silence alone no longer closes anything — list only what\n`
+      + `you actually verified. Most of this list will name files outside the globs\n`
+      + `below; that is expected, not an error — it belongs to whichever domain owns\n`
+      + `that file, and your silence about it has no effect on its fate.\n\n`
+      + `${fenceSafeBlock(neutralizeForPrompt(openPriorContext))}\n`
+    : '';
+}
+
+/**
+ * Render the T4 roadmap-digest section — cross-run targeting context from a
+ * PRIOR run's compiled roadmap (docs/trajectory-and-closure.dispatch.md,
+ * T1/T2/T4), injected at the TOP of a generated brief (Lost in the Middle,
+ * arXiv:2307.03172, cited directly in the dispatch) rather than sharing
+ * priorContext/openPriorContext's lower position.
+ *
+ * IDENTICAL neutralization treatment to opts.priorContext (F-swarmcpcore-009):
+ * a roadmap digest echoes finding `description`/`file_path` text (the
+ * attention-score top-K list, the drain-queue summary) via the SAME
+ * zero-privilege, potentially-adversarial-repo origin as any other
+ * agent-authored text this file already hardened (F-d2d06af3). Routing it
+ * through this file's existing fenceSafeBlock(neutralizeForPrompt(...)) seam
+ * is what makes it inherit that hardening for free — a caller that instead
+ * string-concatenates a digest into a prompt built OUTSIDE this module would
+ * reopen the exact injection class F-d2d06af3 closed.
+ *
+ * Advisory-only per T2's own text, stated in the heading itself: this is
+ * targeting CONTEXT — a ranked attention list, unexpired operator notes, a
+ * drain-queue summary — never a gate, predictor, or auto-blame signal, and
+ * never grounds for skipping independent judgment on any file in scope.
+ * Whether to pass a digest AT ALL (the run's explicit opt-in flag, T4) is the
+ * CALLER's decision (commands/dispatch.js); this function only renders what
+ * it is given.
+ *
+ * @param {string} [roadmapDigest]
+ * @returns {string}
+ */
+function renderRoadmapDigestSection(roadmapDigest) {
+  return roadmapDigest
+    ? `\n## Roadmap Digest — cross-run targeting context (advisory only)\n\n`
+      + `This is context carried forward from a PRIOR run's compiled roadmap, seeded\n`
+      + `into this run by an explicit operator opt-in. It is advisory: a ranked\n`
+      + `attention list, unexpired operator notes, and a drain-queue summary — never\n`
+      + `a gate, never a predictor, and never grounds for skipping your own\n`
+      + `independent judgment on any file in your scope.\n\n`
+      + `${fenceSafeBlock(neutralizeForPrompt(roadmapDigest))}\n`
+    : '';
+}
+
+/**
  * Render the per-domain ownership block — globs + ownership class + (optional)
  * frozen-snapshot ID. Agents read the SAME ownership facts the collect-time
  * checkOwnership() will enforce against, not a paraphrased coordinator brief.
@@ -505,66 +641,18 @@ Prioritize by impact. Estimate effort (small/medium/large).`,
  *   `fixed` from a full-coverage wave's silence about these, so the brief must
  *   ask for the re-report that makes that silence meaningful. Keep the two
  *   lists separate; merging them re-creates the false-fixed defect.
+ * @param {string} [opts.roadmapDigest] — T4 cross-run targeting context from a
+ *   prior run's compiled roadmap. Advisory only; rendered at the TOP of the
+ *   brief. See renderRoadmapDigestSection's header for the full contract.
  * @returns {string}
  */
 export function buildAuditPrompt(opts) {
   const lens = STAGE_LENS[opts.phase];
   if (!lens) throw new Error(`Unknown audit phase: ${opts.phase}`);
 
-  // F-d2d06af3: neutralize the invisible/deception codepoint class BEFORE
-  // fenceSafeBlock's backtick-fence-parity pass — the two passes operate on
-  // disjoint codepoint sets (control/bidi/Tag-block vs. backtick runs), so
-  // order does not change either pass's own result, but neutralizing closer
-  // to the untrusted source mirrors this package's established
-  // escape-then-format discipline (findings-render.js's truncate()).
-  const priorSection = opts.priorContext
-    ? `\n## Prior Findings — already CLOSED (do NOT re-report these)\n\n${fenceSafeBlock(neutralizeForPrompt(opts.priorContext))}\n`
-    : '';
-
-  // Open priors carry the OPPOSITE instruction from closed ones, and the
-  // difference is load-bearing rather than cosmetic. classifyFindings reads a
-  // prior's ABSENCE from a full-coverage wave as positive evidence it was
-  // fixed. That inference is sound ONLY if this agent would have re-reported
-  // the defect had it still been there. This brief used to emit one flat
-  // "do NOT re-report these" list covering every prior — open ones included —
-  // which made their absence guaranteed by instruction: the evidence was
-  // manufactured by the order forbidding the evidence. On run
-  // swarm-1784091637-5127 wave 28, an audit-only wave with no amend before it,
-  // 9 untouched findings closed themselves that way. F-bd8b4353 caught the
-  // same lie once as a one-off ("a false entry in the swarm's own fix ledger")
-  // and it was closed by correcting the affected files, never the mechanism.
-  // F-8f44c67f: this heading used to read "in your scope" unconditionally, but
-  // dispatch.js builds openPriorContext ONCE per wave from the ENTIRE run's
-  // priorMap (no domain/glob filter) and splices the identical text into every
-  // domain's prompt — empirically, ~88% of a typical queue sits outside the
-  // receiving domain's own globs. "in your scope" was therefore false for most
-  // entries most of the time, for every domain simultaneously. Filtering the
-  // queue itself is commands/dispatch.js's call (out of this domain's owned
-  // globs); this section instead states the true shape — a run-wide queue,
-  // narrowed to "your scope" only as an instruction to the agent, not as a
-  // pre-filtered fact — so the claim matches what dispatch.js actually does.
-  const openPriorSection = opts.openPriorContext
-    ? `\n## Known OPEN findings across the run — CONFIRM the ones in your scope\n\n`
-      + `These are already filed and still open, from EVERY domain in this run, not\n`
-      + `just yours. This is **not** a do-not-report list — it is a confirmation queue,\n`
-      + `and your report decides the fate of the ones you can actually check:\n\n`
-      + `- **Still present?** Report it again, reusing its id from below AND keeping\n`
-      + `  its \`file\` exactly as listed there (the id+file pair is what the control\n`
-      + `  plane matches on; your description and line may be fresh). That records it\n`
-      + `  as recurring, not as a duplicate. This is wanted, not noise.\n`
-      + `- **Verified gone?** Put its id in your output's \`confirmed\` array AND omit\n`
-      + `  it from \`findings\`. That declaration is what closes it, on your authority.\n`
-      + `- **Did not check it, or it names a file outside your domain?** Leave it out of\n`
-      + `  \`confirmed\`. It stays open and the next wave re-asks — no penalty, and far\n`
-      + `  better than closing a live defect. Note the out-of-domain ones in your\n`
-      + `  \`summary\` so the coordinator can see they are waiting on a different agent.\n\n`
-      + `\`confirmed\` is a declaration, not a formality: an id you list is one you are\n`
-      + `stating you checked. Silence alone no longer closes anything — list only what\n`
-      + `you actually verified. Most of this list will name files outside the globs\n`
-      + `below; that is expected, not an error — it belongs to whichever domain owns\n`
-      + `that file, and your silence about it has no effect on its fate.\n\n`
-      + `${fenceSafeBlock(neutralizeForPrompt(opts.openPriorContext))}\n`
-    : '';
+  const roadmapSection = renderRoadmapDigestSection(opts.roadmapDigest);
+  const priorSection = renderPriorSection(opts.priorContext);
+  const openPriorSection = renderOpenPriorSection(opts.openPriorContext);
 
   const domainContract = renderDomainContract(
     opts.globs,
@@ -579,7 +667,7 @@ export function buildAuditPrompt(opts) {
 **Path:** ${opts.repoPath}
 **Domain:** ${opts.domainName}
 **Wave:** ${opts.waveNumber}
-
+${roadmapSection}
 ${domainContract}
 
 ## Your Scope
@@ -714,6 +802,20 @@ illustrates shape; the canonical contract above is load-bearing:
 /**
  * Build a feature audit prompt for a domain agent.
  *
+ * F-f86e42eb: before this fix, this function never accepted or rendered
+ * opts.priorContext/opts.openPriorContext at all, even though collect.js's
+ * AUDIT_PHASES array already includes 'feature-audit' and
+ * classifyFindings/scopeConfirmedToOwningDomain already read `agent.confirmed`
+ * generically regardless of whether the agent's output is findings[]- or
+ * features[]-shaped. The mechanism to CLOSE a prior finding via a
+ * feature-audit wave's `confirmed` declaration worked end-to-end; no
+ * feature-audit brief ever told the agent the mechanism existed, or showed
+ * it the queue to confirm against. Fixed by routing through the SAME shared
+ * renderPriorSection/renderOpenPriorSection functions buildAuditPrompt uses
+ * — one rendering, both callers, so the two cannot independently drift the
+ * way lib/fingerprint.js's and commands/collect.js's normalizePath copies
+ * did (F-swarmcpcore-008).
+ *
  * @param {object} opts
  * @param {string} opts.repoPath
  * @param {string} opts.repo
@@ -722,10 +824,22 @@ illustrates shape; the canonical contract above is load-bearing:
  * @param {number} opts.waveNumber
  * @param {string} [opts.ownershipClass]
  * @param {string} [opts.domainSnapshotId]
+ * @param {string} [opts.priorContext] — CLOSED prior findings/features
+ *   (fixed/deferred/rejected). Same do-not-re-report contract as
+ *   buildAuditPrompt's identically-named param.
+ * @param {string} [opts.openPriorContext] — OPEN prior findings/features —
+ *   the CONFIRM queue. Same contract as buildAuditPrompt's identically-named
+ *   param; see renderOpenPriorSection's header for the F-f86e42eb history.
+ * @param {string} [opts.roadmapDigest] — T4 cross-run targeting context.
+ *   Same contract as buildAuditPrompt's identically-named param.
  * @returns {string}
  */
 export function buildFeatureAuditPrompt(opts) {
   const lens = STAGE_LENS['feature-audit'];
+
+  const roadmapSection = renderRoadmapDigestSection(opts.roadmapDigest);
+  const priorSection = renderPriorSection(opts.priorContext);
+  const openPriorSection = renderOpenPriorSection(opts.openPriorContext);
 
   const domainContract = renderDomainContract(
     opts.globs,
@@ -740,7 +854,7 @@ export function buildFeatureAuditPrompt(opts) {
 **Path:** ${opts.repoPath}
 **Domain:** ${opts.domainName}
 **Wave:** ${opts.waveNumber}
-
+${roadmapSection}
 ${domainContract}
 
 ## Your Scope
@@ -756,7 +870,7 @@ ${opts.globs.join('\n')}
 ## Audit Lens
 
 ${lens.instruction}
-
+${priorSection}${openPriorSection}
 ${outputContract}
 
 ## Output Format
@@ -778,6 +892,7 @@ the canonical contract above is load-bearing:
       "recommendation": "How to implement"
     }
   ],
+  "confirmed": ["F-002"],
   "summary": "Domain feature assessment"
 }
 \`\`\``;

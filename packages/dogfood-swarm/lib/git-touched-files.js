@@ -19,6 +19,8 @@
  */
 
 import { execFileSync } from 'node:child_process';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 /**
  * Compute the actual touched-files set in a worktree, including untracked
@@ -209,4 +211,91 @@ export function diffReportedVsActual(reported, actual) {
     extra_in_report,
     match: missing_from_report.length === 0 && extra_in_report.length === 0,
   };
+}
+
+/**
+ * F-e7c4c16d / F-swarmcpcore-004 (T2, docs/trajectory-and-closure.dispatch.md):
+ * per-file churn over a trailing window, answering "how much history has this
+ * file accumulated" — a DIFFERENT question than getActualTouchedFiles above
+ * (which is worktree-diff-scoped: "what changed in one diff"). A new sibling
+ * function rather than a repurposing of that one, per the finding's own
+ * framing ("the wrong tool wearing a new hat").
+ *
+ * Churn is reported RELATIVE to the file's CURRENT line count, not as an
+ * absolute lines-changed total — Nagappan & Ball (ICSE 2005), cited directly
+ * in the dispatch's own Q3, found relative churn discriminates defect-proneness
+ * better than absolute churn (a 500-line file with 50 lines changed is a much
+ * smaller proportional churn than a 20-line file with the same 50 lines
+ * changed). This is one of T2's three attention-score factors; the composed
+ * score stays advisory-only per T2's own text — this function does not gate
+ * on anything, it only reports.
+ *
+ * @param {string} repoPath — absolute path to the repo (or worktree)
+ * @param {object} [options]
+ * @param {number} [options.sinceDays=90] — trailing window in days
+ * @returns {{
+ *   available: boolean,
+ *   since_days?: number,
+ *   files: Array<{ file: string, lines_changed: number, current_lines: number, relative_churn: number }>
+ * }}
+ *   `available: false` (empty files[]) when git itself is unavailable or the
+ *   repo has no commit history in the window — mirrors getActualTouchedFiles'
+ *   own degraded-mode contract (never throws, always returns a well-shaped
+ *   result the caller can render as "no signal" rather than crashing on).
+ *   `files` is sorted by relative_churn DESC, then file ASC — deterministic
+ *   tiebreak so two files with identical churn always order the same way
+ *   (T1's "same DB state -> byte-identical artifact" requirement extends to
+ *   every git-derived signal the roadmap compiler folds in, not only SQL).
+ */
+export function getChurnStats(repoPath, options = {}) {
+  const sinceDays = Number.isFinite(options.sinceDays) ? options.sinceDays : 90;
+
+  let out;
+  try {
+    // --numstat --format= : one "<added>\t<deleted>\t<path>" line per touched
+    // file per commit, no commit-header noise. Binary files report '-' for
+    // both counts (excluded below, not coerced to 0 — a binary's byte churn
+    // is not commensurable with a text file's line churn).
+    out = execFileSync(
+      'git', ['log', `--since=${sinceDays} days ago`, '--numstat', '--format='],
+      { cwd: repoPath, encoding: 'utf-8' },
+    );
+  } catch {
+    return { available: false, files: [] };
+  }
+
+  const linesChangedByFile = new Map();
+  for (const line of out.split('\n')) {
+    if (!line) continue;
+    const parts = line.split('\t');
+    if (parts.length !== 3) continue; // defensive: malformed/unexpected numstat line
+    const [addedRaw, deletedRaw, file] = parts;
+    const added = Number(addedRaw);
+    const deleted = Number(deletedRaw);
+    if (!Number.isFinite(added) || !Number.isFinite(deleted)) continue; // binary '-' entries
+    linesChangedByFile.set(file, (linesChangedByFile.get(file) || 0) + added + deleted);
+  }
+
+  const files = [];
+  for (const [file, linesChanged] of linesChangedByFile) {
+    let currentLines = 0;
+    try {
+      currentLines = readFileSync(join(repoPath, file), 'utf-8').split('\n').length;
+    } catch {
+      // Deleted since, binary, or unreadable — 0 signals "size unknown," and
+      // the Math.max(…, 1) floor below still lets a since-deleted-but-heavily-
+      // churned file surface rather than divide-by-zero to Infinity/NaN.
+      currentLines = 0;
+    }
+    files.push({
+      file,
+      lines_changed: linesChanged,
+      current_lines: currentLines,
+      relative_churn: linesChanged / Math.max(currentLines, 1),
+    });
+  }
+
+  files.sort((a, b) => b.relative_churn - a.relative_churn || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+
+  return { available: true, since_days: sinceDays, files };
 }

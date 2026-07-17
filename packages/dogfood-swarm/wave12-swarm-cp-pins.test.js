@@ -445,6 +445,7 @@ describe('revalidate — a repaired-to-collected FULL-coverage audit wave closes
   // call (leaving collect.js's untouched) would ship with the full suite green
   // — proven live in a scratch worktree (see this wave's swarm-cp-tests
   // output for the mutation-proof recipe).
+  /** @pins F-a9c399ce */
   it('GATE RED: revalidate() itself cannot let a non-owning domain close another domain\'s finding (F-a9c399ce)', () => {
     const domainBOutputPath = join(tmp, 'domain-b-existing.json');
     // domain-b names F-PRIOR, which lives under packages/a/** — domain-b owns

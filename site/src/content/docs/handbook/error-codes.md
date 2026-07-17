@@ -507,6 +507,19 @@ A submission passed the record schema but its on-disk path could not be safely c
   2. Fix the submission's `repo` or `run_id` and resubmit. **The run_id is not consumed** — nothing was written, so a corrected resubmission is not a duplicate.
 - **Why a distinct code rather than reusing `RECORD_SCHEMA_INVALID`:** the record is *not* schema-invalid — it passed. Reporting it as a schema failure would send the operator to the schema, which is exactly the confusion this code exists to end. The two checks disagree by design: the schema is a permissive contract shared with consumers, and `isUnsafeSegment` is the stricter filesystem-safety gate. A submission can satisfy the first and fail the second, and that state now has a name.
 
+### `swarm reopen` / `swarm close` / `swarm roadmap` — failure modes
+
+:::note[Severity: LOW]
+The recovery and trajectory verbs introduce **no new typed error codes**. They follow the two established conventions their siblings already use, so an operator's existing reflexes apply unchanged.
+:::
+
+- **Usage errors** (missing `--ids`, empty `--reason` or `--evidence`, missing `--verified-how` on `close`, an `--as` value other than `fixed`, unknown flags): the untyped single-line `ERROR: <message>` + usage synopsis on stderr, exit code mirrors the `defer`/`reject` convention. Both mutation verbs are **dry-run by default** — forgetting `--apply` is not an error; it prints the would-do report and changes nothing.
+- **Per-id refusals** (reopening an id that is not closed, operator-closing an id that is not open, an id that names no finding in the run): listed per-id in the dry-run/apply report rather than thrown — the verbs are idempotent over ineligible rows, matching `defer`/`reject`'s established contract. A typo'd or hallucinated id can never vacuously transition anything.
+- **`swarm roadmap compile`** validates operator notes at compile time: more than seven notes, an `invariant` note without `enforced_by`, an `enforced_by` path that does not exist on disk, or a malformed `expires` each refuse the compile with a per-note report (nothing is written on refusal — compile is atomic). Expired notes do **not** refuse: they are dropped **loudly**, listed in the compile output as expired.
+- **Provenance guarantees on every transition:** each applied reopen/close writes an append-only `finding_events` row (`reopened` / `operator_closed`) carrying reason, evidence, and the acting authority. The original closure a reopen reverses is never rewritten — it remains in the event history.
+
+Documented at contract level alongside the verbs' first shipped wave; the next confirming audit re-verifies this section against the implementation, per this page's standing discipline.
+
 ## Cross-references
 
 - Hard Gate B (Errors): structured shape (code/message/hint), exit codes for CLI, no raw stacks. See [README threat model](https://github.com/dogfood-lab/testing-os#threat-model).

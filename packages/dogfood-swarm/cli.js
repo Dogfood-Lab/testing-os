@@ -64,6 +64,7 @@ import {
   editDomain, addDomain, removeDomain, getDomainEvents,
 } from './lib/domains.js';
 import { setTimeoutPolicy, getTimeoutPolicy } from './lib/state-machine.js';
+import { CLOSED_FINDING_STATUSES } from './lib/finding-status.js';
 // F-19f86582: cmdFindings no longer calls the all-in-one buildDigest() —
 // it needs to attach a `.code`/`.hint` to the directory-resolution throws
 // (typed-error surface owned by THIS file, cli.js) and to annotate each
@@ -2197,6 +2198,467 @@ function cmdReject(args) {
   disposeFindings('reject', 'rejected', 'Rejected', args);
 }
 
+// ── C1/C2 — reopen / close (Wave 39, F-8595faf8 / F-5164d456) ──
+//
+// disposeFindings (above) covers approve/defer/reject: OPEN rows only,
+// immediate mutation, single --reason. reopen/close act on the OPPOSITE
+// side of the lifecycle — SETTLED, terminal rows — so they get their OWN
+// shared core (transitionFindings, below) rather than a disposeFindings
+// refork: same --ids/UPPER(finding_id) matching + refuseIfNoIdsExist reuse,
+// but a DELIBERATELY different mutation polarity (dry-run-first, --apply
+// required) matching the recovery-verb family (clean.js/redrive.js/
+// revalidate.js/rewind.js) instead of disposeFindings' immediate-mutation
+// contract — reopen/close undo SETTLED history, not act on still-open rows.
+
+/**
+ * The four OPEN statuses eligible as `swarm close`'s SOURCE set — identical
+ * to disposeFindings' own open-status predicate (cli.js:2163/2167 above).
+ * Reused as a JS array (not re-derived from a SQL fragment) so
+ * transitionFindings can filter client-side for the eligible/ineligible
+ * preview split, matching CLOSED_FINDING_STATUSES' shape one status set over.
+ */
+export const CLOSE_SOURCE_STATUSES = ['new', 'recurring', 'approved', 'unverified'];
+
+export const VERIFIED_HOW_VALUES = ['independent', 'self_attested', 'operator_evidence'];
+
+/**
+ * Fail-loud error for an out-of-enum `--verified-how`, mirroring formatError/
+ * juryError: a typo'd value must not silently default to anything, since this
+ * field is load-bearing evidence (Zimmermann et al., ICSE-SEIP 2012 — verification
+ * mode predicts reopen risk; the pass contract's own Q2 research grounding),
+ * not decoration.
+ */
+function verifiedHowError(raw) {
+  const e = new Error(
+    `--verified-how expects one of ${VERIFIED_HOW_VALUES.join('|')}; got '${raw}'`
+  );
+  e.code = 'CLI_INVALID_VERIFIED_HOW';
+  e.received = raw;
+  e.hint = `pass one of: ${VERIFIED_HOW_VALUES.join(', ')} — e.g. \`--verified-how independent\``;
+  return e;
+}
+
+// reopen/close's own --format enum. Deliberately narrower than the shared
+// VERIFY_FORMATS (text|markdown|json): neither verb has a markdown rendering,
+// and this package's own culture (swarms/CLAUDE.md "honesty is a feature of
+// the artifact") treats an accepted-but-unimplemented enum value as the same
+// class of overclaim as a gate that reports more than it verified.
+const CLOSURE_VERB_FORMATS = ['text', 'json'];
+
+function closureFormatError(raw) {
+  const e = new Error(
+    `--format expects one of ${CLOSURE_VERB_FORMATS.join('|')}; got '${raw}'`
+  );
+  e.code = 'CLI_INVALID_FORMAT';
+  e.received = raw;
+  e.hint = `pass one of: ${CLOSURE_VERB_FORMATS.join(', ')} — e.g. \`--format json\``;
+  return e;
+}
+
+function parseClosureFormatFlag(args) {
+  const raw = parseValueFlag(args, '--format');
+  if (raw === undefined) return 'text';
+  if (!CLOSURE_VERB_FORMATS.includes(raw)) throw closureFormatError(raw);
+  return raw;
+}
+
+/**
+ * Shared core for `swarm reopen` (C1) and `swarm close` (C2) — a
+ * `disposeOrClose`-shaped function parameterized by {sourceStatuses,
+ * targetStatus, eventType, extraSetColumns, buildNotes} per F-5164d456's own
+ * recommendation, so the two verbs share ONE transition implementation
+ * rather than two independently-coded copies (DECOMPOSE_BY_SECRETS).
+ *
+ * Unlike disposeFindings, this returns a REPORT OBJECT instead of driving
+ * process.exit()/console.log itself — reopen/close need --format=json and a
+ * dry-run preview (clean.js's formatPlanSummary shape, per F-8595faf8's own
+ * recommendation), neither of which disposeFindings supports. The CLI-layer
+ * concerns (arg parsing, --reason/--evidence/--verified-how validation,
+ * process.exit on bad input, printing) live in cmdReopen/cmdClose below —
+ * this function is exit-free and independently unit-testable.
+ *
+ * SEAM (wave 39): `closure_kind` / `verified_how` are v10-migration columns
+ * on `findings` (C3); `actor` is a v10-migration column on `finding_events`
+ * (C3). Neither exists in THIS worktree's schema (v9) — swarm-cp-core lands
+ * the v10 ALTERs in its own worktree this same wave. The INSERT/UPDATE below
+ * are coded against the LOCKED v10 spec in docs/trajectory-and-closure.
+ * dispatch.js and will throw "no such column" against an un-migrated v9 DB
+ * until merge. Targeted tests apply the same ALTERs in a try/catch-guarded
+ * setup step (a no-op once the real migration lands) — see
+ * wave39-4091637-5127-swarm-cp-pins.test.js.
+ *
+ * @param {object} spec
+ * @param {'reopen'|'close'} spec.verb
+ * @param {string[]} spec.sourceStatuses — eligible current-status set
+ * @param {string} spec.targetStatus — status to flip matched+eligible rows to
+ * @param {'reopened'|'operator_closed'} spec.eventType
+ * @param {Object<string, string|null>} spec.extraSetColumns — fixed,
+ *   code-controlled column -> bound value pairs applied to every matched row
+ *   on --apply (never operator-derived — safe to splice as literal column
+ *   names since the keys always come from this file's own two call sites,
+ *   never from args)
+ * @param {(reason: string, evidence: string) => string} spec.buildNotes
+ * @param {object} opts
+ * @param {string} opts.runId
+ * @param {string[]} opts.ids — already comma-split/trimmed by the caller
+ * @param {string} opts.reason
+ * @param {string} opts.evidence
+ * @param {boolean} opts.apply
+ * @param {string} opts.dbPath
+ * @returns {object} report — { verb, runId, targetStatus, dryRun, apply, ids,
+ *   reason, evidence, eligible[], ineligible[], flipped, summary }
+ */
+export function transitionFindings(spec, opts) {
+  const { runId, ids, reason, evidence, apply, dbPath } = opts;
+  const db = openDb(dbPath);
+
+  const idsUpper = ids.map(s => s.toUpperCase());
+  const placeholders = idsUpper.map(() => '?').join(',');
+
+  // F-ad540b83-shaped existence probe: match ANY status first (not just the
+  // eligible set) so a wrong-status id and a genuinely-nonexistent id render
+  // as two DIFFERENT, correctly-labeled outcomes rather than collapsing into
+  // one "0 flipped" line — see refuseIfNoIdsExist's own doc comment for the
+  // id-namespace-confusion class this distinction protects against.
+  const allMatches = db.prepare(
+    `SELECT finding_id, status, severity, file_path FROM findings
+     WHERE run_id = ? AND UPPER(finding_id) IN (${placeholders})`
+  ).all(runId, ...idsUpper);
+
+  const eligible = allMatches.filter(f => spec.sourceStatuses.includes(f.status));
+  const ineligible = allMatches.filter(f => !spec.sourceStatuses.includes(f.status));
+
+  const report = {
+    verb: spec.verb,
+    runId,
+    targetStatus: spec.targetStatus,
+    dryRun: !apply,
+    apply: !!apply,
+    ids,
+    reason,
+    evidence,
+    eligible: eligible.map(f => ({
+      finding_id: f.finding_id, status: f.status, severity: f.severity, file_path: f.file_path,
+    })),
+    ineligible: ineligible.map(f => ({
+      finding_id: f.finding_id, status: f.status, severity: f.severity, file_path: f.file_path,
+      note: `current status '${f.status}' is not eligible for ${spec.verb} (needs one of: ${spec.sourceStatuses.join(', ')})`,
+    })),
+    flipped: 0,
+    summary: null,
+  };
+
+  if (apply && eligible.length > 0) {
+    const notes = spec.buildNotes(reason, evidence);
+    const sourceList = spec.sourceStatuses.map(s => `'${s}'`).join(',');
+    const extraCols = Object.keys(spec.extraSetColumns);
+    const setClauses = ['status = ?', ...extraCols.map(c => `${c} = ?`)];
+    const setValues = [spec.targetStatus, ...extraCols.map(c => spec.extraSetColumns[c])];
+
+    // Capture-pending-before-UPDATE (Stripe Ledger pattern, mirrors
+    // disposeFindings/cmdApprove): the event row set is exactly the rows
+    // THIS call actually flips, re-filtered by status at mutation time (not
+    // reused from the `eligible` snapshot above) so a hypothetical
+    // concurrent writer can't event-source a row this transaction didn't
+    // actually touch.
+    const selectPending = db.prepare(
+      `SELECT id, finding_id FROM findings WHERE run_id = ? AND UPPER(finding_id) IN (${placeholders})
+       AND status IN (${sourceList})`
+    );
+    const update = db.prepare(
+      `UPDATE findings SET ${setClauses.join(', ')} WHERE run_id = ? AND UPPER(finding_id) IN (${placeholders})
+       AND status IN (${sourceList})`
+    );
+    // finding_events.actor (v10/C3): this CLI has no operator-identity
+    // concept anywhere (approve/defer/reject don't record who ran them
+    // either) — 'operator' is the fixed literal distinguishing an
+    // operator-invoked write from collect()'s automated fingerprint-pipeline
+    // writes, matching close's own closure_kind='operator' naming. The
+    // event_type itself (reopened/operator_closed, following an earlier
+    // fixed/approved/operator_closed event for the same finding_id) is
+    // already the distinguishing-from-the-original-closer signal C1 asks
+    // for — no new auth mechanism needed (F-8595faf8).
+    const insertEvent = db.prepare(
+      `INSERT INTO finding_events (finding_id, event_type, notes, actor) VALUES (?, ?, ?, 'operator')`
+    );
+
+    const tx = db.transaction(() => {
+      const pending = selectPending.all(runId, ...idsUpper);
+      update.run(...setValues, runId, ...idsUpper);
+      for (const f of pending) insertEvent.run(f.id, spec.eventType, notes);
+      return pending.length;
+    });
+
+    report.flipped = tx();
+  }
+
+  return report;
+}
+
+/**
+ * Text renderer for transitionFindings' report — dry-run preview AND
+ * apply confirmation share one shape (clean.js's formatPlanSummary
+ * precedent). F-29640f0b: every reason/evidence/file_path render routes
+ * through escapeReasonForDisplay/escapePathForDisplay — this is a NEW render
+ * site added to that helper's own doc-comment site inventory (see
+ * commands/lib/escape-reason.js). `--format=json` (the caller's OTHER
+ * branch) never calls this function, so the raw/lossless values still reach
+ * JSON consumers unescaped, per that file's own established invariant.
+ */
+export function formatTransitionReport(report) {
+  const verbLabel = report.verb === 'reopen' ? 'Reopen' : 'Close';
+  const mode = report.apply ? `${verbLabel} (APPLIED)` : `${verbLabel} (DRY-RUN)`;
+  const lines = [];
+  lines.push(`${mode} — run ${report.runId}`);
+  lines.push(`  Reason:   "${escapeReasonForDisplay(report.reason)}"`);
+  lines.push(`  Evidence: "${escapeReasonForDisplay(report.evidence)}"`);
+
+  if (report.eligible.length > 0) {
+    lines.push('');
+    lines.push(report.apply ? 'Flipped:' : 'Would flip:');
+    for (const f of report.eligible) {
+      const tag = report.apply ? '[DONE]' : '[would]';
+      const file = f.file_path ? escapePathForDisplay(f.file_path) : '(no file)';
+      lines.push(`  ${tag} ${f.finding_id}  ${f.status} -> ${report.targetStatus}  (${f.severity}, ${file})`);
+    }
+  }
+
+  if (report.ineligible.length > 0) {
+    lines.push('');
+    lines.push('Skipped (not eligible):');
+    for (const f of report.ineligible) {
+      lines.push(`  [SKIP] ${f.finding_id}  status='${f.status}': ${escapeReasonForDisplay(f.note)}`);
+    }
+  }
+
+  lines.push('');
+  if (report.apply) {
+    lines.push(`${pluralize(report.flipped, 'finding')} for ${report.runId} (status: ${report.targetStatus}).`);
+  } else {
+    lines.push('Re-run with --apply to mutate.');
+  }
+
+  return lines.join('\n');
+}
+
+/**
+ * `swarm reopen <run-id> --ids F-001,F-002 --reason "<text>" --evidence "<text>" [--apply] [--format=text|json]`
+ *
+ * C1 (F-8595faf8, CRITICAL): moves fixed|deferred|rejected -> recurring — the
+ * verb HANDOFF.md itself names as "the obvious gap" (wave-28: 9 findings
+ * restored via an ad hoc, unshipped DB-repair script). No lawful verb before
+ * this one could move a CLOSED finding back to open.
+ */
+function cmdReopen(args) {
+  const runId = args[0];
+  if (!runId || runId.startsWith('--')) {
+    console.error('Usage: swarm reopen <run-id> --ids F-001,F-002 --reason "<text>" --evidence "<text>" [--apply] [--format=text|json]');
+    process.exit(1);
+  }
+
+  const idsArg = parseValueFlag(args, '--ids');
+  const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
+  if (ids.length === 0) {
+    console.error('Specify --ids F-001,F-002 (reopen is targeted — there is no --all)');
+    process.exit(1);
+  }
+
+  const reason = parseValueFlag(args, '--reason');
+  if (!reason || !reason.trim()) {
+    console.error('reopen: --reason "<text>" is required (non-empty)');
+    process.exit(1);
+  }
+
+  // F-8595faf8: --evidence is a SECOND mandatory text flag, validated with
+  // the identical non-empty-after-trim guard --reason gets — the error text
+  // names WHY it is non-negotiable rather than just that it is missing.
+  const evidence = parseValueFlag(args, '--evidence');
+  if (!evidence || !evidence.trim()) {
+    console.error(
+      'reopen: --evidence "<text>" is required (non-empty) — a reason without evidence is the same ' +
+      'prose-promises-a-test gap the Class #14 rewrite exists to prevent one layer up.'
+    );
+    process.exit(1);
+  }
+
+  // Enum-validate --format BEFORE any DB work, mirroring cmdAdjudicate's
+  // F-a7eb2d09 "parse + enum-validate every flag up front" discipline.
+  const format = parseClosureFormatFlag(args);
+  const apply = args.includes('--apply');
+  const dbPath = getDbPath();
+  const idsUpper = ids.map(s => s.toUpperCase());
+
+  const report = transitionFindings({
+    verb: 'reopen',
+    sourceStatuses: CLOSED_FINDING_STATUSES,
+    targetStatus: 'recurring',
+    eventType: 'reopened',
+    // Resets closure provenance (Q2/C1) — the PRIOR closure's finding_events
+    // row is never touched (append-only history survives per C1/C4).
+    extraSetColumns: { closure_kind: null, verified_how: null },
+    buildNotes: (r, e) => `reason: ${r} | evidence: ${e}`,
+  }, { runId, ids, reason, evidence, apply, dbPath });
+
+  // F-ad540b83-shaped zero-existence refusal: reuse the SAME existence probe
+  // approve/defer/reject use, only when NONE of --ids matched anything.
+  if (report.eligible.length === 0 && report.ineligible.length === 0) {
+    refuseIfNoIdsExist(openDb(dbPath), runId, ids, idsUpper);
+    return;
+  }
+
+  // F-a3af1ac5: reopen is the deliberate ASYMMETRY from close's redundant-
+  // closure precedent — an id that exists but is already OPEN (not currently
+  // fixed|deferred|rejected) has no lawful reopen target, and this repo's
+  // ethos rejects silent success as a category. Unlike close (where a
+  // redundant close on an already-terminal status is a benign 0-changes
+  // no-op), reopen refuses LOUDLY here, before any output, so a caller cannot
+  // mistake "nothing happened" for "nothing was wrong".
+  if (report.ineligible.length > 0) {
+    console.error(
+      `reopen: ${pluralize(report.ineligible.length, 'finding')} not eligible for reopen — only closed ` +
+      `(${CLOSED_FINDING_STATUSES.join('|')}) findings can be reopened; an already-open finding is not closed:\n` +
+      report.ineligible.map(f => `  ${f.finding_id}: status '${f.status}' is not closed`).join('\n')
+    );
+    process.exit(1);
+  }
+
+  if (format === 'json') {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  console.log(formatTransitionReport(report));
+  if (report.apply && report.flipped > 0) {
+    console.log(`Next: swarm approve ${runId} --ids ${ids.join(',')} to route into the next amend wave.`);
+  } else if (!report.apply) {
+    console.log(`Next: re-run with --apply to reopen ${pluralize(report.eligible.length, 'finding')}.`);
+  }
+}
+
+/**
+ * `swarm close <run-id> --ids F-001,F-002 [--as fixed] --reason "<text>" --evidence "<text>" --verified-how independent|self_attested|operator_evidence [--apply] [--format=text|json]`
+ *
+ * C2 (F-5164d456, HIGH), NARROWED per this domain's own wave-38 dispute:
+ * `--as` supports ONLY 'fixed' — 'rejected'/'deferred' stay the standalone
+ * `swarm defer`/`swarm reject` verbs (the wave8 disposition-honesty pin
+ * keeps them separate; duplicating those transitions here is exactly the
+ * shape that pin exists to prevent one verb over). Operator closure for rows
+ * structurally unclosable by declaration (the F-6a5eb347 unowned-files
+ * class) or where the Director directs disposal.
+ */
+function cmdClose(args) {
+  const runId = args[0];
+  if (!runId || runId.startsWith('--')) {
+    console.error('Usage: swarm close <run-id> --ids F-001,F-002 [--as fixed] --reason "<text>" --evidence "<text>" --verified-how independent|self_attested|operator_evidence [--apply] [--format=text|json]');
+    process.exit(1);
+  }
+
+  const idsArg = parseValueFlag(args, '--ids');
+  const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
+  if (ids.length === 0) {
+    console.error('Specify --ids F-001,F-002 (close is targeted — there is no --all)');
+    process.exit(1);
+  }
+
+  // C2's enum, adjudicated at the wave-39 merge: 'fixed' ONLY. The full
+  // history, because this flag flipped twice: the pass contract's first draft
+  // said fixed|rejected|deferred; the verbs lane's wave-38 dispute narrowed it
+  // (accepted at triage, but the document wasn't amended — the coordinator's
+  // omission); the merge reconciler then lawfully re-widened to match the
+  // stale document plus F-4a0354b4's draft-era contract test, correctly
+  // noting along the way that wave8-approve-disposition-honesty.test.js's pin
+  // never covered this enum at all. The narrowing stands on the accepted
+  // dispute's own argument, not that pin: `--as rejected|deferred` would be a
+  // SECOND path to statuses `swarm defer`/`swarm reject` already own, with a
+  // different required-flag contract (--evidence/--verified-how here, bare
+  // --reason there) — two verbs, one status, divergent evidence requirements
+  // is drift bait. Rejecting/deferring stays where it lives; operator-close
+  // does the one transition nothing else can.
+  const CLOSE_AS_VALUES = ['fixed'];
+  const asRaw = parseValueFlag(args, '--as') ?? 'fixed';
+  if (!CLOSE_AS_VALUES.includes(asRaw)) {
+    console.error(
+      `close: --as supports only 'fixed' — deferring belongs to \`swarm defer\` and rejecting to ` +
+      `\`swarm reject\` (each with its own reason contract); got '${asRaw}'`
+    );
+    process.exit(1);
+  }
+
+  const reason = parseValueFlag(args, '--reason');
+  if (!reason || !reason.trim()) {
+    console.error('close: --reason "<text>" is required (non-empty)');
+    process.exit(1);
+  }
+
+  const evidence = parseValueFlag(args, '--evidence');
+  if (!evidence || !evidence.trim()) {
+    console.error(
+      'close: --evidence "<text>" is required (non-empty) — a reason without evidence is the same ' +
+      'prose-promises-a-test gap the Class #14 rewrite exists to prevent one layer up.'
+    );
+    process.exit(1);
+  }
+
+  // --verified-how is NOT optional (F-5164d456): missing -> console.error +
+  // exit 1 (matches the missing-required-flag shape above); out-of-enum ->
+  // throw verifiedHowError (matches --format's enum-mismatch shape, handled
+  // uniformly by main()'s renderTopLevelError seam).
+  const verifiedHowRaw = parseValueFlag(args, '--verified-how');
+  if (verifiedHowRaw === undefined) {
+    console.error(
+      `close: --verified-how is required — one of ${VERIFIED_HOW_VALUES.join('|')}. This field is load-bearing ` +
+      '(Zimmermann et al., ICSE-SEIP 2012: verification mode predicts reopen risk), not decoration.'
+    );
+    process.exit(1);
+  }
+  if (!VERIFIED_HOW_VALUES.includes(verifiedHowRaw)) {
+    throw verifiedHowError(verifiedHowRaw);
+  }
+
+  const format = parseClosureFormatFlag(args);
+  const apply = args.includes('--apply');
+  const dbPath = getDbPath();
+  const idsUpper = ids.map(s => s.toUpperCase());
+
+  const report = transitionFindings({
+    verb: 'close',
+    sourceStatuses: CLOSE_SOURCE_STATUSES,
+    targetStatus: asRaw,
+    // event_type mirrors the target status literal — the SAME convention
+    // disposeFindings already established for defer/reject (cli.js's
+    // insertEvent.run(f.id, status, reason) above), extended here to the
+    // 'fixed' disposition too (F-837dcb2f's close->reopen->close->reopen
+    // convergence pin requires event_type === the --as value at every step,
+    // never the fixed literal 'operator_closed' regardless of disposition).
+    // 'operator_closed' remains a valid EVENT_TYPES member (db/schema.js) for
+    // any caller that wants it explicitly; this verb just doesn't default to
+    // it now that all three dispositions are real, distinct transitions.
+    eventType: asRaw,
+    // `swarm close` may only ever persist closure_kind='operator' — never
+    // 'declared' (exclusively collect.js's classifyFindings path) and never
+    // 'absence' (a v10-migration backfill label for historical closures
+    // whose real verification method is unknown; a live verb asserting it
+    // would defeat the confirm-queue mechanism entirely).
+    extraSetColumns: { closure_kind: 'operator', verified_how: verifiedHowRaw },
+    buildNotes: (r, e) => `reason: ${r} | evidence: ${e} | verified_how: ${verifiedHowRaw}`,
+  }, { runId, ids, reason, evidence, apply, dbPath });
+
+  if (report.eligible.length === 0 && report.ineligible.length === 0) {
+    refuseIfNoIdsExist(openDb(dbPath), runId, ids, idsUpper);
+    return;
+  }
+
+  if (format === 'json') {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  console.log(formatTransitionReport(report));
+  if (!report.apply) {
+    console.log(`Next: re-run with --apply to close ${pluralize(report.eligible.length, 'finding')} as ${report.targetStatus}.`);
+  }
+}
+
 /**
  * F-ad540b83 (half 1/2): best-effort resolution of each digest finding's
  * DB-canonical `finding_id`, so an id an operator copies from `swarm
@@ -2587,6 +3049,82 @@ function formatTrends(query, payload) {
   return lines.join('\n');
 }
 
+/**
+ * `swarm roadmap compile <run-id> [--format=text|json]`
+ * `swarm roadmap show <run-id> [--version=N] [--format=text|json]`
+ *
+ * T1's CLI surface (F-338c8c46). Loaded via a DYNAMIC import (not the static
+ * import every other command uses) because commands/roadmap.js itself
+ * statically imports the not-yet-real `lib/roadmap/compiler.js` (core lands
+ * it in its own worktree this same wave — see that file's own header for
+ * the full SEAM writeup). A static import here would make THIS import fail
+ * at cli.js's own module-load time, breaking every OTHER verb until merge —
+ * the dynamic import contains the seam to the moment `swarm roadmap ...` is
+ * actually invoked, exactly like adjudicate's existing async-command
+ * handling in main() (a rejected promise routes through the same
+ * renderTopLevelError seam).
+ *
+ * Placement note (F-5dabf101 regression, caught by this wave's own targeted
+ * run): this function originally sat between cmdFindings and cmdRuns —
+ * exactly the source-text window wave2-4091637-5127-swarm-cp-pins.test.js's
+ * F-5dabf101 gate slices out via `/function cmdFindings\(args\)/` .. `/\nfunction
+ * cmdRuns/` to check cmdFindings' OWN body for a stray process.exit() past a
+ * pending stdout write. Inserting ANY new function in that window silently
+ * widens the slice to include it — this function's OWN legitimate Usage-guard
+ * process.exit(1) calls then read as cmdFindings' violation. Moved here
+ * (after every other cmd-handler and formatter function, immediately before
+ * the dispatch tables) so no existing source-position-dependent pin's window
+ * is disturbed.
+ */
+async function cmdRoadmap(args) {
+  const sub = args[0];
+  if (sub !== 'compile' && sub !== 'show') {
+    console.error('Usage: swarm roadmap compile <run-id> [--format=text|json]');
+    console.error('   or: swarm roadmap show <run-id> [--version=N] [--format=text|json]');
+    process.exit(1);
+  }
+
+  const runId = args[1];
+  if (!runId || runId.startsWith('--')) {
+    console.error(`Usage: swarm roadmap ${sub} <run-id> [opts]`);
+    process.exit(1);
+  }
+
+  const format = parseClosureFormatFlag(args); // text|json — roadmap has no markdown rendering either
+  const dbPath = getDbPath();
+
+  const { compileRoadmap, showRoadmap, formatRoadmapCompile, formatRoadmapShow } =
+    await import('./commands/roadmap.js');
+
+  if (sub === 'compile') {
+    const report = compileRoadmap({ runId, dbPath });
+    if (format === 'json') {
+      console.log(JSON.stringify(report, null, 2));
+      return;
+    }
+    console.log(formatRoadmapCompile(report));
+    return;
+  }
+
+  // sub === 'show'
+  const versionRaw = parseValueFlag(args, '--version');
+  let version;
+  if (versionRaw !== undefined) {
+    version = Number(versionRaw);
+    if (!Number.isInteger(version) || version <= 0) {
+      console.error(`roadmap show: --version must be a positive integer (got ${JSON.stringify(versionRaw)})`);
+      process.exit(1);
+    }
+  }
+
+  const report = showRoadmap({ runId, dbPath, version });
+  if (format === 'json') {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+  console.log(formatRoadmapShow(report));
+}
+
 // ── Dispatch ──
 
 // Exported (F-264ab3aa) so wave31-4091637-5127-swarm-cp-pins.test.js can pin
@@ -2620,10 +3158,13 @@ export const commands = {
   approve: cmdApprove,
   defer: cmdDefer,
   reject: cmdReject,
+  reopen: cmdReopen,
+  close: cmdClose,
   persist: cmdPersist,
   findings: cmdFindings,
   runs: cmdRuns,
   trends: cmdTrends,
+  roadmap: cmdRoadmap,
 };
 
 /**
@@ -2788,10 +3329,75 @@ export const USAGE = {
   approve: 'Usage: swarm approve <run-id> [--all | --ids F-001,F-002]',
   defer: 'Usage: swarm defer <run-id> --ids F-001,F-002 --reason "<text>"',
   reject: 'Usage: swarm reject <run-id> --ids F-001,F-002 --reason "<text>"',
+  reopen: [
+    'Usage: swarm reopen <run-id> --ids F-001,F-002 --reason "<text>" --evidence "<text>" [--apply] [--format=text|json]',
+    '',
+    'C1: moves fixed|deferred|rejected -> recurring (open, amendable). The',
+    'lawful undo for a wrongly-closed finding — no lawful verb before this one',
+    'could move a CLOSED finding back to open. Targeted only (no --all).',
+    'Dry-run by default; --apply required to mutate (a DEPARTURE from defer/',
+    'reject\'s immediate-mutation polarity: reopen acts on SETTLED, terminal',
+    'history, mirroring the recovery-verb family\'s --apply gate instead).',
+    '',
+    'Required:',
+    '  --ids F-001,F-002       Targeted finding ids (case-insensitive)',
+    '  --reason "<text>"       Non-empty audit reason',
+    '  --evidence "<text>"     Non-empty supporting evidence (mandatory —',
+    '                          a reason without evidence is not enough)',
+    '',
+    'Optional:',
+    '  --apply                 Mutate (default: dry-run preview)',
+    '  --format=text|json       Output format (default: text)',
+    '',
+    'Resets the finding\'s closure_kind/verified_how; the PRIOR closure\'s',
+    'finding_events row is never touched (append-only history survives).',
+    'Writes one finding_events row per finding actually flipped',
+    '(event_type=\'reopened\').',
+  ].join('\n'),
+  close: [
+    'Usage: swarm close <run-id> --ids F-001,F-002 [--as fixed] --reason "<text>" --evidence "<text>" --verified-how independent|self_attested|operator_evidence [--apply] [--format=text|json]',
+    '',
+    'C2: operator closure for OPEN rows (new/recurring/approved/unverified)',
+    'structurally unclosable by declaration (e.g. unowned files) or where the',
+    'Director directs disposal. --as supports ONLY \'fixed\' today —',
+    '\'rejected\'/\'deferred\' stay the standalone `swarm defer`/`swarm reject`',
+    'verbs. Targeted only (no --all). Dry-run by default; --apply required',
+    'to mutate.',
+    '',
+    'Required:',
+    '  --ids F-001,F-002       Targeted finding ids (case-insensitive)',
+    '  --reason "<text>"       Non-empty audit reason',
+    '  --evidence "<text>"     Non-empty supporting evidence (mandatory)',
+    '  --verified-how <v>      One of: independent | self_attested | operator_evidence',
+    '                          (load-bearing — predicts reopen risk; never optional)',
+    '',
+    'Optional:',
+    '  --as fixed               Forward-compat placeholder; \'fixed\' is the only value',
+    '  --apply                  Mutate (default: dry-run preview)',
+    '  --format=text|json        Output format (default: text)',
+    '',
+    'Persists closure_kind=\'operator\' (never \'declared\' or \'absence\').',
+    'Writes one finding_events row per finding actually flipped',
+    '(event_type=\'operator_closed\').',
+  ].join('\n'),
   persist: 'Usage: swarm persist <run-id> [--ingest] [--dry-run]',
   findings: 'Usage: swarm findings <run-id> [wave-number] [--format=text|markdown|json]',
   runs: 'Usage: swarm runs [--format=text|json]',
   trends: 'Usage: swarm trends --query <recurring|history|recurrence> [--format=text|json]',
+  roadmap: [
+    'Usage: swarm roadmap compile <run-id> [--format=text|json]',
+    '   or: swarm roadmap show <run-id> [--version=N] [--format=text|json]',
+    '',
+    'T1 (trajectory layer): the roadmap is COMPILED, never authored. `compile`',
+    'generates a versioned artifact from the control-plane DB + git alone —',
+    'open/deferred/approved findings, the drain-queue rollup, recurrence',
+    'stats, and an ADVISORY (never a gate) per-file attention list — folding',
+    'in a bounded (<=7), human-authored operator-notes seed. An `invariant`',
+    'note with no resolvable `enforced_by` gate/test, or more than 7 notes,',
+    'is a hard, fail-loud refusal — not silent clamping. `show` is a',
+    'read-only render of the latest (or --version=N) compiled artifact;',
+    'expired notes are listed as EXPIRED, never silently dropped.',
+  ].join('\n'),
 };
 
 /**
@@ -3129,6 +3735,21 @@ Commands:
                              Mark targeted findings 'rejected' (triaged away as
                              not-a-defect — closed for the gate). Same contract
                              as defer.
+  reopen <run-id> --ids F-001,F-002 --reason "<text>" --evidence "<text>" [opts]
+                             C1: move fixed|deferred|rejected -> recurring (open,
+                             amendable) — the lawful undo for a wrongly-closed
+                             finding. Targeted only (no --all). --reason AND
+                             --evidence both required. Dry-run by default;
+                             --apply required to mutate. --format=text|json.
+  close <run-id> --ids F-001,F-002 [--as fixed] --reason "<text>" --evidence "<text>" --verified-how <v> [opts]
+                             C2: operator closure for OPEN rows structurally
+                             unclosable by declaration (e.g. unowned files).
+                             --as supports ONLY 'fixed' (defer/reject stay
+                             standalone). --verified-how (independent|
+                             self_attested|operator_evidence) is required, not
+                             optional. Targeted only (no --all). Dry-run by
+                             default; --apply required to mutate.
+                             --format=text|json.
   findings <run-id> [wave] [--format=text|markdown|json]
                              Findings digest for a wave (default: latest).
                              Format auto-detects: text on TTY, markdown when
@@ -3144,6 +3765,19 @@ Commands:
                              --query recurrence  recurrence-rate stats
                                                  (optional --window-days N)
                              --format=text|json  (default text)
+  roadmap compile <run-id> [--format=text|json]
+                             T1: compile the trajectory-layer artifact from the
+                             control-plane DB + git alone (never authored) —
+                             open/deferred/approved findings, drain-queue
+                             rollup, recurrence stats, and an ADVISORY (never a
+                             gate) per-file attention list, folding in a
+                             bounded (<=7) operator-notes seed. Versioned:
+                             recompiling within a run supersedes with a new
+                             sequence number; nothing is rewritten.
+  roadmap show <run-id> [--version=N] [--format=text|json]
+                             Read-only render of the latest (or --version=N)
+                             compiled roadmap. Expired notes render as EXPIRED,
+                             never silently dropped.
 
 Domain commands:
   domains <run-id>                          Show current map

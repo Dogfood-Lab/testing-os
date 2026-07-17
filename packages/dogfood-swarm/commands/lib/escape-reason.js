@@ -258,6 +258,22 @@
  *     own severity framing, now cited rather than inferred. See "Known
  *     residual" below escapeReasonForDisplay for the updated conclusion.
  *
+ *   F-29640f0b (wave 39): the C1/C2 closure verbs (`swarm reopen` / `swarm
+ *     close`, cli.js's transitionFindings/formatTransitionReport) add THREE
+ *     new call sites to this list, filed preemptively rather than
+ *     reactively -- this exact class has independently bitten seven prior
+ *     render sites in this file's own history above, one new site
+ *     discovered at a time across waves 16-24. New sites: (1) the dry-run
+ *     preview's `Reason:` / `Evidence:` echo lines, (2) the per-finding
+ *     eligible/ineligible list rows (`f.file_path` via escapePathForDisplay,
+ *     `f.note` -- a composite string built from the operator's own
+ *     --reason/--evidence and this file's own `f.status` -- via
+ *     escapeReasonForDisplay), and (3) the apply-confirmation summary line.
+ *     `--format=json` (transitionFindings' OTHER caller-side branch in
+ *     cmdReopen/cmdClose) never reaches formatTransitionReport, so the raw/
+ *     lossless values still reach JSON consumers unescaped, unchanged from
+ *     this file's established invariant.
+ *
  * `--format=json` output for every verb bypasses this helper entirely and
  * stays the lossless, unescaped canonical form -- JSON's own string escaping
  * already makes control bytes safe and machine-parseable losslessly.

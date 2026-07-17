@@ -64,6 +64,8 @@ testing-os processes dogfood submissions dispatched via `repository_dispatch` fr
 
 **What testing-os does NOT touch:** consumer source code beyond the declared `dogfood/scenarios/` definition files, secrets in consumer repos beyond the dispatch envelope, or anything outside this repo's working tree.
 
+**Finding-state transitions are evidence-bearing and append-only.** The swarm control plane's closure verbs (`swarm reopen`, `swarm close`) require an explicit reason, evidence, and — for operator closures — a declared verification mode; every transition writes an immutable `finding_events` row recording the acting authority. No automated path can close a finding on staleness or reopen one by prediction, and no verb can rewrite the event history — a wrongly-used credential can add transitions, but each addition is itself on the record.
+
 **Network surface.** By default the only egress is `api.github.com` (read-only: provenance confirmation + the scenario-definition fetch above). The two exceptions are both opt-in and disclosed above: a GitLab-provider submission (`gitlab.com/api`), and an operator-enabled XRPL anchor run. **No telemetry, no analytics — this codebase never phones home; absent those two opt-in paths it exposes no network surface beyond GitHub.** The receiver workflow runs with `contents: write` scoped to this repo only.
 
 ## Packages

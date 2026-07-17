@@ -53,6 +53,12 @@
 import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
 import { dirname, resolve, relative, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+// F-8f9e3ea0: the roadmap-notes-integrity handler's expires-passed check
+// reuses the SAME overdue comparison check-finding-regression-pins.mjs uses
+// for its allowlist/grandfather due-lists (F-875708f9 extracted it for
+// exactly this kind of second caller) rather than a third hand-rolled date
+// compare.
+import { isDueForRevalidation, defaultToday } from './lib/revalidation-cadence.mjs';
 
 /**
  * @typedef {Object} DriftReport
@@ -168,8 +174,21 @@ export async function runDriftChecks({ repoRoot, configPath, checkId }) {
     }
   }
 
+  // F-8f9e3ea0: 'warn' is a non-blocking severity (mirrors the WARN-not-block
+  // precedent in check-finding-regression-pins.mjs's dueForRevalidation
+  // reporting) — introduced for roadmap-notes-integrity's expired-note check,
+  // where T3 asks for the boundary to be surfaced loudly without failing the
+  // build over a note the compiler would drop on its next run anyway.
+  // `clean` is fail-closed the other direction: ONLY 'warn' is exempted, so
+  // any OTHER severity — 'drift', 'config-error', or a hypothetical future
+  // kind nobody has wired special handling for — still turns clean false.
+  // Every handler that existed before this change only ever emitted 'drift'
+  // or 'config-error', so this is a behavior-preserving generalization, not a
+  // redefinition, for every pre-existing check (see check-doc-drift.test.mjs's
+  // ~90 `.clean` assertions, none of which exercise a 'warn' report).
+  const clean = reports.every((r) => r.severity === 'warn');
   return {
-    clean: reports.length === 0,
+    clean,
     reports,
     checksRun: checks.length,
     checksTotal: allChecks.length,
@@ -603,10 +622,20 @@ const helperAdoptionSweepHandler = {
  * Combined with dropping `allowEmpty: true` in the config, the gate is now
  * behaviorally fail-loud: zero fixtures → config-error; positive fixture
  * that fails → drift; negative fixture that passes → drift.
+ *
+ * `schemaPointer` (optional, e.g. `#/$defs/latestPointer`) — F-7493be3c wave
+ * 39 correction: a single schema FILE can define more than one contract via
+ * `$defs` (packages/schemas/src/json/dogfood-roadmap.schema.json's own
+ * $defs.latestPointer is exactly this — the roadmap-artifact document's
+ * schema also shapes the SEPARATE, smaller dogfood/roadmap/latest.json
+ * pointer file via a `$ref`, rather than needing a second schema file).
+ * When set, targets validate against that JSON-pointer fragment of the
+ * loaded schema instead of its top level. Absent (the default) preserves
+ * the pre-existing top-level-only behavior byte for byte.
  */
 const schemaConformanceHandler = {
   kind: 'schema-conformance',
-  description: 'Target JSON files validate against the configured JSON Schema. Negative fixtures (basename matches negativeFilenamePattern) must fail validation; everything else must pass.',
+  description: 'Target JSON files validate against the configured JSON Schema (or, with schemaPointer set, a $defs fragment of it). Negative fixtures (basename matches negativeFilenamePattern) must fail validation; everything else must pass.',
   requiredFields: ['schema', 'targets'],
   async run(check, repoRoot) {
     const schemaAbs = resolve(repoRoot, check.schema);
@@ -630,6 +659,15 @@ const schemaConformanceHandler = {
       }];
     }
 
+    if (check.schemaPointer && resolveSchemaPointer(schema, check.schemaPointer) === undefined) {
+      return [{
+        checkId: check.id,
+        severity: 'config-error',
+        message: `[${check.id}] schemaPointer '${check.schemaPointer}' does not resolve within ${check.schema}`,
+        hint: 'Verify the pointer (e.g. "#/$defs/someName") matches the schema\'s actual $defs structure.',
+      }];
+    }
+
     // Ajv is an optional dep — a structural fallback exists for minimum-dep
     // environments, but ONLY as an explicit opt-in. F-1b9456a0: the fallback
     // ignores additionalProperties, oneOf/anyOf, deep $defs, and numeric
@@ -649,7 +687,18 @@ const schemaConformanceHandler = {
       const addFormats = addFormatsMod?.default ?? addFormatsMod;
       const ajv = new Ajv2020({ allErrors: true, strict: false });
       if (addFormats) addFormats(ajv);
-      validate = ajv.compile(schema);
+      if (check.schemaPointer) {
+        // $id is preferred when present (matches how a real consumer would
+        // reference this schema); the absolute file path is a safe fallback
+        // key for schemas authored without one. Either way `addSchema`
+        // registers the WHOLE document so internal $ref between $defs still
+        // resolves — only the compiled ENTRY point is the pointer fragment.
+        const schemaKey = schema.$id ?? schemaAbs;
+        ajv.addSchema(schema, schemaKey);
+        validate = ajv.compile({ $ref: `${schemaKey}${check.schemaPointer}` });
+      } else {
+        validate = ajv.compile(schema);
+      }
     } catch (err) {
       if (check.allowStructuralFallback !== true) {
         return [{
@@ -662,7 +711,7 @@ const schemaConformanceHandler = {
       console.error(
         `[check-doc-drift] WARNING: Ajv unavailable for check '${check.id}' (${err.message}) — running with the weaker structural validator (ignores additionalProperties, oneOf/anyOf, numeric constraints).`,
       );
-      validate = makeStructuralValidator(schema);
+      validate = makeStructuralValidator(schema, check.schemaPointer ? { $ref: check.schemaPointer } : schema);
     }
 
     const targetFiles = expandGlobs(check.targets ?? [], repoRoot, { recursive: true });
@@ -780,6 +829,201 @@ const schemaConformanceHandler = {
         });
       }
     }
+
+    return reports;
+  },
+};
+
+/**
+ * roadmap-notes-integrity — F-8f9e3ea0 (wave 39 feature pass, T3 —
+ * docs/trajectory-and-closure.dispatch.md).
+ *
+ * T3 requires two invariants over a roadmap artifact's operator notes: (a)
+ * an `invariant`-kind note must carry a resolvable `enforced_by` path, and
+ * (b) compile "drops expired notes loudly." Both are enforced by the roadmap
+ * COMPILER (core domain) at compile time — `swarm roadmap compile` runs
+ * occasionally (at run-close), not on every push. Between compiles, a
+ * COMMITTED artifact can drift out from under its own notes: an unrelated
+ * later change renames/deletes/moves a file an `enforced_by` pointer names,
+ * or a note's `expires` boundary passes with nobody having recompiled — and
+ * today nothing at verify/CI time re-checks a committed artifact's notes
+ * independent of the next compile event. This handler is that standing,
+ * independent re-check.
+ *
+ * TWO-HOP INDIRECTION (correction made from ground truth, not left as a
+ * guess — see check-doc-drift-roadmap.test.mjs's docstring for the same
+ * correction on the sibling schema check): dogfood/roadmap/latest.json is
+ * NOT the full compiled document — reading the backend lane's real, already-
+ * committed packages/schemas/src/json/dogfood-roadmap.schema.json (same
+ * wave) showed latest.json is the small `{ run_id, sequence, path }` pointer
+ * (T5), and operator_notes lives on the FULL document at the path it names.
+ * This handler therefore reads TWO files: `target` (the
+ * pointer) to learn where the real document is, then that document for
+ * `notesPath`. `targetPathField` names the pointer's own path-bearing field
+ * (config-driven rather than hardcoded to 'path', for the same reason
+ * `notesPath` is config-driven below).
+ *
+ * Severity split (mirrors the WARN-not-block precedent already established
+ * by check-finding-regression-pins.mjs's dueForRevalidation reporting):
+ *   - a pointer missing its path field, or naming a document that does not
+ *     exist                                          -> 'drift' (blocks) —
+ *     T5's "one mutable pointer to the newest version" promise is broken.
+ *   - invariant-kind note with no enforced_by      -> 'drift' (blocks) —
+ *     T3's hard requirement; a lesson with no enforcement pointer is
+ *     exactly what this repo's own swarms/CLAUDE.md calls "memoranda, not
+ *     mechanism," and is refused the same way here.
+ *   - a present enforced_by that no longer resolves -> 'drift' (blocks) —
+ *     the note is actively lying about what enforces it.
+ *   - expires boundary already passed at HEAD       -> 'warn' (does not
+ *     block, but is loudly reported) — an expired THEME or OPEN-QUESTION
+ *     note is stale advice, not a broken invariant; it should be recompiled
+ *     away, not held as a release blocker.
+ *
+ * Graceful absence: if the pointer file does not exist (the artifact has
+ * never been compiled, or this wave's compiler/schema lanes have not merged
+ * yet), this handler returns [] — no report of any kind, positive or
+ * negative. T1 already owns "the artifact doesn't exist yet"; this handler
+ * has nothing to say about notes that don't exist. Mirrors the
+ * roadmap-artifact-schema check's allowEmptyGlobs handling of the same
+ * pointer file.
+ *
+ * `notesPath` is config-driven (dotted path into the parsed REAL document)
+ * rather than hardcoded to `operator_notes`: if the compiler (core domain)
+ * ever nests notes somewhere other than the top level, only the config
+ * entry needs to change, not this handler.
+ */
+const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+function getByPath(obj, path) {
+  return String(path).split('.').reduce((acc, seg) => (acc == null ? undefined : acc[seg]), obj);
+}
+
+const roadmapNotesIntegrityHandler = {
+  kind: 'roadmap-notes-integrity',
+  description: 'Resolves the roadmap latest-pointer to the real compiled document, then checks its operator notes: an invariant-kind note must carry a resolvable enforced_by (blocks); an expired note is reported loudly but does not block.',
+  requiredFields: ['target', 'targetPathField', 'notesPath'],
+  async run(check, repoRoot) {
+    const pointerAbs = resolve(repoRoot, check.target);
+    if (!existsSync(pointerAbs)) {
+      // Graceful absence: the artifact has never been compiled (or hasn't
+      // merged yet, mid-wave). Not a report of any severity — see module doc.
+      return [];
+    }
+
+    let pointer;
+    try {
+      pointer = JSON.parse(readFileSync(pointerAbs, 'utf8'));
+    } catch (err) {
+      return [{
+        checkId: check.id,
+        severity: 'drift',
+        message: `[${check.id}] ${check.target}: invalid JSON — ${err.message}`,
+        file: check.target,
+        hint: check.hint,
+      }];
+    }
+
+    const documentRel = pointer?.[check.targetPathField];
+    if (typeof documentRel !== 'string' || documentRel.length === 0) {
+      // The pointer's OWN schema (dogfood-roadmap.schema.json#/$defs/
+      // latestPointer) requires this field — a compiled pointer missing it
+      // is a broken artifact (drift), not a mismatch in this check's own
+      // assumption (config-error is reserved for OUR shape guess being
+      // wrong, e.g. the notesPath lookup below).
+      return [{
+        checkId: check.id,
+        severity: 'drift',
+        message: `[${check.id}] ${check.target}: no non-empty string at targetPathField '${check.targetPathField}' — a compiled pointer must name the document it points to`,
+        file: check.target,
+        hint: check.hint,
+      }];
+    }
+
+    const documentAbs = resolve(repoRoot, documentRel);
+    if (!existsSync(documentAbs)) {
+      return [{
+        checkId: check.id,
+        severity: 'drift',
+        message: `[${check.id}] ${check.target} points at '${documentRel}', which does not exist at HEAD — T5's pointer promise is broken`,
+        file: check.target,
+        hint: check.hint,
+      }];
+    }
+
+    let artifact;
+    try {
+      artifact = JSON.parse(readFileSync(documentAbs, 'utf8'));
+    } catch (err) {
+      return [{
+        checkId: check.id,
+        severity: 'drift',
+        message: `[${check.id}] ${documentRel}: invalid JSON — ${err.message}`,
+        file: documentRel,
+        hint: check.hint,
+      }];
+    }
+
+    const notes = getByPath(artifact, check.notesPath);
+    if (notes === undefined) {
+      // The document parses but has no value at notesPath: OUR assumption
+      // about the document's shape is wrong, not a claim about note
+      // soundness — config-error, not drift (mirrors the schema-conformance
+      // handler's "schema file not found" being config-error rather than a
+      // vacuous pass).
+      return [{
+        checkId: check.id,
+        severity: 'config-error',
+        message: `[${check.id}] ${documentRel}: no value at notesPath '${check.notesPath}' — this check's assumption about the compiled document's shape does not match reality`,
+        hint: 'Update notesPath in scripts/doc-drift-patterns.json to match the compiler'
+          + "'s actual output shape (core domain), or fix the compiler if the document's shape is wrong.",
+      }];
+    }
+    if (!Array.isArray(notes)) {
+      return [{
+        checkId: check.id,
+        severity: 'drift',
+        message: `[${check.id}] ${documentRel}: value at '${check.notesPath}' is not an array`,
+        file: documentRel,
+        hint: check.hint,
+      }];
+    }
+
+    const today = check.today ?? defaultToday();
+    const reports = [];
+    notes.forEach((note, idx) => {
+      const where = `${documentRel} ${check.notesPath}[${idx}]`;
+      if (note && note.kind === 'invariant' && !note.enforced_by) {
+        reports.push({
+          checkId: check.id,
+          severity: 'drift',
+          message: `[${check.id}] ${where}: kind 'invariant' has no enforced_by — T3 requires a resolvable gate/test path for every invariant note`,
+          file: documentRel,
+          hint: check.hint,
+        });
+      }
+      if (note && note.enforced_by) {
+        const enforcedAbs = resolve(repoRoot, note.enforced_by);
+        if (!existsSync(enforcedAbs)) {
+          reports.push({
+            checkId: check.id,
+            severity: 'drift',
+            message: `[${check.id}] ${where}: enforced_by '${note.enforced_by}' does not exist at HEAD`,
+            file: documentRel,
+            hint: check.hint,
+          });
+        }
+      }
+      if (note && typeof note.expires === 'string' && ISO_DATE_RE.test(note.expires)
+        && isDueForRevalidation({ revalidate_by: note.expires }, today)) {
+        reports.push({
+          checkId: check.id,
+          severity: 'warn',
+          message: `[${check.id}] ${where}: expires '${note.expires}' has already passed at HEAD (kind=${note.kind ?? 'unknown'}) — not blocking; recompile to drop it`,
+          file: documentRel,
+          hint: check.hint,
+        });
+      }
+    });
 
     return reports;
   },
@@ -1340,6 +1584,7 @@ const HANDLERS = {
   [untaggedFenceHandler.kind]: untaggedFenceHandler,
   [helperAdoptionSweepHandler.kind]: helperAdoptionSweepHandler,
   [schemaConformanceHandler.kind]: schemaConformanceHandler,
+  [roadmapNotesIntegrityHandler.kind]: roadmapNotesIntegrityHandler,
   [frameworkSelfTestHandler.kind]: frameworkSelfTestHandler,
   [sourceOfTruthCrossRefHandler.kind]: sourceOfTruthCrossRefHandler,
 };
@@ -1560,6 +1805,30 @@ function stripCommentsAndStrings(src) {
 }
 
 /**
+ * Resolve a bare JSON-pointer fragment (e.g. '#/$defs/latestPointer') within
+ * a parsed schema document. Returns undefined if any segment is missing —
+ * callers treat that as a config-error (a typo'd pointer, or a schema whose
+ * $defs shape moved) rather than attempting to compile/validate against
+ * nothing. Mirrors the identical resolution walkValue's own $ref handling
+ * performs internally, exposed standalone so schemaConformanceHandler can
+ * validate the pointer BEFORE handing it to Ajv (a bad $ref inside
+ * ajv.compile() produces a much less actionable error).
+ *
+ * @param {unknown} schema
+ * @param {string} pointer
+ * @returns {unknown}
+ */
+function resolveSchemaPointer(schema, pointer) {
+  const segments = String(pointer).replace(/^#\/?/, '').split('/').filter(Boolean);
+  let node = schema;
+  for (const seg of segments) {
+    if (node == null || typeof node !== 'object') return undefined;
+    node = node[seg];
+  }
+  return node;
+}
+
+/**
  * Tiny structural JSON-Schema validator used as a fallback when Ajv is not
  * installable in the current environment. Honors:
  *   - top-level type
@@ -1571,10 +1840,10 @@ function stripCommentsAndStrings(src) {
  * available (which is always, in this repo) — this keeps the handler
  * functional in dep-light fixtures.
  */
-function makeStructuralValidator(schema) {
+function makeStructuralValidator(schema, entrySchema = schema) {
   function validate(value) {
     const errors = [];
-    walkValue('', value, schema, errors);
+    walkValue('', value, entrySchema, errors);
     validate.errors = errors;
     return errors.length === 0;
   }
@@ -1716,7 +1985,8 @@ Options:
                       (default: scripts/doc-drift-patterns.json)
   -h, --help          this message
 
-Exit codes: 0 (no drift) | 1 (drift found) | 2 (config error / bad arguments)
+Exit codes: 0 (no drift — non-blocking 'warn' reports, if any, are still
+printed) | 1 (drift found) | 2 (config error / bad arguments)
 `);
 }
 
@@ -1758,14 +2028,26 @@ if (isMain) {
       // update a doc; 'config-error' says fix the check itself.
       const hasConfigError = result.reports.some((r) => r.severity === 'config-error');
       const hasDrift = result.reports.some((r) => r.severity === 'drift');
+      // F-8f9e3ea0: warnReports are pulled out for their own always-printed
+      // block — 'warn' is non-blocking (result.clean can be true with warns
+      // present) but must never be silent ("at minimum WARNs loudly", per the
+      // finding this severity was added for).
+      const warnReports = result.reports.filter((r) => r.severity === 'warn');
       if (json) {
         console.log(JSON.stringify(result, null, 2));
       } else {
         const verb = checkId ? `check '${checkId}'` : `${result.checksRun} check(s)`;
         if (result.clean) {
           console.log(`[check-doc-drift] OK — ${verb} passed.`);
+          if (warnReports.length > 0) {
+            console.log(`[check-doc-drift] WARN — ${warnReports.length} non-blocking report(s):`);
+            for (const r of warnReports) {
+              console.log(`  WARN: ${r.message}`);
+              if (r.hint) console.log(`    hint: ${r.hint}`);
+            }
+          }
         } else {
-          const kinds = [hasConfigError && 'CONFIG-ERROR', hasDrift && 'DRIFT'].filter(Boolean).join(' + ');
+          const kinds = [hasConfigError && 'CONFIG-ERROR', hasDrift && 'DRIFT'].filter(Boolean).join(' + ') || 'UNEXPECTED-SEVERITY';
           console.error(`[check-doc-drift] ${kinds} — ${result.reports.length} report(s) from ${verb}:\n`);
           for (const r of result.reports) {
             console.error(`  ${r.severity.toUpperCase()}: ${r.message}`);
@@ -1779,10 +2061,12 @@ if (isMain) {
           }
         }
       }
-      // Fail closed on an unrecognized severity: only 'drift' and
-      // 'config-error' are emitted today, but a report of any OTHER
-      // severity should still red the run rather than silently exit 0.
-      process.exit(hasConfigError ? 2 : result.reports.length > 0 ? 1 : 0);
+      // Fail closed: 'warn' is the ONLY severity that does not red the run
+      // (result.clean already encodes that — see runDriftChecks). Exit 2
+      // takes precedence when any config-error is present (the check itself
+      // is broken); otherwise exit 1 unless clean, which now correctly
+      // covers both "zero reports" and "warn-only" as the exit-0 cases.
+      process.exit(hasConfigError ? 2 : result.clean ? 0 : 1);
     })
     .catch((err) => {
       console.error(`[check-doc-drift] fatal: ${err.message}`);

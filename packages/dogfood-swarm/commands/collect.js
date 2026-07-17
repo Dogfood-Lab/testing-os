@@ -32,6 +32,7 @@ import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { getActualTouchedFiles, diffReportedVsActual, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { normalizeFilePathForGlobMatch } from '../lib/normalize-path.js';
 import { pluralize } from './lib/pluralize.js';
 
 /**
@@ -339,15 +340,9 @@ export function scopeConfirmedToOwningDomain(db, runId, domains, agents) {
  * @param {string} filePath
  * @returns {string}
  */
-function normalizeFilePathForGlobMatch(filePath) {
-  if (!filePath) return '';
-  return filePath
-    .replace(/\\/g, '/')
-    .replace(/\/{2,}/g, '/')
-    .replace(/^\.\//, '')
-    .replace(/\/$/, '')
-    .toLowerCase();
-}
+// The wave-37 local copy of this normalizer moved to the shared leaf
+// lib/normalize-path.js at the wave-39 merge (the byte-identical duplicate
+// F-d656acc4 tracked); collect.js now consumes the one definition.
 
 /**
  * F-67ddcd02: the shared file_claims reconciliation step BOTH collect() (this

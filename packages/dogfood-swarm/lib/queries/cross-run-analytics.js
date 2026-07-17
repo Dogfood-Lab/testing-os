@@ -273,3 +273,68 @@ export function queryFindingRecurrenceRate(db, windowDays) {
     window_days: windowDays ?? null,
   };
 }
+
+/**
+ * F-e7c4c16d / F-swarmcpcore-004 (T2, docs/trajectory-and-closure.dispatch.md):
+ * per-file LANE-FRAGMENTATION — the count of DISTINCT domains that touched a
+ * file, scoped to one run. Bird et al. (ESEC/FSE 2011) and Nagappan et al.
+ * (ICSE 2008), cited in the dispatch's own Q3, found ownership fragmentation
+ * predicts failures better than churn+complexity+coverage combined; this is
+ * that signal, read directly off `file_claims` (already carries `file_path` +
+ * `domain_id` per agent_run — schema.js:115-123) joined through `agent_runs`
+ * to `waves` for the run scope.
+ *
+ * One of T2's three attention-score factors; the composed score stays
+ * advisory-only per T2's own text — this query does not gate on anything.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} runId
+ * @returns {Array<{ file_path: string, domain_count: number }>} — ordered
+ *   domain_count DESC, then file_path ASC (deterministic tiebreak — T1's
+ *   "same DB state -> byte-identical artifact" requirement).
+ */
+export function queryLaneFragmentation(db, runId) {
+  return db.prepare(`
+    SELECT
+      fc.file_path              AS file_path,
+      COUNT(DISTINCT ar.domain_id) AS domain_count
+    FROM file_claims fc
+    JOIN agent_runs ar ON fc.agent_run_id = ar.id
+    JOIN waves w ON ar.wave_id = w.id
+    WHERE w.run_id = ?
+    GROUP BY fc.file_path
+    ORDER BY domain_count DESC, file_path ASC
+  `).all(runId);
+}
+
+/**
+ * F-e7c4c16d / F-swarmcpcore-004 (T2): per-file PRIOR-FINDING recency/count —
+ * the other of T2's non-git attention-score factors. Rahman & Devanbu (ICSE
+ * 2013), cited in the dispatch's own Q3, found process metrics beat static
+ * code metrics; a file's own finding history (how many findings, how
+ * recently) is exactly that kind of process signal, read directly off
+ * `findings` (file_path + last_seen_wave + status), scoped to one run.
+ *
+ * File-less findings (file_path IS NULL) are excluded — there is no file to
+ * attribute the signal to; they are handled separately by the roadmap
+ * compiler's filed_by_domain-based routing (F-874c0683), not by this
+ * per-file query.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} runId
+ * @returns {Array<{ file_path: string, finding_count: number, most_recent_wave: number }>}
+ *   — ordered most_recent_wave DESC, then finding_count DESC, then file_path
+ *   ASC (deterministic tiebreak, matching queryLaneFragmentation's discipline).
+ */
+export function queryFindingRecencyByFile(db, runId) {
+  return db.prepare(`
+    SELECT
+      file_path                 AS file_path,
+      COUNT(*)                  AS finding_count,
+      MAX(last_seen_wave)       AS most_recent_wave
+    FROM findings
+    WHERE run_id = ? AND file_path IS NOT NULL
+    GROUP BY file_path
+    ORDER BY most_recent_wave DESC, finding_count DESC, file_path ASC
+  `).all(runId);
+}

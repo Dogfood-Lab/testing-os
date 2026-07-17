@@ -361,7 +361,9 @@ describe('F4-CP-04 — ordered/versioned control-plane migration-runner', () => 
       const row = ledgerRows(db).find((r) => r.migration_id === 'v9-adjudications-table');
       assert.ok(row, 'the v9 migration must be recorded in the ledger');
       assert.equal(row.target_version, 9);
-      assert.equal(row.target_version, SCHEMA_VERSION, 'v9 is the current SCHEMA_VERSION');
+      // (An earlier revision also equated 9 with the LIVE SCHEMA_VERSION —
+      // true when written, stale the moment v10 landed. The migration's own
+      // ledger row is the durable claim; the live constant is not.)
       db.close();
     });
 
@@ -379,6 +381,130 @@ describe('F4-CP-04 — ordered/versioned control-plane migration-runner', () => 
         plan.applied.some((m) => m.id === 'v9-adjudications-table'),
         'the v9 table migration must be APPLIED (not bootstrapped) when the table is missing',
       );
+      db.close();
+    });
+  });
+
+  /**
+   * F-91f34832 — v9->v10 migration on a REAL SEEDED ledger (docs/
+   * trajectory-and-closure.dispatch.md, C3: findings gains `closure_kind` and
+   * `verified_how`, both additive ADD COLUMNs).
+   *
+   * The manifest-shape test above and the fresh/bootstrap describe blocks
+   * already prove downgrade-refusal and fresh/bootstrap generically and
+   * version-agnostically — re-running THOSE after SCHEMA_VERSION bumps to 10
+   * needs zero new code (per this finding's own text). What is genuinely
+   * missing: this repo's actual live control plane is neither a fresh DB nor
+   * a ledger-LESS legacy DB — it is a v9 DB whose migrations_ledger is
+   * ALREADY FULLY POPULATED (every v2-v9 entry recorded 'applied'). That is
+   * the one shape none of the existing fixtures exercise.
+   *
+   * `buildV9FullLedgerDb()` below does NOT call `migrateDb` to construct its
+   * "before" state — deliberately, because once swarm-cp-core's v10 entries
+   * land in MIGRATIONS_MANIFEST, a plain `migrateDb(db, 0)` (or
+   * `openMemoryDb()`) would ALSO pick up v10 in the same pass, leaving no
+   * "stopped at v9" checkpoint to migrate FROM. Instead it applies only the
+   * manifest entries with `target_version <= 9` by hand, seeding the ledger
+   * to look exactly like this repo's real v9 control plane, then runs the
+   * real `migrateDb` — which is the one call under test.
+   */
+  describe('F-91f34832 — v9->v10 migration on a real, fully-ledgered v9 DB', () => {
+    function buildV9FullLedgerDb() {
+      const db = new Database(':memory:');
+      db.pragma('foreign_keys = ON');
+      db.exec(SCHEMA_SQL);
+      const v9Manifest = MIGRATIONS_MANIFEST.filter((m) => m.target_version <= 9);
+      const insertLedger = db.prepare(
+        `INSERT INTO migrations_ledger (migration_id, target_version, applied_at, status) VALUES (?, ?, datetime('now'), 'applied')`
+      );
+      const tx = db.transaction(() => {
+        for (const m of v9Manifest) {
+          // SCHEMA_SQL already bakes in several columns/tables that the
+          // historical MIGRATIONS_SQL entries separately ADD COLUMN/CREATE —
+          // e.g. runs.timeout_policy_ms is in SCHEMA_SQL's base CREATE TABLE
+          // directly, so v2-runs-timeout-policy-ms's ALTER TABLE throws
+          // "duplicate column" here. This is the EXACT tolerant-replay idiom
+          // already used elsewhere in this same file (the retroactive-
+          // bootstrap describe block above) — not a new pattern.
+          try { db.exec(m.sql); } catch (e) {
+            if (!e.message.includes('duplicate column')) throw e;
+          }
+          insertLedger.run(m.id, m.target_version);
+        }
+        db.prepare(`INSERT OR REPLACE INTO kv (key, value) VALUES ('schema_version', '9')`).run();
+      });
+      tx();
+      return db;
+    }
+
+    // ADJUDICATED at the wave-39 merge: this test's draft pinned "exactly 2"
+    // v10 rows against the pass contract's PRE-amendment C3 (closure_kind +
+    // verified_how only). The amended C3 grew to include filed_by_domain,
+    // finding_events.actor, and T5's roadmap_artifacts table — so the durable
+    // property is "exactly the v10 manifest slice, nothing else", derived from
+    // the manifest rather than a hardcoded literal (the volatile-count class).
+    it('appends EXACTLY the v10 manifest slice as new ledger rows and leaves every v2-v9 entry byte-unchanged', () => {
+      const db = buildV9FullLedgerDb();
+      const beforeFull = db.prepare(
+        'SELECT migration_id, target_version, applied_at, status FROM migrations_ledger ORDER BY migration_id'
+      ).all();
+      assert.equal(beforeFull.length, MIGRATIONS_MANIFEST.filter((m) => m.target_version <= 9).length,
+        'precondition: the hand-seeded v9 ledger must be fully populated for every v2-v9 entry');
+
+      if (SCHEMA_VERSION < 10) {
+        assert.fail(
+          `SCHEMA_VERSION is ${SCHEMA_VERSION}, expected >= 10 — awaiting swarm-cp-core's v10 migration ` +
+          `(the two additive ADD COLUMNs for findings.closure_kind / findings.verified_how, C3's schema ` +
+          `section). This test needs SCHEMA_VERSION bumped to 10 and two new MIGRATIONS_MANIFEST entries ` +
+          `before it can exercise the real migration path — that lane's job, not this test's.`
+        );
+      }
+
+      const plan = migrateDb(db, 9);
+      const afterFull = db.prepare(
+        'SELECT migration_id, target_version, applied_at, status FROM migrations_ledger ORDER BY migration_id'
+      ).all();
+
+      const v10Slice = MIGRATIONS_MANIFEST.filter((m) => m.target_version === 10);
+      assert.ok(v10Slice.length > 0, 'the v10 manifest slice must be non-empty for this test to mean anything');
+      assert.equal(afterFull.length, beforeFull.length + v10Slice.length,
+        `expected exactly the v10 manifest slice (${v10Slice.length} rows) appended; before=${beforeFull.length}, after=${afterFull.length}`);
+      const beforeIds = new Set(beforeFull.map((r) => r.migration_id));
+      const newRows = afterFull.filter((r) => !beforeIds.has(r.migration_id));
+      assert.deepEqual(newRows.map((r) => r.migration_id).sort(), v10Slice.map((m) => m.id).sort(),
+        'the new ledger ids must be exactly the v10 manifest ids — no more, no fewer');
+      for (const row of newRows) {
+        assert.equal(row.target_version, 10, `new v10 migration '${row.migration_id}' must have target_version 10`);
+        assert.equal(row.status, 'applied', `new v10 migration '${row.migration_id}' must be status=applied`);
+      }
+
+      // Zero re-application of any v2-v9 entry — applied_at must be
+      // byte-unchanged (this is the "no re-application" half of the claim;
+      // the fresh-DB/bootstrap tests above already prove the APPLY half).
+      for (const before of beforeFull) {
+        const after = afterFull.find((r) => r.migration_id === before.migration_id);
+        assert.ok(after, `pre-existing migration '${before.migration_id}' must still be present`);
+        assert.equal(after.applied_at, before.applied_at,
+          `migration '${before.migration_id}' must NOT be re-applied — applied_at must be byte-unchanged`);
+        assert.equal(after.status, before.status, `migration '${before.migration_id}' status must be unchanged`);
+      }
+
+      // The new columns exist and are nullable/default-compatible for the
+      // pre-existing rows this DB never had any findings in (additive-only,
+      // per C3's own text — no NOT NULL without a DEFAULT is permitted here).
+      assert.ok(tableColumns(db, 'findings').includes('closure_kind'), 'v10 must add findings.closure_kind');
+      assert.ok(tableColumns(db, 'findings').includes('verified_how'), 'v10 must add findings.verified_how');
+
+      // This fixture's base DB is built from the CURRENT (v10-shaped)
+      // SCHEMA_SQL, so migrateDb classifies the v10 entries as retroactive
+      // BOOTSTRAPS (artifact already present → ledger-only), not fresh
+      // applies — the same path every historical ALTER takes in openMemoryDb.
+      // The durable claim is that the whole v10 slice is accounted for in
+      // the plan, whichever bucket the base-DB shape routes it through.
+      const v10Accounted = [...plan.applied, ...plan.bootstrapped]
+        .filter((m) => m.target_version === 10);
+      assert.equal(v10Accounted.length, v10Slice.length,
+        `plan must account for the full v10 manifest slice across applied+bootstrapped; got ${v10Accounted.length} of ${v10Slice.length}`);
       db.close();
     });
   });

@@ -17,6 +17,7 @@ import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
+import { readBoundedJson } from '../lib/bounded-json-read.js';
 import { getDomains, aredomainsFrozen, freezeDomains, takeDomainSnapshot } from '../lib/domains.js';
 import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../lib/templates.js';
 import { buildPriorMap } from '../lib/fingerprint.js';
@@ -29,6 +30,7 @@ import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { AUDIT_PHASES, AMEND_PHASES, renderPhaseList } from '../lib/phases.js';
+import { escapePathForDisplay } from './lib/escape-reason.js';
 
 /**
  * D3B-003 (Wave A2 Stage C): emit a structured NDJSON event for a
@@ -101,6 +103,137 @@ function previewWorktree(repoPath, waveNumber, domainName, runId) {
 }
 
 /**
+ * The current roadmap's digest-relevant fields (T4), read from
+ * `<repoLocalPath>/dogfood/roadmap/latest.json`. Tolerates BOTH shapes that
+ * file can legitimately hold:
+ *
+ *   (1) A thin `{ run_id, sequence, path }` POINTER — the shape
+ *       lib/roadmap/compiler.js#writeRoadmapArtifact actually writes for a
+ *       REAL `swarm roadmap compile`. Resolved by reading the pointed-at
+ *       artifact (repo-relative `path`) and using ITS `attention`/`drain`/
+ *       `notes` fields.
+ *   (2) The digest fields directly on latest.json itself — a fixture (or
+ *       any future writer) that skips the pointer indirection.
+ *
+ * Absent/unreadable/malformed input degrades to `null` (no digest to seed),
+ * never a throw — matching this package's established advisory-content
+ * degrade-not-fail posture (getChurnStats, compileGrandfatheredManifestDrain).
+ *
+ * H5 discipline: both reads go through the bounded reader rather than a raw
+ * synchronous parse of the file contents — `latest.json` and the artifact
+ * it points at both live under the AUDITED repo's checkout (run.local_path),
+ * the same "untrusted target-repo file" trust class as
+ * lib/verify/adapters/node.js's package.json read.
+ *
+ * @param {string} repoLocalPath
+ * @returns {{ attention?: Array, drain?: Array, notes?: Array } | null}
+ */
+function loadRoadmapDigestSource(repoLocalPath) {
+  const latestPath = join(repoLocalPath, 'dogfood', 'roadmap', 'latest.json');
+  if (!existsSync(latestPath)) return null;
+
+  let parsed;
+  try {
+    parsed = readBoundedJson(latestPath);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+
+  const looksLikePointer = typeof parsed.path === 'string'
+    && !Array.isArray(parsed.attention) && !Array.isArray(parsed.drain) && !Array.isArray(parsed.notes);
+  if (!looksLikePointer) return parsed;
+
+  const resolvedPath = join(repoLocalPath, parsed.path);
+  if (!existsSync(resolvedPath)) return null;
+  try {
+    return readBoundedJson(resolvedPath);
+  } catch {
+    return null;
+  }
+}
+
+/** Advisory attention/drain lists are bounded to this many lines each before
+ * truncating with a "+N more" pointer (F-8a97a700(b): bounded even when the
+ * underlying artifact is large, with the full artifact addressable on disk —
+ * MemGPT-style paging, never a raw dump). */
+const ROADMAP_DIGEST_TOP_K = 10;
+
+/**
+ * Renders the T4 roadmap-digest STRING passed as `buildAuditPrompt`'s
+ * `opts.roadmapDigest` — plain text; templates.js's own
+ * renderRoadmapDigestSection applies the neutralizeForPrompt/fenceSafeBlock
+ * hardening (F-swarmcpcore-009), so this function does not need to.
+ *
+ * BOUNDED (F-8a97a700(b)): each of attention/drain is ranked (attention by
+ * score DESC, a deterministic file-ASC tiebreak) and truncated to
+ * ROADMAP_DIGEST_TOP_K, with an explicit "+N more, see <path>" line — never
+ * a raw dump of a 200-file/500-entry artifact into every agent's prompt.
+ *
+ * @param {string} repoLocalPath
+ * @returns {string|undefined} — undefined when there is nothing to seed
+ *   (no latest.json, or an empty/malformed one) so the caller can leave
+ *   `roadmapDigest` unset entirely and templates.js's own `? ... : ''`
+ *   renders nothing, exactly as if --seed-roadmap had never been passed.
+ */
+function buildRoadmapDigest(repoLocalPath) {
+  const source = loadRoadmapDigestSource(repoLocalPath);
+  if (!source) return undefined;
+
+  const pointerHint = 'dogfood/roadmap/latest.json';
+  const lines = [];
+
+  // F-6c030425 umbrella (reason-escaping-discipline.test.js's field-family
+  // gate): `.file` is a named field-family member (git-derived, audited-repo
+  // path) — escaped HERE, at the render line the mechanical scanner checks,
+  // rather than relying solely on templates.js's downstream
+  // neutralizeForPrompt. `id`/`owner`/`reason`/`kind`/`text` below are NOT
+  // named family members and are deliberately left un-escaped at THIS line,
+  // matching this same file's existing, already-allowlisted precedent for
+  // opts.priorContext a few lines up in the render pipeline (buildPriorMap's
+  // f.description/f.file_path join, F-d2d06af3): the WHOLE composed
+  // roadmapDigest string still gets neutralizeForPrompt'd unconditionally at
+  // its one render site (lib/templates.js's renderRoadmapDigestSection)
+  // before reaching any agent, so adding a second, redundant escape call
+  // here would only duplicate that protection, not add any.
+  const attention = Array.isArray(source.attention) ? [...source.attention] : [];
+  if (attention.length > 0) {
+    attention.sort((a, b) => (b.score ?? 0) - (a.score ?? 0) || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+    lines.push('Attention (advisory, ranked — never a gate):');
+    for (const a of attention.slice(0, ROADMAP_DIGEST_TOP_K)) {
+      lines.push(`- ${escapePathForDisplay(a.file)} (score ${a.score})`);
+    }
+    if (attention.length > ROADMAP_DIGEST_TOP_K) {
+      lines.push(`- +${attention.length - ROADMAP_DIGEST_TOP_K} more, see ${pointerHint}`);
+    }
+  }
+
+  const drain = Array.isArray(source.drain) ? source.drain : (source.drain && Array.isArray(source.drain.entries) ? source.drain.entries : []);
+  if (drain.length > 0) {
+    lines.push('');
+    lines.push('Drain queue (advisory):');
+    for (const d of drain.slice(0, ROADMAP_DIGEST_TOP_K)) {
+      const reason = d.reason ? ` — ${d.reason}` : '';
+      lines.push(`- ${d.id} (owner: ${d.owner || 'unknown'})${reason}`);
+    }
+    if (drain.length > ROADMAP_DIGEST_TOP_K) {
+      lines.push(`- +${drain.length - ROADMAP_DIGEST_TOP_K} more, see ${pointerHint}`);
+    }
+  }
+
+  const notes = Array.isArray(source.notes) ? source.notes : [];
+  if (notes.length > 0) {
+    lines.push('');
+    lines.push('Operator notes:');
+    for (const n of notes) {
+      lines.push(`- [${n.kind}] ${n.text}`);
+    }
+  }
+
+  return lines.length > 0 ? lines.join('\n') : undefined;
+}
+
+/**
  * @param {object} opts
  * @param {string} opts.runId
  * @param {string} opts.phase
@@ -116,6 +249,14 @@ function previewWorktree(repoPath, waveNumber, domainName, runId) {
  *   routing counts for amend phases, and the worktrees that WOULD be created
  *   under --isolate) WITHOUT any control-plane write, file write, or worktree
  *   creation. Returns a report with `dryRun: true` and `waveId: null`.
+ * @param {boolean} [opts.seedRoadmap] — T4 (F-8a97a700): explicit opt-in to
+ *   seed a bounded roadmap-digest section into every audit prompt this wave,
+ *   read from `<run.local_path>/dogfood/roadmap/latest.json` if present.
+ *   OFF by default — a prior run's roadmap must never leak into a new run's
+ *   briefs absent this explicit flag (Q5: Semgrep's opt-in triage-propagation
+ *   precedent; the same cross-boundary-trust class F-18d0ef6d/F-a9c399ce
+ *   already warn against, moved from cross-domain to cross-run). See
+ *   buildRoadmapDigest's own header for the bounding/truncation contract.
  * @returns {object} — { waveId, waveNumber, agents, promptDir, dryRun? }
  *
  * Atomicity contract (D3B-002, Wave A2 Stage C):
@@ -633,6 +774,16 @@ export function dispatch(opts) {
   // already committed) and the operator can re-render with the prompt-
   // generator helpers; the wave is recoverable via `swarm resume` because
   // the agent rows exist with status=dispatched.
+  //
+  // F-8a97a700 (T4): computed ONCE for the whole wave (not per-agent — the
+  // digest is the same cross-run targeting context regardless of which
+  // domain is reading it), and ONLY when opts.seedRoadmap is explicitly
+  // true. Every OTHER dispatch — the overwhelming default — leaves
+  // roadmapDigest undefined, so templates.js's renderRoadmapDigestSection
+  // renders nothing and a prior run's roadmap never leaks in (Q5: Semgrep's
+  // opt-in triage-propagation precedent).
+  const roadmapDigest = opts.seedRoadmap ? buildRoadmapDigest(run.local_path) : undefined;
+
   const builtAgents = [];
   for (const a of agents) {
     const domain = a.domain;
@@ -646,12 +797,17 @@ export function dispatch(opts) {
       domainSnapshotId: snapshot.snapshotId,
       phase: opts.phase,
       waveNumber,
+      roadmapDigest,
     };
 
     let prompt;
     if (isAudit) {
       if (opts.phase === 'feature-audit') {
-        prompt = buildFeatureAuditPrompt(promptOpts);
+        // F-f86e42eb consumer half (coordinator, wave-39 merge): the template
+        // accepts the prior/CONFIRM context; pass it the same way the audit
+        // branch below does. roadmapDigest is now wired (F-8a97a700, wave 39
+        // seam reconciliation) via promptOpts above, gated on opts.seedRoadmap.
+        prompt = buildFeatureAuditPrompt({ ...promptOpts, priorContext, openPriorContext });
       } else {
         prompt = buildAuditPrompt({ ...promptOpts, priorContext, openPriorContext });
       }

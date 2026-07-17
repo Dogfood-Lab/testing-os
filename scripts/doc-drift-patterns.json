@@ -1,6 +1,6 @@
 {
   "$schema": "./doc-drift-patterns.schema.json",
-  "description": "Config for scripts/check-doc-drift.mjs — codifies Class #9 (multi-occurrence sibling-fix sweep) and Class #11 (multi-occurrence fix completeness). Each entry is one drift CHECK. Adding a new check is a config edit, not a code edit: append a new object with { id, kind, title, ... } where the remaining fields are the requiredFields declared by the handler module for that kind. The framework registers seven handler modules — source-vs-target-coverage, forbidden-pattern-in-targets, self-consistency, untagged-fence, helper-adoption-sweep, schema-conformance, framework-self-test — and dispatches each entry to the matching handler. New drift CLASSES (entirely new kinds of comparison) need both a config entry AND a new handler module; new INSTANCES of an existing class are config-only.",
+  "description": "Config for scripts/check-doc-drift.mjs — codifies Class #9 (multi-occurrence sibling-fix sweep) and Class #11 (multi-occurrence fix completeness). Each entry is one drift CHECK. Adding a new check is a config edit, not a code edit: append a new object with { id, kind, title, ... } where the remaining fields are the requiredFields declared by the handler module for that kind. The framework registers nine handler modules — source-vs-target-coverage, forbidden-pattern-in-targets, self-consistency, untagged-fence, helper-adoption-sweep, schema-conformance, roadmap-notes-integrity, framework-self-test, source-of-truth-cross-ref — and dispatches each entry to the matching handler. (This count/list drifted stale at eight handlers for a time — source-of-truth-cross-ref shipped without updating this prose; fixed alongside the F-8f9e3ea0 addition of roadmap-notes-integrity rather than compounding it, per this repo's own Class #11 the hard way.) New drift CLASSES (entirely new kinds of comparison) need both a config entry AND a new handler module; new INSTANCES of an existing class are config-only.",
   "checks": [
     {
       "id": "error-codes",
@@ -23,15 +23,25 @@
         },
         {
           "regex": "this\\.code\\s*=\\s*`STATE_MACHINE_\\$\\{opts\\.kind\\}`",
-          "expand": ["STATE_MACHINE_BLOCKED", "STATE_MACHINE_TERMINAL", "STATE_MACHINE_INVALID"]
+          "expand": [
+            "STATE_MACHINE_BLOCKED",
+            "STATE_MACHINE_TERMINAL",
+            "STATE_MACHINE_INVALID"
+          ]
         },
         {
           "regex": "code:\\s*['\"]FINDING_ID_COLLISION['\"]",
-          "expand": ["FINDING_ID_COLLISION"]
+          "expand": [
+            "FINDING_ID_COLLISION"
+          ]
         },
         {
           "regex": "`VALIDATOR_FAULT_\\$\\{cls\\}",
-          "expand": ["VALIDATOR_FAULT_SCHEMA", "VALIDATOR_FAULT_POLICY", "VALIDATOR_FAULT_STEPS"]
+          "expand": [
+            "VALIDATOR_FAULT_SCHEMA",
+            "VALIDATOR_FAULT_POLICY",
+            "VALIDATOR_FAULT_STEPS"
+          ]
         },
         {
           "regex": "'(DISPATCH_[A-Z_]+)'",
@@ -56,14 +66,24 @@
           "kind": "status-enum-evaluator",
           "module": "packages/dogfood-swarm/db/schema.js",
           "exportName": "STATUS",
-          "skipKeys": ["claim_type", "ownership_class", "severity", "run", "wave", "agent_run"]
+          "skipKeys": [
+            "claim_type",
+            "ownership_class",
+            "severity",
+            "run",
+            "wave",
+            "agent_run"
+          ]
         }
       ],
       "targets": [
         "site/src/content/docs/handbook/state-machines.md"
       ],
       "matchMode": "wholeWord",
-      "allowlist": ["reported", "recurred"],
+      "allowlist": [
+        "reported",
+        "recurred"
+      ],
       "hint": "Mention the missing status in site/src/content/docs/handbook/state-machines.md. The state-machines page documents PUBLIC state vocabularies (record classification, finding review, wave classification). Internal control-plane plumbing (run/wave/agent_run statuses) is exempt via skipKeys in scripts/doc-drift-patterns.json. If a finding-review or wave-classifier state is genuinely internal-only and shouldn't be documented, add it to the allowlist with a comment explaining why."
     },
     {
@@ -134,25 +154,52 @@
         {
           "id": "10-phase-title",
           "must": [
-            { "regex": "10-Phase Play", "min": 1, "label": "title block must reference 10-Phase Play" }
+            {
+              "regex": "10-Phase Play",
+              "min": 1,
+              "label": "title block must reference 10-Phase Play"
+            }
           ],
           "mustNot": [
-            { "regex": "## The 9-Phase Play", "label": "old '9-Phase Play' header" }
+            {
+              "regex": "## The 9-Phase Play",
+              "label": "old '9-Phase Play' header"
+            }
           ]
         },
         {
           "id": "stage-d-defined",
           "must": [
-            { "regex": "Stage D[^-]*[—-][^\\n]*Visual", "min": 1, "label": "Stage D must be defined with 'Visual' lens" },
-            { "regex": "\\*\\*Stage D[^*]+\\*\\*", "min": 1, "label": "Stage D must appear as a bolded entry in the stage list" }
+            {
+              "regex": "Stage D[^-]*[—-][^\\n]*Visual",
+              "min": 1,
+              "label": "Stage D must be defined with 'Visual' lens"
+            },
+            {
+              "regex": "\\*\\*Stage D[^*]+\\*\\*",
+              "min": 1,
+              "label": "Stage D must appear as a bolded entry in the stage list"
+            }
           ]
         },
         {
           "id": "all-stages-mentioned-in-checklist",
           "must": [
-            { "regex": "STAGE A", "min": 1, "label": "Stage A in coordinator checklist" },
-            { "regex": "STAGE B", "min": 1, "label": "Stage B in coordinator checklist" },
-            { "regex": "STAGE C", "min": 1, "label": "Stage C in coordinator checklist" }
+            {
+              "regex": "STAGE A",
+              "min": 1,
+              "label": "Stage A in coordinator checklist"
+            },
+            {
+              "regex": "STAGE B",
+              "min": 1,
+              "label": "Stage B in coordinator checklist"
+            },
+            {
+              "regex": "STAGE C",
+              "min": 1,
+              "label": "Stage C in coordinator checklist"
+            }
           ]
         }
       ],
@@ -168,8 +215,16 @@
         {
           "id": "tombstone-intact",
           "must": [
-            { "regex": "\"\\$comment\":\\s*\"RETIRED \\(2026-07-15\\)", "min": 1, "label": "$comment must open with the RETIRED (2026-07-15) marker" },
-            { "regex": "RETIRED — see \\$comment", "min": 1, "label": "description must carry the 'RETIRED — see $comment' cross-ref" }
+            {
+              "regex": "\"\\$comment\":\\s*\"RETIRED \\(2026-07-15\\)",
+              "min": 1,
+              "label": "$comment must open with the RETIRED (2026-07-15) marker"
+            },
+            {
+              "regex": "RETIRED — see \\$comment",
+              "min": 1,
+              "label": "description must carry the 'RETIRED — see $comment' cross-ref"
+            }
           ]
         }
       ],
@@ -185,8 +240,16 @@
         {
           "id": "banner-intact",
           "must": [
-            { "regex": "^# RETIRED TEMPLATE — do not use \\(deprecated 2026-07-15\\)", "min": 1, "label": "RETIRED banner as the first line" },
-            { "regex": "\\*\\*No code path consumes this file\\.\\*\\*", "min": 1, "label": "bolded no-consumer claim" }
+            {
+              "regex": "^# RETIRED TEMPLATE — do not use \\(deprecated 2026-07-15\\)",
+              "min": 1,
+              "label": "RETIRED banner as the first line"
+            },
+            {
+              "regex": "\\*\\*No code path consumes this file\\.\\*\\*",
+              "min": 1,
+              "label": "bolded no-consumer claim"
+            }
           ]
         }
       ],
@@ -202,14 +265,21 @@
         {
           "id": "banner-intact",
           "must": [
-            { "regex": "^# RETIRED TEMPLATE — do not use \\(deprecated 2026-07-15\\)", "min": 1, "label": "RETIRED banner as the first line" },
-            { "regex": "\\*\\*No code path consumes this file\\.\\*\\*", "min": 1, "label": "bolded no-consumer claim" }
+            {
+              "regex": "^# RETIRED TEMPLATE — do not use \\(deprecated 2026-07-15\\)",
+              "min": 1,
+              "label": "RETIRED banner as the first line"
+            },
+            {
+              "regex": "\\*\\*No code path consumes this file\\.\\*\\*",
+              "min": 1,
+              "label": "bolded no-consumer claim"
+            }
           ]
         }
       ],
       "hint": "swarms/templates/explore.md is a RETIRED template (wave-6 amend F-bd8b4353) — component/domain decomposition lives in the control plane's frozen domain map (`swarm domains`). Keep the '# RETIRED TEMPLATE — do not use (deprecated 2026-07-15)' banner as the file's first line and the '**No code path consumes this file.**' claim intact. If the file is genuinely coming back to life, retire this check in the same commit with the rationale."
     },
-
     {
       "id": "helper-adoption--atomic-write",
       "kind": "helper-adoption-sweep",
@@ -218,7 +288,9 @@
       "helper": "packages/findings/lib/atomic-write.js",
       "exportName": "atomicWriteFileSync",
       "forbiddenPattern": "fs\\.writeFileSync\\(|(?<![\\w.])writeFileSync\\(",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/findings/lib/atomic-write.js",
         "packages/findings/lib/file-lock.js",
@@ -241,7 +313,9 @@
       "helper": "packages/dogfood-swarm/lib/log-stage.js",
       "exportName": "logStage",
       "forbiddenPattern": "(?:function|const|let|var)\\s+logStage\\b",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/dogfood-swarm/lib/log-stage.js"
       ],
@@ -255,7 +329,9 @@
       "helper": "packages/ingest/validate-record.js",
       "exportName": "RecordValidationError",
       "forbiddenPattern": "class\\s+RecordValidationError\\b",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/ingest/validate-record.js"
       ],
@@ -269,7 +345,9 @@
       "helper": "packages/findings/lib/atomic-write.js",
       "exportName": "atomicWriteFileSync",
       "forbiddenPattern": "(?:function|const)\\s+unsafeSegment\\b",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/findings/lib/atomic-write.js",
         "packages/ingest/persist.js"
@@ -284,13 +362,14 @@
       "helper": "packages/dogfood-swarm/lib/errors.js",
       "exportName": "IsolationError",
       "forbiddenPattern": "class\\s+IsolationError\\b",
-      "callers": ["packages/**/*.js"],
+      "callers": [
+        "packages/**/*.js"
+      ],
       "allowlist": [
         "packages/dogfood-swarm/lib/errors.js"
       ],
       "wrapperHint": "Import { IsolationError } from the central errors module. New typed errors with .code go into packages/dogfood-swarm/lib/errors.js (or a sibling errors.js if they belong to a different package's lifecycle)."
     },
-
     {
       "id": "agent-output-schema",
       "kind": "schema-conformance",
@@ -301,13 +380,43 @@
         "swarms/__schema-fixtures__/*.json",
         "swarms/swarm-*/wave-*/outputs/*.json"
       ],
-      "allowEmptyGlobs": ["swarms/swarm-*/wave-*/outputs/*.json"],
+      "allowEmptyGlobs": [
+        "swarms/swarm-*/wave-*/outputs/*.json"
+      ],
       "allowlist": [],
       "errorClass": "AgentOutputValidationError",
       "negativeFilenamePattern": "^invalid-",
       "hint": "Match packages/schemas/src/json/agent-output.schema.json. Required at top level: domain, summary. Audit outputs add `findings[]` (with severity ∈ CRITICAL/HIGH/MEDIUM/LOW and category ∈ AUDIT_CATEGORIES); feature outputs add `features[]`; amend outputs add `fixes[]` + `files_changed[]`. Live-run target glob expanded 2026-05-14 (study-swarm Prevention-A): wave-2 amend's coordinator-brief drift (fixes_applied vs fixes) was caught at collect-time after agents had already run — moving the schema-conformance check to CI fires the gate at push time so brief-vs-schema drift surfaces before agents are dispatched. Stage C Wave A2 follow-up: a positive fixture that no longer validates means the schema tightened without updating the fixture (fix one side); a negative fixture that validates means the schema loosened without updating the negative test (fix the schema or the fixture). F-5d126106: the live-run glob (swarms/swarm-*/wave-*/outputs/*.json) is listed in `allowEmptyGlobs` because it is STRUCTURALLY unmatchable in CI — swarms/.gitignore ignores `swarm-*/` wholesale, so no push can ever contain a file under that path. It still matches real files on a dev rig where swarm-*/ working dirs exist on disk, which is where `npm run verify` actually schema-checks live wave outputs; CI's job is limited to the committed swarms/__schema-fixtures__/*.json fixtures, which are NOT in allowEmptyGlobs and must always match at least one file."
     },
-
+    {
+      "id": "roadmap-artifact-schema",
+      "kind": "schema-conformance",
+      "title": "The roadmap latest-pointer (dogfood/roadmap/latest.json) conforms to packages/schemas/src/json/dogfood-roadmap.schema.json#/$defs/latestPointer",
+      "description": "F-7493be3c (wave 39 feature pass, T1 — docs/trajectory-and-closure.dispatch.md): the roadmap is COMPILED, never authored (`swarm roadmap compile <run-id>` writes dogfood/roadmap/<run-id>.json + a latest.json pointer). Without a verify/CI gate, a malformed compile ships a broken artifact that T4's digest-injection (swarm init/dispatch reading latest.json for a new run) would then choke on downstream, with no signal until that unrelated later command fails. Reuses the schema-conformance handler proven on agent-output.schema.json rather than inventing new machinery. CORRECTED after reading the backend domain's real dogfood-roadmap.schema.json (built the same wave, F-fe05c6d7): dogfood/roadmap/latest.json is the SMALL {run_id, sequence, path} pointer shaped by the schema's $defs.latestPointer sub-schema, NOT the full compiled document (that lives at the path the pointer names) — the original brief text ('validate latest.json') was written before the real schema existed and read as 'validate the whole roadmap document'; ground truth corrects that to 'validate the pointer against its own, smaller, dedicated $defs fragment' via the schema-conformance handler's new schemaPointer field (added this same fix). Two design decisions the finding calls out explicitly, both still true post-correction: (1) targets ONLY dogfood/roadmap/latest.json, never a glob over per-run history (dogfood/roadmap/<run-id>.json accumulates one file per run forever — globbing it re-validates the entire archive on every push for no marginal safety, since latest.json is the only artifact anything reads); (2) the target is listed in allowEmptyGlobs so a repo that has never run `swarm roadmap compile` (or is mid-wave-39, pre-merge) reports NOTHING for that glob — not a pass, not a fail, structurally not-applicable — while the committed fixtures below still give the gate something real to validate on every push regardless of compile state.",
+      "schema": "packages/schemas/src/json/dogfood-roadmap.schema.json",
+      "schemaPointer": "#/$defs/latestPointer",
+      "targets": [
+        "scripts/__roadmap-fixtures__/*.json",
+        "dogfood/roadmap/latest.json"
+      ],
+      "allowEmptyGlobs": [
+        "dogfood/roadmap/latest.json"
+      ],
+      "allowlist": [],
+      "errorClass": "RoadmapArtifactValidationError",
+      "negativeFilenamePattern": "^invalid-",
+      "hint": "Match the latestPointer shape ({ run_id, sequence, path }, additionalProperties:false) inside packages/schemas/src/json/dogfood-roadmap.schema.json's $defs (schemas domain, wave 39, F-fe05c6d7). SEAM (disclosed at authoring time, corrected once ground truth existed): this check config was written by the ci-tooling lane in the same parallel wave that built the schema — until that merge lands in THIS worktree, `schema file not found` is the CORRECT, disclosed, pre-merge state of this check, not a bug in this config. scripts/__roadmap-fixtures__/*.json were re-authored against the real $defs.latestPointer shape after reading the backend lane's completed, already-committed schema file directly (not left as an unverified best-effort guess) — see check-doc-drift-roadmap.test.mjs's own stand-in-schema docstring for exactly which fields were confirmed this way. If a fixture still fails post-merge, that means the schemas domain revised latestPointer's shape after this check was authored — a real integration change for the coordinator's serial verify to surface, not a latent bug to paper over."
+    },
+    {
+      "id": "roadmap-notes-integrity",
+      "kind": "roadmap-notes-integrity",
+      "title": "The roadmap document's operator notes stay sound between compiles (resolved via the latest-pointer)",
+      "description": "F-8f9e3ea0 (wave 39 feature pass, T3 — docs/trajectory-and-closure.dispatch.md): T3's two note invariants (an invariant-kind note must carry a resolvable enforced_by; expired notes are dropped loudly) are enforced by the roadmap compiler at COMPILE time only (swarm roadmap compile, which runs occasionally at run-close). Between compiles, a COMMITTED artifact can drift out from under its own notes — an unrelated later change renames/deletes/moves a file an enforced_by pointer names, or a note's expires boundary passes with nobody having recompiled — and nothing at verify/CI time re-checked either condition independent of the next compile. This check is that standing re-check. CORRECTED after reading the backend domain's real dogfood-roadmap.schema.json (F-fe05c6d7, same wave): dogfood/roadmap/latest.json is only the small {run_id, sequence, path} pointer (T5) — operator_notes lives on the FULL document the pointer names, not on latest.json itself. This check therefore resolves in two hops: read the pointer (target/targetPathField), then read notesPath from the document it names. Graceful absence unchanged: if the pointer does not exist (never compiled yet, or this wave's core/schemas lanes have not merged), this check reports nothing at all — not a pass, not a fail. A pointer whose named document does not exist is itself reported as drift (T5's pointer promise broken), not silently skipped. Severity split mirrors the WARN-not-block precedent in check-finding-regression-pins.mjs's dueForRevalidation reporting: a missing/dangling enforced_by (or a broken pointer) is 'drift' (blocks); an expired note is 'warn' (loud, non-blocking — stale advice, not a broken invariant).",
+      "target": "dogfood/roadmap/latest.json",
+      "targetPathField": "path",
+      "notesPath": "operator_notes",
+      "hint": "For an invariant note with no enforced_by: add one (a real gate/test path this repo already has), or change the note's kind to 'theme'/'open-question' if it isn't actually enforced by anything. For a dangling enforced_by: fix the path, or delete the note if the mechanism it named is genuinely gone. For a pointer naming a document that doesn't exist: recompile (`swarm roadmap compile <run-id>`) to regenerate a consistent pointer + document pair. For an expired note (WARN, non-blocking): recompile, which drops expired notes loudly per T3 — this WARN is the between-compiles signal that a recompile is due, not a release blocker on its own."
+    },
     {
       "id": "framework-self-test",
       "kind": "framework-self-test",
@@ -316,7 +425,6 @@
       "configPath": "scripts/doc-drift-patterns.json",
       "hint": "Either register the missing handler module in scripts/check-doc-drift.mjs (HANDLERS map), or remove the orphaned check from scripts/doc-drift-patterns.json. Required fields are declared on each handler module."
     },
-
     {
       "id": "source-of-truth-cross-ref",
       "kind": "source-of-truth-cross-ref",
@@ -352,15 +460,6 @@
           "captureGroup": 1,
           "resolver": "verbCount",
           "hint": "Update site/src/content/docs/handbook/index.md's 'per-verb quick reference for all N `swarm` verbs' to the current registered-verb count (keys of the `commands` map in packages/dogfood-swarm/cli.js)."
-        },
-        {
-          "id": "handbook-cli-reference-verb-count",
-          "title": "handbook cli-reference 'all N verbs' matches the cli.js commands map (total)",
-          "target": "site/src/content/docs/handbook/cli-reference.md",
-          "pattern": "scan all (\\d+) verbs",
-          "captureGroup": 1,
-          "resolver": "verbCount",
-          "hint": "Update site/src/content/docs/handbook/cli-reference.md's 'scan all N verbs' to the current registered-verb count (keys of the `commands` map in packages/dogfood-swarm/cli.js)."
         },
         {
           "id": "handbook-swarm-history-sibling-count",

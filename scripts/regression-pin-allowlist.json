@@ -180,6 +180,36 @@
       "file": "packages/dogfood-swarm/commands/collect.js",
       "owner": "coordinator",
       "revalidate_by": "2026-10-17"
+    },
+    "F-07895c2c": {
+      "reason": "Cross-reference, no fix behind it: the dispatch.js comment marks where the roadmap-digest wiring will attach when the seeding flags land — F-07895c2c was DELIBERATELY SKIPPED in wave 39 (swarm-cp-verbs output: hard dependency on the compiler seam plus source-position-pin fragility in dispatch.js made it the wrong trade late in the wave). The finding stays approved in the control plane; when its fix lands, this entry must be REMOVED and replaced by a real @pins tag.",
+      "file": "packages/dogfood-swarm/commands/dispatch.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-271b4661": {
+      "reason": "The fix IS a comment: F-271b4661 asked for a vocabulary cross-reference mapping the public finding-contract reopen grammar (REQUIRES_CLOSED / REASON_REQUIRED / lineage.superseded_by) onto the control-plane C1/C2 verbs, explicitly with NO behavior change (wave-38 backend filing; wave-39 backend fix). A prose-only fix has no test to pin without a tautology — the F-35304e50 comment-only precedent, again.",
+      "file": "packages/findings/review/transitions.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-936c83f4": {
+      "reason": "Same comment-only class as F-271b4661, same wave: cross-reference comments at the three how-do-we-know enums (--provenance, evidence_kind, verified_how) so a future unifier can find all three. No behavior change anywhere; no non-tautological test exists for a comment.",
+      "file": "packages/verify/validators/provenance.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-274e7ac5": {
+      "reason": "The citation sits at the consolidated phase-constant definition whose duplication F-274e7ac5 tracked. The fix is structural de-duplication (one definition); collect.js adopting the import is the disclosed queued follow-up from the wave-39 merge (swarm-cp-core cross_domain_notes). When the adoption lands with its test, this entry should convert to a real @pins tag.",
+      "file": "packages/dogfood-swarm/lib/phases.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-ad2d6318": {
+      "reason": "Documentation-of-semantics comment: pre-v10 rows read closure_kind/verified_how as unknown/pre-migration, never silently defaulted. swarm-cp-core disclosed in its wave-39 output that NO consumer query exists yet to exercise the bucketing — a test today would be the vacuous shape the ethos forbids. Becomes a fix pin when the first consumer lands (expected: the wave-40+ read surfaces).",
+      "file": "packages/dogfood-swarm/db/schema.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
     }
   }
 }

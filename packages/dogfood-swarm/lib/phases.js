@@ -7,8 +7,25 @@
  * the ten phases in a DIFFERENT order — so which sequence an operator read
  * depended on which command printed it. dispatch.js's own AUDIT_PHASES /
  * AMEND_PHASES validation arrays were a fourth private copy. This module owns
- * the ordered enumeration; every render site and the validation gate consume
- * it, so the enumeration and order provably cannot drift.
+ * the ordered enumeration; dispatch.js imports it directly (see its own
+ * `import { AUDIT_PHASES, AMEND_PHASES, ... } from '../lib/phases.js'`), so
+ * that render site and the validation gate it drives provably cannot drift.
+ *
+ * DISCLOSED EXCEPTION (F-274e7ac5): commands/collect.js — which is ALSO a
+ * validation gate consulted for phase-shape decisions (its `isAudit`/
+ * `isAmend` branching) — declares its OWN local `const AUDIT_PHASES = [...]`
+ * / `const AMEND_PHASES = [...]` literals rather than importing from this
+ * module. The two arrays match today (byte-for-byte compared), so there is no
+ * live behavioral bug, but this file's enumeration and collect.js's copy are
+ * two independently-typed sources that CAN desync on a future edit to
+ * either — "provably cannot drift" was true only of the dispatch.js import
+ * path, not of every phase-consuming call site in the package, and is
+ * disclosed here rather than left as an overclaim (this repo's own standing
+ * rule: unsoundness must be disclosed, not merely absent from the file that
+ * would reveal it). collect.js is owned by a different domain
+ * (swarm-cp-verbs) than this file (swarm-cp-core), so the mechanical fix —
+ * importing AUDIT_PHASES/AMEND_PHASES here and deleting collect.js's local
+ * literal — is that domain's edit to make, not this file's.
  *
  * Order: all AUDIT phases first, then all AMEND phases — the grouping the
  * help block, README, and error-render hint already agreed on. (This is NOT

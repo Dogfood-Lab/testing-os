@@ -1467,6 +1467,7 @@ test('framework-self-test: REGISTERED_HANDLERS exposes all handler kinds', () =>
     'forbidden-pattern-in-targets',
     'framework-self-test',
     'helper-adoption-sweep',
+    'roadmap-notes-integrity',
     'schema-conformance',
     'self-consistency',
     'source-of-truth-cross-ref',
@@ -2351,14 +2352,14 @@ test('CLI: the config-not-found hint promises --config, and that flag now exists
 // relative-count claims (sibling = total-1, "the other N" = total-K).
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('FT-g: countCommandMapEntries counts the real cli.js commands map as 28', () => {
+test('FT-g: countCommandMapEntries counts the real cli.js commands map as 31', () => {
   const cliSrc = readFileSync(
     resolve(repoRoot, 'packages/dogfood-swarm/cli.js'),
     'utf8',
   );
   assert.equal(
     countCommandMapEntries(cliSrc, 'commands', 'packages/dogfood-swarm/cli.js'),
-    28,
+    31,
     'The authoritative verb count is the key count of the `commands` dispatch map. ' +
       'If this changed, every prose surface stating the count (and its offsets) must follow.',
   );
@@ -2588,7 +2589,9 @@ test('FT-g LIVE: the real config\'s verbCount resolver uses command-map-count, n
   const claimTargets = sot.claims.map((c) => c.target);
   for (const surface of [
     'site/src/content/docs/handbook/index.md',
-    'site/src/content/docs/handbook/cli-reference.md',
+    // cli-reference.md dropped its literal count in wave 39 (de-literaled by
+    // design; its verbCount claim was deleted with it) — the page can no
+    // longer drift by number, which beats guarding the number.
     'site/src/content/docs/handbook/swarm-history.md',
     'site/src/content/docs/handbook/operating-guide.md',
   ]) {

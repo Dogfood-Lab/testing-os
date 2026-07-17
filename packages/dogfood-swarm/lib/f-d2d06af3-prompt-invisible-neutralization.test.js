@@ -180,14 +180,85 @@ describe('F-d2d06af3 — buildAuditPrompt neutralizes the invisible/deception cl
       `an evenly-paired fence must still survive untouched, got:\n${prompt}`);
   });
 
-  it('non-regression: buildFeatureAuditPrompt is unaffected (it interpolates no finding fields)', async () => {
-    // The coordinator's correction explicitly scoped this fix to
-    // buildAmendPrompt + buildAuditPrompt; buildFeatureAuditPrompt takes no
-    // findings/priorContext argument at all, so there is nothing to sweep
-    // here — recorded so a future reader does not wonder why this file is
-    // silent about a third prompt builder in the same module.
+  it('non-regression: buildFeatureAuditPrompt renders cleanly with no priorContext/openPriorContext/roadmapDigest', async () => {
+    // SUPERSEDES this test's own prior framing ("buildFeatureAuditPrompt
+    // takes no findings/priorContext argument at all, so there is nothing to
+    // sweep here"): F-f86e42eb gave buildFeatureAuditPrompt the SAME
+    // priorContext/openPriorContext/roadmapDigest params buildAuditPrompt
+    // has, via the shared renderPriorSection/renderOpenPriorSection/
+    // renderRoadmapDigestSection functions — see the new describe block
+    // below for the adversarial-payload coverage that fix needs. This case
+    // stays as the omitted-args non-regression: every new param is optional,
+    // so a caller passing none of them (still true of every feature-audit
+    // dispatch until commands/dispatch.js is updated to pass them) must keep
+    // producing a clean, non-empty prompt.
     const { buildFeatureAuditPrompt } = await import('./templates.js');
     const prompt = buildFeatureAuditPrompt({ ...BASE_OPTS, phase: 'feature-audit' });
     assert.ok(typeof prompt === 'string' && prompt.length > 0);
+  });
+});
+
+/** @pins F-f86e42eb */
+describe('F-f86e42eb — buildFeatureAuditPrompt neutralizes the invisible/deception class in priorContext/openPriorContext/roadmapDigest (same treatment as buildAuditPrompt)', () => {
+  it('a Unicode TAG-block payload in openPriorContext does not survive, and the CONFIRM section renders', async () => {
+    const { buildFeatureAuditPrompt } = await import('./templates.js');
+    const openPriorContext =
+      `- [approved] F-9: ordinary open feature (src/a.js)\n` +
+      `- [new] F-8: hidden${TAG_A}instruction feature (src/b.js)`;
+    const prompt = buildFeatureAuditPrompt({
+      ...BASE_OPTS,
+      phase: 'feature-audit',
+      openPriorContext,
+    });
+    assert.ok(!prompt.includes(TAG_A),
+      `raw TAG-block codepoint in openPriorContext must not survive into the feature-audit prompt:\n${JSON.stringify(prompt)}`);
+    assert.ok(prompt.includes('ordinary open feature (src/a.js)'), 'ordinary open-prior text must stay legible');
+    assert.ok(prompt.includes('Known OPEN findings across the run — CONFIRM the ones in your scope'),
+      'the CONFIRM-queue section must actually render for buildFeatureAuditPrompt (F-f86e42eb\'s whole point)');
+    assert.ok(prompt.includes('"confirmed"'), 'the worked JSON example must mention confirmed, per F-f86e42eb');
+  });
+
+  it('a bidi RLO/PDF payload in priorContext (closed priors) does not survive', async () => {
+    const { buildFeatureAuditPrompt } = await import('./templates.js');
+    const priorContext = `- [fixed] F-1: before${RLO}reversed${PDF}after (src/a.js)`;
+    const prompt = buildFeatureAuditPrompt({
+      ...BASE_OPTS,
+      phase: 'feature-audit',
+      priorContext,
+    });
+    assert.ok(!prompt.includes(RLO), `raw RLO in priorContext must not survive:\n${JSON.stringify(prompt)}`);
+    assert.ok(!prompt.includes(PDF), `raw PDF in priorContext must not survive:\n${JSON.stringify(prompt)}`);
+  });
+
+  it('a Unicode TAG-block payload in roadmapDigest does not survive, in EITHER prompt builder, and renders at the TOP', async () => {
+    const { buildAuditPrompt, buildFeatureAuditPrompt } = await import('./templates.js');
+    const roadmapDigest = `top attention file: src/hot${TAG_A}.js (churn 42)`;
+
+    for (const [label, builder, phase] of [
+      ['buildAuditPrompt', buildAuditPrompt, 'health-audit-a'],
+      ['buildFeatureAuditPrompt', buildFeatureAuditPrompt, 'feature-audit'],
+    ]) {
+      const prompt = builder({ ...BASE_OPTS, phase, roadmapDigest });
+      assert.ok(!prompt.includes(TAG_A),
+        `${label}: raw TAG-block codepoint in roadmapDigest must not survive:\n${JSON.stringify(prompt)}`);
+      assert.ok(prompt.includes('Roadmap Digest'), `${label}: the roadmap-digest section must render`);
+      assert.ok(prompt.includes('advisory'), `${label}: the section must label itself advisory (T2/T4)`);
+
+      // T4: "injected at the TOP of audit briefs" — the digest heading must
+      // appear before the '## Your Scope' section every prompt already has,
+      // not merely be present somewhere in the document (Lost in the Middle).
+      const digestIdx = prompt.indexOf('## Roadmap Digest');
+      const scopeIdx = prompt.indexOf('## Your Scope');
+      assert.ok(digestIdx >= 0 && scopeIdx >= 0 && digestIdx < scopeIdx,
+        `${label}: roadmap digest must render BEFORE '## Your Scope', got digestIdx=${digestIdx} scopeIdx=${scopeIdx}`);
+    }
+  });
+
+  it('omitting roadmapDigest renders no Roadmap Digest section at all (opt-in, never a default)', async () => {
+    const { buildAuditPrompt, buildFeatureAuditPrompt } = await import('./templates.js');
+    for (const [builder, phase] of [[buildAuditPrompt, 'health-audit-a'], [buildFeatureAuditPrompt, 'feature-audit']]) {
+      const prompt = builder({ ...BASE_OPTS, phase });
+      assert.ok(!prompt.includes('Roadmap Digest'), 'no roadmapDigest arg must mean no section at all');
+    }
   });
 });
