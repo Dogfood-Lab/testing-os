@@ -18,6 +18,15 @@
  *
  * Lens: the lowest-stakes boundary in scope (human/CI operator, known path,
  * fails fast and loud) still gets a legible message instead of a raw stack.
+ *
+ * F-a9d91e67 update: build-submission.js's inline CLI now delegates to
+ * cli.js's run(), whose documented contract classifies an unreadable
+ * --scenario-file as a USAGE error — exit 2, structured
+ * `ERROR [SCENARIO_FILE_UNREADABLE]:` envelope (see cli.js's USAGE text:
+ * "2  usage error (missing/invalid flag, unreadable --scenario-file)").
+ * The substance this suite pins is unchanged — path-naming message, no raw
+ * stack — but the failure exit code is now 2, aligned across both entry
+ * points instead of the legacy front door's bare exit 1.
  */
 
 import { describe, it } from 'node:test';
@@ -81,10 +90,10 @@ function baseArgs(scenarioFile) {
 }
 
 describe('build-submission --scenario-file read guard (d3-ingest-B004)', () => {
-  it('POSITIVE: a MISSING scenario file exits 1 with a path-naming message, not a raw ENOENT stack', () => {
+  it('POSITIVE: a MISSING scenario file exits 2 (usage error) with a path-naming message, not a raw ENOENT stack', () => {
     const missing = resolve(tmpdir(), 'stageC-b004-does-not-exist-' + Date.now() + '.json');
     const { code, stderr } = runCli(baseArgs(missing));
-    assert.equal(code, 1, `missing scenario file must exit 1; stderr=${stderr}`);
+    assert.equal(code, 2, `missing scenario file must exit 2; stderr=${stderr}`);
     assert.ok(stderr.includes(missing) || stderr.includes('does-not-exist'),
       `error must name the offending scenario file; got stderr=${stderr}`);
     assert.ok(/scenario.?file/i.test(stderr),
@@ -94,13 +103,13 @@ describe('build-submission --scenario-file read guard (d3-ingest-B004)', () => {
       `must not surface a raw fs stack; got stderr=${stderr}`);
   });
 
-  it('POSITIVE: a MALFORMED-JSON scenario file exits 1 with a path-naming message, not a raw SyntaxError stack', () => {
+  it('POSITIVE: a MALFORMED-JSON scenario file exits 2 (usage error) with a path-naming message, not a raw SyntaxError stack', () => {
     const root = mkdtempSync(join(tmpdir(), 'stageC-b004-'));
     try {
       const badJson = join(root, 'results.json');
       writeFileSync(badJson, '{ this is not valid json', 'utf-8');
       const { code, stderr } = runCli(baseArgs(badJson));
-      assert.equal(code, 1, `malformed scenario JSON must exit 1; stderr=${stderr}`);
+      assert.equal(code, 2, `malformed scenario JSON must exit 2; stderr=${stderr}`);
       assert.ok(stderr.includes(badJson) || stderr.includes('results.json'),
         `error must name the offending scenario file; got stderr=${stderr}`);
       assert.ok(/scenario.?file/i.test(stderr),
@@ -110,7 +119,7 @@ describe('build-submission --scenario-file read guard (d3-ingest-B004)', () => {
     }
   });
 
-  it('POSITIVE: an UNREADABLE scenario path (a directory) exits 1 with a path-naming message', () => {
+  it('POSITIVE: an UNREADABLE scenario path (a directory) exits 2 (usage error) with a path-naming message', () => {
     // A directory passed where a file is expected → readFileSync throws EISDIR,
     // a genuine read-time IO error (same class as EACCES/lock), cross-platform.
     const root = mkdtempSync(join(tmpdir(), 'stageC-b004-dir-'));
@@ -118,7 +127,7 @@ describe('build-submission --scenario-file read guard (d3-ingest-B004)', () => {
       const asDir = join(root, 'results.json');
       mkdirSync(asDir);
       const { code, stderr } = runCli(baseArgs(asDir));
-      assert.equal(code, 1, `unreadable scenario path must exit 1; stderr=${stderr}`);
+      assert.equal(code, 2, `unreadable scenario path must exit 2; stderr=${stderr}`);
       assert.ok(stderr.includes(asDir) || stderr.includes('results.json'),
         `error must name the offending scenario file; got stderr=${stderr}`);
       assert.ok(/scenario.?file/i.test(stderr),

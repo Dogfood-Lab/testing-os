@@ -181,12 +181,32 @@ export function queryFindingRecurrenceRate(db, windowDays) {
   // non-numeric-looking string never gets a chance to coerce to a number at
   // all; a genuine numeric string ('30', '3650') has no leading/trailing-only
   // whitespace content and is untouched by this clause.
+  // F-93cd78d3: a NEGATIVE finite number (`-5`, or the string `'-5'`) passed
+  // BOTH clauses above cleanly — `Number.isFinite(-5)` is true and
+  // `String(-5).trim()` is `'-5'`, not empty — and reached the SQL
+  // date-modifier template literal at line ~209 unguarded. `` `-${Number(-5)}
+  // days` `` renders the literal string '--5 days', which SQLite's
+  // datetime() treats as an unparseable modifier and silently returns NULL
+  // (confirmed directly: `SELECT datetime(<ts>, '--5 days')` → NULL) — the
+  // WHERE clause then matches zero rows, and this function returns the SAME
+  // clean, plausible all-zero shape a genuinely quiet run history produces.
+  // The exact "unparseable modifier -> silent NULL -> zero rows -> plausible
+  // clean result" mechanism F-36327af8/F-b5fd9887 already named, for a third
+  // input shape neither guard reached. windowDays is a trailing-window
+  // length; a negative one has no valid meaning (unlike '0', which the
+  // existing tests correctly protect as a real, deliberate "anchor run
+  // only" value — 0 is a valid boundary, negative is not).
   if (
     windowDays !== undefined && windowDays !== null
-    && (String(windowDays).trim() === '' || !Number.isFinite(Number(windowDays)))
+    && (String(windowDays).trim() === '' || !Number.isFinite(Number(windowDays)) || Number(windowDays) < 0)
   ) {
     throw new Error(
-      `queryFindingRecurrenceRate: windowDays must be a finite number, or omitted/null for "all runs" — got ${JSON.stringify(windowDays)}`,
+      // The "must be a finite number" substring is preserved verbatim
+      // (rather than e.g. "finite, non-negative number") because
+      // F-36327af8/F-b5fd9887's own existing tests assert against it with
+      // `/windowDays must be a finite number/` — this fix extends the same
+      // guard and must not require editing those two siblings' tests.
+      `queryFindingRecurrenceRate: windowDays must be a finite number that is not negative, or omitted/null for "all runs" — got ${JSON.stringify(windowDays)}`,
     );
   }
 

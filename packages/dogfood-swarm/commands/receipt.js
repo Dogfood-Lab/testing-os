@@ -25,6 +25,7 @@ import { FINDING_GATED_PHASES } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
 import { logStage } from '../lib/log-stage.js';
 import { escapeReasonForDisplay, escapePathForDisplay } from './lib/escape-reason.js';
+import { pluralize } from './lib/pluralize.js';
 
 /**
  * Build a receipt object from DB truth.
@@ -434,7 +435,7 @@ export function formatReceiptMarkdown(r) {
     lines.push('## Verification');
     lines.push('');
     const v = r.verification;
-    lines.push(`${v.passed ? 'PASS' : 'FAIL'} (${v.repo_type}${v.test_count ? `, ${v.test_count} tests` : ''}, ${formatExitClause(v.passed, v.exit_code)})`);
+    lines.push(`${v.passed ? 'PASS' : 'FAIL'} (${v.repo_type}${v.test_count ? `, ${pluralize(v.test_count, 'test')}` : ''}, ${formatExitClause(v.passed, v.exit_code)})`);
     lines.push('');
   }
 

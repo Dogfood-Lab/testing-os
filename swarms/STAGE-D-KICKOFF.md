@@ -104,8 +104,8 @@ Then: present findings → `swarm approve` → `dispatch stage-d-amend --isolate
 
 ## Open debt (disclosed, not hidden — do not re-file, siblings are fair game)
 
-- `lib/log-stage.js:90` — unguarded primary `console.error`; the shared root cause of the retry-warn class (`F-7f2a9c4d`, open).
-- `revalidate.js`'s call site is correct but has **no** cross-domain regression test — revert it and the whole suite still passes (`F-2826433c`/`F-7c2a9e41`, open, filed independently by two lanes).
+- `lib/log-stage.js:90` — unguarded primary `console.error`; the shared root cause of the retry-warn class (canonical id `F-36fdebca`, open — an earlier revision of this line carried the lane's local label `F-7f2a9c4d`, which exists in no run).
+- `revalidate.js`'s call site is correct but has **no** cross-domain regression test — revert it and the whole suite still passes (canonical id `F-a9c399ce`, open, filed independently by two lanes — the two ids an earlier revision cited here were agent-local labels, not DB ids).
 - `init.js`/`persist.js`/`adjudicate.js` — zero `logStage` despite being consequential.
 - `wave_receipts` can't go append-only without a `db/schema.js` edit (`UNIQUE(wave_id)`, `foreign_keys=ON`).
 - **No lawful verb reopens a wrongly-closed finding.** The "Three R's" contract has no answer for a bad classification; the previous coordinator used a guarded, dry-run-first DB repair with a `finding_events` row per finding.

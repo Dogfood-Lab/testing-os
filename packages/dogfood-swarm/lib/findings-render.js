@@ -82,6 +82,7 @@
  */
 
 import { escapeReasonForDisplay, escapePathForDisplay } from '../commands/lib/escape-reason.js';
+import { displayWidth, sliceToDisplayWidth } from './display-width.js';
 
 const SEV_SHORT = { CRITICAL: 'CRIT', HIGH: 'HIGH', MEDIUM: 'MED', LOW: 'LOW' };
 
@@ -420,16 +421,35 @@ function truncate(s, n) {
   // escaped free-text render site in this package.
   const escaped = escapeReasonForDisplay(String(s));
   const flat = escaped.replace(/\s+/g, ' ').trim();
-  if (flat.length <= n) return flat;
-  // F-391f3e5d: the naive `flat.slice(0, n - 1)` can land inside one of the
-  // multi-character tokens escapeReasonForDisplay just produced. Back up to
-  // the last complete boundary before appending the ellipsis so the output
-  // never ends in a dangling, malformed-looking fragment like `...aaa\x…`.
-  return backUpIncompleteEscape(flat.slice(0, n - 1)) + '…';
+  // F-44200377: `n` is a terminal-column budget (140 for descriptions, 240
+  // for clean-domain summaries), not a code-unit budget — a CJK-heavy string
+  // has a code-unit length far below `n` while its actual on-screen width
+  // sails past it, so the old `flat.length <= n` check let a wide-glyph
+  // string through untruncated at up to ~2x its intended column budget.
+  // displayWidth()/sliceToDisplayWidth() (lib/display-width.js) measure and
+  // cut in terminal columns instead.
+  if (displayWidth(flat) <= n) return flat;
+  // F-391f3e5d: the naive slice can land inside one of the multi-character
+  // tokens escapeReasonForDisplay just produced. Back up to the last
+  // complete boundary before appending the ellipsis so the output never
+  // ends in a dangling, malformed-looking fragment like `...aaa\x…`.
+  // sliceToDisplayWidth() only ever cuts on a code-point boundary, so the
+  // ASCII-only escape tokens it might still land inside are handled
+  // identically to before this fix.
+  return backUpIncompleteEscape(sliceToDisplayWidth(flat, n - 1)) + '…';
 }
 
 function pad(s, width) {
-  return String(s ?? '').padEnd(width, ' ');
+  // F-44200377: pad to a terminal-column target, not a code-unit target —
+  // see maxWidth() below for why `width` itself is now a column count.
+  // String#padEnd pads based on `.length` (code units), which both
+  // under-pads a wide-glyph cell (it needs FEWER trailing spaces to reach a
+  // given column count than its code-unit length suggests) and would anyway
+  // be measuring the wrong unit even if it padded correctly, so the built-in
+  // is not reusable here — this replaces it rather than wrapping it.
+  const str = String(s ?? '');
+  const w = displayWidth(str);
+  return w >= width ? str : str + ' '.repeat(width - w);
 }
 
 function dash(width) {
@@ -437,16 +457,35 @@ function dash(width) {
 }
 
 function maxWidth(rows, key, header) {
-  let w = String(header).length;
+  // F-44200377: renderText()/renderVerifyFixedText() compute a column's
+  // width from the widest CELL in that column (this file's own header
+  // comment: "aligned columns via String.padEnd matching the widest cell per
+  // column") and then pad every other cell out to that width. Measuring
+  // width with `.length` (UTF-16 code units) undercounts any East-Asian-Wide
+  // glyph (CJK ideograph, Hangul syllable, fullwidth form) or emoji, which
+  // render as 2 terminal columns but count as 1 (BMP) or 2 (astral,
+  // surrogate-pair) code units — so a row whose domain/id/file/symbol column
+  // contains such text pads short relative to its true on-screen width,
+  // throwing every column to its right out of alignment for that row.
+  // displayWidth() (lib/display-width.js) measures actual terminal columns
+  // instead, computed AFTER escapeReasonForDisplay/escapePathForDisplay have
+  // already run (via truncate()/formatLoc()/formatSymbol()) so the security
+  // property F-c3d8fd7e established is untouched — this is a measurement
+  // fix on top of already-safe text, not a change to what gets escaped.
+  let w = displayWidth(String(header));
   for (const r of rows) {
-    const len = String(r[key] ?? '').length;
+    const len = displayWidth(String(r[key] ?? ''));
     if (len > w) w = len;
   }
   return w;
 }
 
 function underline(text, char) {
-  return `${text}\n${char.repeat(text.length)}`;
+  // F-44200377: the underline must span the same number of terminal columns
+  // as `text` actually renders as, not `text.length` code units — otherwise
+  // a CJK-heavy section title (e.g. a non-ASCII runId) gets an underline
+  // shorter than the title itself.
+  return `${text}\n${char.repeat(displayWidth(text))}`;
 }
 
 // ════════════════════════════════════════════════════════════════════

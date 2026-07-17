@@ -245,7 +245,7 @@ describe('F-ad540b83: digest ids match --ids (canonical, case-insensitive), and 
 
     const approveResult = runCli(['approve', fx.RUN_ID, '--ids', renderedId], fx.dbPath);
     assert.equal(approveResult.status, 0, `approve with the digest-rendered id must succeed: ${approveResult.stderr}`);
-    assert.match(approveResult.stdout, /Approved 1 findings/);
+    assert.match(approveResult.stdout, /Approved 1 finding\b/);
   });
 
   it('pasting the AGENT-LOCAL id (the pre-fix silent-0-match trap) refuses loudly instead of a bare "Approved 0" at exit 0', () => {
@@ -275,7 +275,7 @@ describe('F-ad540b83: digest ids match --ids (canonical, case-insensitive), and 
 
     const r = runCli(['approve', fx.RUN_ID, '--ids', canonicalId.toUpperCase()], fx.dbPath);
     assert.equal(r.status, 0, `an uppercased canonical id must still match case-insensitively: ${r.stderr}`);
-    assert.match(r.stdout, /Approved 1 findings/);
+    assert.match(r.stdout, /Approved 1 finding\b/);
   });
 
   it('defer/reject share the same zero-match refusal and case-insensitive matching', () => {
@@ -291,7 +291,7 @@ describe('F-ad540b83: digest ids match --ids (canonical, case-insensitive), and 
 
     const good = runCli(['defer', fx.RUN_ID, '--ids', canonicalId.toUpperCase(), '--reason', 'x'], fx.dbPath);
     assert.equal(good.status, 0, `stderr: ${good.stderr}`);
-    assert.match(good.stdout, /Deferred 1 findings/);
+    assert.match(good.stdout, /Deferred 1 finding\b/);
 
     // reject on a fresh (undisposed) run of the same shape.
     fx = seedAuditWave();
@@ -309,7 +309,7 @@ describe('F-ad540b83: digest ids match --ids (canonical, case-insensitive), and 
 
     const first = runCli(['defer', fx.RUN_ID, '--ids', canonicalId, '--reason', 'first'], fx.dbPath);
     assert.equal(first.status, 0, `stderr: ${first.stderr}`);
-    assert.match(first.stdout, /Deferred 1 findings/);
+    assert.match(first.stdout, /Deferred 1 finding\b/);
 
     const again = runCli(['defer', fx.RUN_ID, '--ids', canonicalId, '--reason', 'second'], fx.dbPath);
     assert.equal(again.status, 0,

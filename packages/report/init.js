@@ -249,9 +249,13 @@ function nextSteps({ workflowPath, slug, slugDetected }) {
     ' ─────────────────────────────────────────────────────────────────── ',
     '    Set the DOGFOOD_TOKEN secret, or the dispatch silently records nothing:',
     '',
-    `      a. Mint a fine-grained PAT with  contents: write  on  ${RECEIVER_REPO}`,
+    // F-36d8b03d: single-spaced like every sibling line — the unmarked
+    // double-space "emphasis" around `contents: write` / `DOGFOOD_TOKEN`
+    // read as formatting residue; no renderer in this package sets terms
+    // off with spacing.
+    `      a. Mint a fine-grained PAT with contents: write on ${RECEIVER_REPO}`,
     '      b. In THIS repo: Settings → Secrets and variables → Actions →',
-    '         New repository secret → name it  DOGFOOD_TOKEN',
+    '         New repository secret → name it DOGFOOD_TOKEN',
     '',
     '    The workflow preflight FAILS LOUD if DOGFOOD_TOKEN is missing, so a',
     '    misconfigured run errors instead of going green with nothing recorded.',

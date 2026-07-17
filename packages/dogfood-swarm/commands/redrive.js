@@ -110,6 +110,7 @@ import {
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { pluralize } from './lib/pluralize.js';
 
 const REDRIVE_TARGET_STATUS = 'dispatched';
 
@@ -619,9 +620,9 @@ function formatPlanSummary(report) {
   const lines = [];
   lines.push(`${verb} — wave_id: ${report.waveId} (run ${report.runId}, ${report.phase}, #${report.waveNumber})`);
   lines.push(`  Wave status: ${report.waveStatusBefore} -> ${REDRIVE_TARGET_STATUS}`);
-  lines.push(`  Preserved: ${report.preserved.length} complete agent_runs (receipts unchanged)${formatByteIdentitySuffix(report)}`);
-  lines.push(`  Redriven:  ${report.eligible.length} agent_runs to ${REDRIVE_TARGET_STATUS}`);
-  lines.push(`  Refused:   ${report.refused.length} agent_runs (named recovery verb per row)`);
+  lines.push(`  Preserved: ${pluralize(report.preserved.length, 'complete agent_run')} (receipts unchanged)${formatByteIdentitySuffix(report)}`);
+  lines.push(`  Redriven:  ${pluralize(report.eligible.length, 'agent_run')} to ${REDRIVE_TARGET_STATUS}`);
+  lines.push(`  Refused:   ${pluralize(report.refused.length, 'agent_run')} (named recovery verb per row)`);
   // F-7c3e91a4 class (wave 18): immediate echo of the operator's own
   // just-typed --reason. See commands/lib/escape-reason.js.
   if (report.apply) {

@@ -15,6 +15,7 @@ import { FINDING_GATED_PHASES, PHASE_MAP } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
 import { formatDomainRow } from '../lib/domain-row.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { pluralize } from './lib/pluralize.js';
 
 /**
  * @param {object} opts
@@ -379,7 +380,13 @@ export function formatStatus(s) {
   // Findings
   const f = s.findings;
   lines.push('Findings:');
-  lines.push(`  Open:  CRIT ${f.open.CRITICAL}  HIGH ${f.open.HIGH}  MED ${f.open.MEDIUM}  LOW ${f.open.LOW}  (${f.total} total)`);
+  // F-94175151: the four Open: counts sum to the OPEN population, not
+  // f.total (allFindings.length — the run's lifetime count across every
+  // status: fixed/deferred/rejected/unverified/recurring/new, restated in
+  // full on the All: line two rows down). An unlabeled "(N total)" directly
+  // after the four open counts reads as their sum; relabeling it disambiguates
+  // at the point of reading instead of relying on the reader reaching All:.
+  lines.push(`  Open:  CRIT ${f.open.CRITICAL}  HIGH ${f.open.HIGH}  MED ${f.open.MEDIUM}  LOW ${f.open.LOW}  (${f.total} total ever filed)`);
   lines.push(`  Wave:  ${f.thisWave.new} new  ${f.thisWave.recurring} recurring  ${f.thisWave.fixed} fixed`);
   if (Object.keys(f.byStatus).length > 0) {
     lines.push(`  All:   ${Object.entries(f.byStatus).map(([k, v]) => `${k}: ${v}`).join('  ')}`);
@@ -393,7 +400,7 @@ export function formatStatus(s) {
 
   if (s.lastVerification) {
     const v = s.lastVerification;
-    lines.push(`Verify: ${v.passed ? 'PASS' : 'FAIL'} (${v.repoType}${v.testCount ? `, ${v.testCount} tests` : ''})`);
+    lines.push(`Verify: ${v.passed ? 'PASS' : 'FAIL'} (${v.repoType}${v.testCount ? `, ${pluralize(v.testCount, 'test')}` : ''})`);
     lines.push('');
   }
 

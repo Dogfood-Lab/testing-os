@@ -40,6 +40,7 @@ import { clean, formatClean } from './commands/clean.js';
 import { cleanClaims, formatCleanClaims } from './commands/clean-claims.js';
 import { buildReceipt, exportReceipt, storeReceipt } from './commands/receipt.js';
 import { escapeReasonForDisplay, escapePathForDisplay } from './commands/lib/escape-reason.js';
+import { pluralize, pluralizeWord } from './commands/lib/pluralize.js';
 import { verify as runVerify, probeRepo, formatVerify, formatProbe } from './commands/verify.js';
 import { verifyFixed as runVerifyFixed } from './commands/verify-fixed.js';
 import { verifyRecurring as runVerifyRecurring } from './commands/verify-recurring.js';
@@ -416,10 +417,10 @@ function cmdInit(args) {
 
   console.log('Domain draft (review before freezing):');
   for (const d of result.domains) {
-    console.log(formatDomainRow(d, { trailer: `${d.matched_files} files` }));
+    console.log(formatDomainRow(d, { trailer: pluralize(d.matched_files, 'file') }));
   }
   if (result.unmatched.length > 0) {
-    console.log(`\n  ${result.unmatched.length} unmatched files (will go to "shared" or remain unassigned)`);
+    console.log(`\n  ${pluralize(result.unmatched.length, 'unmatched file')} (will go to "shared" or remain unassigned)`);
   }
   console.log(`\nNext: review domains, then run: swarm freeze ${result.runId}`);
 }
@@ -647,7 +648,7 @@ function cmdDispatch(args) {
         : '';
       console.log(`  ${a.domain} (${a.ownershipClass}) → ${a.promptPath}${findings}${wt}`);
     }
-    console.log(`\nWould dispatch ${result.agents.length} agents. No control-plane write, no file write, no worktree creation.`);
+    console.log(`\nWould dispatch ${pluralize(result.agents.length, 'agent')}. No control-plane write, no file write, no worktree creation.`);
     console.log(`Re-run without --dry-run to commit the wave.`);
     return;
   }
@@ -658,7 +659,7 @@ function cmdDispatch(args) {
     const wt = a.worktreePath ? ` [worktree: ${a.worktreePath}]` : '';
     console.log(`  ${a.domain} → ${a.promptPath}${wt}`);
   }
-  console.log(`\nDispatch ${result.agents.length} agents with these prompts.`);
+  console.log(`\nDispatch ${pluralize(result.agents.length, 'agent')} with these prompts.`);
   console.log(`When done, run: swarm collect ${runId}`);
 }
 
@@ -1826,7 +1827,7 @@ function cmdAdvance(args) {
       // F-51fa8e13: name WHICH gate(s) each override reason consented to —
       // pre-fix this rendered `o.reason` alone, discarding `o.gate` entirely.
       const override = p.overrides ? ` [OVERRIDE: ${formatOverrideGroups(p.overrides)}]` : '';
-      console.log(`  ${p.created_at} | ${p.from_phase} → ${p.to_phase} | ${gates}/${total} gates | ${p.authorized_by}${override}`);
+      console.log(`  ${p.created_at} | ${p.from_phase} → ${p.to_phase} | ${gates}/${total} ${pluralizeWord(total, 'gate')} | ${p.authorized_by}${override}`);
     }
     return;
   }
@@ -2003,7 +2004,7 @@ function cmdApprove(args) {
     refuseIfNoIdsExist(db, runId, ids, idsUpper);
   }
 
-  console.log(`Approved ${changes} findings for ${runId}`);
+  console.log(`Approved ${pluralize(changes, 'finding')} for ${runId}`);
 }
 
 function cmdPersist(args) {
@@ -2185,7 +2186,7 @@ function disposeFindings(verb, status, label, args) {
     refuseIfNoIdsExist(db, runId, ids, idsUpper);
   }
 
-  console.log(`${label} ${changes} findings for ${runId}`);
+  console.log(`${label} ${pluralize(changes, 'finding')} for ${runId}`);
 }
 
 function cmdDefer(args) {
@@ -2457,7 +2458,7 @@ function cmdRuns(args = []) {
     const waveCnt = db.prepare('SELECT COUNT(*) as cnt FROM waves WHERE run_id = ?').get(r.id);
     const findCnt = db.prepare('SELECT COUNT(*) as cnt FROM findings WHERE run_id = ?').get(r.id);
     console.log(`  ${r.id}`);
-    console.log(`    ${r.repo} [${r.status}] — ${waveCnt.cnt} waves, ${findCnt.cnt} findings`);
+    console.log(`    ${r.repo} [${r.status}] — ${pluralize(waveCnt.cnt, 'wave')}, ${pluralize(findCnt.cnt, 'finding')}`);
     console.log(`    Created: ${r.created_at}`);
     console.log('');
   }
@@ -2548,7 +2549,7 @@ function formatTrends(query, payload) {
       lines.push('  (none — no fingerprint has recurred across runs)');
     } else {
       for (const r of payload) {
-        lines.push(`  [${r.severity}] ${r.fingerprint} — ${r.run_count} runs`);
+        lines.push(`  [${r.severity}] ${r.fingerprint} — ${pluralize(r.run_count, 'run')}`);
         // F-c6f7d8fc (wave 24) sweep: r.description is MAX(findings.description)
         // (lib/queries/cross-run-analytics.js's queryRecurringFindings) -- the
         // same agent-self-reported, schema-unconstrained field family as
@@ -2568,7 +2569,7 @@ function formatTrends(query, payload) {
     } else {
       for (const r of payload) {
         lines.push(`  ${r.run_id}  [${r.status}]`);
-        lines.push(`    ${r.repo} — ${r.wave_count} waves, ${r.finding_count} findings`);
+        lines.push(`    ${r.repo} — ${pluralize(r.wave_count, 'wave')}, ${pluralize(r.finding_count, 'finding')}`);
         lines.push(`    created ${r.created_at}`);
         lines.push('');
       }
@@ -2578,7 +2579,7 @@ function formatTrends(query, payload) {
     const pct = (payload.recurrence_rate * 100).toFixed(1);
     lines.push('Finding recurrence rate:');
     lines.push('');
-    lines.push(`  Runs considered:        ${payload.total_runs}${payload.window_days != null ? ` (last ${payload.window_days} days)` : ''}`);
+    lines.push(`  Runs considered:        ${payload.total_runs}${payload.window_days != null ? ` (last ${pluralize(payload.window_days, 'day')})` : ''}`);
     lines.push(`  Distinct fingerprints:  ${payload.distinct_fingerprints}`);
     lines.push(`  Recurring (> 1 run):    ${payload.recurring_fingerprints}`);
     lines.push(`  Recurrence rate:        ${pct}%`);

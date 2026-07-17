@@ -78,6 +78,7 @@ import { logStage } from '../lib/log-stage.js';
 import { removeWorktree } from '../lib/worktree.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { pluralize } from './lib/pluralize.js';
 
 const REWIND_TARGET_STATUS = 'aborted_for_rewind';
 
@@ -554,7 +555,7 @@ function formatPlanSummary(report) {
   // survives the rewind alongside what is torn down. Terminal rows (advanced
   // waves, complete agent_runs, prior aborted_for_rewind entries) survive
   // byte-identical; the surface here makes that explicit.
-  lines.push(`  Preserved: ${report.preserved_wave_count} terminal waves, ${report.preserved_agent_run_count} terminal agent_runs (unchanged)`);
+  lines.push(`  Preserved: ${pluralize(report.preserved_wave_count, 'terminal wave')}, ${pluralize(report.preserved_agent_run_count, 'terminal agent_run')} (unchanged)`);
   // F-7c3e91a4 class (wave 18): immediate echo of the operator's own
   // just-typed --reason. See commands/lib/escape-reason.js.
   if (report.apply) {

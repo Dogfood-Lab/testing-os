@@ -32,6 +32,7 @@ import { CollectUpsertError } from '../lib/errors.js';
 import { logStage } from '../lib/log-stage.js';
 import { getActualTouchedFiles, diffReportedVsActual, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
+import { pluralize } from './lib/pluralize.js';
 
 /**
  * The deterministic per-domain output filename the dispatch layout promises an
@@ -1077,7 +1078,7 @@ export function collect(opts) {
         findingsAttempted: allFindings.length,
       });
       throw new CollectUpsertError(
-        `upsertFindings failed for wave=${wave.wave_number} (${allFindings.length} findings attempted): ${e.message}`,
+        `upsertFindings failed for wave=${wave.wave_number} (${pluralize(allFindings.length, 'finding')} attempted): ${e.message}`,
         { cause: e, waveId: wave.id, findingsAttempted: allFindings.length }
       );
     }
@@ -1185,7 +1186,7 @@ export function buildSummary(db, runId, wave, report) {
     .join('  ');
 
   const agentSummary = report.agents
-    .map(a => `  ${a.domain}: ${a.status}${a.findings_count ? ` (${a.findings_count} findings)` : ''}${a.errors.length ? ` [ERRORS: ${a.errors.length}]` : ''}`)
+    .map(a => `  ${a.domain}: ${a.status}${a.findings_count ? ` (${pluralize(a.findings_count, 'finding')})` : ''}${a.errors.length ? ` [ERRORS: ${a.errors.length}]` : ''}`)
     .join('\n');
 
   // OPF-3: surface the wave-status transition in the summary header so the

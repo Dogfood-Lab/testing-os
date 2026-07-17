@@ -78,8 +78,16 @@ export function formatHistory(report) {
     return lines.join('\n');
   }
 
-  const FROM_W = 12;
-  const TO_W = 12;
+  // F-4e4b88f7: 19 fits 'aborted_for_rewind' — the longest status
+  // wave-state-machine.js's transitionWave ever writes to wave_state_events
+  // (pending/dispatched/collected/verified/advanced/failed/collecting/
+  // aborted_for_rewind) — with zero truncation in the common case. pad()'s
+  // truncate-with-ellipsis fallback (below) is the actual fix for the class:
+  // it protects any FUTURE status name longer than this width too, instead
+  // of re-earning this same finding the next time the state machine grows a
+  // longer name.
+  const FROM_W = 19;
+  const TO_W = 19;
   const TS_W = 19;
   const REASON_W = 60;
 
@@ -117,7 +125,15 @@ export function formatHistory(report) {
 
 function pad(s, w) {
   const str = String(s ?? '');
-  if (str.length >= w) return str;
+  // F-4e4b88f7: a status name >= the column width used to return unpadded AND
+  // untruncated, silently breaking the fixed-column contract for that one row
+  // (every column after it desyncs from the header and every sibling row).
+  // truncate() already guarantees an exactly-w-length result when str.length > w
+  // (either the w<=3 slice branch or the `slice(0, w-3) + '...'` branch), so
+  // this stays symmetric with the REASON column's existing shrink behavior for
+  // ANY status name, not just the ones known when FROM_W/TO_W were chosen.
+  if (str.length > w) return truncate(str, w);
+  if (str.length === w) return str;
   return str + ' '.repeat(w - str.length);
 }
 

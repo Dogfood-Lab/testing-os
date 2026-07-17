@@ -228,7 +228,10 @@ describe('collect — F-693631-002 upsertFindings failure surfaces CollectUpsert
       'CollectUpsertError message must name the failing operation (upsertFindings)');
     assert.match(thrown.message, /wave=/,
       'CollectUpsertError message must carry the wave context for log correlation');
-    assert.match(thrown.message, /findings attempted/,
+    // F-e164337b (wave 35): this fixture attempts exactly 1 finding (asserted
+    // above via thrown.findingsAttempted === 1), so the fixed, singular-aware
+    // message now reads "1 finding attempted", not "1 findings attempted".
+    assert.match(thrown.message, /1 finding attempted/,
       'CollectUpsertError message must include the attempted-count for atomicity diagnostics');
 
     const upsertLog = errCalls.find(s => {

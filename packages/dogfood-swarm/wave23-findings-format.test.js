@@ -215,16 +215,35 @@ describe('renderDigest — text / markdown / json each render the same model coh
 
     // Find the rows for F-1 and F-LONG-22 — they share a header row above.
     const rowF1 = lines.find(l => l.includes('F-1 ') || l.includes('F-1 '));
+    const headerLine = lines.find(l => l.startsWith('Sev'));
     const rowFLong = lines.find(l => l.includes('F-LONG-22'));
+    assert.ok(headerLine, 'header row must be rendered');
     assert.ok(rowF1, 'F-1 row must be rendered');
     assert.ok(rowFLong, 'F-LONG-22 row must be rendered');
 
     // Both rows must align — same starting column for the description text.
-    // The description sits after the file:line column. We assert: both rows
-    // contain at least one run of two spaces immediately preceding the
-    // description, which is the padEnd-output signature.
-    assert.match(rowF1, /\s{2,}short desc/);
-    assert.match(rowFLong, /\s{2,}longer description text/);
+    // F-6c23f933: the previous version of this assertion checked each row
+    // INDEPENDENTLY for /\s{2,}<its own text>/ -- a shape satisfied by two
+    // rows whose description text starts at completely different offsets
+    // (e.g. 43 and 54), because each regex only inspects its own row and
+    // never compares against the other. Proven directly: a hand-built pair
+    // of rows with description offsets 43 and 54 (demonstrably misaligned)
+    // passes both of the old regexes, and fails the offset-equality checks
+    // below. Comparing the actual character indexes is the only way to
+    // assert the property this test's own docstring claims: "same starting
+    // column" -- both against EACH OTHER and against the header's own
+    // 'Description' label (two rows could coincidentally agree with each
+    // other while both disagreeing with the header).
+    const f1Offset = rowF1.indexOf('short desc');
+    const fLongOffset = rowFLong.indexOf('longer description text');
+    const headerOffset = headerLine.indexOf('Description');
+    assert.notEqual(f1Offset, -1, `'short desc' must appear in the F-1 row: ${JSON.stringify(rowF1)}`);
+    assert.notEqual(fLongOffset, -1, `'longer description text' must appear in the F-LONG-22 row: ${JSON.stringify(rowFLong)}`);
+    assert.notEqual(headerOffset, -1, `'Description' label must appear in the header: ${JSON.stringify(headerLine)}`);
+    assert.equal(f1Offset, fLongOffset,
+      `both rows' description text must start at the same column -- got ${f1Offset} for F-1 and ${fLongOffset} for F-LONG-22:\n${JSON.stringify(rowF1)}\n${JSON.stringify(rowFLong)}`);
+    assert.equal(f1Offset, headerOffset,
+      `row description text must start at the same column as the header's 'Description' label -- got ${f1Offset} vs header ${headerOffset}`);
   });
 
   it('markdown format: keeps **bold** + | pipe tables | + ## headers exactly as pre-wave-23', () => {

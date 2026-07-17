@@ -149,7 +149,7 @@ describe('F-SWARMCP-001/002 — swarm defer / reject terminal-disposition verbs'
   it('reject flips status to rejected AND writes a reason-bearing finding_event', () => {
     const r = spawnCli('reject', [RUN, '--ids', 'F-001', '--reason', 'not a defect'], dbPath);
     assert.equal(r.status, 0, `reject failed: ${r.stderr}`);
-    assert.match(r.stdout, /Rejected 1 findings for r-disp/);
+    assert.match(r.stdout, /Rejected 1 finding for r-disp/);
 
     const f1 = findingStatus('F-001');
     assert.equal(f1.status, 'rejected');

@@ -871,7 +871,7 @@ describe('rewind — T4: preserved-count surface in summary', () => {
       assert.equal(r.planned_agent_runs.length, 2, '2 non-terminal agent_runs are affected');
 
       // Surface assertion: the preserved-count line is present in the summary.
-      assert.match(r.summary, /Preserved:\s+1 terminal waves,\s+1 terminal agent_runs/);
+      assert.match(r.summary, /Preserved:\s+1 terminal wave,\s+1 terminal agent_run\b/);
     } finally {
       teardown(tempDir, dbPath);
     }

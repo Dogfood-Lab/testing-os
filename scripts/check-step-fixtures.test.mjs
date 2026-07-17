@@ -58,19 +58,20 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import { parse } from '@babel/parser';
 
+import { classifyFile, walkSourceFiles } from '../packages/portfolio/lib/parse-regression-pins.js';
+
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 const SCAN_ROOT = join(REPO_ROOT, 'packages');
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', 'coverage']);
 
 /** Mirrors scripts/pin-declarations.mjs's JS_PARSE_OPTS — one grammar, one behaviour. */
-const PARSE_OPTS = {
+const JS_PARSE_OPTS = {
   sourceType: 'module',
   allowImportExportEverywhere: true,
   allowReturnOutsideFunction: true,
@@ -78,23 +79,31 @@ const PARSE_OPTS = {
   plugins: ['estree', 'jsx'],
 };
 
-function walkTestFiles(dir, out = []) {
-  let entries;
-  try {
-    entries = readdirSync(dir, { withFileTypes: true });
-  } catch {
-    return out;
-  }
-  for (const entry of entries) {
-    const full = join(dir, entry.name);
-    if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) walkTestFiles(full, out);
-    } else if (entry.name.endsWith('.test.js') || entry.name.endsWith('.test.mjs')) {
-      out.push(full);
-    }
-  }
-  return out;
-}
+/**
+ * F-e9543066: this gate used to discover test files with its own narrow
+ * `.test.js`/`.test.mjs` suffix check (the removed `walkTestFiles`) instead
+ * of the canonical classifyFile()/walkSourceFiles() pair that
+ * scripts/pin-declarations.mjs, scripts/check-finding-regression-pins.mjs,
+ * and scripts/suggest-pins.mjs already route through — invisible to
+ * `.test.ts` (14 real files under packages/schemas/test/ at fix time),
+ * `.test.cjs`, `-test.`/`_test.`/bare `test.` names, and a bare
+ * `test/`-directory fixture, all of which classifyFile() already recognizes.
+ * Routing through the shared classifier below closes that drift risk.
+ *
+ * Reusing it also newly surfaces those 14 `.test.ts` files to THIS file's own
+ * parser, and JS_PARSE_OPTS above cannot read them: TS-only syntax (type
+ * annotations, `as` casts, interfaces) is not valid ESTree/JS grammar, and
+ * @babel/parser throws without the `typescript` plugin — confirmed
+ * empirically (all 4 sampled *.test.ts files under packages/schemas/test/
+ * threw "Unexpected token" against JS_PARSE_OPTS pre-fix). Left alone,
+ * widening the walk would have traded an undisclosed coverage gap for an
+ * uncaught crash the moment those files were scanned — `auditSource` has no
+ * try/catch around `parse()`. TS_PARSE_OPTS + parseOptsFor mirror
+ * pin-declarations.mjs's own JS_PARSE_OPTS/TS_PARSE_OPTS/parseOptsFor split —
+ * same parser, same fix, same reason, applied here too.
+ */
+const TS_PARSE_OPTS = { ...JS_PARSE_OPTS, plugins: ['estree', 'jsx', 'typescript'] };
+const parseOptsFor = (label) => (/\.tsx?$/.test(label) ? TS_PARSE_OPTS : JS_PARSE_OPTS);
 
 /** Generic AST walk. `loc`/`range`/comment arrays are skipped as non-structural. */
 function walkAst(node, visit) {
@@ -223,7 +232,7 @@ function auditSource(source, label) {
   const skipped = [];
   let checked = 0;
 
-  for (const fx of extractStepFixtures(parse(source, PARSE_OPTS))) {
+  for (const fx of extractStepFixtures(parse(source, parseOptsFor(label)))) {
     const where = `${label}:${fx.line}`;
 
     if (isProcessExecPath(fx.cmd)) {
@@ -330,7 +339,10 @@ describe('verify-step fixtures must survive runStep\'s shell:true composition', 
   });
 
   it('every step fixture in packages/** composes to a shell-parseable command', () => {
-    const files = walkTestFiles(SCAN_ROOT);
+    // F-e9543066: canonical classifier, not a hand-rolled suffix check — see
+    // the doc comment above TS_PARSE_OPTS for why that also required a
+    // TS-aware parse path.
+    const files = walkSourceFiles(SCAN_ROOT).filter((f) => classifyFile(f) === 'test');
     assert.ok(files.length > 0, 'fixture sanity: the scan must actually find test files');
 
     const allViolations = [];

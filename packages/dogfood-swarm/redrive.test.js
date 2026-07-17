@@ -651,7 +651,7 @@ describe('redrive — F-a5f6b585: receipts_checked + not_applicable (never vacuo
       const r = redrive({ waveId, reason: 'operator surface', dbPath, apply: true });
       const text = formatRedrive(r);
 
-      assert.match(text, /Preserved:\s+1 complete agent_runs \(receipts unchanged\) — byte-identity: VERIFIED \(1 checked\)/,
+      assert.match(text, /Preserved:\s+1 complete agent_run \(receipts unchanged\) — byte-identity: VERIFIED \(1 checked\)/,
         'the printed Preserved: line must carry the VERIFIED claim, not just the classified count');
     } finally {
       teardown(tempDir, dbPath);
@@ -1225,9 +1225,9 @@ describe('redrive — T4 preserved-count surface in summary', () => {
       );
 
       const r = redrive({ waveId, reason: 'summary surface check', dbPath });
-      assert.match(r.summary, /Preserved:\s+1 complete agent_runs/);
-      assert.match(r.summary, /Redriven:\s+1 agent_runs/);
-      assert.match(r.summary, /Refused:\s+1 agent_runs/);
+      assert.match(r.summary, /Preserved:\s+1 complete agent_run\b/);
+      assert.match(r.summary, /Redriven:\s+1 agent_run\b/);
+      assert.match(r.summary, /Refused:\s+1 agent_run\b/);
     } finally {
       teardown(tempDir, dbPath);
     }

@@ -102,6 +102,28 @@ describe('queryFindingRecurrenceRate — windowDays validation (F-36327af8)', ()
     );
   });
 
+  /** @pins F-93cd78d3 */
+  it('GATE: a NEGATIVE windowDays throws instead of silently returning an all-zero result (F-93cd78d3)', () => {
+    // `Number.isFinite(-5)` is true and `String(-5).trim()` is '-5' (not
+    // empty), so pre-fix this sailed past BOTH F-36327af8's and
+    // F-b5fd9887's guards untouched. The value then reached the SQL
+    // date-modifier template literal as `-${Number(-5)} days`, which renders
+    // the literal string '--5 days' — SQLite's datetime() treats that as an
+    // unparseable modifier and silently returns NULL, matching zero rows,
+    // the exact "plausible clean result masking malformed input" shape this
+    // whole family of guards exists to close.
+    assert.throws(
+      () => queryFindingRecurrenceRate(db, -5),
+      /windowDays must be a finite number/,
+      'a negative NUMBER must throw, not silently produce an all-zero result',
+    );
+    assert.throws(
+      () => queryFindingRecurrenceRate(db, '-5'),
+      /windowDays must be a finite number/,
+      'a negative numeric STRING must throw the same as the negative number itself',
+    );
+  });
+
   it('non-regression: "0" (the real, deliberate zero-day-window value) is still accepted, not confused with empty', () => {
     // The fix must reject the ABSENCE of a value, not the value zero itself —
     // a caller who genuinely means "anchor run only" still gets that.

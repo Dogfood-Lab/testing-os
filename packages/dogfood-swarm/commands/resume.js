@@ -61,6 +61,7 @@ import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js
 import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { pluralize } from './lib/pluralize.js';
 
 /**
  * @param {object} opts
@@ -361,13 +362,13 @@ export function resume(opts) {
     report.reason = 'All agents complete. Ready for collect.';
   } else if (report.manual_fix.length > 0 && report.redispatch.length === 0 && report.still_running.length === 0) {
     report.action = 'blocked';
-    report.reason = `${report.manual_fix.length} agents blocked (${report.manual_fix.map(m => `${m.domain}: ${m.status}`).join(', ')})`;
+    report.reason = `${pluralize(report.manual_fix.length, 'agent')} blocked (${report.manual_fix.map(m => `${m.domain}: ${m.status}`).join(', ')})`;
   } else if (report.redispatch.length > 0) {
     report.action = 'redispatched';
-    report.reason = `Redispatched ${report.redispatch.length} agents`;
+    report.reason = `Redispatched ${pluralize(report.redispatch.length, 'agent')}`;
   } else if (report.still_running.length > 0) {
     report.action = 'waiting';
-    report.reason = `${report.still_running.length} agents still in-flight`;
+    report.reason = `${pluralize(report.still_running.length, 'agent')} still in-flight`;
   } else if (report.rewound.length > 0) {
     // ds-lib-002: every non-terminal agent is accounted for and the remainder
     // were aborted by `swarm rewind --apply`. The wave's tree was reset, so it

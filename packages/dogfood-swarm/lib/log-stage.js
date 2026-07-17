@@ -87,7 +87,25 @@ export function logStage(stage, fields = {}) {
     return;
   }
 
-  console.error(serialized);
+  // F-36fdebca: this is the ORDINARY, successful-serialization exit path —
+  // every OTHER console.error call in this function is already guarded (the
+  // serialization-failure fallback above; the human-banner call below,
+  // "Banner failure must not crash the logger"). This was the one gap. A
+  // closed/broken stderr pipe (EPIPE) throws synchronously from
+  // console.error itself, not asynchronously — proven live for the identical
+  // shape at packages/verify/validators/provenance.js's defaultOnRetryWarn
+  // (F-f50e779b), which this mirrors. logStage is the operator's last
+  // forensic channel and must never crash its caller over a write it does
+  // not control.
+  try {
+    console.error(serialized);
+  } catch {
+    // Nothing further to do: this IS the fallback-of-last-resort for a
+    // successfully-serialized line — there is no more-fundamental channel to
+    // hand the failure to (contrast the serialization-failure branch above,
+    // which exists to recover the INPUT; this is the OUTPUT stream itself
+    // failing).
+  }
 
   if (shouldEmitHuman()) {
     try {
