@@ -181,12 +181,6 @@
       "owner": "coordinator",
       "revalidate_by": "2026-10-17"
     },
-    "F-07895c2c": {
-      "reason": "Cross-reference, no fix behind it: the dispatch.js comment marks where the roadmap-digest wiring will attach when the seeding flags land — F-07895c2c was DELIBERATELY SKIPPED in wave 39 (swarm-cp-verbs output: hard dependency on the compiler seam plus source-position-pin fragility in dispatch.js made it the wrong trade late in the wave). The finding stays approved in the control plane; when its fix lands, this entry must be REMOVED and replaced by a real @pins tag.",
-      "file": "packages/dogfood-swarm/commands/dispatch.js",
-      "owner": "coordinator",
-      "revalidate_by": "2026-08-17"
-    },
     "F-271b4661": {
       "reason": "The fix IS a comment: F-271b4661 asked for a vocabulary cross-reference mapping the public finding-contract reopen grammar (REQUIRES_CLOSED / REASON_REQUIRED / lineage.superseded_by) onto the control-plane C1/C2 verbs, explicitly with NO behavior change (wave-38 backend filing; wave-39 backend fix). A prose-only fix has no test to pin without a tautology — the F-35304e50 comment-only precedent, again.",
       "file": "packages/findings/review/transitions.js",

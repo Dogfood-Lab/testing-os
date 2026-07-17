@@ -302,6 +302,15 @@ const sourceVsTargetCoverageHandler = {
 /**
  * Assert no target file contains any of the forbidden patterns. Path patterns
  * for legacy paths, version-specific narrative terms, etc.
+ *
+ * F-cec640b1 (wave 41 amend): the roadmap-artifact-no-absolute-paths config
+ * entry reuses this same generic handler (no new code needed — a config-only
+ * addition, per this file's own "new INSTANCES of an existing class are
+ * config-only" convention) to catch a machine-absolute Windows path baked
+ * into a committed dogfood/roadmap/*.json artifact — a real, live-proven
+ * information-disclosure leak (see that config entry's own description in
+ * scripts/doc-drift-patterns.json for the proof and the fix location, which
+ * sits outside ci-tooling's owned globs).
  */
 const forbiddenPatternInTargetsHandler = {
   kind: 'forbidden-pattern-in-targets',
@@ -632,6 +641,20 @@ const helperAdoptionSweepHandler = {
  * When set, targets validate against that JSON-pointer fragment of the
  * loaded schema instead of its top level. Absent (the default) preserves
  * the pre-existing top-level-only behavior byte for byte.
+ *
+ * F-f52fc700 (wave 41 amend, HIGH): the absent-schemaPointer (top-level)
+ * path above is what the roadmap-artifact-full-document-schema check
+ * config entry uses to validate the FULL compiled roadmap document
+ * (dogfood/roadmap/<run-id>.json / <run-id>.<seq>.json) — the other half of
+ * F-7493be3c's original ask, which roadmap-artifact-schema (schemaPointer
+ * set) never covered: that check only ever validated the small latestPointer
+ * fragment. Before this second config entry, nothing at verify/CI time
+ * validated the full document against any schema at all. See that config
+ * entry's own description in scripts/doc-drift-patterns.json for the live
+ * Ajv proof that the schema and the compiler's actual camelCase output
+ * currently disagree on 16 points, and scripts/check-doc-drift-roadmap.test.mjs
+ * for the fixture-isolation tests that keep this handler's behavior pinned
+ * independent of that still-in-flight cross-domain reconciliation.
  */
 const schemaConformanceHandler = {
   kind: 'schema-conformance',

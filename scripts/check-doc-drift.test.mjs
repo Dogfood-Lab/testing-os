@@ -7,8 +7,11 @@
  * wired in CI right after `npm ci`).
  *
  * Coverage:
- *   1. Each configured check in scripts/doc-drift-patterns.json (currently 17,
- *      after F-41379e68 added the three retired-swarm-artifact tombstone pins)
+ *   1. Each configured check in scripts/doc-drift-patterns.json (the exact
+ *      count drifts as checks are added — see the "at least N checks ran"
+ *      live-tree assertion below rather than a hardcoded figure here; a
+ *      stale count in this comment already went unnoticed across at least
+ *      one prior wave, per this repo's own memory on hardcoded counts)
  *      with a clean fixture and a drift fixture.
  *   2. Live-tree assertion: the actual repo passes all checks. This is the
  *      load-bearing test — it's the contract that the docs agents in wave 19
@@ -234,6 +237,51 @@ test('no-version-specific-narrative check: 9-Phase reference flagged', async (t)
   result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
   assert.equal(result.clean, false);
   assert.match(result.reports[0].message, /stale 9-Phase/);
+});
+
+/** @pins F-cec640b1 */
+test('F-cec640b1: roadmap-artifact-no-absolute-paths check: relative artifact passes, machine-absolute notesPath triggers drift', async (t) => {
+  const fx = makeFixture(t);
+  // Same drive-letter-in-a-JSON-string-value shape PROVEN LIVE in the real
+  // dogfood/roadmap/swarm-1784091637-5127.{1,}.json at authoring time (see
+  // scripts/doc-drift-patterns.json's roadmap-artifact-no-absolute-paths
+  // description) — a real committed shape, not an invented one.
+  fx.write('dogfood/roadmap/latest.json', JSON.stringify({
+    run_id: 'run-1', sequence: 1, path: 'dogfood/roadmap/run-1.1.json',
+  }));
+  fx.write('dogfood/roadmap/run-1.1.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'dogfood/roadmap-notes.json', sections: {},
+  }, null, 2));
+  const cfg = fx.config({
+    checks: [{
+      id: 'roadmap-artifact-no-absolute-paths',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'roadmap-artifact-no-absolute-paths',
+      patterns: [{ regex: '"[A-Za-z]:[\\\\/]', label: 'Windows drive-letter absolute path' }],
+      targets: ['dogfood/roadmap/*.json'],
+    }],
+  });
+  let result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, JSON.stringify(result.reports));
+
+  // Now introduce the exact real-world shape: an absolute Windows path baked
+  // into the committed artifact's notesPath field.
+  fx.write('dogfood/roadmap/run-1.1.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'E:\\AI\\testing-os\\dogfood\\roadmap-notes.json', sections: {},
+  }, null, 2));
+  result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false);
+  assert.match(result.reports[0].file, /run-1\.1\.json/);
+  assert.match(result.reports[0].message, /Windows drive-letter absolute path/);
+
+  // Non-vacuity in the OTHER direction: latest.json's own small pointer shape
+  // (run_id/sequence/path, all repo-relative) must never false-positive —
+  // the check globs the whole dogfood/roadmap/*.json directory, so this
+  // guards against the pattern being loose enough to flag the pointer itself.
+  assert.ok(
+    !result.reports.some((r) => /latest\.json/.test(r.file)),
+    'the pointer file must never be flagged — it has no notesPath-shaped field',
+  );
 });
 
 test('self-consistency check: must[] passes when present, fails when missing', async (t) => {
