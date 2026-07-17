@@ -103,7 +103,7 @@ const A3_EXTRAS_FIXTURE = {
   notesPath: 'dogfood/roadmap-notes.json',
 };
 
-/** @pins A3.1 A3.3 A3.4 */
+/** @pins F-471a06f1 F-fc17138c */
 describe('A3.1 — buildRoadmapArtifact: schema-named envelope, no intermediate vocabulary', () => {
   it('passes every named section through from `sections` verbatim, under its OWN schema name', () => {
     const artifact = buildRoadmapArtifact(A3_SECTIONS_FIXTURE, A3_EXTRAS_FIXTURE);

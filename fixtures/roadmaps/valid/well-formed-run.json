@@ -20,11 +20,9 @@
     "outstanding": [
       {
         "id": "gf-manifest-0032",
-        "reason": "Pre-Class-#14 regression-pin heuristic grant; awaiting AST-based re-derivation.",
         "owner": "coordinator",
-        "added_at": "2026-06-02T00:00:00Z",
-        "cadence_runs": 10,
-        "due_at_run": 12
+        "revalidate_by": "2026-10-14",
+        "reason": "Pre-Class-#14 regression-pin heuristic grant; awaiting AST-based re-derivation."
       }
     ]
   },
@@ -46,12 +44,20 @@
       {
         "file": "packages/dogfood-swarm/lib/fingerprint.js",
         "score": 0.82,
-        "components": { "churn": 0.6, "recency": 0.9, "fragmentation": 0.75 }
+        "components": {
+          "churn": 0.6,
+          "recency": 0.9,
+          "fragmentation": 0.75
+        }
       },
       {
         "file": "packages/findings/review/transitions.js",
         "score": 0.41,
-        "components": { "churn": 0.2, "recency": 0.5, "fragmentation": 0.3 }
+        "components": {
+          "churn": 0.2,
+          "recency": 0.5,
+          "fragmentation": 0.3
+        }
       }
     ]
   },
@@ -73,16 +79,28 @@
       "expires": 6
     }
   ],
-  "drain_queue": [
+  "expired_notes": [
     {
-      "id": "dfind-testing-os-deferred-001",
-      "reason": "Cross-domain fix requires a core-lane edit; deferred to next feature pass.",
-      "owner": "core-lane",
-      "added_at": "2026-07-10T00:00:00Z",
-      "cadence_runs": 5,
-      "due_at_run": 6
+      "kind": "theme",
+      "text": "Wave-38 docs audit: contrastive-framing scoring stayed at 1 until PROTOCOL.md's ledger uplifts it.",
+      "expires": "2026-07-01"
     }
   ],
+  "drain_queue": {
+    "entries": [
+      {
+        "id": "dfind-testing-os-deferred-001",
+        "owner": "core-lane",
+        "cadence_runs": 5,
+        "runs_since_review": 6,
+        "overdue": true,
+        "reason": "Cross-domain fix requires a core-lane edit; deferred to next feature pass."
+      }
+    ],
+    "overdue_ids": [
+      "dfind-testing-os-deferred-001"
+    ]
+  },
   "notesPath": "dogfood/roadmap-notes.json",
   "content_hash": "a3f5c9e1d2b4867012f9e6c8a4d1b3e5f7091a2c4e6b8d0f2a4c6e8b0d2f4a6c"
 }

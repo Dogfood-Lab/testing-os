@@ -100,6 +100,13 @@ test('D2B-015 STATIC: no `new Ajv` outside @dogfood-lab/schemas (single canonica
     // payload schemas wired through compileSchema/validatePayload. See that
     // file's header comment.
     'packages/dogfood-swarm/lib/case-file/schema.js',
+    // The roadmap seed validator compiles dogfood-roadmap.schema.json — the
+    // third swarm-internal envelope (CLAUDE.md names all three: agent-output,
+    // case-file, dogfood-roadmap), resolved as a raw JSON file via the
+    // ./json/* subpath, NOT wired through compileSchema/validatePayload.
+    // Same class as the two entries above; added at the wave-43 merge when
+    // `swarm init --seed-from-roadmap` (T4) shipped its fail-fast validation.
+    'packages/dogfood-swarm/commands/lib/roadmap-seed.js',
   ]);
   const SCHEMA_PACKAGE_PREFIX = 'packages/schemas/';
 

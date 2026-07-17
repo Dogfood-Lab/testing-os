@@ -22,14 +22,50 @@
     "items": []
   },
   "operator_notes": [
-    { "kind": "theme", "text": "note one", "expires": 1 },
-    { "kind": "theme", "text": "note two", "expires": 1 },
-    { "kind": "theme", "text": "note three", "expires": 1 },
-    { "kind": "theme", "text": "note four", "expires": 1 },
-    { "kind": "theme", "text": "note five", "expires": 1 },
-    { "kind": "theme", "text": "note six", "expires": 1 },
-    { "kind": "theme", "text": "note seven", "expires": 1 },
-    { "kind": "theme", "text": "note eight — the 8th entry, over the T3 bound", "expires": 1 }
+    {
+      "kind": "theme",
+      "text": "note one",
+      "expires": 1
+    },
+    {
+      "kind": "theme",
+      "text": "note two",
+      "expires": 1
+    },
+    {
+      "kind": "theme",
+      "text": "note three",
+      "expires": 1
+    },
+    {
+      "kind": "theme",
+      "text": "note four",
+      "expires": 1
+    },
+    {
+      "kind": "theme",
+      "text": "note five",
+      "expires": 1
+    },
+    {
+      "kind": "theme",
+      "text": "note six",
+      "expires": 1
+    },
+    {
+      "kind": "theme",
+      "text": "note seven",
+      "expires": 1
+    },
+    {
+      "kind": "theme",
+      "text": "note eight — the 8th entry, over the T3 bound",
+      "expires": 1
+    }
   ],
-  "drain_queue": []
+  "expired_notes": [],
+  "drain_queue": {
+    "entries": [],
+    "overdue_ids": []
+  }
 }

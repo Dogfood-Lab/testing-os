@@ -194,6 +194,28 @@ The on-disk `control-plane.db` was written by a **newer** `@dogfood-lab/dogfood-
   1. Re-invoke with a phase from the list above, e.g. `swarm dispatch <run-id> health-audit-a`.
   2. The control plane is untouched — no cleanup is needed before retrying.
 
+### `DISPATCH_NO_AGENT_DOMAINS`
+
+:::caution[Severity: MEDIUM]
+Every domain in the run's frozen map is `ownership_class: 'shared'` — a shared zone is not an agent-bearing domain, so dispatching would create a wave with **zero** `agent_runs`. Refused as a pre-commit precondition; nothing is written.
+:::
+
+- **Class:** `DispatchPreconditionError` (`packages/dogfood-swarm/lib/errors.js`).
+- **Trigger:** `dispatch()`'s pre-transaction sweep of the frozen domain map (`packages/dogfood-swarm/commands/dispatch.js`) finds no `owned` or `bridge` domain to become an agent.
+- **NDJSON event emitted before throw:** `dispatch_precondition_failed` with `code=DISPATCH_NO_AGENT_DOMAINS`.
+- **Operator action:** edit the domain map (`swarm domains <run-id> --edit/--add`) so at least one domain is `owned` (or `bridge`), re-freeze, then dispatch.
+
+### `DISPATCH_WAVE_IN_FLIGHT`
+
+:::caution[Severity: MEDIUM]
+The run's latest wave is still `dispatched` or `collecting` — opening a new wave now would strand it mid-flight. Refused as a pre-commit precondition; nothing is written.
+:::
+
+- **Class:** `DispatchPreconditionError` (`packages/dogfood-swarm/lib/errors.js`).
+- **Trigger:** `dispatch()`'s pre-transaction wave-status check (`packages/dogfood-swarm/commands/dispatch.js`) finds the newest `waves` row in a non-terminal collecting state.
+- **NDJSON event emitted before throw:** `dispatch_precondition_failed` with `code=DISPATCH_WAVE_IN_FLIGHT`.
+- **Operator action:** finish the in-flight wave first — `swarm collect <run-id> --all` (or `swarm resume <run-id>` if agents died) — then dispatch the next one. `swarm clean` mirrors this guard on `--apply` (`CLEAN_WAVE_IN_FLIGHT`).
+
 ### `CLI_INVALID_GLOBS_JSON`
 
 :::note[Severity: MEDIUM]

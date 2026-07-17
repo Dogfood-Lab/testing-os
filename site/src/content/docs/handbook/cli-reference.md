@@ -379,8 +379,8 @@ Example:
 Compile and inspect the trajectory artifact — the compiled-never-authored roadmap that lets the next run on this repo start targeted instead of cold. `compile` regenerates `dogfood/roadmap/<run-id>.json` (+ the `latest.json` pointer) from the control-plane DB and git alone: open/deferred queues, the drain queue with per-entry provenance and cadence, recurrence stats, the advisory attention list, and the bounded operator notes (validated at compile — an `invariant` note must name an existing `enforced_by` gate; expired notes are dropped loudly). `show` renders the latest artifact, or an earlier one via `--version=N`. `compile --undo <sequence> --apply` is the named compensator for a partial or wrong compile: it removes exactly that sequence's ledger row and, when that sequence was the latest, repoints `latest.json` at the prior version (dry-run without `--apply`; a nonexistent sequence refuses with `ROADMAP_UNDO_NOT_FOUND`, zero mutation). See the [trajectory layer](/testing-os/handbook/trajectory/) page for the full design and its refusals.
 
 ```text
-Usage: swarm roadmap compile <run-id> [--undo <sequence> --apply]
-                             [--format=text|json]
+Usage: swarm roadmap compile <run-id> [--format=text|json]
+                             [--undo <sequence> --apply]
        swarm roadmap show <run-id> [--version=N]
                           [--format=text|json]
 

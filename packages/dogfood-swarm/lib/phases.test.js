@@ -87,11 +87,19 @@ describe('DISCLOSED EXCEPTION parity (F-274e7ac5 / F-ab4fbab0) — local phase-l
       .map((s) => s.replace(/^['"]|['"]$/g, ''));
   }
 
-  it('commands/collect.js\'s local AUDIT_PHASES/AMEND_PHASES literals match lib/phases.js\'s canonical arrays', () => {
+  it('commands/collect.js: either it now imports AUDIT_PHASES/AMEND_PHASES from lib/phases.js (the wave-43 verbs fix landed — the F-274e7ac5 disclosed exception dissolved), or its local copy still matches byte-for-byte', () => {
     const collectPath = join(COMMANDS_DIR, 'collect.js');
     const localAudit = extractLocalPhaseArray(collectPath, 'AUDIT_PHASES');
     const localAmend = extractLocalPhaseArray(collectPath, 'AMEND_PHASES');
-    assert.ok(localAudit, 'collect.js is documented as carrying a local AUDIT_PHASES literal — if this now fails, the docstring (F-274e7ac5) needs updating, not this test');
+    if (localAudit === null && localAmend === null) {
+      // The verbs lane's wave-43 fix went further than the disclosed-exception
+      // compromise: collect.js consumes the shared enumeration outright, so
+      // there is no local literal left to desync — strictly better than the
+      // parity this gate was built to hold. It must still USE the enumeration.
+      const source = readFileSync(collectPath, 'utf-8');
+      assert.match(source, /AUDIT_PHASES/, 'collect.js must still USE AUDIT_PHASES somehow (imported) if it no longer declares it locally');
+      return;
+    }
     assert.deepEqual(localAudit, AUDIT_PHASES, 'collect.js\'s local AUDIT_PHASES has desynced from lib/phases.js\'s canonical array');
     assert.deepEqual(localAmend, AMEND_PHASES, 'collect.js\'s local AMEND_PHASES has desynced from lib/phases.js\'s canonical array');
   });

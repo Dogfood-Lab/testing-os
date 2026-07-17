@@ -216,6 +216,10 @@ function toRepoRelativeNotesPath(repoRoot, absoluteNotesPath) {
  * smuggled straight into a schema-invalid artifact — the exact failure mode
  * A3.1 exists to close, not reintroduce one layer down.
  *
+ * Closes the envelope half of F-471a06f1 / F-fc17138c (the schema-conformance
+ * cluster: the CLI used to discard compile.js's schema-named sections down to
+ * a flat camelCase envelope no artifact of which ever validated).
+ *
  * @param {object} sections — compileRoadmapSections' return value; expected
  *   (per A3.1, the wave-43 locked contract) to already carry: run_id, repo,
  *   compiled_from, open_summary, grandfathered_drain, recurrence_stats,

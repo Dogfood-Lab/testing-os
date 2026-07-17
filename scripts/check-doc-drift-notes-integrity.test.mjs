@@ -294,10 +294,13 @@ test('the real doc-drift-patterns.json wires roadmap-notes-integrity with the tw
   // (the schema vocabulary, F-fe05c6d7) — but the first REAL compiled
   // artifact carries its notes at a flat top-level 'notes' array (the CLI
   // envelope, post-reconciliation). The document-schema-vs-CLI-envelope
-  // field reconciliation is a declared residual for the next audit; until it
-  // lands, the config — and this pin — point at the live shape, because a
-  // gate aimed at a vocabulary the writer does not emit checks nothing.
-  assert.equal(entry.notesPath, 'notes');
+  // field reconciliation LANDED at the wave-43 merge (Amendment 3): the
+  // envelope now emits the schema-named `operator_notes`, the sequence-3
+  // artifact carries it, and the config's pointer followed in the same
+  // reconciliation commit. The config — and this pin — track the live shape,
+  // because a gate aimed at a vocabulary the writer does not emit checks
+  // nothing; pre-A3 that meant 'notes', post-A3 it means 'operator_notes'.
+  assert.equal(entry.notesPath, 'operator_notes');
 });
 
 test('LIVE TREE: the real roadmap-notes-integrity check contributes zero reports against the actual repo today (graceful absence before the first compile; zero note violations after it — the inaugural artifact has an empty notes array)', async () => {

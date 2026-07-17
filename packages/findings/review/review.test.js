@@ -258,7 +258,7 @@ describe('Review actions: reopen', () => {
       action: 'reopen',
       actor: 'mike'
     });
-    // F-B40-002 (wave-41 rider): this test's title used to say "requires
+    // F-a50d8106 (wave-41 rider, canonicalized wave 43): this test's title used to say "requires
     // reason" while its body proved the opposite — reopen is not in
     // REASON_REQUIRED (transitions.js), so no `reason` field is passed here
     // and success is still expected. Renamed to state what the test actually

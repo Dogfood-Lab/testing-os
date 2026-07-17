@@ -20,8 +20,16 @@ layer is built on one rule:
 `swarm roadmap compile <run-id>` writes `dogfood/roadmap/<run-id>.json` and points
 `dogfood/roadmap/latest.json` at it. One artifact per run; a recompile supersedes
 with a new sequence number; history is never edited. The shape is governed by
-`@dogfood-lab/schemas`' `dogfood-roadmap.schema.json` and validated in `npm run
-verify` (a missing artifact is *not applicable*, never a vacuous pass).
+`@dogfood-lab/schemas`' `dogfood-roadmap.schema.json`, and since the wave-43
+vocabulary reconciliation (Amendment 3 of the pass contract) the **full
+document** is validated in `npm run verify` — not just the `latest.json`
+pointer, which for two waves was the only enforced sub-schema while the
+full-document check sat loudly suspended pending the drain-cadence decision
+(an earlier revision of this page claimed full validation during that window;
+the confirming audit caught the overclaim). The two pre-reconciliation
+artifacts and the deliberately `sequence`-less byte-identity mirror are
+allowlisted **by name** — history is never rewritten to satisfy a gate — and
+a missing artifact is *not applicable*, never a vacuous pass.
 
 Compiled sections — all queries, regenerated on every compile:
 

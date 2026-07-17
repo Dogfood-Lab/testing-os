@@ -1497,5 +1497,7 @@
     "entries": [],
     "overdue_ids": []
   },
-  "notesPath": "dogfood/roadmap-notes.json"
+  "notesPath": "dogfood/roadmap-notes.json",
+  "sequence": 3,
+  "content_hash": "26663d337138abe986548e4f2d63d9aef1be98e3f0453b2eb645223c08b8bfc5"
 }

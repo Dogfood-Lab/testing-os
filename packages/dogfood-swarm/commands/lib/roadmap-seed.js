@@ -25,7 +25,11 @@
  * DURABLE lineage must fail loud instead — F-d110f547's own words).
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
+// H5 bounded-read discipline: every from-disk JSON read routes through the
+// shared bounded reader — a seed artifact is repo-tree data an operator can
+// point anywhere, so it gets the same cap agent outputs do.
+import { readBoundedJson } from '../../lib/bounded-json-read.js';
 import { join, resolve as resolvePath } from 'node:path';
 import { createRequire } from 'node:module';
 import Ajv2020 from 'ajv/dist/2020.js';
@@ -55,7 +59,7 @@ function getRoadmapValidator() {
     const schemaPath = require.resolve('@dogfood-lab/schemas/json/dogfood-roadmap.schema.json');
     const ajv = new Ajv2020({ allErrors: true, strict: false });
     addFormats(ajv);
-    const schema = JSON.parse(readFileSync(schemaPath, 'utf-8'));
+    const schema = readBoundedJson(schemaPath);
     _validate = ajv.compile(schema);
     return _validate;
   } catch (e) {
@@ -103,7 +107,7 @@ export function resolveRoadmapSeed(repoPath, requested) {
     }
     let pointer;
     try {
-      pointer = JSON.parse(readFileSync(latestPath, 'utf-8'));
+      pointer = readBoundedJson(latestPath);
     } catch (e) {
       throw roadmapError(
         'ROADMAP_SEED_NOT_FOUND',
@@ -139,7 +143,7 @@ export function resolveRoadmapSeed(repoPath, requested) {
 
   let artifact;
   try {
-    artifact = JSON.parse(readFileSync(absPath, 'utf-8'));
+    artifact = readBoundedJson(absPath);
   } catch (e) {
     throw roadmapError(
       'ROADMAP_SEED_SCHEMA_INVALID',

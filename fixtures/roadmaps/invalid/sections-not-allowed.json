@@ -22,11 +22,19 @@
     "items": []
   },
   "operator_notes": [],
-  "drain_queue": [],
+  "expired_notes": [],
+  "drain_queue": {
+    "entries": [],
+    "overdue_ids": []
+  },
   "sections": {
     "run_id": "swarm-1784091637-5127",
     "repo": "dogfood-lab/testing-os",
     "generated_at": "2026-07-17T18:00:00Z",
-    "findings": { "open": [], "deferred": [], "approved": [] }
+    "findings": {
+      "open": [],
+      "deferred": [],
+      "approved": []
+    }
   }
 }

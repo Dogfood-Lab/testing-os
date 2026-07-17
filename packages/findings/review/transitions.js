@@ -53,7 +53,8 @@
  *     row or a prior roadmap sequence; every reopen/close is itself a new,
  *     evidence-bearing record layered on top of what came before.
  *
- * NOT SHARED, DISCLOSED (F-B40-002 — wave-41 rider; this cross-reference
+ * NOT SHARED, DISCLOSED (F-a50d8106 — wave-41 rider, canonicalized from the
+ * collect-swallowed local label B40-002 at the wave-43 merge; this cross-reference
  * comment previously listed the next line as shared discipline, which
  * overclaimed): the control-plane's C1 `swarm reopen` requires a non-empty
  * `--reason` (and `--evidence`) as a hard CLI-layer precondition — cli.js's

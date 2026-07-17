@@ -77,11 +77,18 @@ function makeGitRepo() {
   return dir;
 }
 
+// task_6026249b discipline: SWARM_DB is pinned to a temp fallback AT the
+// spawn site, so no call path — including usage-error paths that open the DB
+// before validating args — can ever touch the repo's live control plane.
+// Call sites that pass their own env.SWARM_DB override the fallback.
+const fallbackDbDir = makeTmpDir('roadmap-seed-fallback-db-');
 function runCli(args, opts = {}) {
+  const { env: extraEnv, ...rest } = opts;
   return spawnSync(process.execPath, [CLI_PATH, ...args], {
     encoding: 'utf-8',
     cwd: __dirname,
-    ...opts,
+    env: { ...process.env, SWARM_DB: join(fallbackDbDir, 'control-plane.db'), ...(extraEnv || {}) },
+    ...rest,
   });
 }
 
@@ -118,12 +125,13 @@ function a3ArtifactFor(sourceRunId, repo) {
  * COMMITS both — `swarm init` refuses a dirty working tree, and this
  * fixture must not leave the repo dirty for that check.
  *
- * USE THIS for `swarm dispatch`-side tests only (buildRoadmapDigest reads
- * artifact content directly, degrading gracefully — it never schema-
- * validates). For `swarm init --seed-from-roadmap`, which DOES run the
- * artifact through Ajv against dogfood-roadmap.schema.json, use
- * writeLegacySchemaConformantArtifactFixture below instead — see its own
- * header for why.
+ * Valid for BOTH dispatch-side and init-side tests since the wave-43 merge:
+ * the schemas domain's A3 reshape landed, so production's own
+ * buildRoadmapArtifact output validates against the real schema. (Pre-merge,
+ * init-side tests needed a separate wave-41-shaped fixture writer because
+ * this worktree's schema copy was pre-A3 — the dedicated SEAM describe
+ * block below proved that gap explicitly and self-retires now that the
+ * seam is closed.)
  */
 function writeArtifactFixture(repoDir, sourceRunId, repo) {
   const roadmapDir = join(repoDir, 'dogfood', 'roadmap');
@@ -137,62 +145,7 @@ function writeArtifactFixture(repoDir, sourceRunId, repo) {
   return artifact;
 }
 
-/**
- * SEAM DISCLOSURE (read before "fixing" this by reaching for a3ArtifactFor
- * instead): `resolveRoadmapSeed` (commands/lib/roadmap-seed.js) validates
- * against `@dogfood-lab/schemas/json/dogfood-roadmap.schema.json` — the
- * REAL, shipped schema file, resolved the same way production code
- * resolves it. THIS worktree's copy of that schema file still has the
- * PRE-A3 (wave-41) shape: `expired_notes` is not a recognized property at
- * all (additionalProperties:false rejects it), and `drain_queue` must be an
- * ARRAY of $defs/drainEntry, not A3.2(a)'s `{entries, overdue_ids}` object.
- * The schemas domain lands A3's reshape of that file IN ITS OWN WORKTREE
- * this same wave (commands/roadmap.js's own header, "SEAM (wave 43 —
- * Amendment 3)") — this test file cannot see that edit, exactly like
- * f-feeaef78-roadmap-compile-determinism.test.js already could not see
- * core's T1 compiler module in wave 39.
- *
- * A fixture built via buildRoadmapArtifact() (production's OWN A3-shaped
- * output) therefore does NOT validate against THIS worktree's schema copy
- * today — proven explicitly, not silently worked around, in the dedicated
- * "SEAM" describe block below. This helper instead hand-builds a fixture
- * matching the schema AS IT LITERALLY IS on disk right now, so the
- * happy-path tests here can prove the surrounding MACHINERY (resolve file
- * -> parse JSON -> Ajv-validate -> stamp kv lineage -> read back) is
- * correct TODAY, decoupled from which exact schema vocabulary is live at
- * any given moment — the seam is in the DATA SHAPE, not in this
- * resolve/validate/stamp pipeline itself.
- */
-function writeLegacySchemaConformantArtifactFixture(repoDir, sourceRunId, repo) {
-  const roadmapDir = join(repoDir, 'dogfood', 'roadmap');
-  mkdirSync(roadmapDir, { recursive: true });
-  const artifact = {
-    run_id: sourceRunId,
-    sequence: 1,
-    compiled_at: '2026-07-17T00:00:00.000Z',
-    repo,
-    compiled_from: { commit_sha: 'a'.repeat(40) },
-    open_summary: { open: 1, deferred: 0, approved: 0 },
-    grandfathered_drain: { frozen_total: 0, drained: 0, outstanding: [] },
-    recurrence_stats: {},
-    attention: {
-      advisory: true,
-      items: [{ file: 'packages/seed/src/hot.js', score: 0.9, components: { churn: 1, recency: 1, fragmentation: 1 } }],
-    },
-    operator_notes: [{ kind: 'theme', text: 'seeded-note-marker', expires: 10 }],
-    // wave-41 $defs/drainEntry shape — an ARRAY, every field required.
-    drain_queue: [
-      { id: 'F-SEED-0001', reason: 'legacy fixture', owner: 'coordinator', added_at: '2026-07-01T00:00:00.000Z', cadence_runs: 5, due_at_run: 2 },
-    ],
-  };
-  const relPath = `dogfood/roadmap/${sourceRunId}.json`;
-  writeFileSync(join(repoDir, relPath), JSON.stringify(artifact, null, 2));
-  writeFileSync(join(roadmapDir, 'latest.json'), JSON.stringify({ run_id: sourceRunId, sequence: 1, path: relPath }, null, 2));
-  git(repoDir, ['add', '.']);
-  git(repoDir, ['commit', '-q', '-m', `fixture: legacy-schema-conformant roadmap artifact for ${sourceRunId}`]);
-  return artifact;
-}
-
+/** @pins F-d110f547 */
 describe('F-d110f547 — swarm init --seed-from-roadmap', () => {
   it('fails fast with ROADMAP_SEED_NOT_FOUND when no artifact resolves — and creates NO run row (fail before any DB write)', () => {
     const dbDir = makeTmpDir('seed-init-notfound-db-');
@@ -230,7 +183,7 @@ describe('F-d110f547 — swarm init --seed-from-roadmap', () => {
     const dbDir = makeTmpDir('seed-init-ok-db-');
     const dbPath = join(dbDir, 'control-plane.db');
     const repoDir = makeGitRepo();
-    writeLegacySchemaConformantArtifactFixture(repoDir, 'roadmap-seed-source-r1', 'org/repo');
+    writeArtifactFixture(repoDir, 'roadmap-seed-source-r1', 'org/repo');
 
     const result = runCli(['init', repoDir, '--repo', 'org/repo', '--seed-from-roadmap=roadmap-seed-source-r1'],
       { env: { ...process.env, SWARM_DB: dbPath } });
@@ -253,7 +206,7 @@ describe('F-d110f547 — swarm init --seed-from-roadmap', () => {
     const dbDir = makeTmpDir('seed-init-latest-db-');
     const dbPath = join(dbDir, 'control-plane.db');
     const repoDir = makeGitRepo();
-    writeLegacySchemaConformantArtifactFixture(repoDir, 'roadmap-seed-latest-r1', 'org/repo');
+    writeArtifactFixture(repoDir, 'roadmap-seed-latest-r1', 'org/repo');
 
     const result = runCli(['init', repoDir, '--repo', 'org/repo', '--seed-from-roadmap'],
       { env: { ...process.env, SWARM_DB: dbPath } });
