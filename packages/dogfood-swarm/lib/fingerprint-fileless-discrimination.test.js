@@ -1,15 +1,16 @@
 /**
  * fingerprint-fileless-discrimination.test.js — wave-41 coordinator rider
- * ("fingerprint-fusion-rider", swarm-cp-core), NOT a filed F-id — the
- * coordinator's own wave-40 forensics, not a routed finding from this run's
- * findings table. See swarms/swarm-1784091637-5127/wave-41/swarm-cp-core/
- * output.json's rider entry for the full forensic trail; no `@pins` tag is
- * used anywhere in this file because check-finding-regression-pins.mjs's
- * dangling-id check requires a REAL source-side F-id, and this fix has none
- * to point at. The tests lane is expected to author the canonical
- * root-level regression pin, once the coordinator either files a real
- * finding for this rider or establishes a convention for coordinator-
- * sourced (non-agent-filed) fixes.
+ * ("fingerprint-fusion-rider", swarm-cp-core), retroactively canonicalized
+ * as F-52e61f49 by the wave-43 coordinator instruction (this file's own
+ * prior text predicted exactly this: "the wave-42 audit is expected to mint
+ * a canonical id and retro-tag them — this finding is that id"). Originally
+ * NOT a filed F-id — the coordinator's own wave-40 forensics, not a routed
+ * finding from this run's findings table. See
+ * swarms/swarm-1784091637-5127/wave-41/swarm-cp-core/output.json's rider
+ * entry for the full forensic trail. `packages/dogfood-swarm/fingerprint-
+ * file-less-discrimination.test.js` (note the different spelling) is
+ * swarm-cp-tests' independent parallel pin for the SAME finding, tagged
+ * separately (outside this domain's globs).
  *
  * THE BUG: computeFingerprint's base fingerprint is
  * `category|rule_id|normalizePath(file)|symbol|location` — for a file-less
@@ -48,6 +49,7 @@ import { createHash } from 'node:crypto';
 
 import { computeFingerprint, classifyFindings } from './fingerprint.js';
 
+/** @pins F-52e61f49 */
 describe('computeFingerprint — file-less findings get real discrimination (fingerprint-fusion rider)', () => {
   it('two file-less findings sharing ONLY category now get DIFFERENT base fingerprints (the fusion this rider closes)', () => {
     const findingA = { category: 'integration', file: null, description: 'Totally unrelated NEW defect about missing widget X provisioning', _declaringDomain: 'backend' };

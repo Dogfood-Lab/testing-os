@@ -1,7 +1,17 @@
 /**
  * roadmap-drain.test.js — F-6c807f60 / F-1cd5de59 (T6,
- * docs/trajectory-and-closure.dispatch.md): drain-queue compilation, both
- * halves.
+ * docs/trajectory-and-closure.dispatch.md): drain-queue compilation.
+ *
+ * Amendment 3 (wave 42/43) additions covered below:
+ *   - compileAuthoredDrainState (A3.2a): previously exercised ONLY through
+ *     the root-level, out-of-this-domain F-1cd5de59 CLI end-to-end test —
+ *     zero direct unit coverage existed. Added here alongside the fail-closed
+ *     missing-owner skip and the optional `reason` field.
+ *   - compileGrandfatherManifestDrainState (A3.2b, NEW this wave): the
+ *     256-entry FROZEN manifest half — do not confuse with
+ *     compileGrandfatheredManifestDrain above, which reads the DIFFERENT
+ *     36-entry allowlist (see drain.js's own module header, "TWO
+ *     SUPPRESSION-REGISTRY FILES, NOT INTERCHANGEABLE").
  */
 
 import { describe, it } from 'node:test';
@@ -16,6 +26,9 @@ import {
   compileDeferredFindingsDrain,
   compileDrainQueue,
   compileUnroutableApprovedDrain,
+  compileAuthoredDrainState,
+  compileGrandfatherManifestDrainState,
+  FROZEN_GRANDFATHER_MANIFEST_TOTAL,
   DEFAULT_STALE_WAVE_THRESHOLD,
 } from './roadmap/drain.js';
 
@@ -30,6 +43,46 @@ function withRepoRoot(allowlistBody, fn) {
   } finally {
     rmSync(repoRoot, { recursive: true, force: true });
   }
+}
+
+/**
+ * Same shape as withRepoRoot but plants the DIFFERENT, 256-entry-style
+ * manifest file (`scripts/grandfathered-pins.json`) rather than the
+ * 36-entry allowlist. `manifestBody` is the FULL parsed-JSON shape
+ * (`{ $comment?, frozen_at_commit?, frozen_at_date?, grandfathered }`), not
+ * just the inner map, so a test can also exercise header-field variation.
+ */
+function withGrandfatherManifest(manifestBody, fn) {
+  const repoRoot = mkdtempSync(join(tmpdir(), 'roadmap-drain-gf-'));
+  try {
+    if (manifestBody !== null) {
+      mkdirSync(join(repoRoot, 'scripts'), { recursive: true });
+      writeFileSync(join(repoRoot, 'scripts', 'grandfathered-pins.json'), JSON.stringify(manifestBody));
+    }
+    return fn(repoRoot);
+  } finally {
+    rmSync(repoRoot, { recursive: true, force: true });
+  }
+}
+
+function seedDrainStateRun(db, runId, repoDir, { numRuns = 1 } = {}) {
+  const insRun = db.prepare(
+    `INSERT INTO runs (id, repo, local_path, commit_sha, branch, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)`
+  );
+  let currentId;
+  for (let i = 1; i <= numRuns; i++) {
+    const id = i === numRuns ? runId : `${runId}-prior-${i}`;
+    const createdAt = `2026-01-${String(i).padStart(2, '0')} 00:00:00`;
+    insRun.run(id, 'org/drain-state-repo', repoDir, String(i).repeat(40).slice(0, 40), 'main',
+      i === numRuns ? 'feature-audit' : 'complete', createdAt);
+    currentId = id;
+  }
+  return currentId;
+}
+
+function writeDrainStateFile(repoDir, entries) {
+  mkdirSync(join(repoDir, 'dogfood'), { recursive: true });
+  writeFileSync(join(repoDir, 'dogfood', 'roadmap-drain-state.json'), JSON.stringify({ entries }, null, 2));
 }
 
 /** @pins F-6c807f60 */
@@ -57,6 +110,21 @@ describe('compileGrandfatheredManifestDrain — F-6c807f60 grandfathered-manifes
     });
   });
 
+  /**
+   * @pins F-2f7dd0ce
+   * F-2f7dd0ce's fix was a DOCSTRING correction (drain.js's own header
+   * wrongly described this boundary as INCLUSIVE while the code below —
+   * unchanged by that fix — was always EXCLUSIVE); there is no behavior
+   * change to pin, since the bug never reached runtime. This test is the
+   * closest available regression pin: it proves the BEHAVIORAL CLAIM the
+   * corrected header now accurately describes, matching the two named
+   * precedents for this exact "drift inside a comment" class
+   * (F-017409f3, F-c4d70660), both of which also had no behavior-level pin
+   * available and were left to the grandfathered bucket for the identical
+   * reason. A future re-introduction of the wrong INCLUSIVE claim in prose
+   * would not be caught here (no test can assert on a comment's content) —
+   * an honest limitation, disclosed rather than pretended away.
+   */
   it('an entry whose revalidate_by is TODAY (exactly at the boundary) is NOT yet overdue — exclusive per the shared revalidation-cadence convention (F-780490da)', () => {
     const allowlist = { allow: { 'F-1': { reason: 'r', file: 'f', owner: 'o', revalidate_by: '2026-07-17' } } };
     withRepoRoot(allowlist, (repoRoot) => {
@@ -291,5 +359,217 @@ describe('compileUnroutableApprovedDrain — approved + file-less + unroutable f
 
     const result = compileUnroutableApprovedDrain(db, runId);
     assert.deepEqual(result.findings.map((f) => f.finding_id), ['F-aaa', 'F-zzz']);
+  });
+});
+
+/** @pins F-1cd5de59 */
+describe('compileAuthoredDrainState — A3.2a (previously CLI-only coverage; direct unit tests added wave 43)', () => {
+  it('a valid entry produces {id, owner, cadence_runs, runs_since_review, overdue} with no reason key when the seed omits one', () => {
+    const db = openMemoryDb();
+    const repoDir = mkdtempSync(join(tmpdir(), 'roadmap-drain-authored-'));
+    try {
+      const runId = seedDrainStateRun(db, 'run-authored-1', repoDir, { numRuns: 6 });
+      writeDrainStateFile(repoDir, [{ id: 'F-x', owner: 'coordinator', last_reviewed_run_ordinal: 1, cadence_runs: 5 }]);
+
+      const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
+      const result = compileAuthoredDrainState(db, run);
+
+      assert.equal(result.available, true);
+      assert.deepEqual(result.entries, [{
+        id: 'F-x', owner: 'coordinator', cadence_runs: 5, runs_since_review: 5, overdue: false,
+      }]);
+      assert.equal(Object.hasOwn(result.entries[0], 'reason'), false);
+      assert.deepEqual(result.overdue_ids, []);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('carries an optional, non-empty reason through to the output entry', () => {
+    const db = openMemoryDb();
+    const repoDir = mkdtempSync(join(tmpdir(), 'roadmap-drain-authored-'));
+    try {
+      const runId = seedDrainStateRun(db, 'run-authored-2', repoDir, { numRuns: 1 });
+      writeDrainStateFile(repoDir, [{
+        id: 'F-y', owner: 'coordinator', last_reviewed_run_ordinal: 1, cadence_runs: 5, reason: 'awaiting upstream fix',
+      }]);
+
+      const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
+      const result = compileAuthoredDrainState(db, run);
+      assert.equal(result.entries[0].reason, 'awaiting upstream fix');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('a present-but-empty/whitespace-only reason is treated as absent, not passed through', () => {
+    const db = openMemoryDb();
+    const repoDir = mkdtempSync(join(tmpdir(), 'roadmap-drain-authored-'));
+    try {
+      const runId = seedDrainStateRun(db, 'run-authored-3', repoDir, { numRuns: 1 });
+      writeDrainStateFile(repoDir, [{
+        id: 'F-z', owner: 'coordinator', last_reviewed_run_ordinal: 1, cadence_runs: 5, reason: '   ',
+      }]);
+
+      const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
+      const result = compileAuthoredDrainState(db, run);
+      assert.equal(Object.hasOwn(result.entries[0], 'reason'), false);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('coordinator-relay fix: an entry with a missing/empty owner is SKIPPED, never emitted with owner:"" (schema minLength:1)', () => {
+    const db = openMemoryDb();
+    const repoDir = mkdtempSync(join(tmpdir(), 'roadmap-drain-authored-'));
+    try {
+      const runId = seedDrainStateRun(db, 'run-authored-4', repoDir, { numRuns: 1 });
+      writeDrainStateFile(repoDir, [
+        { id: 'F-no-owner', last_reviewed_run_ordinal: 1, cadence_runs: 5 },
+        { id: 'F-empty-owner', owner: '', last_reviewed_run_ordinal: 1, cadence_runs: 5 },
+        { id: 'F-has-owner', owner: 'coordinator', last_reviewed_run_ordinal: 1, cadence_runs: 5 },
+      ]);
+
+      const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
+      const result = compileAuthoredDrainState(db, run);
+
+      assert.deepEqual(result.entries.map((e) => e.id), ['F-has-owner'],
+        'both the missing-owner and empty-owner entries must be excluded, never emitted with owner:""');
+      assert.ok(result.entries.every((e) => typeof e.owner === 'string' && e.owner.length > 0),
+        'every emitted entry must have a non-empty owner — the schema-invalid shape must never escape this producer');
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('degrades to available:false (never throws) when the drain-state file is absent', () => {
+    const db = openMemoryDb();
+    const repoDir = mkdtempSync(join(tmpdir(), 'roadmap-drain-authored-'));
+    try {
+      const runId = seedDrainStateRun(db, 'run-authored-5', repoDir, { numRuns: 1 });
+      const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
+      const result = compileAuthoredDrainState(db, run);
+      assert.equal(result.available, false);
+      assert.deepEqual(result.entries, []);
+      assert.deepEqual(result.overdue_ids, []);
+    } finally {
+      rmSync(repoDir, { recursive: true, force: true });
+    }
+  });
+
+  it('degrades to available:false (never throws) when `run` is omitted or has no local_path', () => {
+    const db = openMemoryDb();
+    assert.doesNotThrow(() => {
+      assert.equal(compileAuthoredDrainState(db, null).available, false);
+      assert.equal(compileAuthoredDrainState(db, {}).available, false);
+    });
+  });
+});
+
+// No `@pins` tag here by design: A3.2b (docs/trajectory-and-closure
+// .dispatch.md, Amendment 3) is a dispatch-section reference, not a filed
+// F-id — check-finding-regression-pins.mjs's dangling-id check requires a
+// real F-id both a test tag AND a source-side mention can agree on, and
+// "A3.2b" is not F-id-shaped (F_ID_PATTERN would flag it, and every word in
+// a parenthetical after it, as bad-shape — verified live against the real
+// gate this wave). Referenced in prose only, matching this package's
+// established convention for coordinator/dispatch-sourced work with no
+// minted id (see lib/fingerprint-fileless-discrimination.test.js's header,
+// pre-F-52e61f49, for the identical situation and its own resolution once a
+// real id existed to tag).
+describe('compileGrandfatherManifestDrainState — A3.2b, the 256-entry FROZEN manifest half (NOT the 36-entry allowlist above)', () => {
+  it('emits ALL remaining entries (not just overdue ones), shaped {id, owner, revalidate_by}, id ASC', () => {
+    withGrandfatherManifest({
+      frozen_at_commit: '132dc18',
+      frozen_at_date: '2026-07-16',
+      grandfathered: {
+        'F-zzz': { owner: 'coordinator', revalidate_by: '2099-01-01' }, // far future — still "outstanding"
+        'F-aaa': { owner: 'coordinator', revalidate_by: '2020-01-01' }, // long past — also "outstanding"
+      },
+    }, (repoRoot) => {
+      const result = compileGrandfatherManifestDrainState(repoRoot);
+      assert.equal(result.available, true);
+      assert.deepEqual(result.outstanding, [
+        { id: 'F-aaa', owner: 'coordinator', revalidate_by: '2020-01-01' },
+        { id: 'F-zzz', owner: 'coordinator', revalidate_by: '2099-01-01' },
+      ], 'both entries surface regardless of revalidate_by — A3.2b: "emit ALL remaining entries," never filtered to overdue-only');
+    });
+  });
+
+  it('frozen_total is the DOCUMENTED CONSTANT, never Object.keys(...).length — drained = frozen_total - live count', () => {
+    withGrandfatherManifest({
+      grandfathered: { 'F-1': { owner: 'coordinator', revalidate_by: '2099-01-01' } },
+    }, (repoRoot) => {
+      const result = compileGrandfatherManifestDrainState(repoRoot);
+      assert.equal(result.frozen_total, FROZEN_GRANDFATHER_MANIFEST_TOTAL);
+      assert.equal(result.drained, FROZEN_GRANDFATHER_MANIFEST_TOTAL - 1,
+        'drained must be computed against the FROZEN constant, not a live re-derived total — a live-derived ' +
+        'total would silently report drained:0 regardless of how many entries had actually migrated out');
+    });
+  });
+
+  it('carries an optional per-entry reason through unchanged when the manifest genuinely has one (never invented when absent)', () => {
+    withGrandfatherManifest({
+      grandfathered: {
+        'F-1': { owner: 'coordinator', revalidate_by: '2099-01-01', reason: 'still under investigation' },
+        'F-2': { owner: 'coordinator', revalidate_by: '2099-01-01' },
+      },
+    }, (repoRoot) => {
+      const result = compileGrandfatherManifestDrainState(repoRoot);
+      const withReason = result.outstanding.find((e) => e.id === 'F-1');
+      const withoutReason = result.outstanding.find((e) => e.id === 'F-2');
+      assert.equal(withReason.reason, 'still under investigation');
+      assert.equal(Object.hasOwn(withoutReason, 'reason'), false, 'a reason must never be invented for an entry that has none');
+    });
+  });
+
+  it('degrades to available:false with frozen_total:0/drained:0/outstanding:[] (never throws) when the manifest is absent — the honest "not applicable" shape for a foreign audited repo', () => {
+    withGrandfatherManifest(null, (repoRoot) => {
+      const result = compileGrandfatherManifestDrainState(repoRoot);
+      assert.deepEqual(result, { available: false, frozen_total: 0, drained: 0, outstanding: [] });
+    });
+  });
+
+  it('degrades to available:false (never throws) when repoRoot is omitted entirely', () => {
+    assert.doesNotThrow(() => {
+      const result = compileGrandfatherManifestDrainState(undefined);
+      assert.equal(result.available, false);
+    });
+  });
+
+  it('degrades to available:false (never throws) on malformed JSON', () => {
+    const repoRoot = mkdtempSync(join(tmpdir(), 'roadmap-drain-gf-bad-'));
+    try {
+      mkdirSync(join(repoRoot, 'scripts'), { recursive: true });
+      writeFileSync(join(repoRoot, 'scripts', 'grandfathered-pins.json'), '{ not valid json');
+      const result = compileGrandfatherManifestDrainState(repoRoot);
+      assert.equal(result.available, false);
+    } finally {
+      rmSync(repoRoot, { recursive: true, force: true });
+    }
+  });
+
+  it('skips a malformed individual entry (missing owner or revalidate_by) rather than throwing — an advisory reader, not the CI gate', () => {
+    withGrandfatherManifest({
+      grandfathered: {
+        'F-good': { owner: 'coordinator', revalidate_by: '2099-01-01' },
+        'F-no-owner': { revalidate_by: '2099-01-01' },
+        'F-no-date': { owner: 'coordinator' },
+      },
+    }, (repoRoot) => {
+      const result = compileGrandfatherManifestDrainState(repoRoot);
+      assert.deepEqual(result.outstanding.map((e) => e.id), ['F-good']);
+    });
+  });
+
+  it('reads the 256-entry MANIFEST path, not the 36-entry ALLOWLIST path — the two files are never conflated', () => {
+    // Plant ONLY the allowlist (compileGrandfatheredManifestDrain's file);
+    // the manifest path must be independently absent -> unavailable.
+    withRepoRoot({ allow: { 'F-1': { reason: 'r', file: 'f', owner: 'o', revalidate_by: '2020-01-01' } } }, (repoRoot) => {
+      const allowlistResult = compileGrandfatheredManifestDrain(repoRoot, new Date('2026-07-17T00:00:00Z'));
+      const manifestResult = compileGrandfatherManifestDrainState(repoRoot);
+      assert.equal(allowlistResult.available, true, 'the allowlist reader must see the allowlist file');
+      assert.equal(manifestResult.available, false, 'the manifest reader must NOT see the allowlist file at its own different path');
+    });
   });
 });

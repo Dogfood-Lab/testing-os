@@ -179,7 +179,91 @@ describe('honorReusedFindingIds — declared-id reconciliation', () => {
     assert.equal(honorReusedFindingIds(findings, new Map(), DOMAINS), findings,
       'an empty prior map must return the input array itself');
   });
+});
 
+// ───────────────────────────────────────────────────────
+// FILE-LESS OWNERSHIP FALLBACK (F-ec18bc02) — mirrors the already-shipped
+// F-8a15be4c fix (commands/collect.js#isVouchableByDomain, the sibling
+// CONFIRM-queue VOUCHING path) and lib/findings-filter.js#findingsForDomain's
+// pre-existing C3 ROUTING fallback: matchesAnyGlob('', globs) can never be
+// true (findings-filter.js's own guard: `if (!filePath) return false`), so
+// a FILE-LESS prior's ownership must answer to `filed_by_domain`, not a
+// glob match — every file-less reuse was refused as unowned unconditionally
+// before this fix, regardless of which domain declared it.
+// ───────────────────────────────────────────────────────
+/** @pins F-ec18bc02 */
+describe('FILE-LESS OWNERSHIP FALLBACK (F-ec18bc02) — three-case probe (own-domain honored / wrong-domain refused / hallucinated id untouched)', () => {
+  function fileLessPriorRow(overrides = {}) {
+    return priorRow({
+      file_path: null,
+      line_number: null,
+      filed_by_domain: 'domain-a',
+      ...overrides,
+    });
+  }
+
+  // The CONFIRM queue shows no file for a file-less finding, so a faithful
+  // re-report from the filing domain is itself file-less — `file: undefined`
+  // mirrors that shape exactly (never a guessed/invented file).
+  function fileLessReReport(overrides = {}) {
+    return {
+      id: 'F-PRIOR9',
+      severity: 'MEDIUM',
+      category: 'ux',
+      file: undefined,
+      description: 'STILL PRESENT — re-verified live this wave, no file to report',
+      _declaringDomain: 'domain-a',
+      ...overrides,
+    };
+  }
+
+  it('CASE 1 — own-domain file-less reuse is HONORED: declaring domain === prior.filed_by_domain', () => {
+    const prior = fileLessPriorRow();
+    const finding = { ...fileLessReReport(), fingerprint: 'computed' };
+    const [out] = honorReusedFindingIds([finding], priorMapOf(prior), DOMAINS);
+    assert.equal(out.fingerprint, 'fp-prior9',
+      'the filing domain must be able to vouch for its own file-less finding — pre-fix this was impossible for anyone');
+    assert.equal(out._idReuseHonored, true);
+  });
+
+  it('CASE 2 — wrong-domain file-less reuse is REFUSED: declaring domain !== prior.filed_by_domain', () => {
+    const prior = fileLessPriorRow({ filed_by_domain: 'domain-a' });
+    const finding = { ...fileLessReReport({ _declaringDomain: 'domain-b' }), fingerprint: 'computed' };
+    const [out] = honorReusedFindingIds([finding], priorMapOf(prior), DOMAINS);
+    assert.equal(out.fingerprint, 'computed',
+      'a domain that did not file the finding must not be able to vouch for it — F-18d0ef6d\'s rule, extended to the file-less fallback (the OVER-permissive direction F-8a15be4c\'s own review named)');
+    assert.equal(out._idReuseHonored, undefined);
+  });
+
+  it('CASE 3 — a hallucinated id (absent from the prior map) is left UNTOUCHED, file-less or not', () => {
+    const prior = fileLessPriorRow();
+    const hallucinated = { ...fileLessReReport({ id: 'F-NOSUCH-FL' }), fingerprint: 'computed' };
+    const [out] = honorReusedFindingIds([hallucinated], priorMapOf(prior), DOMAINS);
+    assert.equal(out.fingerprint, 'computed', 'an id absent from the prior map must be untouched, never guessed');
+    assert.equal(out._idReuseHonored, undefined);
+  });
+
+  it('a file-less prior with NO recorded filer (filed_by_domain NULL) fails closed for every domain — never a wildcard grant', () => {
+    const prior = fileLessPriorRow({ filed_by_domain: null });
+    const finding = { ...fileLessReReport(), fingerprint: 'computed' };
+    const [out] = honorReusedFindingIds([finding], priorMapOf(prior), DOMAINS);
+    assert.equal(out.fingerprint, 'computed',
+      'no recorded filer means no legitimate vouching domain, for ANY domain including the one now declaring it — the honest answer is "nobody", never a guess');
+    assert.equal(out._idReuseHonored, undefined);
+  });
+
+  it('a file-BEARING prior is unaffected by this fix — the pre-existing glob-match path still governs', () => {
+    const prior = priorRow({ filed_by_domain: 'domain-b' }); // deliberately WRONG filed_by_domain
+    const finding = { ...reReport(), fingerprint: computeFingerprint(reReport()) }; // domain-a, real file it owns
+    const [out] = honorReusedFindingIds([finding], priorMapOf(prior), DOMAINS);
+    assert.equal(out.fingerprint, 'fp-prior9',
+      'a file-bearing prior must still be governed by the glob match, ignoring filed_by_domain entirely — ' +
+      'the fallback only applies when there is no file to match against');
+    assert.equal(out._idReuseHonored, true);
+  });
+});
+
+describe('honorReusedFindingIds — declared-id reconciliation (continued)', () => {
   it('classifies an honored re-report as RECURRING — and documents that plain classify still cannot', () => {
     const prior = priorRow();
     const map = priorMapOf(prior);
