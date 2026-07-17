@@ -129,18 +129,41 @@ function setupDispatchFixture(runId) {
   return { dbPath, repoDir };
 }
 
+/**
+ * WAVE-43 UPDATE (A3, docs/trajectory-and-closure.dispatch.md "Amendment
+ * 3"): this fixture used to write the pre-A3 flat shape
+ * (`{attention: [...], drain: [...], notes: []}`) directly. commands/
+ * dispatch.js's own digest reader (buildRoadmapDigest/
+ * loadRoadmapDigestSource) was updated this wave to read A3's actual
+ * schema-shaped sections (`attention.items[]`, `drain_queue.entries[]`,
+ * `operator_notes[]`) — reading the OLD flat shape silently produced an
+ * EMPTY digest (every `Array.isArray(source.attention)` / `source.drain`
+ * check failed against an object/renamed-key input), which is exactly the
+ * "seeded-digest feature ships reading nothing" defect this update closes.
+ * This fixture is updated to match; the sub-claims under test (position,
+ * bounds/truncation, opt-in gating) are UNCHANGED — only the artifact's
+ * field vocabulary is.
+ */
 function writeRoadmapArtifact(repoDir, { attentionCount, drainCount, uniqueMarkerFile }) {
   mkdirSync(join(repoDir, 'dogfood', 'roadmap'), { recursive: true });
-  const attention = Array.from({ length: attentionCount }, (_, i) => ({
+  const items = Array.from({ length: attentionCount }, (_, i) => ({
     file: i === 0 && uniqueMarkerFile ? uniqueMarkerFile : `packages/a/src/attn-file-${i}.js`,
     score: attentionCount - i,
+    components: { churn: 1, recency: 1, fragmentation: 1 },
   }));
-  const drain = Array.from({ length: drainCount }, (_, i) => ({
+  const entries = Array.from({ length: drainCount }, (_, i) => ({
     id: `F-${String(i).padStart(6, '0')}`,
     owner: 'coordinator',
+    cadence_runs: 5,
+    runs_since_review: 6,
+    overdue: true,
     reason: `drain entry ${i}`,
   }));
-  writeFileSync(join(repoDir, 'dogfood', 'roadmap', 'latest.json'), JSON.stringify({ attention, drain, notes: [] }, null, 2));
+  writeFileSync(join(repoDir, 'dogfood', 'roadmap', 'latest.json'), JSON.stringify({
+    attention: { advisory: true, items },
+    drain_queue: { entries, overdue_ids: entries.map((e) => e.id) },
+    operator_notes: [],
+  }, null, 2));
 }
 
 describe('F-8a97a700(b) — roadmap digest BOUNDS when the underlying artifact is large', () => {
@@ -155,7 +178,9 @@ describe('F-8a97a700(b) — roadmap digest BOUNDS when the underlying artifact i
     // only at the tail with the worst score, which is what this override does.
     writeRoadmapArtifact(repoDir, { attentionCount: 200, drainCount: 500 });
     const artifact = JSON.parse(readFileSync(join(repoDir, 'dogfood', 'roadmap', 'latest.json'), 'utf-8'));
-    artifact.attention[artifact.attention.length - 1] = { file: uniqueMarkerFile, score: -1 };
+    artifact.attention.items[artifact.attention.items.length - 1] = {
+      file: uniqueMarkerFile, score: -1, components: { churn: 0, recency: 0, fragmentation: 0 },
+    };
     writeFileSync(join(repoDir, 'dogfood', 'roadmap', 'latest.json'), JSON.stringify(artifact, null, 2));
 
     const result = dispatch({

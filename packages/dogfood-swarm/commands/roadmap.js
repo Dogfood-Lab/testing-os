@@ -10,56 +10,65 @@
  * clean.js wraps lib/worktree.js).
  *
  * ============================================================================
- * SEAM (wave 39) — read before touching this file at merge time
+ * SEAM (wave 43 — Amendment 3) — read before touching this file at merge time
  * ============================================================================
- * `../lib/roadmap/compiler.js` does NOT exist in this worktree. swarm-cp-core
- * lands `lib/roadmap/` in its OWN worktree this same wave (per this wave's
- * dispatch). This file is coded against the CONTRACT below, derived directly
- * from the dispatch doc's own T1/T2/T5/T6 language — not against a real,
- * mergeable module today. It is red-in-isolation (any invocation of `swarm
- * roadmap compile|show` throws Cannot-find-module) until core's module
- * lands; cli.js loads this file via a DYNAMIC import inside cmdRoadmap so
- * the seam is contained to invocation time and never breaks module-load for
- * any OTHER verb (see cli.js's cmdRoadmap for the isolation mechanism, and
- * this repo's own wave-35 cli-smoke precedent for the red-in-isolation/
- * green-at-merge pattern this mirrors).
+ * CORRECTION to the wave-39 header this replaces: `../lib/roadmap/
+ * compiler.js` DOES exist in this worktree (it has since wave 39's own
+ * merge) — the "does not exist" framing below was stale documentation, not
+ * a live seam, and is deleted rather than carried forward.
  *
- * Expected exports from `lib/roadmap/compiler.js`:
+ * The REAL, current seam this wave is narrower and different in kind: A3
+ * (docs/trajectory-and-closure.dispatch.md, "Amendment 3") is the wave-42
+ * ruling that "the schema is the contract" — `lib/roadmap/compile.js`
+ * (swarm-cp-core's file) is being reshaped, IN ITS OWN WORKTREE this same
+ * wave, to emit `compileRoadmapSections()`'s section object using the
+ * SCHEMA's own field names (`run_id`, `repo`, `compiled_from`,
+ * `open_summary`, `grandfathered_drain`, `recurrence_stats`, `attention`,
+ * `run_anchored_at`) instead of the pre-A3 shape this worktree's copy of
+ * compile.js still has (`findings.{open,deferred,approved}` raw arrays, no
+ * `compiled_from`, no `grandfathered_drain`, a differently-shaped
+ * `drain_queue`). This file is coded against A3's TEXT, below and in
+ * `buildRoadmapArtifact()`'s own doc comment — not against what THIS
+ * worktree's compile.js currently returns. Until core's A3 edit lands,
+ * `swarm roadmap compile` is red-in-isolation here in a NEW way (wrong/
+ * missing fields on the written artifact, not a missing module) — the same
+ * "coded against the locked contract, not a mergeable module today"
+ * posture the original wave-39 seam had, one level deeper.
  *
- *   compileRoadmapSections(db, runId, { gitRoot }) -> {
- *     openFindings: object[], deferredFindings: object[],
- *     approvedFindings: object[], drainQueue: object[],
- *     recurrenceStats: object, attention: { file: string, score: number }[]
- *   }
- *     The T1 factual sections (queries executed AT COMPILE TIME against the
- *     control-plane DB + git alone — never authored) plus T2's advisory,
- *     labeled, ranked top-K attention list and T6's drain-queue rollup.
- *     MUST be pure/side-effect-free (no writes) — this function only reads.
+ * A3.1's field mapping (no intermediate vocabulary — every key taken from
+ * `sections` keeps its OWN schema name):
  *
- *   writeRoadmapArtifact(runId, artifact, { dbPath }) -> {
- *     path: string, latestPath: string, sequence: number
- *   }
- *     T5: versions supersede, nothing rewrites. Writes `dogfood/roadmap/
- *     <run-id>.json` (+ `latest.json`); recompiling within a run supersedes
- *     with a new sequence number. `dbPath` (not a pre-resolved directory) is
- *     passed through DELIBERATELY: F-338c8c46 itself flags the exact repo-
- *     namespacing shape of this path as an OPEN QUESTION for the coordinator/
- *     schemas domain to resolve, not swarm-cp-verbs to decide unilaterally —
- *     so this CLI layer hands over the raw ingredient (mirroring how
- *     `getOutputDir(runId)` derives ITS base dir from `dirname(getDbPath())`
- *     rather than a hardcoded repo-relative default, so a run against a
- *     custom SWARM_DB/test temp DB never pollutes the real tree) and lets
- *     core's compiler own the actual directory-resolution decision, exactly
- *     the same authority split as `compileRoadmapSections` above.
+ *   FROM sections (compile.js, core, post-A3):
+ *     run_id, repo, compiled_from{commit_sha}, open_summary,
+ *     grandfathered_drain, recurrence_stats, attention{advisory,items[+components]},
+ *     run_anchored_at (A3.3: internal name pinned, stays — NEVER renamed at
+ *     the compile.js layer; this file derives the envelope's `compiled_at`
+ *     from it, see buildRoadmapArtifact).
  *
- *   loadRoadmapArtifact(runId, { version, dbPath }) -> object | null
- *     Read-only. `version` omitted = latest. Returns null when nothing has
- *     been compiled yet for this run (NOT an error — `swarm roadmap show`
- *     on a fresh run is a legitimate, common state).
+ *   FROM this CLI layer (unchanged from pre-A3 — T3's notes source has
+ *   ALWAYS lived here, never in compile.js, whose own `operator_notes` on
+ *   this callpath is always empty and is therefore never read):
+ *     operator_notes (active notes), expired_notes (A3.4: renamed from
+ *     `expired`, required/empty-allowed), drain_queue (A3.2(a): still
+ *     compileAuthoredDrainState's runs-ordinal shape — deliberately outside
+ *     compileRoadmapSections' own composition, per lib/roadmap/drain.js's
+ *     own header), notesPath (F-113eefea: repo-relative).
  *
- * If core's real module differs from this contract, reconciling THIS file
- * (not the note-validation logic in commands/lib/roadmap-notes.js, which has
- * no dependency on it at all) is the merge follow-up.
+ *   DROPPED from the pre-A3 envelope, never reintroduced: the flat `runId`
+ *   (camelCase — superseded by `run_id`), the top-level `notes`/`expired`
+ *   (superseded by `operator_notes`/`expired_notes`), the top-level `drain`
+ *   (superseded by `drain_queue`), and `sections` itself (never persisted —
+ *   wave-41's own SCHEMA CONFORMANCE note in compiler.js already established
+ *   this; unchanged by A3).
+ *
+ * `writeRoadmapArtifact(runId, artifact, { dbPath })` and
+ * `loadRoadmapArtifact(runId, { version, dbPath })` are untouched by A3 —
+ * both are real, unchanged today (see lib/roadmap/compiler.js directly).
+ *
+ * If core's real A3 edit differs from this file's own reading of the
+ * contract, reconciling THIS file (not the note-validation logic in
+ * commands/lib/roadmap-notes.js, which has no dependency on compile.js at
+ * all) is the merge follow-up.
  * ============================================================================
  */
 
@@ -69,12 +78,23 @@ import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
 import { readOperatorNotes, splitExpiredNotes, roadmapError } from './lib/roadmap-notes.js';
 import { escapeReasonForDisplay, escapePathForDisplay } from './lib/escape-reason.js';
-// SEAM: see this file's header. Does not exist in this worktree yet.
 import { compileRoadmapSections, writeRoadmapArtifact, loadRoadmapArtifact } from '../lib/roadmap/compiler.js';
 // F-1cd5de59's authored, run-ordinal drain-state half — additive to (never a
 // replacement for) core's own two-halves compileDrainQueue, which lives
 // inside compileRoadmapSections above and is left untouched.
-import { compileAuthoredDrainState } from '../lib/roadmap/drain.js';
+//
+// A3.5: the three named residuals (allowlist-overdue, unroutable-approved,
+// deferred-stale) surface in `swarm roadmap show` ONLY — computed live
+// against current DB/git state, never persisted into the compiled artifact.
+// All three are already-real, already-exported functions (lib/roadmap/
+// drain.js has never been behind the compiler.js seam) — imported directly,
+// same as compileAuthoredDrainState already was.
+import {
+  compileAuthoredDrainState,
+  compileGrandfatheredManifestDrain,
+  compileUnroutableApprovedDrain,
+  compileDeferredFindingsDrain,
+} from '../lib/roadmap/drain.js';
 
 function requireRun(db, runId) {
   // created_at is load-bearing (deterministicNow below) — omitting it here
@@ -93,6 +113,48 @@ function requireRun(db, runId) {
 }
 
 /**
+ * F-5cfa163c: SQLite's `datetime('now')` (`runs.created_at`'s own DEFAULT,
+ * db/schema.js) returns a UTC instant in the space-separated,
+ * timezone-UNMARKED form `'YYYY-MM-DD HH:MM:SS'` — UTC by SQLite's own
+ * convention (`datetime('now')` is always UTC unless the `'localtime'`
+ * modifier is applied, which this schema's DEFAULT never uses). `new
+ * Date(...)` has no way to know that: the ECMA-262 date-string grammar
+ * treats a non-'T'-separated, non-'Z'/offset-suffixed string as LOCAL time,
+ * not UTC. On any machine whose local timezone is not UTC+0, `new
+ * Date(run.created_at)` therefore parsed the identical stored string to a
+ * DIFFERENT instant than the row's true UTC meaning — silently, off by
+ * exactly the local UTC offset. The proof shape: parse the same SQLite-
+ * shaped string once as local time and once forced-UTC; the two epoch
+ * values differ by `getTimezoneOffset() * 60000` ms whenever that offset is
+ * non-zero (see f-5cfa163c-deterministic-now-utc.test.js, which pins this
+ * via TZ-env-injected subprocesses rather than depending on the CI
+ * machine's own zone). T1's cross-process byte-identity promise
+ * (F-feeaef78) was unaffected BY ITSELF — the same wrong offset applies
+ * consistently within one machine/process — but the VALUE embedded in
+ * every compiled artifact's `compiled_at` (A3.3) was wrong on any non-UTC
+ * machine.
+ *
+ * Robust to three input shapes without assuming which one a given caller
+ * (production SQLite reads vs. a hand-built test fixture) supplies:
+ *   - already timezone-marked (`...Z` or `...+HH:MM`/`...-HH:MM`) → parsed
+ *     as-is, no rewrite (a caller that was already explicit is trusted).
+ *   - space-separated, no timezone marker (the real SQLite shape) → the
+ *     space is replaced with `T` and `Z` appended, forcing the UTC read
+ *     SQLite's own value always means.
+ *   - anything else unparseable → NaN, handled by deterministicNow's
+ *     existing live-clock fallback (unchanged).
+ *
+ * @param {string} raw — runs.created_at's stored value
+ * @returns {Date}
+ */
+function parseSqliteUtcDatetime(raw) {
+  if (typeof raw !== 'string') return new Date(NaN);
+  const hasTimezoneMarker = /Z$|[+-]\d{2}:?\d{2}$/.test(raw);
+  const normalized = hasTimezoneMarker ? raw : `${raw.replace(' ', 'T')}Z`;
+  return new Date(normalized);
+}
+
+/**
  * A deterministic stand-in for "now", derived from the run's OWN DB row
  * rather than the wall clock. T1's determinism promise ("same DB state ->
  * byte-identical artifact", pinned by F-feeaef78's cross-process test) is
@@ -106,8 +168,8 @@ function requireRun(db, runId) {
  * clock only if the column is somehow unparseable — a defensive, undocumented
  * corner, not the normal path.
  */
-function deterministicNow(run) {
-  const parsed = new Date(run.created_at);
+export function deterministicNow(run) {
+  const parsed = parseSqliteUtcDatetime(run.created_at);
   return Number.isNaN(parsed.getTime()) ? new Date() : parsed;
 }
 
@@ -140,6 +202,58 @@ function toRepoRelativeNotesPath(repoRoot, absoluteNotesPath) {
 }
 
 /**
+ * A3.1: assembles the persisted artifact body from compile.js's
+ * schema-shaped sections plus the CLI-layer-only additions (real operator
+ * notes, the runs-ordinal drain_queue, notesPath). Pure, no I/O — exported
+ * so the FIELD-MAPPING CONTRACT ITSELF ("no intermediate vocabulary": every
+ * key taken from `sections` keeps its own schema name, nothing renamed or
+ * reshaped) is unit-testable with a hand-built `sections` fixture,
+ * independent of whether lib/roadmap/compile.js has landed A3's shape in a
+ * given worktree (this file's own header SEAM note). Explicit whitelist,
+ * not a `...sections` spread: `additionalProperties: false` at the schema's
+ * top level means any extra/leftover key on `sections` (e.g. a transitional
+ * shape still carrying the pre-A3 `findings` raw arrays) would otherwise be
+ * smuggled straight into a schema-invalid artifact — the exact failure mode
+ * A3.1 exists to close, not reintroduce one layer down.
+ *
+ * @param {object} sections — compileRoadmapSections' return value; expected
+ *   (per A3.1, the wave-43 locked contract) to already carry: run_id, repo,
+ *   compiled_from, open_summary, grandfathered_drain, recurrence_stats,
+ *   attention, run_anchored_at (A3.3: internal name pinned, stays).
+ * @param {object} extras
+ * @param {object[]} extras.activeNotes — T3's real notes source (this CLI
+ *   layer, never compile.js's own always-[] operator_notes on this callpath)
+ * @param {object[]} extras.expiredNotes
+ * @param {{entries: object[], overdue_ids: string[]}} extras.drainQueue — A3.2(a)
+ * @param {string} extras.notesPath — repo-relative (F-113eefea)
+ * @returns {object} — the artifact body BEFORE writeRoadmapArtifact stamps
+ *   `sequence`/`content_hash`
+ */
+export function buildRoadmapArtifact(sections, extras) {
+  return {
+    run_id: sections.run_id,
+    repo: sections.repo,
+    compiled_from: sections.compiled_from,
+    open_summary: sections.open_summary,
+    grandfathered_drain: sections.grandfathered_drain,
+    recurrence_stats: sections.recurrence_stats,
+    attention: sections.attention,
+    // A3.3: a REAL read-through of the section's own value — never an
+    // independent second `now.toISOString()` computation. Recomputing
+    // invites the two call sites (this envelope vs. compile.js's own
+    // run_anchored_at) silently drifting apart if compile.js's derivation
+    // ever changes; deriving from the section's own value makes drift
+    // structurally impossible instead of merely unlikely.
+    compiled_at: sections.run_anchored_at,
+    operator_notes: extras.activeNotes,
+    // A3.4: renamed from `expired` — required, empty-allowed.
+    expired_notes: extras.expiredNotes,
+    drain_queue: extras.drainQueue,
+    notesPath: extras.notesPath,
+  };
+}
+
+/**
  * `swarm roadmap compile <run-id>`
  *
  * @param {object} opts
@@ -162,35 +276,25 @@ export function compileRoadmap(opts) {
   const { notesPath, notes } = readOperatorNotes(run.local_path, { notesPath: opts.notesPath });
   const { active, expired } = splitExpiredNotes(notes, now);
 
+  // A3.1: consume compile.js's schema-shaped sections VERBATIM (see
+  // buildRoadmapArtifact for the field-by-field mapping) — no intermediate
+  // vocabulary.
   const sections = compileRoadmapSections(db, runId, { gitRoot: run.local_path, now });
+
+  // A3.2(a): drain_queue is compileAuthoredDrainState's runs-ordinal shape —
+  // deliberately NOT part of compileRoadmapSections' own composition (that
+  // module's own header: "never folded into compileDrainQueue's
+  // composition... callers that want both call each explicitly"). Only the
+  // PERSISTED KEY NAME changed under A3 (`drain` -> `drain_queue`); this
+  // call and its shape are unchanged from pre-A3.
   const drainState = compileAuthoredDrainState(db, run);
 
-  const artifact = {
-    runId,
-    repo: run.repo,
-    // F-520023e7: named to match packages/schemas/src/json/
-    // dogfood-roadmap.schema.json's chosen field name (`compiled_at`, snake
-    // case, matching every other schema-blessed field on this artifact) —
-    // the VALUE is unchanged, still deterministicNow(run) (DB-derived, never
-    // a live wall clock — F-feeaef78's determinism promise depends on it).
-    compiled_at: now.toISOString(),
-    // Flat, CLI-facing sections (F-1cd5de59/F-74ba2c79/F-8a97a700's own
-    // pinned wire shape) — projections of `sections` (core's richer internal
-    // shape), not a second independent compile.
-    //
-    // F-113eefea/F-520023e7: the nested `sections` object itself is
-    // DELIBERATELY NOT persisted here (dropped, not renamed) — it duplicated
-    // the same content the flat fields below already carry, nobody in this
-    // domain's own code reads `.sections` (grepped: zero hits outside this
-    // file before this fix), and the schema does not bless a `sections` key
-    // at all (additionalProperties: false, no such property). `sections` is
-    // still computed locally, above, purely to derive `attention` below.
-    notes: active,
-    expired,
-    attention: flattenAttention(sections.attention),
-    drain: { entries: drainState.entries, overdue_ids: drainState.overdue_ids },
+  const artifact = buildRoadmapArtifact(sections, {
+    activeNotes: active,
+    expiredNotes: expired,
+    drainQueue: { entries: drainState.entries, overdue_ids: drainState.overdue_ids },
     notesPath: toRepoRelativeNotesPath(run.local_path, notesPath),
-  };
+  });
 
   const written = writeRoadmapArtifact(runId, artifact, { dbPath });
   // F-113eefea/F-520023e7 axis 4 (content_hash): ONE derivation, core's.
@@ -365,29 +469,20 @@ export function undoRoadmapCompile(opts) {
 }
 
 /**
- * Projects core's rich `{ advisory, churn_available, top: [{file,
- * attention_score, factors}], truncated, total_candidates }` shape (T2,
- * lib/roadmap/attention.js) down to the flat `[{file, score}]` list the
- * CLI-facing artifact and dispatch's roadmap-digest injection (F-8a97a700)
- * both consume. Never throws on a missing/malformed input — an absent
- * attention section (e.g. a artifact compiled before this field existed)
- * degrades to an empty list, matching this module's overall degrade-not-throw
- * posture for advisory-only content.
- */
-function flattenAttention(attention) {
-  if (!attention || !Array.isArray(attention.top)) return [];
-  return attention.top.map((a) => ({ file: a.file, score: a.attention_score }));
-}
-
-/**
  * `swarm roadmap show <run-id> [--version=N]`
  *
  * @param {object} opts
  * @param {string} opts.runId
  * @param {string} opts.dbPath
  * @param {number} [opts.version]
- * @returns {object} report — `{ runId, compiled: false, version }` when
- *   nothing has been compiled yet, else `{ runId, compiled: true, ...artifact }`
+ * @returns {object} report — `{ runId, compiled: false, version, ...residuals }`
+ *   when nothing has been compiled yet, else
+ *   `{ runId, compiled: true, ...artifact, ...residuals }`. `residuals` is
+ *   A3.5's three named, NOT-persisted sections (`allowlist_overdue`,
+ *   `unroutable_approved`, `deferred_stale`) — always present, live-computed
+ *   against current DB/git state regardless of whether a roadmap has ever
+ *   been compiled for this run (`show` is a live read, not merely an
+ *   artifact echo).
  * @throws {Error} `ROADMAP_ARTIFACT_MISSING` (F-d875b3c1) when the
  *   roadmap_artifacts ledger names a sequence whose file is absent on disk
  *   — see that error's own construction, below, for why this is a named,
@@ -398,7 +493,22 @@ export function showRoadmap(opts) {
   if (!runId) throw new Error('roadmap show: <run-id> is required');
 
   const db = openDb(dbPath);
-  requireRun(db, runId);
+  const run = requireRun(db, runId);
+
+  // A3.5: three named residuals — the allowlist-overdue registry (36-entry
+  // scripts/regression-pin-allowlist.json, DISTINCT from grandfathered_drain
+  // in the persisted artifact, which reads the 256-entry
+  // scripts/grandfathered-pins.json manifest instead), findings 'approved'
+  // but structurally unroutable to any domain, and deferred findings gone
+  // stale by wave count (kept out of the persisted artifact entirely —
+  // findings rows carry no owner column and owners are never invented).
+  // All three surface here (and in dispatch's digest, per this wave's
+  // dispatch.js changes) whether or not a roadmap has ever been compiled.
+  const residuals = {
+    allowlist_overdue: compileGrandfatheredManifestDrain(run.local_path),
+    unroutable_approved: compileUnroutableApprovedDrain(db, runId),
+    deferred_stale: compileDeferredFindingsDrain(db, runId),
+  };
 
   let loaded;
   try {
@@ -430,7 +540,7 @@ export function showRoadmap(opts) {
     );
   }
   if (!loaded) {
-    return { runId, compiled: false, version: version ?? null };
+    return { runId, compiled: false, version: version ?? null, ...residuals };
   }
 
   // F-113eefea/F-520023e7 axis 4: content_hash is not embedded in the
@@ -445,7 +555,13 @@ export function showRoadmap(opts) {
     'SELECT content_hash FROM roadmap_artifacts WHERE run_id = ? AND sequence_number = ?'
   ).get(runId, loaded.sequence);
 
-  return { runId, compiled: true, ...loaded, content_hash: ledgerRow ? ledgerRow.content_hash : null };
+  return {
+    runId,
+    compiled: true,
+    ...loaded,
+    content_hash: ledgerRow ? ledgerRow.content_hash : null,
+    ...residuals,
+  };
 }
 
 function renderNotesSection(lines, notes) {
@@ -470,40 +586,108 @@ function renderNotesSection(lines, notes) {
 }
 
 function renderAttentionSection(lines, attention) {
-  if (!attention || attention.length === 0) return;
+  // A3.1: attention is {advisory, items[{file,score,components}]} — the
+  // schema's own shape, consumed verbatim (no more flattening a `top[]`
+  // array down to a synthesized {file,score} list).
+  if (!attention || !Array.isArray(attention.items) || attention.items.length === 0) return;
   // T2: "never a gate, never a predictor, never auto-blame" — the header is
   // unmissable in text (and JSON, per the pass contract's own refusal),
   // matching cmdRoadmap's --format=json branch, which emits the report
-  // object (including this same flat `attention` array) verbatim.
+  // object (including this same `attention` object) verbatim.
   lines.push('ADVISORY — NOT A GATE (per-file attention, top-K):');
-  for (const a of attention) {
+  for (const a of attention.items) {
     lines.push(`  ${escapePathForDisplay(a.file)}  (score ${a.score})`);
   }
   lines.push('');
 }
 
+/**
+ * A3.2(a): drain_queue = compileAuthoredDrainState's runs-ordinal shape
+ * `{entries[{id,owner,cadence_runs,runs_since_review,overdue,reason?}],
+ * overdue_ids[]}`. Renders "overdue drain state" (this wave's `swarm
+ * roadmap show` surfacing task) in both `compile`'s and `show`'s text
+ * output — the persisted artifact already carries it, so unlike the A3.5
+ * residuals below this is not show-only.
+ */
+function renderDrainQueueSection(lines, drainQueue) {
+  if (!drainQueue || !Array.isArray(drainQueue.entries) || drainQueue.entries.length === 0) return;
+  lines.push('Drain queue (advisory — runs-ordinal cadence):');
+  for (const e of drainQueue.entries) {
+    const overdueTag = e.overdue ? '  [OVERDUE]' : '';
+    const reasonClause = e.reason ? ` — ${escapeReasonForDisplay(e.reason)}` : '';
+    lines.push(`  ${e.id} (owner: ${e.owner || 'unknown'}; ${e.runs_since_review}/${e.cadence_runs} runs)${overdueTag}${reasonClause}`);
+  }
+  if (Array.isArray(drainQueue.overdue_ids) && drainQueue.overdue_ids.length > 0) {
+    lines.push(`  ${drainQueue.overdue_ids.length} overdue: ${drainQueue.overdue_ids.join(', ')}`);
+  }
+  lines.push('');
+}
+
+/**
+ * A3.5: the three named residuals — SHOW-ONLY (never part of
+ * formatRoadmapCompile's output; these are live reads against current
+ * DB/git state, not a projection of what got persisted). Each section is
+ * explicitly labeled "NOT persisted" so an operator reading `swarm roadmap
+ * show`'s text output cannot mistake advisory, always-recomputed content
+ * for something a re-run of `swarm roadmap compile` will remember.
+ */
+function renderResidualsSection(lines, residuals) {
+  if (!residuals) return;
+  const { allowlist_overdue: allowlistOverdue, unroutable_approved: unroutableApproved, deferred_stale: deferredStale } = residuals;
+
+  if (allowlistOverdue && allowlistOverdue.available && allowlistOverdue.overdue.length > 0) {
+    lines.push(`Allowlist overdue (advisory, NOT persisted — scripts/regression-pin-allowlist.json, ${allowlistOverdue.overdue.length}):`);
+    for (const o of allowlistOverdue.overdue) {
+      const reasonClause = o.reason ? ` — ${escapeReasonForDisplay(o.reason)}` : '';
+      lines.push(`  ${o.finding_id} (owner: ${o.owner || 'unknown'}, due ${o.revalidate_by})${reasonClause}`);
+    }
+    lines.push('');
+  }
+
+  if (unroutableApproved && unroutableApproved.count > 0) {
+    lines.push(`Unroutable approved findings (advisory, NOT persisted — no lawful domain/owner, ${unroutableApproved.count}):`);
+    for (const f of unroutableApproved.findings) {
+      lines.push(`  ${f.finding_id} (filed_by_domain: ${f.filed_by_domain || 'none'})`);
+    }
+    lines.push('');
+  }
+
+  if (deferredStale && Array.isArray(deferredStale.stale) && deferredStale.stale.length > 0) {
+    lines.push(`Deferred findings gone stale (advisory, NOT persisted — no owner column, owners never invented, ${deferredStale.stale.length}):`);
+    for (const f of deferredStale.stale) {
+      lines.push(`  ${f.finding_id} (${escapePathForDisplay(f.file_path || '(no file)')}, ${f.waves_behind} waves behind)`);
+    }
+    lines.push('');
+  }
+}
+
 export function formatRoadmapCompile(report) {
   const lines = [];
-  lines.push(`Roadmap compiled — run ${report.runId} (sequence ${report.sequence})`);
+  lines.push(`Roadmap compiled — run ${report.run_id} (sequence ${report.sequence})`);
   lines.push(`  Artifact: ${escapePathForDisplay(report.path)}`);
   lines.push(`  Latest:   ${escapePathForDisplay(report.latestPath)}`);
   lines.push('');
-  renderNotesSection(lines, { active: report.notes, expired: report.expired });
+  renderNotesSection(lines, { active: report.operator_notes, expired: report.expired_notes });
   renderAttentionSection(lines, report.attention);
+  renderDrainQueueSection(lines, report.drain_queue);
   return lines.join('\n');
 }
 
 export function formatRoadmapShow(report) {
   if (!report.compiled) {
     const versionNote = report.version ? ` (version ${report.version})` : '';
-    return `No roadmap compiled yet for run ${report.runId}${versionNote}.\n` +
-      `Next: swarm roadmap compile ${report.runId}`;
+    const lines = [`No roadmap compiled yet for run ${report.runId}${versionNote}.`, ''];
+    renderResidualsSection(lines, report);
+    lines.push(`Next: swarm roadmap compile ${report.runId}`);
+    return lines.join('\n');
   }
   const lines = [];
-  lines.push(`Roadmap — run ${report.runId} (sequence ${report.sequence}, compiled ${report.compiled_at})`);
+  lines.push(`Roadmap — run ${report.run_id} (sequence ${report.sequence}, compiled ${report.compiled_at})`);
   lines.push('');
-  renderNotesSection(lines, { active: report.notes, expired: report.expired });
+  renderNotesSection(lines, { active: report.operator_notes, expired: report.expired_notes });
   renderAttentionSection(lines, report.attention);
+  renderDrainQueueSection(lines, report.drain_queue);
+  renderResidualsSection(lines, report);
   return lines.join('\n');
 }
 

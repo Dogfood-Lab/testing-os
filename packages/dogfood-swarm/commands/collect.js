@@ -34,6 +34,12 @@ import { getActualTouchedFiles, diffReportedVsActual, resolveWorktreeBaseRef } f
 import { mintCorrelationId } from '../lib/correlation-id.js';
 import { normalizeFilePathForGlobMatch } from '../lib/normalize-path.js';
 import { pluralize } from './lib/pluralize.js';
+// F-ab4fbab0 (the class lib/phases.js's own header names as F-274e7ac5,
+// "DISCLOSED EXCEPTION": this file's private copy, specifically): importing
+// the single ordered source of truth instead of a hand-typed literal that
+// can desync from it. See commands/revalidate.js's identical fix (this same
+// wave) for the sibling copy in this domain.
+import { AUDIT_PHASES, AMEND_PHASES } from '../lib/phases.js';
 
 /**
  * The deterministic per-domain output filename the dispatch layout promises an
@@ -231,9 +237,6 @@ function tryTransition(db, agentRunId, to, reason, domainHint) {
     return { skipped: true, error: e.message };
   }
 }
-
-const AUDIT_PHASES = ['health-audit-a', 'health-audit-b', 'health-audit-c', 'stage-d-audit', 'feature-audit'];
-const AMEND_PHASES = ['health-amend-a', 'health-amend-b', 'health-amend-c', 'stage-d-amend', 'feature-execute'];
 
 /**
  * Narrow each agent's `confirmed` declaration to the findings its OWN domain

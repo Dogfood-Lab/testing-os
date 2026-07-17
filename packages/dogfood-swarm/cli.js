@@ -395,7 +395,7 @@ export function renderProbeDegradedAgents(result) {
 function cmdInit(args) {
   const repoPath = args[0];
   if (!repoPath) {
-    console.error('Usage: swarm init <repo-path> [--repo org/name]');
+    console.error('Usage: swarm init <repo-path> [--repo org/name] [--seed-from-roadmap[=<run-id>|latest]]');
     process.exit(1);
   }
 
@@ -405,16 +405,32 @@ function cmdInit(args) {
   // rather than capturing the following flag as the repo slug.
   const repo = parseValueFlag(args, '--repo') ?? undefined;
 
+  // T4/F-d110f547: --seed-from-roadmap[=<run-id>|latest]. parseValueFlag
+  // returns undefined for BOTH "flag absent" and "flag present but bare" (no
+  // following value, or a swallowed `--`-prefixed next flag) — args.includes
+  // disambiguates the bare-flag case (-> true, meaning "latest") from
+  // genuinely absent (-> undefined, meaning "do not seed").
+  const seedFromRoadmapRaw = parseValueFlag(args, '--seed-from-roadmap');
+  const seedFromRoadmap = seedFromRoadmapRaw !== undefined
+    ? seedFromRoadmapRaw
+    : (args.includes('--seed-from-roadmap') ? true : undefined);
+
   const result = init({
     repoPath: resolve(repoPath),
     repo,
     dbPath: getDbPath(),
+    seedFromRoadmap,
   });
 
   console.log(`\nRun created: ${result.runId}`);
   console.log(`Repo: ${result.repo}`);
   console.log(`Save point: ${result.savePointTag}`);
   console.log(`Commit: ${result.commitSha.slice(0, 8)} on ${result.branch}\n`);
+
+  if (result.roadmapSeed) {
+    console.log(`Roadmap seed: run ${result.roadmapSeed.sourceRunId} (sequence ${result.roadmapSeed.sequence}) -> ${result.roadmapSeed.path}`);
+    console.log(`  The first audit-phase wave dispatched for this run will auto-inject its digest (suppress with --no-roadmap-digest).\n`);
+  }
 
   console.log('Domain draft (review before freezing):');
   for (const d of result.domains) {
@@ -578,7 +594,7 @@ function cmdDispatch(args) {
   const runId = args[0];
   const phase = args[1];
   if (!runId || !phase) {
-    console.error('Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview]');
+    console.error('Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview] [--seed-roadmap] [--no-roadmap-digest] [--roadmap-digest=<run-id>]');
     console.error(`Phases: ${renderPhaseList()}`);
     process.exit(1);
   }
@@ -597,6 +613,16 @@ function cmdDispatch(args) {
   // The operator's "what will this dispatch do?" preview before committing the
   // wave. --preview is an alias so the verb reads naturally either way.
   const dryRun = args.includes('--dry-run') || args.includes('--preview');
+  // T4 (F-8a97a700 original flag, wired to the real binary for the first
+  // time this wave — F-d110f547 proved it was permanently dormant before
+  // this fix): explicit opt-in to seed the bounded digest from whatever
+  // this checkout's dogfood/roadmap/latest.json currently names.
+  const seedRoadmap = args.includes('--seed-roadmap');
+  // T4/F-d110f547: the two escape hatches. Precedence is resolved inside
+  // dispatch() itself (an explicit --roadmap-digest=<run-id> always wins);
+  // parsed here only.
+  const noRoadmapDigest = args.includes('--no-roadmap-digest');
+  const roadmapDigestRunId = parseValueFlag(args, '--roadmap-digest');
 
   const result = dispatch({
     runId,
@@ -607,6 +633,9 @@ function cmdDispatch(args) {
     isolate,
     skipVerify,
     dryRun,
+    seedRoadmap,
+    noRoadmapDigest,
+    roadmapDigestRunId,
   });
 
   // F-aa32371b: approved findings routed to ZERO domain agents (file-less or
@@ -3242,9 +3271,9 @@ export const commands = {
  * degrading to the generic fallback main() prints below.
  */
 export const USAGE = {
-  init: 'Usage: swarm init <repo-path> [--repo org/name]',
+  init: 'Usage: swarm init <repo-path> [--repo org/name] [--seed-from-roadmap[=<run-id>|latest]]',
   domains: 'Usage: swarm domains <run-id> [--freeze | --unfreeze --reason "..." [--force] | --edit <name> [opts] | --add <name> [opts] | --remove <name> | --history]',
-  dispatch: 'Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview]',
+  dispatch: 'Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview] [--seed-roadmap] [--no-roadmap-digest] [--roadmap-digest=<run-id>]',
   collect: 'Usage: swarm collect <run-id> (--all | --domain=name:path [--domain=name:path ...])',
   doctor: 'Usage: swarm doctor [--format=text|json]',
   revalidate: 'Usage: swarm revalidate <run-id> --reason "<text>" --domain=name:path [--domain=name:path ...] [--apply]',
