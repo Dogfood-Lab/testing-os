@@ -82,7 +82,5 @@
       "cadence_runs": 5,
       "due_at_run": 6
     }
-  ],
-  "notesPath": "dogfood/roadmap-notes.json",
-  "content_hash": "a3f5c9e1d2b4867012f9e6c8a4d1b3e5f7091a2c4e6b8d0f2a4c6e8b0d2f4a6c"
+  ]
 }
