@@ -171,7 +171,20 @@ export function queryFindingRecurrenceRate(db, windowDays) {
   // function (see lib/verify/runner.js's readEnvMaxBufferBytes, which
   // validates with the same Number.isFinite check rather than trusting its
   // one caller).
-  if (windowDays !== undefined && windowDays !== null && !Number.isFinite(Number(windowDays))) {
+  // F-b5fd9887: `Number('') === 0`, a well-known JS coercion quirk, so an
+  // empty/whitespace-only windowDays (an unfilled form field, or an unset
+  // query-string param forwarded verbatim as `?windowDays=`) passed
+  // Number.isFinite cleanly and was silently treated as a valid "window = 0
+  // days" request — the exact "plausible result masking malformed input"
+  // shape F-36327af8 already named, just for a narrower value that guard
+  // didn't reach. Checked BEFORE the Number.isFinite fallback so a
+  // non-numeric-looking string never gets a chance to coerce to a number at
+  // all; a genuine numeric string ('30', '3650') has no leading/trailing-only
+  // whitespace content and is untouched by this clause.
+  if (
+    windowDays !== undefined && windowDays !== null
+    && (String(windowDays).trim() === '' || !Number.isFinite(Number(windowDays)))
+  ) {
     throw new Error(
       `queryFindingRecurrenceRate: windowDays must be a finite number, or omitted/null for "all runs" — got ${JSON.stringify(windowDays)}`,
     );

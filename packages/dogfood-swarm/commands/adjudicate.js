@@ -280,10 +280,38 @@ export function formatAdjudication({ result, adjudicationId, receiptPath }) {
   const lines = [];
   lines.push(`Adjudication: ${result.overall.toUpperCase()}  (advisory — the deterministic floor is law)`);
   lines.push(`Panel: ${result.seats.join(', ') || '(none)'}`);
+  // F-9acd2df3: normalizeAdjudication (F-993df146, wave 29) attaches a
+  // panel-level seats_errored array whenever a juror's seat died
+  // (ECONNREFUSED, an unpulled-model 404, VERIFIER_UNAVAILABLE, ...) — this
+  // renderer, the DEFAULT (non --format=json) `swarm adjudicate` surface,
+  // never read the field: a dead seat's name still appeared in the Panel
+  // line above indistinguishable from a healthy panelist, and the text
+  // contained zero occurrences of "error"/"ECONNREFUSED" anywhere. The
+  // --format=json path (cli.js) and the receipt file on disk already carry
+  // this — only the primary human-facing surface was blind. Guarded with
+  // `|| []` because historical result payloads recorded before F-993df146
+  // (and this file's own pre-fix unit-test fixtures) carry no seats_errored
+  // key at all. escapeReasonForDisplay because jv.error is jury-supplied
+  // text with the same zero-privilege provenance as the out_of_brief loop
+  // below — seat names themselves are left unescaped, matching the Panel
+  // line's own existing (pre-fix) convention.
+  const seatsErrored = result.seats_errored || [];
+  if (seatsErrored.length > 0) {
+    lines.push(`Seats errored (${seatsErrored.length}): ${
+      seatsErrored.map(s => `${s.seat || '(unknown seat)'} — ${escapeReasonForDisplay(s.error)}`).join('; ')
+    }`);
+  }
   lines.push('');
   lines.push('Criteria:');
   for (const c of result.criteria) {
-    lines.push(`  [${c.verdict}] ${c.id} — pass ${c.counts.pass} / fail ${c.counts.fail} / insufficient ${c.counts.insufficient_context}`);
+    // F-9acd2df3: a non-empty c.errors means one or more seats abstained on
+    // THIS criterion specifically (a whole-juror error attributes to every
+    // criterion that seat was asked to judge; a per-criterion prism error
+    // attributes to just this one) — annotate inline so "pass 1 / fail 0 /
+    // insufficient 1" cannot read as an ordinary split when it is actually
+    // one live vote and one dead seat.
+    const erroredNote = c.errors && c.errors.length > 0 ? ` [${c.errors.length} seat(s) errored]` : '';
+    lines.push(`  [${c.verdict}] ${c.id} — pass ${c.counts.pass} / fail ${c.counts.fail} / insufficient ${c.counts.insufficient_context}${erroredNote}`);
   }
   if (result.out_of_brief.length) {
     lines.push('');

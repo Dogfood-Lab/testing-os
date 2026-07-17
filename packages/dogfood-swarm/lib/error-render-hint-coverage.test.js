@@ -168,6 +168,7 @@ import {
   DispatchPreconditionError,
   CliInvalidGlobsError,
   ControlPlaneSchemaTooNewError,
+  ControlPlaneSchemaCorruptError,
   CriterionIntentOverflowError,
   StateMachineRejectionError,
 } from './errors.js';
@@ -340,6 +341,14 @@ describe('errors.js — every typed error renders a "Next:" hint (F-4b72faf9 cla
     assert.ok(nextLineFor(e), 'ControlPlaneSchemaTooNewError must render a Next: hint');
   });
 
+  namedErrorTest('ControlPlaneSchemaCorruptError', () => {
+    // F-9587adda: this class must render a "Next:" hint exactly like its
+    // ControlPlaneSchemaTooNewError sibling above — same dynamic-gate coverage
+    // requirement (F-7d4ac5ce/F-8f735719), applied to the newest errors.js class.
+    const e = new ControlPlaneSchemaCorruptError('schema corrupt', { rawValue: 'not-a-number' });
+    assert.ok(nextLineFor(e), 'ControlPlaneSchemaCorruptError must render a Next: hint');
+  });
+
   namedErrorTest('CriterionIntentOverflowError', () => {
     const e = new CriterionIntentOverflowError('intent too long', {
       criterionId: 'c1', headLength: 4100, maxChars: 4000,
@@ -425,17 +434,20 @@ describe('errors.js coverage gate is DYNAMIC, not a hardcoded list (F-7d4ac5ce c
     assert.deepEqual(staleEntries, [], `EXERCISED_CLASSES names a class errors.js no longer exports: ${staleEntries.join(', ')}`);
   });
 
-  it('F-8f735719 GATE (mutation control): EXERCISED_CLASSES pins the exact 7 classes actually run above — no more, no fewer', () => {
+  it('F-8f735719 GATE (mutation control): EXERCISED_CLASSES pins the exact 8 classes actually run above — no more, no fewer', () => {
     // Content-addresses the coverage set itself (PROTOCOL.md sub-law 5: "a
     // count is not integrity") rather than only its cardinality — a future
     // author deleting one namedErrorTest call while adding an unrelated one
     // would hold the SIZE constant but change the membership; this pins
     // membership directly.
+    //
+    // F-9587adda (wave 31): ControlPlaneSchemaCorruptError added — 7 -> 8.
     assert.deepEqual(
       [...EXERCISED_CLASSES].sort(),
       [
         'CliInvalidGlobsError',
         'CollectUpsertError',
+        'ControlPlaneSchemaCorruptError',
         'ControlPlaneSchemaTooNewError',
         'CriterionIntentOverflowError',
         'DispatchPreconditionError',

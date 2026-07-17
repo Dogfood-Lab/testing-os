@@ -40,11 +40,17 @@
  * The classifier's contract is coherent; the brief was breaking its premise.
  */
 
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { buildAuditPrompt } from './lib/templates.js';
 import { isOpenFinding, CLOSED_FINDING_STATUSES } from './lib/finding-status.js';
+import { openDb, closeDb } from './db/connection.js';
+import { saveDomainDraft, freezeDomains } from './lib/domains.js';
+import { dispatch } from './commands/dispatch.js';
 
 const BASE = {
   repo: 'org/r',
@@ -161,5 +167,100 @@ describe('the audit brief must never order an agent to ignore an OPEN finding', 
     for (const openId of ['F-O1', 'F-O2']) {
       assert.ok(!closed.includes(openId), `${openId} leaked into the do-not-re-report block`);
     }
+  });
+});
+
+/**
+ * F-1a877be1 — the integration seam: a REAL dispatch() call, not a
+ * hand-built priorContext/openPriorContext string.
+ *
+ * Every test above proves buildAuditPrompt slots pre-built strings into the
+ * right heading (the template layer), and isOpenFinding's classification is
+ * exhaustively checked elsewhere (wave12-swarm-cp-pins.test.js). Nothing
+ * anywhere drove the actual production wiring that PRODUCES those two
+ * strings from real DB rows — dispatch.js:499-511's
+ * `(isOpenFinding(f.status) ? openLines : closedLines).push(line)` inside
+ * `if (isAudit) { const priorMap = buildPriorMap(db, opts.runId); ... }` —
+ * end to end: seed real findings rows with mixed status, call the real
+ * exported dispatch() in an audit phase, read the prompt file it actually
+ * wrote to disk, and assert the routing there. The mechanism is proven
+ * correct in isolation by every test above; this is the one call site that
+ * wires it to production data — the exact site that already shipped the
+ * "wave 28 closed 9 untouched findings" defect this file exists to catch —
+ * and it had zero coverage. An accidental revert of dispatch.js:508's
+ * ternary (or a future refactor of the surrounding loop) would silently
+ * recreate that defect undetected by any test in this package.
+ */
+
+// No `@pins F-1a877be1` tag, deliberately, and the gate is right to demand
+// that. F-1a877be1 was a MISSING-COVERAGE finding: the routing at
+// dispatch.js:508 was already correct (proven by reverting it and watching this
+// suite go red), so the amend added a test and changed no source. A declared
+// tag cross-references a SOURCE pin; with no source change there is no pin to
+// match, and the tag dangles — which is exactly what the gate reported on this
+// wave's merge. Same disposition as F-7d4ac5ce.
+describe('the real dispatch() pipeline routes DB-sourced priors the same way the template layer promises', () => {
+  const INTEGRATION_RUN_ID = 'test-open-prior-integration';
+  let tmpDir;
+  let dbPath;
+
+  beforeEach(() => {
+    tmpDir = mkdtempSync(join(tmpdir(), 'open-prior-integration-'));
+    dbPath = join(tmpDir, 'control-plane.db');
+
+    const db = openDb(dbPath);
+    db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, branch, status)
+      VALUES (?, ?, ?, ?, 'main', 'pending')`)
+      .run(INTEGRATION_RUN_ID, 'org/repo', tmpDir, 'a'.repeat(40));
+    saveDomainDraft(db, INTEGRATION_RUN_ID, [
+      { name: 'backend', globs: ['packages/verify/**'], ownership_class: 'owned' },
+    ]);
+    freezeDomains(db, INTEGRATION_RUN_ID);
+
+    // buildPriorMap (lib/fingerprint.js) selects every findings row for this
+    // run regardless of domain, and dispatch.js:499-511 buckets ALL of them
+    // by isOpenFinding(status) ONCE, before the per-domain loop -- every
+    // agent in the dispatch gets the identical priorContext/openPriorContext
+    // pair. One owned domain is enough to prove the routing end to end.
+    const insertFinding = db.prepare(`
+      INSERT INTO findings (run_id, finding_id, fingerprint, severity, category, file_path, description, status)
+      VALUES (?, ?, ?, 'MEDIUM', 'proactive', ?, ?, ?)
+    `);
+    insertFinding.run(INTEGRATION_RUN_ID, 'F-OPEN-NEW', 'fp-open-new', 'packages/verify/x.js', 'still-open new finding', 'new');
+    insertFinding.run(INTEGRATION_RUN_ID, 'F-OPEN-APPROVED', 'fp-open-approved', 'packages/verify/y.js', 'still-open approved finding', 'approved');
+    insertFinding.run(INTEGRATION_RUN_ID, 'F-CLOSED-FIXED', 'fp-closed-fixed', 'packages/verify/z.js', 'genuinely fixed finding', 'fixed');
+    insertFinding.run(INTEGRATION_RUN_ID, 'F-CLOSED-DEFERRED', 'fp-closed-deferred', 'packages/verify/w.js', 'consciously deferred finding', 'deferred');
+    closeDb(dbPath);
+  });
+
+  afterEach(() => {
+    closeDb(dbPath);
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('a real dispatch() audit call routes DB-sourced findings into the correct section on disk', () => {
+    const result = dispatch({
+      runId: INTEGRATION_RUN_ID,
+      phase: 'health-audit-b',
+      dbPath,
+      outputDir: tmpDir,
+    });
+    assert.equal(result.agents.length, 1, 'expected exactly one agent for the single owned domain');
+
+    const prompt = readFileSync(result.agents[0].promptPath, 'utf-8');
+    const { closed, open } = sections(prompt);
+
+    assert.ok(open.includes('F-OPEN-NEW'), 'a real "new" DB row must reach the CONFIRM block');
+    assert.ok(open.includes('F-OPEN-APPROVED'), 'a real "approved" DB row must reach the CONFIRM block');
+    assert.ok(closed.includes('F-CLOSED-FIXED'), 'a real "fixed" DB row belongs in the do-not-re-report block');
+    assert.ok(closed.includes('F-CLOSED-DEFERRED'), 'a real "deferred" DB row belongs in the do-not-re-report block');
+
+    // THE PROOF this gap was about: neither open finding may ALSO appear in
+    // the closed block (and vice versa), driven through the real DB ->
+    // dispatch() -> disk seam instead of a hand-built string.
+    assert.ok(!closed.includes('F-OPEN-NEW'), 'THE BUG: an open finding must never leak into the do-not-re-report block');
+    assert.ok(!closed.includes('F-OPEN-APPROVED'), 'THE BUG: an open finding must never leak into the do-not-re-report block');
+    assert.ok(!open.includes('F-CLOSED-FIXED'), 'a closed finding must not be queued for re-confirmation');
+    assert.ok(!open.includes('F-CLOSED-DEFERRED'), 'a closed finding must not be queued for re-confirmation');
   });
 });

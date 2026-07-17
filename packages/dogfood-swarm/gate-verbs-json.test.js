@@ -91,6 +91,21 @@ describe('advance --check-only --format=json', () => {
       `advance --check-only --format=json must emit parseable JSON; got:\n${r.stdout}`);
     assert.ok(typeof parsed.verdict === 'string', 'has a verdict');
     assert.ok(Array.isArray(parsed.gates), 'has a gates array (the structured shape)');
+    // F-8df61051: a live sibling of F-db2ed146 (advance.test.js's "Promotion
+    // records" pin). Array.isArray + .every() are both vacuously true for an
+    // EMPTY array, so neither catches lib/advance.js#checkGates() dropping its
+    // gates -- this surface reads the identical gates array via a different
+    // seam (buildCheckGatesJSON is an identity projection of checkGates()'s
+    // return value, per cli.js's own docstring on that function), so it needs
+    // the same exact-name pin, not a second independently-invented shape check.
+    // checkGates() always assembles a fixed 6-entry gate set unconditionally
+    // (lib/advance.js:129), so pinning the full, sorted name set is a real,
+    // always-true invariant -- matching advance.test.js's F-db2ed146 fix.
+    const gateNames = parsed.gates.map(g => g.name).sort();
+    assert.deepEqual(gateNames, [
+      'adjudication', 'agent_completion', 'finding_severity',
+      'ownership', 'verification', 'wave_status',
+    ], `checkGates() always assembles exactly these 6 gates (F-feb78e7b) -- got: ${gateNames.join(', ')}`);
     assert.ok(parsed.gates.every(g => 'name' in g && 'passed' in g), 'gates carry name+passed');
   });
 

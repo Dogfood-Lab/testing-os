@@ -149,8 +149,20 @@ function defaultOnRetryWarn(fields) {
     console.error(JSON.stringify(line));
   } catch {
     // The logger must never throw and mask a real retry — same last-resort
-    // discipline as the shared dogfood-swarm helper (log-stage.js).
-    console.error('{"stage":"warn","kind":"log_serialization_failed"}');
+    // discipline as the shared dogfood-swarm helper (log-stage.js). F-f50e779b:
+    // this fallback itself must not throw either — a broken stderr fd
+    // (EPIPE/ENOSPC) fails BOTH console.error calls, and pre-fix this second
+    // call was unguarded, so its throw escaped defaultOnRetryWarn uncaught and
+    // turned a retry that was about to SUCCEED into a rejected confirm() (the
+    // observability feature converting a good outcome into a discarded
+    // submission — see log-stage.js's own two-level guard for the same shape,
+    // which this now mirrors exactly).
+    try {
+      console.error('{"stage":"warn","kind":"log_serialization_failed"}');
+    } catch {
+      // stderr itself is broken; nothing further to do, but must not crash
+      // the caller — there is no third fallback to hand the failure to.
+    }
   }
 }
 

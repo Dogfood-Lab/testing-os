@@ -98,6 +98,24 @@ A wave is now in a half-written state: artifact rows + file_claims + agent state
   2. Diagnose the underlying SQLite issue from `Caused by:`. `busy_timeout` usually means another process holds the DB; check for stuck `swarm` processes. UNIQUE collision usually means the fingerprint algorithm matched an existing row — check `swarms/control-plane.db` for the colliding finding.
   3. Re-run `swarm collect` for the same wave once resolved. The outer wrapper is idempotent at the upsert level.
 
+### `CONTROL_PLANE_SCHEMA_CORRUPT`
+
+:::caution[Severity: HIGH]
+The on-disk `control-plane.db` has a `kv.schema_version` that is not a number at all — it was hand-edited or otherwise damaged, as opposed to merely being older or newer than your build. `openDb` refuses it **fail-closed**: it closes the handle and throws rather than operate on a DB whose schema it cannot identify.
+:::
+
+- **Class:** `ControlPlaneSchemaCorruptError` (`packages/dogfood-swarm/lib/errors.js`), thrown by `getSchemaVersion` and surfaced through `openDb` — `packages/dogfood-swarm/db/connection.js`. Carries `code: 'CONTROL_PLANE_SCHEMA_CORRUPT'`, so it renders through `renderTopLevelError` as the structured `ERROR [CONTROL_PLANE_SCHEMA_CORRUPT]:` envelope like the rest of the family.
+- **Trigger:** `getSchemaVersion()` read a `schema_version` row from the `kv` table whose value fails `Number.isFinite` (`"abc"`, `""`, `null`-ish text — anything `Number()` turns into `NaN`). Distinct from [`CONTROL_PLANE_SCHEMA_TOO_NEW`](#control_plane_schema_too_new) on purpose: the two conditions get separate codes so an operator is never told to "upgrade" a DB that is actually damaged, or to restore-from-backup a DB that is merely newer.
+- **Message shape:** `control-plane.db at <dbPath> has a corrupted kv.schema_version value: <rawValue> — expected a finite number.`
+- **Carries:** `rawValue` (the unparseable value as read from disk), `dbPath`, `hint`.
+- **Hint:** `kv.schema_version is not a finite number — the control-plane.db is corrupted or was hand-edited, not merely older/newer. Restore control-plane.db from a known-good backup, or remove it to bootstrap a fresh one (only if this run's history is not needed) — do not hand-write schema_version without reading db/migrate.js's ledger first.`
+- **Why it fails loud instead of coping (F-9587adda):** `Number('abc')` is `NaN`, and **every** comparison against `NaN` is false. A silent `NaN` therefore defeated *both* of `openDb`'s guards at once — the too-new refusal (`onDisk > SCHEMA_VERSION`) and the bootstrap gate (`onDisk === 0`) — so a corrupted DB sailed past the exact two checks written to stop it and got operated on as though its schema were understood. This is the ordinary NaN-poisoning shape with an unusually bad blast radius: not one guard bypassed, but a matched pair.
+- **Recovery:**
+  1. Inspect the value the error names: `sqlite3 swarms/control-plane.db "SELECT * FROM kv WHERE key='schema_version'"`.
+  2. Restore `control-plane.db` from a known-good backup if this run's history matters.
+  3. Only if it does not, delete the DB and let `openDb` bootstrap a fresh one.
+  4. Do **not** hand-write `schema_version` back to a plausible-looking integer — read `db/migrate.js`'s migration ledger first, or you will claim a shape the DB does not have.
+
 ### `CONTROL_PLANE_SCHEMA_TOO_NEW`
 
 :::caution[Severity: HIGH]

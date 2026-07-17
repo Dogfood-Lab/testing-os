@@ -20,6 +20,7 @@
  */
 import { test, describe } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 
@@ -349,6 +350,64 @@ describe('extractDeclaredIds', () => {
       extractDeclaredIds(`* @pins F-11111111 F-${cyrillicCapitalEs}I-SELF-DOGFOOD-002`),
       [{ token: 'F-11111111', ok: true }],
       'a letter homoglyph inside the id body silently reads as free text today — disclosed, not fixed, by F-23866242',
+    );
+  });
+
+  // F-2826c50e: the F-23866242 widening above correctly grew DASH_CONFUSABLES
+  // and its adjacent "Codepoints, named" list to 13 entries, but the
+  // paragraph's own prose still said "ten" (twice) -- a fresh miscount
+  // introduced BY that fix, inside the paragraph whose job is honest
+  // disclosure. Hand-typing "thirteen" in its place would only relocate the
+  // same class of drift to the next widening, so this pins the claim
+  // STRUCTURALLY: the expected count is derived by parsing DASH_CONFUSABLES'
+  // own regex source (expanding \uXXXX-\uYYYY ranges and lone \uXXXX
+  // escapes) -- never hardcoded here -- and every prose surface (both
+  // numeral-word claims, plus the enumerated list itself) is checked against
+  // that one live-derived number, not against each other.
+  /** @pins F-2826c50e */
+  test('F-2826c50e: DASH_CONFUSABLES\' docstring numeral-word claims and its enumerated codepoint list both agree with the regex\'s own codepoint count', () => {
+    const source = readFileSync(new URL('./pin-declarations.mjs', import.meta.url), 'utf-8');
+
+    const classMatch = /const DASH_CONFUSABLES = \/\[([^\]]+)\]\/g;/.exec(source);
+    assert.ok(classMatch, 'could not locate the DASH_CONFUSABLES regex literal — has its declaration shape changed?');
+    let regexCodepointCount = 0;
+    const rangeOrChar = /\\u([0-9A-Fa-f]{4})(?:-\\u([0-9A-Fa-f]{4}))?/g;
+    for (const m of classMatch[1].matchAll(rangeOrChar)) {
+      const start = parseInt(m[1], 16);
+      const end = m[2] ? parseInt(m[2], 16) : start;
+      regexCodepointCount += end - start + 1;
+    }
+    assert.ok(regexCodepointCount > 0, 'expanded zero codepoints from the character class — the extraction pattern itself is broken, not a signal about DASH_CONFUSABLES');
+
+    // Counted within the "Codepoints, named" JSDoc block by its heading and
+    // closing "*/" rather than by assuming a fixed number of entries per
+    // physical line (the real list packs two per line, see below).
+    const listStart = source.indexOf('Codepoints, named');
+    assert.ok(listStart >= 0, 'could not locate the "Codepoints, named" heading beneath DASH_CONFUSABLES');
+    const blockEnd = source.indexOf('*/', listStart);
+    assert.ok(blockEnd > listStart, 'could not locate the end of the JSDoc block containing "Codepoints, named"');
+    const namedCount = (source.slice(listStart, blockEnd).match(/U\+[0-9A-Fa-f]{4,6}\b/g) ?? []).length;
+    assert.equal(namedCount, regexCodepointCount, 'the enumerated "Codepoints, named" list must name exactly as many codepoints as the regex matches');
+
+    // Read from a JSDoc-continuation-flattened copy of the source (each
+    // "\n * " line-wrap collapsed to a single space) so a claim that happens
+    // to line-wrap mid-phrase -- as this one does, "...Widened here to" /
+    // "the N codepoints below..." -- is still read as one contiguous phrase.
+    const flattened = source.replace(/\r?\n\s*\*\s?/g, ' ');
+    const NUMBER_WORDS = { eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15 };
+    const widenedClaim = /Widened\s+here\s+to\s+the\s+(\w+)\s+codepoints\s+below/.exec(flattened);
+    const namedCountClaim = /Codepoints,\s+named\s+\(all\s+(\w+),\s+in\s+ascending\s+order\)/.exec(flattened);
+    assert.ok(widenedClaim, 'could not locate the "Widened here to the ___ codepoints below" claim');
+    assert.ok(namedCountClaim, 'could not locate the "Codepoints, named (all ___, in ascending order)" claim');
+    assert.equal(
+      NUMBER_WORDS[widenedClaim[1]],
+      regexCodepointCount,
+      `"Widened here to the ${widenedClaim[1]} codepoints below" must name the regex's actual codepoint count (${regexCodepointCount})`,
+    );
+    assert.equal(
+      NUMBER_WORDS[namedCountClaim[1]],
+      regexCodepointCount,
+      `"Codepoints, named (all ${namedCountClaim[1]}, ...)" must name the regex's actual codepoint count (${regexCodepointCount})`,
     );
   });
 

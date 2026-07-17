@@ -23,6 +23,7 @@ import { openDb } from '../db/connection.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { FINDING_GATED_PHASES } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
+import { logStage } from '../lib/log-stage.js';
 import { escapeReasonForDisplay, escapePathForDisplay } from './lib/escape-reason.js';
 
 /**
@@ -250,17 +251,54 @@ export function exportReceipt(receipt, outputDir) {
 
 /**
  * Store receipt artifact paths in the control plane.
+ *
+ * F-dd3e6587: wave_receipts has UNIQUE(wave_id) (db/schema.js) and this was
+ * an unconditional INSERT OR REPLACE with zero logStage calls — unlike every
+ * other mutating verb in this domain (collect/dispatch/redrive/resume/
+ * revalidate/rewind/clean/clean-claims/verify* all call it) and unlike its
+ * own sibling verification_receipts (append-only INSERT, reader takes the
+ * latest row by created_at/id). Re-running `swarm receipt` for the SAME wave
+ * — the normal, expected usage as more state accumulates (a verify pass, an
+ * adjudication, more findings resolved) — silently deleted-and-reinserted
+ * the row: the AUTOINCREMENT id churned and created_at reset to now(), with
+ * stdout byte-identical between the first export and any later re-export.
+ *
+ * Making wave_receipts genuinely append-only (dropping UNIQUE(wave_id), the
+ * way verification_receipts already is) would require editing db/schema.js,
+ * which is outside this domain's owned globs (packages/dogfood-swarm/
+ * commands/** + cli.js) — so this fix takes the "at minimum" floor the
+ * finding names: a logStage('receipt_stored', ...) event carrying whether
+ * THIS export replaced a prior row, so a re-export is greppable even though
+ * the INSERT OR REPLACE itself stays silent. Mirrors the
+ * verify_fixed_schema_overwrite precedent (commands/verify-fixed.js,
+ * F-2f10ff78) — the same "persisted artifact silently clobbered with no
+ * durable trail" class, one file away, in the same wave.
  */
-export function storeReceipt(db, waveId, jsonPath, mdPath) {
+export function storeReceipt(db, runId, waveId, jsonPath, mdPath) {
   const hash = createHash('sha256')
     .update(JSON.stringify({ jsonPath, mdPath }))
     .digest('hex')
     .slice(0, 16);
 
+  // Read BEFORE the REPLACE below overwrites it — this is the only way to
+  // know whether this call clobbered a prior row (id churn / created_at
+  // reset) or is this wave's first receipt export.
+  const existing = db.prepare('SELECT id FROM wave_receipts WHERE wave_id = ?').get(waveId);
+
   db.prepare(`
     INSERT OR REPLACE INTO wave_receipts (wave_id, json_path, md_path, content_hash)
     VALUES (?, ?, ?, ?)
   `).run(waveId, jsonPath, mdPath, hash);
+
+  logStage('receipt_stored', {
+    component: 'dogfood-swarm',
+    runId,
+    waveId,
+    jsonPath,
+    mdPath,
+    contentHash: hash,
+    replaced: !!existing,
+  });
 }
 
 /**

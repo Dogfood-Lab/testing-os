@@ -1020,25 +1020,14 @@ function cmdResume(args) {
 }
 
 function cmdRewind(args) {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm rewind <save-point-tag> --reason "<text>" [--apply] [--force] [--force-arbitrary-ref]');
-    console.log('');
-    console.log('Restore the working tree to a named save-point AND lawfully abort orphaned');
-    console.log('in-flight waves/agent_runs (status -> aborted_for_rewind) with full audit');
-    console.log('visibility in wave_state_events / agent_state_events (reason prefixed with');
-    console.log('"rewind: "). Dry-run by default; --apply mutates.');
-    console.log('');
-    console.log('Required:');
-    console.log('  <save-point-tag>          A git tag (default: must match swarm-save-*)');
-    console.log('  --reason "<text>"         Non-empty audit reason (recorded in state events)');
-    console.log('');
-    console.log('Optional:');
-    console.log('  --apply                   Mutate (default: dry-run preview)');
-    console.log('  --force                   Discard uncommitted changes in the working tree');
-    console.log('  --force-arbitrary-ref     Allow tags outside the swarm-save-* glob');
-    return;
-  }
-
+  // F-264ab3aa: per-verb --help/-h used to be hand-rolled inline here (and
+  // in 4 sibling verbs — redrive/clean/clean-claims/history) while the other
+  // ~22 registered verbs had no --help handling at all, so `swarm status
+  // --help` silently consumed the literal string '--help' as a run-id and
+  // printed `ERROR: Run not found: --help`. main() now intercepts --help/-h
+  // centrally for every registered command, before any cmd* function is
+  // ever called — see the USAGE table above `const commands` for this
+  // verb's full text (moved there verbatim; nothing here was shortened).
   const savePointTag = args[0];
   if (!savePointTag || savePointTag.startsWith('--')) {
     console.error('Usage: swarm rewind <save-point-tag> --reason "<text>" [--apply] [--force] [--force-arbitrary-ref]');
@@ -1092,31 +1081,8 @@ function cmdRewind(args) {
 }
 
 function cmdRedrive(args) {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm redrive <wave-id> --reason "<text>" [--apply]');
-    console.log('');
-    console.log('Lawful Redrive: Step Functions Redrive semantics on the swarm control plane.');
-    console.log('Same wave_id, completed work preserved byte-identical, only eligible failed/');
-    console.log('unstarted agent_runs made re-dispatchable. Dry-run by default; --apply mutates.');
-    console.log('');
-    console.log('Required:');
-    console.log('  <wave-id>                 Positive integer (waves.id)');
-    console.log('  --reason "<text>"         Non-empty audit reason (recorded with redrive: prefix)');
-    console.log('');
-    console.log('Optional:');
-    console.log('  --apply                   Mutate (default: dry-run preview)');
-    console.log('');
-    console.log('Eligibility (per agent_run source status):');
-    console.log('  complete             -> PRESERVED (receipt unchanged)');
-    console.log('  pending, dispatched  -> ELIGIBLE (redriven to dispatched)');
-    console.log('  failed, timed_out    -> ELIGIBLE (redriven to dispatched)');
-    console.log('  invalid_output       -> REFUSED  (use `swarm revalidate` instead)');
-    console.log('  ownership_violation  -> REFUSED  (operator unblocks first)');
-    console.log('  aborted_for_rewind   -> REFUSED  (terminal; run a fresh wave)');
-    console.log('  running              -> REFUSED  (let timeout fire, then redrive)');
-    return;
-  }
-
+  // F-264ab3aa: --help/-h is centralized in main() now — see USAGE.redrive
+  // above `const commands` (cmdRewind's note above has the full rationale).
   const waveIdArg = args[0];
   if (!waveIdArg || waveIdArg.startsWith('--')) {
     console.error('Usage: swarm redrive <wave-id> --reason "<text>" [--apply]');
@@ -1169,32 +1135,8 @@ function cmdRedrive(args) {
 }
 
 function cmdClean(args) {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm clean <run-id> [--apply] [--force] [--format=text|json]');
-    console.log('');
-    console.log('Reclaim the stranded --isolate worktrees + swarm/* branches for a run.');
-    console.log('Under --isolate, dispatch creates a per-agent git worktree; recordPromotion');
-    console.log('tears them down on the run\'s terminal `complete` transition. A run abandoned,');
-    console.log('rewound, or interrupted before `complete` strands those worktrees on disk —');
-    console.log('`swarm clean` is the operator reclaim. Dry-run by default; --apply removes.');
-    console.log('');
-    console.log('Required:');
-    console.log('  <run-id>             The run whose worktrees to reclaim');
-    console.log('');
-    console.log('Optional:');
-    console.log('  --apply              Remove (default: dry-run preview)');
-    console.log('  --force              Required IN ADDITION to --apply to remove a');
-    console.log('                       DIRTY or UNMERGED worktree (uncommitted/unpushed');
-    console.log('                       agent work). --apply alone SKIPS those, mirroring');
-    console.log('                       `swarm rewind`\'s --force-on-top-of---apply contract.');
-    console.log('  --format=text|json   Output format (default: text)');
-    console.log('');
-    console.log('--apply refuses while this run\'s latest wave is still `dispatched`/');
-    console.log('`collecting` — finish it first (`swarm collect` / `swarm redrive` /');
-    console.log('`swarm rewind`) so a live agent\'s worktree is never reclaimed mid-flight.');
-    return;
-  }
-
+  // F-264ab3aa: --help/-h is centralized in main() now — see USAGE.clean
+  // above `const commands` (cmdRewind's note above has the full rationale).
   const runId = args[0];
   if (!runId || runId.startsWith('--')) {
     console.error('Usage: swarm clean <run-id> [--apply] [--force] [--format=text|json]');
@@ -1231,41 +1173,9 @@ function cmdClean(args) {
 }
 
 function cmdCleanClaims(args) {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm clean-claims <run-id> [--wave=N] [--agent-run=ID] [--apply --reason "<text>"] [--format=text|json]');
-    console.log('');
-    console.log('Delete phantom violation=1 file_claims rows stranded on TERMINAL waves');
-    console.log('(advanced / aborted_for_rewind) — rows no lawful verb can revisit:');
-    console.log('collect only runs on a dispatched wave, revalidate only repairs blocked');
-    console.log('agents on the run\'s latest wave, redrive refuses terminal waves.');
-    console.log('');
-    console.log('file_claims rows are CLAIMS about what a pass observed, not audit');
-    console.log('events — deleting a superseded claim is the lawful write. The');
-    console.log('agent_state_events audit trail is NEVER touched. Dry-run by default;');
-    console.log('the preview shows each agent_run\'s claims plus the state-event');
-    console.log('evidence that supersedes them.');
-    console.log('');
-    console.log('Required:');
-    console.log('  <run-id>             The run whose phantom claims to clean');
-    console.log('');
-    console.log('Required to mutate:');
-    console.log('  --apply              Delete (default: dry-run preview)');
-    console.log('  --reason "<text>"    Non-empty audit reason, required with --apply;');
-    console.log('                       recorded in domain_events with the clean-claims:');
-    console.log('                       prefix (one restorable audit row per domain)');
-    console.log('');
-    console.log('Optional:');
-    console.log('  --wave=N             Only wave N (wave_number within this run)');
-    console.log('  --agent-run=ID       Only this agent_runs.id (must belong to this run)');
-    console.log('  --format=text|json   Output format (default: text)');
-    console.log('');
-    console.log('Scope guards: rows on non-terminal waves are REFUSED with the verb that');
-    console.log('still owns them (collect / revalidate / redrive); violation=0 rows and');
-    console.log('other runs\' rows are never touched (re-verified inside the delete');
-    console.log('transaction — a violated invariant rolls everything back).');
-    return;
-  }
-
+  // F-264ab3aa: --help/-h is centralized in main() now — see
+  // USAGE['clean-claims'] above `const commands` (cmdRewind's note above
+  // has the full rationale).
   const runId = args[0];
   if (!runId || runId.startsWith('--')) {
     console.error('Usage: swarm clean-claims <run-id> [--wave=N] [--agent-run=ID] [--apply --reason "<text>"] [--format=text|json]');
@@ -1304,17 +1214,8 @@ function cmdCleanClaims(args) {
 }
 
 function cmdHistory(args) {
-  if (args.includes('--help') || args.includes('-h')) {
-    console.log('Usage: swarm history <wave-id> [--format=text|json]');
-    console.log('');
-    console.log('Render the full wave_state_events transition chain for <wave-id>.');
-    console.log('Each row shows: from_status -> to_status, when, and the operator-');
-    console.log('supplied reason text (override transitions via `swarm revalidate`');
-    console.log('carry their --reason text here prefixed with `revalidate:`).');
-    console.log('--format=json emits the structured {waveId,wave,events} report.');
-    return;
-  }
-
+  // F-264ab3aa: --help/-h is centralized in main() now — see USAGE.history
+  // above `const commands` (cmdRewind's note above has the full rationale).
   const waveIdArg = args[0];
   if (!waveIdArg) {
     console.error('Usage: swarm history <wave-id> [--format=text|json]');
@@ -1628,7 +1529,7 @@ function cmdReceipt(args) {
 
   // Store in control plane
   const db = openDb(getDbPath());
-  storeReceipt(db, receipt.wave.id, jsonPath, mdPath);
+  storeReceipt(db, runId, receipt.wave.id, jsonPath, mdPath);
 
   if (format === 'json') {
     console.log(JSON.stringify(receipt, null, 2));
@@ -2687,7 +2588,13 @@ function formatTrends(query, payload) {
 
 // ── Dispatch ──
 
-const commands = {
+// Exported (F-264ab3aa) so wave31-4091637-5127-swarm-cp-pins.test.js can pin
+// "every registered verb has a matching USAGE entry" against the REAL
+// registry, rather than a hand-maintained second list of verb names that
+// would silently drift from this one — the exact enumeration-vs-property
+// failure this run's own culture has caught repeatedly elsewhere
+// (CONTROL_CLASS / ZALGO_RUN / DASH_CONFUSABLES).
+export const commands = {
   init: cmdInit,
   domains: cmdDomains,
   dispatch: cmdDispatch,
@@ -2716,6 +2623,174 @@ const commands = {
   findings: cmdFindings,
   runs: cmdRuns,
   trends: cmdTrends,
+};
+
+/**
+ * F-264ab3aa: per-verb `--help`/`-h` text, keyed by verb name — ONE entry per
+ * key in `commands`, consulted by ONE check in main() (below) BEFORE any
+ * verb is dispatched.
+ *
+ * Pre-fix, only 5 of the 27 verbs registered at the time (rewind, redrive,
+ * clean, clean-claims, history) recognized `--help` at all, each via its own
+ * hand-rolled `if (args.includes('--help')) { ...; return; }` branch inside
+ * its cmd* function. `doctor` and `runs` silently ignored an unrecognized
+ * `--help` and ran their normal read-only action instead (safe, but no help
+ * text). The remaining ~20 had no handling whatsoever: each read `args[0]`
+ * (or the wave-id/adjudication-id equivalent) with no check for a
+ * `--`-prefixed token, so the literal string '--help' was silently consumed
+ * as if it were a real identifier — `swarm status --help` printed `ERROR:
+ * Run not found: --help`, `swarm findings --help` resolved it into a
+ * filesystem path and reported `FINDINGS_RUN_DIR_NOT_FOUND: ...\--help`,
+ * `swarm domains --help` opened the DB and reported "Domains for --help
+ * [DRAFT]:". None of those messages contain the words "help" or "usage" —
+ * each reads as though the operator needs to go create or locate a run/wave
+ * literally named '--help'.
+ *
+ * The five entries below that already had rich inline text (rewind, redrive,
+ * clean, clean-claims, history) are moved here VERBATIM — nothing was
+ * shortened, and the corresponding `if (args.includes('--help'))` branch
+ * inside each cmd* function was deleted (see each function's own F-264ab3aa
+ * breadcrumb comment). Every other entry reuses the SAME one-liner already
+ * used on that verb's own missing-required-argument error path (grep the
+ * function body for the identical `Usage: swarm <verb> ...` string) so the
+ * error path and the --help path can never say two different things about
+ * the same verb.
+ *
+ * wave31-4091637-5127-swarm-cp-pins.test.js pins that every key in
+ * `commands` has a matching entry here — a future verb added to `commands`
+ * with no matching USAGE entry fails that test rather than silently
+ * degrading to the generic fallback main() prints below.
+ */
+export const USAGE = {
+  init: 'Usage: swarm init <repo-path> [--repo org/name]',
+  domains: 'Usage: swarm domains <run-id> [--freeze | --unfreeze --reason "..." [--force] | --edit <name> [opts] | --add <name> [opts] | --remove <name> | --history]',
+  dispatch: 'Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview]',
+  collect: 'Usage: swarm collect <run-id> (--all | --domain=name:path [--domain=name:path ...])',
+  doctor: 'Usage: swarm doctor [--format=text|json]',
+  revalidate: 'Usage: swarm revalidate <run-id> --reason "<text>" --domain=name:path [--domain=name:path ...] [--apply]',
+  rewind: [
+    'Usage: swarm rewind <save-point-tag> --reason "<text>" [--apply] [--force] [--force-arbitrary-ref]',
+    '',
+    'Restore the working tree to a named save-point AND lawfully abort orphaned',
+    'in-flight waves/agent_runs (status -> aborted_for_rewind) with full audit',
+    'visibility in wave_state_events / agent_state_events (reason prefixed with',
+    '"rewind: "). Dry-run by default; --apply mutates.',
+    '',
+    'Required:',
+    '  <save-point-tag>          A git tag (default: must match swarm-save-*)',
+    '  --reason "<text>"         Non-empty audit reason (recorded in state events)',
+    '',
+    'Optional:',
+    '  --apply                   Mutate (default: dry-run preview)',
+    '  --force                   Discard uncommitted changes in the working tree',
+    '  --force-arbitrary-ref     Allow tags outside the swarm-save-* glob',
+  ].join('\n'),
+  redrive: [
+    'Usage: swarm redrive <wave-id> --reason "<text>" [--apply]',
+    '',
+    'Lawful Redrive: Step Functions Redrive semantics on the swarm control plane.',
+    'Same wave_id, completed work preserved byte-identical, only eligible failed/',
+    'unstarted agent_runs made re-dispatchable. Dry-run by default; --apply mutates.',
+    '',
+    'Required:',
+    '  <wave-id>                 Positive integer (waves.id)',
+    '  --reason "<text>"         Non-empty audit reason (recorded with redrive: prefix)',
+    '',
+    'Optional:',
+    '  --apply                   Mutate (default: dry-run preview)',
+    '',
+    'Eligibility (per agent_run source status):',
+    '  complete             -> PRESERVED (receipt unchanged)',
+    '  pending, dispatched  -> ELIGIBLE (redriven to dispatched)',
+    '  failed, timed_out    -> ELIGIBLE (redriven to dispatched)',
+    '  invalid_output       -> REFUSED  (use `swarm revalidate` instead)',
+    '  ownership_violation  -> REFUSED  (operator unblocks first)',
+    '  aborted_for_rewind   -> REFUSED  (terminal; run a fresh wave)',
+    '  running              -> REFUSED  (let timeout fire, then redrive)',
+  ].join('\n'),
+  clean: [
+    'Usage: swarm clean <run-id> [--apply] [--force] [--format=text|json]',
+    '',
+    'Reclaim the stranded --isolate worktrees + swarm/* branches for a run.',
+    'Under --isolate, dispatch creates a per-agent git worktree; recordPromotion',
+    'tears them down on the run\'s terminal `complete` transition. A run abandoned,',
+    'rewound, or interrupted before `complete` strands those worktrees on disk —',
+    '`swarm clean` is the operator reclaim. Dry-run by default; --apply removes.',
+    '',
+    'Required:',
+    '  <run-id>             The run whose worktrees to reclaim',
+    '',
+    'Optional:',
+    '  --apply              Remove (default: dry-run preview)',
+    '  --force              Required IN ADDITION to --apply to remove a',
+    '                       DIRTY or UNMERGED worktree (uncommitted/unpushed',
+    '                       agent work). --apply alone SKIPS those, mirroring',
+    '                       `swarm rewind`\'s --force-on-top-of---apply contract.',
+    '  --format=text|json   Output format (default: text)',
+    '',
+    '--apply refuses while this run\'s latest wave is still `dispatched`/',
+    '`collecting` — finish it first (`swarm collect` / `swarm redrive` /',
+    '`swarm rewind`) so a live agent\'s worktree is never reclaimed mid-flight.',
+  ].join('\n'),
+  'clean-claims': [
+    'Usage: swarm clean-claims <run-id> [--wave=N] [--agent-run=ID] [--apply --reason "<text>"] [--format=text|json]',
+    '',
+    'Delete phantom violation=1 file_claims rows stranded on TERMINAL waves',
+    '(advanced / aborted_for_rewind) — rows no lawful verb can revisit:',
+    'collect only runs on a dispatched wave, revalidate only repairs blocked',
+    'agents on the run\'s latest wave, redrive refuses terminal waves.',
+    '',
+    'file_claims rows are CLAIMS about what a pass observed, not audit',
+    'events — deleting a superseded claim is the lawful write. The',
+    'agent_state_events audit trail is NEVER touched. Dry-run by default;',
+    'the preview shows each agent_run\'s claims plus the state-event',
+    'evidence that supersedes them.',
+    '',
+    'Required:',
+    '  <run-id>             The run whose phantom claims to clean',
+    '',
+    'Required to mutate:',
+    '  --apply              Delete (default: dry-run preview)',
+    '  --reason "<text>"    Non-empty audit reason, required with --apply;',
+    '                       recorded in domain_events with the clean-claims:',
+    '                       prefix (one restorable audit row per domain)',
+    '',
+    'Optional:',
+    '  --wave=N             Only wave N (wave_number within this run)',
+    '  --agent-run=ID       Only this agent_runs.id (must belong to this run)',
+    '  --format=text|json   Output format (default: text)',
+    '',
+    'Scope guards: rows on non-terminal waves are REFUSED with the verb that',
+    'still owns them (collect / revalidate / redrive); violation=0 rows and',
+    'other runs\' rows are never touched (re-verified inside the delete',
+    'transaction — a violated invariant rolls everything back).',
+  ].join('\n'),
+  verify: 'Usage: swarm verify <run-id> [--adapter node|python|rust] [--probe-only]',
+  'verify-fixed': 'Usage: swarm verify-fixed <run-id> [--threshold=N] [--format=text|markdown|json] [--legacy-v1]',
+  'verify-recurring': 'Usage: swarm verify-recurring <run-id> [--threshold=N] [--format=text|markdown|json]',
+  'verify-unverified': 'Usage: swarm verify-unverified <run-id> [--threshold=N] [--format=text|markdown|json]',
+  'verify-approved': 'Usage: swarm verify-approved <run-id> [--threshold=N] [--format=text|markdown|json]',
+  receipt: 'Usage: swarm receipt <run-id> [wave-number] [--format=json]',
+  advance: 'Usage: swarm advance <run-id> [--override --reason "..."] [--check-only] [--history] [--format=json]',
+  adjudicate: 'Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]\n   or: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]',
+  status: 'Usage: swarm status <run-id> [--format=text|json]',
+  resume: 'Usage: swarm resume <run-id> [--force]',
+  history: [
+    'Usage: swarm history <wave-id> [--format=text|json]',
+    '',
+    'Render the full wave_state_events transition chain for <wave-id>.',
+    'Each row shows: from_status -> to_status, when, and the operator-',
+    'supplied reason text (override transitions via `swarm revalidate`',
+    'carry their --reason text here prefixed with `revalidate:`).',
+    '--format=json emits the structured {waveId,wave,events} report.',
+  ].join('\n'),
+  approve: 'Usage: swarm approve <run-id> [--all | --ids F-001,F-002]',
+  defer: 'Usage: swarm defer <run-id> --ids F-001,F-002 --reason "<text>"',
+  reject: 'Usage: swarm reject <run-id> --ids F-001,F-002 --reason "<text>"',
+  persist: 'Usage: swarm persist <run-id> [--ingest] [--dry-run]',
+  findings: 'Usage: swarm findings <run-id> [wave-number] [--format=text|markdown|json]',
+  runs: 'Usage: swarm runs [--format=text|json]',
+  trends: 'Usage: swarm trends --query <recurring|history|recurrence> [--format=text|json]',
 };
 
 /**
@@ -2815,18 +2890,28 @@ function main() {
   // !commands[command])` conflated three operator intents that deserve
   // different treatment: bare invocation (orientation, not an error), an
   // explicit --help/-h/help request (GNU/POSIX convention: universally exit
-  // 0 — the same convention this file's own per-verb --help branches, e.g.
-  // `swarm history --help`, already follow), and a genuinely unknown/
-  // mistyped verb (an error, but not one that should look identical to a
-  // successful help request, and not one that needs the entire ~240-line
-  // reference dumped with zero acknowledgment of what was actually wrong).
-  // All three used to print the byte-identical full command reference and
-  // exit `command ? 1 : 0` — so a wrapper using the conventional
-  // `swarm --help && echo ok` idiom incorrectly reported the tool
-  // unavailable, and a typo'd verb (28 similarly-named siblings —
+  // 0), and a genuinely unknown/mistyped verb (an error, but not one that
+  // should look identical to a successful help request, and not one that
+  // needs the entire ~240-line reference dumped with zero acknowledgment of
+  // what was actually wrong). All three used to print the byte-identical
+  // full command reference and exit `command ? 1 : 0` — so a wrapper using
+  // the conventional `swarm --help && echo ok` idiom incorrectly reported
+  // the tool unavailable, and a typo'd verb (28 similarly-named siblings —
   // dispatch/collect/revalidate/rewind/redrive, verify/verify-fixed/
   // verify-recurring/verify-unverified/verify-approved) got no "unknown
   // command" framing anywhere in ~240 lines of output.
+  //
+  // CORRECTION (F-264ab3aa, wave 31): this comment used to close with a
+  // parenthetical claiming --help "universally exit[s] 0 — the same
+  // convention this file's own per-verb --help branches, e.g. `swarm
+  // history --help`, already follow". That was false when written (wave 29):
+  // only 5 of the 27 verbs registered at the time had ANY per-verb --help
+  // handling, and the other ~22 silently misread the literal string
+  // '--help' as a real positional argument. Wave 30's audit caught the
+  // overclaim; this wave both closes the underlying gap (see the USAGE
+  // table above `const commands` + the check below) and removes the false
+  // sentence rather than leaving it to assert something this repo's own
+  // audit had already disproved.
   const isExplicitHelp = command === '--help' || command === '-h' || command === 'help';
 
   if (command && !isExplicitHelp && !commands[command]) {
@@ -3074,6 +3159,23 @@ Domain commands:
 
 Phases:
 ${renderPhaseColumns('  ')}`);
+    process.exit(0);
+  }
+
+  // F-264ab3aa: per-verb --help/-h, centralized. `command` is guaranteed to
+  // be a real key in `commands` here — the two guards above already
+  // resolved "no command", "bare --help/-h/help", and "unknown verb" and
+  // exited in each case. ONE check here, before ANY verb is dispatched,
+  // covers all 28 registered verbs today and every verb added after this
+  // line — see the USAGE table above `const commands` for the per-verb
+  // text, and wave31-4091637-5127-swarm-cp-pins.test.js for the structural
+  // pin requiring every command to have a matching entry there. Checked
+  // anywhere in commandArgs (not just position 0), matching the convention
+  // the 5 pre-existing per-verb handlers already used — `swarm rewind tag
+  // --reason --help` still surfaces the help text rather than the reason-
+  // swallow-guard error text, same as `swarm rewind --help tag` does.
+  if (commandArgs.includes('--help') || commandArgs.includes('-h')) {
+    console.log(USAGE[command] || `swarm ${command}: no detailed --help text yet — run \`swarm --help\` for the full command reference.`);
     process.exit(0);
   }
 

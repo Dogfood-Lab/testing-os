@@ -185,6 +185,47 @@ export class ControlPlaneSchemaTooNewError extends Error {
 }
 
 /**
+ * Thrown by openDb (via getSchemaVersion) when the on-disk control-plane.db's
+ * `kv.schema_version` value is not a finite number.
+ *
+ * F-9587adda: getSchemaVersion() used to `parseInt(row.value, 10)` and return
+ * whatever that produced, including NaN for a non-numeric value. Both
+ * downstream comparisons in openDb — `version > SCHEMA_VERSION` (the
+ * too-new refusal above) and `version < SCHEMA_VERSION` (the schema-bootstrap
+ * gate) — are FALSE for NaN, so a corrupted schema_version silently skipped
+ * BOTH: the too-new refusal never fired, and `db.exec(SCHEMA_SQL)` never ran,
+ * contradicting this same module's own fail-loud-not-silent discipline
+ * (already applied above for the too-new case, and for the dead-handle
+ * sentinel in openDb).
+ *
+ * Recovery is NOT "pull the latest build" (that is ControlPlaneSchemaTooNewError's
+ * remedy, for a DIFFERENT condition — a value this build understands perfectly
+ * well but that belongs to a newer one). A corrupt kv.value means the row
+ * itself is wrong: restore from a known-good backup, or start a fresh control
+ * plane at this dbPath if none exists. The two conditions get distinct codes
+ * so a caller (or an operator scanning logs) is never told to "upgrade" a DB
+ * that is actually just damaged, or vice versa.
+ */
+export class ControlPlaneSchemaCorruptError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} opts
+   * @param {string} opts.rawValue — the unparseable kv.schema_version value read from disk
+   * @param {string} [opts.dbPath] — the refused DB path (log correlation)
+   * @param {string} [opts.hint]   — override the default corruption hint
+   */
+  constructor(message, opts) {
+    super(message);
+    this.name = 'ControlPlaneSchemaCorruptError';
+    this.code = 'CONTROL_PLANE_SCHEMA_CORRUPT';
+    this.rawValue = opts.rawValue;
+    if (opts.dbPath != null) this.dbPath = opts.dbPath;
+    this.hint = opts.hint
+      || 'kv.schema_version is not a finite number — the control-plane.db is corrupted or was hand-edited, not merely older/newer. Restore control-plane.db from a known-good backup, or remove it to bootstrap a fresh one (only if this run\'s history is not needed) — do not hand-write schema_version without reading db/migrate.js\'s ledger first.';
+  }
+}
+
+/**
  * Thrown by buildCriterionIntent (lib/case-file/prism-jury.js) when the
  * MANDATORY head section (rubric.objective + the criterion under test) alone
  * exceeds prism's 4000-char intent cap, before any optional section (evidence,

@@ -533,21 +533,34 @@ export function buildAuditPrompt(opts) {
   // 9 untouched findings closed themselves that way. F-bd8b4353 caught the
   // same lie once as a one-off ("a false entry in the swarm's own fix ledger")
   // and it was closed by correcting the affected files, never the mechanism.
+  // F-8f44c67f: this heading used to read "in your scope" unconditionally, but
+  // dispatch.js builds openPriorContext ONCE per wave from the ENTIRE run's
+  // priorMap (no domain/glob filter) and splices the identical text into every
+  // domain's prompt — empirically, ~88% of a typical queue sits outside the
+  // receiving domain's own globs. "in your scope" was therefore false for most
+  // entries most of the time, for every domain simultaneously. Filtering the
+  // queue itself is commands/dispatch.js's call (out of this domain's owned
+  // globs); this section instead states the true shape — a run-wide queue,
+  // narrowed to "your scope" only as an instruction to the agent, not as a
+  // pre-filtered fact — so the claim matches what dispatch.js actually does.
   const openPriorSection = opts.openPriorContext
-    ? `\n## Known OPEN findings in your scope — CONFIRM each one\n\n`
-      + `These are already filed and still open. This is **not** a do-not-report list —\n`
-      + `it is your confirmation queue, and your report is what decides their fate:\n\n`
+    ? `\n## Known OPEN findings across the run — CONFIRM the ones in your scope\n\n`
+      + `These are already filed and still open, from EVERY domain in this run, not\n`
+      + `just yours. This is **not** a do-not-report list — it is a confirmation queue,\n`
+      + `and your report decides the fate of the ones you can actually check:\n\n`
       + `- **Still present?** Report it again, reusing its id from below. That records\n`
       + `  it as recurring, not as a duplicate. This is wanted, not noise.\n`
       + `- **Verified gone?** Put its id in your output's \`confirmed\` array AND omit\n`
       + `  it from \`findings\`. That declaration is what closes it, on your authority.\n`
-      + `- **Did not check it?** Leave it out of \`confirmed\`. It stays open and the\n`
-      + `  next wave re-asks — no penalty, and far better than closing a live defect.\n`
-      + `  Say why in your \`summary\` too, but \`confirmed\` is the part that counts.\n\n`
+      + `- **Did not check it, or it names a file outside your domain?** Leave it out of\n`
+      + `  \`confirmed\`. It stays open and the next wave re-asks — no penalty, and far\n`
+      + `  better than closing a live defect. Note the out-of-domain ones in your\n`
+      + `  \`summary\` so the coordinator can see they are waiting on a different agent.\n\n`
       + `\`confirmed\` is a declaration, not a formality: an id you list is one you are\n`
       + `stating you checked. Silence alone no longer closes anything — list only what\n`
-      + `you actually verified, and an id outside your domain belongs to another agent,\n`
-      + `not to you.\n\n`
+      + `you actually verified. Most of this list will name files outside the globs\n`
+      + `below; that is expected, not an error — it belongs to whichever domain owns\n`
+      + `that file, and your silence about it has no effect on its fate.\n\n`
       + `${fenceSafeBlock(neutralizeForPrompt(opts.openPriorContext))}\n`
     : '';
 

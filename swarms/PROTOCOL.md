@@ -146,7 +146,7 @@ The protocol has two repeating passes plus a final test phase and full treatment
 
 ## Health Pass (Phases 1-4) — Four stages to clean bill of health
 
-The Health Pass has four distinct stages. Each stage uses the same Audit → Review → Amend → Repeat cycle (Phases 1-4), but with a different lens:
+The Health Pass has four distinct stages, each applying a different lens. Stages A and D each run a full Audit → Review → Amend → Repeat cycle (Phases 1-4) within the stage itself. Stages B and C instead split one such cycle across the stage boundary — B audits and reviews, C amends what B found — rather than each independently repeating the whole cycle:
 
 - **Stage A: Bug/Security Fix** — Find and fix defects. Repeat until 0 CRITICAL + 0 HIGH.
 - **Stage B: Proactive Health** — Fresh audit with proactive lens (defensive coding, observability, graceful degradation, future-proofing). Review findings.

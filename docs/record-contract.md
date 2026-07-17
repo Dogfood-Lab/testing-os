@@ -18,7 +18,7 @@ The submission is what the source repo emits. The persisted record is what the v
 ## Trust Boundary
 
 Source repos author:
-- `schema_version` — **required, and the first field the verifier reads** (see [Compatibility](#compatibility) below)
+- `schema_version` — **required, and the first entry in the submission schema's `required` array** (see [Compatibility](#compatibility) below)
 - `run_id`, `repo`, `ref`, `source`, `timing`
 - `ci_checks[]` (machine-evaluated)
 - `scenario_results[]` with `step_results[]` (dogfood evidence)

@@ -187,7 +187,7 @@ function parseOptsFor(filePath) {
  * lookalikes, not a generalized Unicode-confusables mapping (contrast NFKC
  * normalization or a maintained UTS #39 confusables table, either of which
  * would close this class structurally instead of by list). Widened here to
- * the ten codepoints below after this run's own wave-27 audit named two
+ * the thirteen codepoints below after this run's own wave-27 audit named two
  * (U+2043, U+FE58) that were missing; a parallel sweep against every
  * dash-shaped codepoint in the General Punctuation, Dingbats, and Small Form
  * Variants blocks surfaced three more (U+2796, U+FE63, U+00AD) sharing the
@@ -215,7 +215,7 @@ function parseOptsFor(filePath) {
  * is a larger design question left for its own dispatch rather than folded
  * into this fix.
  *
- * Codepoints, named (all ten, in ascending order):
+ * Codepoints, named (all thirteen, in ascending order):
  *   U+2010 HYPHEN                        U+2011 NON-BREAKING HYPHEN
  *   U+2012 FIGURE DASH                   U+2013 EN DASH
  *   U+2014 EM DASH                       U+2015 HORIZONTAL BAR
@@ -223,6 +223,15 @@ function parseOptsFor(filePath) {
  *   U+2212 MINUS SIGN                    U+2796 HEAVY MINUS SIGN
  *   U+FE58 SMALL EM DASH                 U+FE63 SMALL HYPHEN-MINUS
  *   U+FF0D FULLWIDTH HYPHEN-MINUS
+ *
+ * F-2826c50e: this paragraph's own numeral-word claims -- "Widened here to
+ * the ___ codepoints below" above, and this list's own heading -- previously
+ * said "ten" in both places, a miscount introduced BY the widening itself,
+ * not by an error in the widening: the regex and this enumerated list
+ * already agreed on thirteen. See pin-declarations.test.mjs's own
+ * F-2826c50e test, which derives the expected count from this regex's own
+ * source rather than hardcoding a number, so a future re-widening cannot
+ * silently repeat the same class of drift.
  */
 const DASH_CONFUSABLES = /[\u2010-\u2015\u2212\uFF0D\u00AD\u2043\u2796\uFE58\uFE63]/g;
 

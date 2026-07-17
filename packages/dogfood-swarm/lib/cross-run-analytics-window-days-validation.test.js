@@ -82,4 +82,31 @@ describe('queryFindingRecurrenceRate — windowDays validation (F-36327af8)', ()
     const stats = queryFindingRecurrenceRate(db, '3650');
     assert.equal(stats.recurring_fingerprints, 1);
   });
+
+  /** @pins F-b5fd9887 */
+  it('GATE: an empty-string windowDays throws instead of silently coercing to "window = 0 days" (F-b5fd9887)', () => {
+    // `Number('') === 0` is a well-known JS coercion quirk — Number.isFinite(0)
+    // is true, so pre-fix this sailed past F-36327af8's guard untouched and
+    // produced a clean, plausible-looking zero-day-window result instead of
+    // the "malformed input" error an unfilled form field or a bare
+    // `?windowDays=` query-string param actually deserves.
+    assert.throws(
+      () => queryFindingRecurrenceRate(db, ''),
+      /windowDays must be a finite number/,
+      'pre-fix: Number(\'\') === 0 passed Number.isFinite and silently meant "0-day window"',
+    );
+    assert.throws(
+      () => queryFindingRecurrenceRate(db, '   '),
+      /windowDays must be a finite number/,
+      'a whitespace-only string is the same defect wearing a different mask',
+    );
+  });
+
+  it('non-regression: "0" (the real, deliberate zero-day-window value) is still accepted, not confused with empty', () => {
+    // The fix must reject the ABSENCE of a value, not the value zero itself —
+    // a caller who genuinely means "anchor run only" still gets that.
+    const stats = queryFindingRecurrenceRate(db, '0');
+    assert.equal(stats.window_days, '0');
+    assert.equal(stats.total_runs, 1, 'a 0-day window keeps only the anchor (newest) run');
+  });
 });
