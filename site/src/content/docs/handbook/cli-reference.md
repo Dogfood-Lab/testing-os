@@ -334,12 +334,12 @@ Example:
 
 ## swarm reopen
 
-Reopen wrongly-closed findings — the recovery path the "Three R's" contract never had. Moves `fixed` / `deferred` / `rejected` rows back to `recurring` (open, amendable). `--ids`, a non-empty `--reason`, **and** a non-empty `--evidence` are all required (no `--all`: reopening is deliberate, per-finding, evidence-bearing). Dry-run by default; `--apply` mutates. The reopen resets the row's closure-provenance fields while the original closure survives immutably in `finding_events`, and the acting authority is recorded on the event — closer and reopener are distinct authorities by design. There is deliberately no automatic reopen beyond the pre-existing regression-rediscovery path (a re-reported fingerprint reopening a `fixed` row): reopen-prediction does not generalize, and stale-bot-style automation has a documented wrongful-closure record.
+Reopen wrongly-closed findings — the recovery path the "Three R's" contract never had. Moves `fixed` / `deferred` / `rejected` rows back to `recurring` (open, amendable). `--ids`, a non-empty `--reason`, **and** a non-empty `--evidence` are all required (no `--all`: reopening is deliberate, per-finding, evidence-bearing). Dry-run by default; `--apply` mutates; `--format=text|json` selects the render (json emits the same report object read-only calls already return). The reopen resets the row's closure-provenance fields while the original closure survives immutably in `finding_events`, and the acting authority is recorded on the event — closer and reopener are distinct authorities by design. There is deliberately no automatic reopen beyond the pre-existing regression-rediscovery path (a re-reported fingerprint reopening a `fixed` row): reopen-prediction does not generalize, and stale-bot-style automation has a documented wrongful-closure record.
 
 ```text
 Usage: swarm reopen <run-id> --ids F-001,F-002
                     --reason "<text>" --evidence "<text>"
-                    [--apply]
+                    [--apply] [--format=text|json]
 
 Example:
   $ swarm reopen <run-id> --ids F-001 \
@@ -349,12 +349,12 @@ Example:
 
 ## swarm close
 
-Operator closure for findings that cannot close by owning-domain declaration — the unowned-file class (a finding on a path no domain's globs match) and Director-directed disposals. Narrow by design: `--as fixed` is the only disposition (deferring and rejecting stay the standalone `swarm defer` / `swarm reject` verbs). Requires `--ids`, `--reason`, `--evidence`, and `--verified-how independent|self_attested|operator_evidence` — the verification mode is load-bearing, not decoration: review-verified fixes demonstrably reopen less than self-attested ones. Dry-run by default; `--apply` mutates. Writes `closure_kind='operator'` and an `operator_closed` event with the acting authority; the by-absence closure kind is never reachable from any verb.
+Operator closure for findings that cannot close by owning-domain declaration — the unowned-file class (a finding on a path no domain's globs match) and Director-directed disposals. Narrow by design: `--as fixed` is the only disposition (deferring and rejecting stay the standalone `swarm defer` / `swarm reject` verbs). Requires `--ids`, `--reason`, `--evidence`, and `--verified-how independent|self_attested|operator_evidence` — the verification mode is load-bearing, not decoration: review-verified fixes demonstrably reopen less than self-attested ones. Dry-run by default; `--apply` mutates; `--format=text|json` selects the render. Writes `closure_kind='operator'` and a `finding_events` row whose `event_type` mirrors the `--as` target status (`'fixed'` today, the only value `--as` accepts) — never a distinct `operator_closed` event type — carrying the acting authority; the by-absence closure kind is never reachable from any verb.
 
 ```text
 Usage: swarm close <run-id> --ids F-001,F-002 --as fixed
                    --reason "<text>" --evidence "<text>"
-                   --verified-how <mode> [--apply]
+                   --verified-how <mode> [--apply] [--format=text|json]
 
 Example:
   $ swarm close <run-id> --ids F-001 --as fixed \
@@ -366,11 +366,11 @@ Example:
 
 ## swarm roadmap
 
-Compile and inspect the trajectory artifact — the compiled-never-authored roadmap that lets the next run on this repo start targeted instead of cold. `compile` regenerates `dogfood/roadmap/<run-id>.json` (+ the `latest.json` pointer) from the control-plane DB and git alone: open/deferred queues, the drain queue with per-entry provenance and cadence, recurrence stats, the advisory attention list, and the bounded operator notes (validated at compile — an `invariant` note must name an existing `enforced_by` gate; expired notes are dropped loudly). `show` renders the latest artifact. See the [trajectory layer](/testing-os/handbook/trajectory/) page for the full design and its refusals.
+Compile and inspect the trajectory artifact — the compiled-never-authored roadmap that lets the next run on this repo start targeted instead of cold. `compile` regenerates `dogfood/roadmap/<run-id>.json` (+ the `latest.json` pointer) from the control-plane DB and git alone: open/deferred queues, the drain queue with per-entry provenance and cadence, recurrence stats, the advisory attention list, and the bounded operator notes (validated at compile — an `invariant` note must name an existing `enforced_by` gate; expired notes are dropped loudly). `show` renders the latest artifact, or an earlier one via `--version=N`. See the [trajectory layer](/testing-os/handbook/trajectory/) page for the full design and its refusals.
 
 ```text
 Usage: swarm roadmap compile <run-id> [--format=text|json]
-       swarm roadmap show <run-id> [--format=text|json]
+       swarm roadmap show <run-id> [--version=N] [--format=text|json]
 
 Example:
   $ swarm roadmap compile <run-id>

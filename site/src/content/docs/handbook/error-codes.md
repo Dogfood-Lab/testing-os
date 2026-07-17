@@ -507,16 +507,31 @@ A submission passed the record schema but its on-disk path could not be safely c
   2. Fix the submission's `repo` or `run_id` and resubmit. **The run_id is not consumed** — nothing was written, so a corrected resubmission is not a duplicate.
 - **Why a distinct code rather than reusing `RECORD_SCHEMA_INVALID`:** the record is *not* schema-invalid — it passed. Reporting it as a schema failure would send the operator to the schema, which is exactly the confusion this code exists to end. The two checks disagree by design: the schema is a permissive contract shared with consumers, and `isUnsafeSegment` is the stricter filesystem-safety gate. A submission can satisfy the first and fail the second, and that state now has a name.
 
+### `CLI_INVALID_VERIFIED_HOW`
+
+:::note[Severity: MEDIUM]
+The operator-supplied `--verified-how <value>` on `swarm close` is not one of the three accepted verification modes. System state is unchanged; the command refuses before mutating rather than silently defaulting a load-bearing field.
+:::
+
+- **Class:** plain `Error` with `e.code = 'CLI_INVALID_VERIFIED_HOW'`, thrown by `verifiedHowError()` — `packages/dogfood-swarm/cli.js`. It throws (unlike the guard clauses below), so it reaches `renderTopLevelError` and renders the full `ERROR [CLI_INVALID_VERIFIED_HOW]:` envelope, matching `CLI_INVALID_GLOBS_JSON` / `CLI_INVALID_THRESHOLD`'s format.
+- **Trigger:** `swarm close --verified-how <raw>` invoked with a `raw` value outside `independent | self_attested | operator_evidence`. A *missing* `--verified-how` is a separate, untyped guard-clause refusal (see the Usage-errors bullet below) — only an out-of-enum value reaches this typed code.
+- **Message shape:** `--verified-how expects one of independent|self_attested|operator_evidence; got '<raw>'`
+- **Hint:** `pass one of: independent, self_attested, operator_evidence — e.g. \`--verified-how independent\``
+- **Carries:** `received` (the raw input).
+- **Operator action:**
+  1. Re-invoke with one of the three accepted values.
+  2. This field is load-bearing, not decoration — review-verified fixes demonstrably reopen less than self-attested ones (Zimmermann et al., ICSE-SEIP 2012).
+
 ### `swarm reopen` / `swarm close` / `swarm roadmap` — failure modes
 
 :::note[Severity: LOW]
-The recovery and trajectory verbs introduce **no new typed error codes**. They follow the two established conventions their siblings already use, so an operator's existing reflexes apply unchanged.
+The recovery and trajectory verbs introduce **one new typed error code** (`CLI_INVALID_VERIFIED_HOW`, above). Everything else follows the two established untyped-guard-clause / per-id-refusal conventions their siblings already use, so an operator's existing reflexes mostly apply unchanged.
 :::
 
-- **Usage errors** (missing `--ids`, empty `--reason` or `--evidence`, missing `--verified-how` on `close`, an `--as` value other than `fixed`, unknown flags): the untyped single-line `ERROR: <message>` + usage synopsis on stderr, exit code mirrors the `defer`/`reject` convention. Both mutation verbs are **dry-run by default** — forgetting `--apply` is not an error; it prints the would-do report and changes nothing.
+- **Usage errors** (missing `--ids`, empty `--reason` or `--evidence`, missing `--verified-how` on `close`, an `--as` value other than `fixed`): each guard clause calls `console.error` directly and `process.exit(1)` — it never throws, so `renderTopLevelError` never sees it: there is no typed `ERROR [<CODE>]:` envelope and no untyped `ERROR: <message>` line either. The printed text is a plain, mostly verb-prefixed sentence (e.g. `reopen: --evidence "<text>" is required (non-empty) — …`, or the bare `Specify --ids F-001,F-002 (reopen is targeted — there is no --all)`). No usage synopsis prints alongside any of these — the `Usage: swarm reopen ...` / `Usage: swarm close ...` synopsis is reserved for the one case where the run-id itself is missing. Unrecognized flags (e.g. a typo'd `--this-flag-does-not-exist`) are silently ignored, not rejected — verified live against both verbs. Both mutation verbs are **dry-run by default** — forgetting `--apply` is not an error; it prints the would-do report and changes nothing.
 - **Per-id refusals** (reopening an id that is not closed, operator-closing an id that is not open, an id that names no finding in the run): listed per-id in the dry-run/apply report rather than thrown — the verbs are idempotent over ineligible rows, matching `defer`/`reject`'s established contract. A typo'd or hallucinated id can never vacuously transition anything.
-- **`swarm roadmap compile`** validates operator notes at compile time: more than seven notes, an `invariant` note without `enforced_by`, an `enforced_by` path that does not exist on disk, or a malformed `expires` each refuse the compile with a per-note report (nothing is written on refusal — compile is atomic). Expired notes do **not** refuse: they are dropped **loudly**, listed in the compile output as expired.
-- **Provenance guarantees on every transition:** each applied reopen/close writes an append-only `finding_events` row (`reopened` / `operator_closed`) carrying reason, evidence, and the acting authority. The original closure a reopen reverses is never rewritten — it remains in the event history.
+- **`swarm roadmap compile`** validates operator notes at compile time, before any core compile work: more than seven notes, an `invariant` note without `enforced_by`, or an `enforced_by` path that does not exist on disk each refuse the compile with a per-note report (nothing is written on refusal — compile is atomic). `expires` is never a validation trigger — `validateNote()` does not inspect it at all, so a malformed `expires` cannot refuse the compile. Compile still buckets every note into `active`/`expired` by `expires` (an unparseable value — e.g. the `<N runs>` shorthand, a disclosed scope gap; only ISO-date `expires` is implemented today — is treated as non-expiring, never a refusal), and both buckets land in the artifact: `roadmap show` renders `expired` notes as EXPIRED rather than silently dropping them.
+- **Provenance guarantees on every transition:** each applied reopen/close writes an append-only `finding_events` row — `event_type='reopened'` for `swarm reopen`; for `swarm close`, `event_type` mirrors the `--as` target status (`'fixed'` today, the only value `--as` accepts) rather than a distinct `operator_closed` event type — carrying reason, evidence, and the acting authority. The original closure a reopen reverses is never rewritten — it remains in the event history.
 
 Documented at contract level alongside the verbs' first shipped wave; the next confirming audit re-verifies this section against the implementation, per this page's standing discipline.
 
