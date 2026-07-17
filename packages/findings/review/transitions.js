@@ -28,7 +28,13 @@
  *   - REQUIRES_CLOSED (below)     ~ C1's precondition that reopen is only
  *     legal from a closed status (accepted/rejected here; fixed/deferred/
  *     rejected on the control-plane side).
- *   - REASON_REQUIRED (below)     ~ C1/C2's mandatory `--reason`.
+ *   - REASON_REQUIRED (below)     ~ C2's mandatory `--reason` on `swarm
+ *     close`. NOT C1: `swarm close`'s closing dispositions are the local
+ *     analogue of this file's reject/invalidate/merge/supersede —
+ *     REASON_REQUIRED's actual members — but `swarm reopen` (C1) mandates
+ *     `--reason` AND `--evidence` while this file's own `reopen` action
+ *     carries NEITHER. That asymmetry is real, not a documentation gap; see
+ *     "NOT SHARED" below rather than assuming symmetry from this line alone.
  *   - ACTION_TARGET_STATUS.reopen ~ C1's `recurring` target status — both
  *     land a reopened item back in an amendable, non-terminal state
  *     (`reviewed` here, `recurring` there), never in the original pre-review
@@ -39,12 +45,35 @@
  *     numbers + immutable finding_events rows on the control-plane side.
  *
  * SHARED DISCIPLINE (the same principle, independently earned in each place):
- *   - a reopen requires a reason — it never happens silently;
- *   - a closed/terminal state is a PRECONDITION for reopening, never a target;
+ *   - a closed/terminal state is a PRECONDITION for reopening, never a target
+ *     (REQUIRES_CLOSED here; C1's own source-status check on the
+ *     control-plane side);
  *   - history is additive — nothing here mutates a prior review-event-log
  *     entry, nothing on the control-plane side edits a prior finding_events
  *     row or a prior roadmap sequence; every reopen/close is itself a new,
  *     evidence-bearing record layered on top of what came before.
+ *
+ * NOT SHARED, DISCLOSED (F-B40-002 — wave-41 rider; this cross-reference
+ * comment previously listed the next line as shared discipline, which
+ * overclaimed): the control-plane's C1 `swarm reopen` requires a non-empty
+ * `--reason` (and `--evidence`) as a hard CLI-layer precondition — cli.js's
+ * cmdReopen refuses before any DB write (packages/dogfood-swarm/cli.js).
+ * THIS file's own `reopen` action carries no such requirement:
+ * REASON_REQUIRED (above) is {reject, invalidate, merge, supersede} —
+ * 'reopen' is deliberately absent, so performAction (review-engine.js) and
+ * reviewArtifact (review-artifacts.js, which reuses the same REASON_REQUIRED
+ * set) both accept a reopen with no reason at all. review.test.js's own
+ * 'Review actions: reopen' suite is live evidence of the gap: its
+ * 'requires reason' case calls performAction with action:'reopen' and NO
+ * reason field, and asserts success — the test's name promised the opposite
+ * of what its body proves, which is exactly the kind of drift this note
+ * exists to stop happening again at the comment level. Silently-reopenable
+ * was never a deliberate design choice on this side, and this note does not
+ * argue it should stay that way — only that a cross-reference asserting
+ * false symmetry is worse than one naming the gap outright, per this repo's
+ * own honesty-is-a-feature ethos (swarms/CLAUDE.md). Adding 'reopen' to
+ * REASON_REQUIRED is a behavior change out of scope for a comment-only fix
+ * (F-271b4661's own precedent) and belongs to a follow-up finding.
  *
  * DELIBERATELY DISTINCT (do not converge these — they answer different
  * questions for two different concepts that both happen to be named

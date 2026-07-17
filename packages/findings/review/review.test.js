@@ -252,13 +252,17 @@ describe('Review actions: reopen', () => {
   });
   after(() => { if (existsSync(TEST_ROOT)) rmSync(TEST_ROOT, { recursive: true }); });
 
-  it('requires reason', () => {
+  it('succeeds without a reason — reopen is deliberately absent from REASON_REQUIRED (asymmetric with the control-plane C1 verb; see transitions.js)', () => {
     const result = performAction(TEST_ROOT, {
       findingId: 'dfind-test-review',
       action: 'reopen',
       actor: 'mike'
     });
-    // reopen isn't in REASON_REQUIRED, but let's test it works
+    // F-B40-002 (wave-41 rider): this test's title used to say "requires
+    // reason" while its body proved the opposite — reopen is not in
+    // REASON_REQUIRED (transitions.js), so no `reason` field is passed here
+    // and success is still expected. Renamed to state what the test actually
+    // proves instead of contradicting its own assertion.
     assert.ok(result.success, result.error);
     assert.equal(result.finding.status, 'reviewed');
   });
