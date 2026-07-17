@@ -13,6 +13,76 @@
  *   any status -> candidate (except initial creation)
  */
 
+/**
+ * F-271b4661 (wave 39, feature-pass integration finding) — cross-reference:
+ * this package's reopen/close guard vs. the swarm control-plane's C1/C2 verbs.
+ *
+ * docs/trajectory-and-closure.dispatch.md's Feature 2 (Closure Verbs) designs
+ * a FRESH guarded-reopen-with-mandatory-reason mechanism for the swarm's own
+ * per-run findings table: `swarm reopen` (C1) moves fixed|deferred|rejected
+ * -> recurring, requiring a non-empty reason AND evidence; `swarm close` (C2)
+ * closes a finding as fixed|rejected|deferred with a required `verified_how`.
+ * That is the SAME shape of guard this file already enforces, one package
+ * over, for a DIFFERENT 'finding':
+ *
+ *   - REQUIRES_CLOSED (below)     ~ C1's precondition that reopen is only
+ *     legal from a closed status (accepted/rejected here; fixed/deferred/
+ *     rejected on the control-plane side).
+ *   - REASON_REQUIRED (below)     ~ C1/C2's mandatory `--reason`.
+ *   - ACTION_TARGET_STATUS.reopen ~ C1's `recurring` target status — both
+ *     land a reopened item back in an amendable, non-terminal state
+ *     (`reviewed` here, `recurring` there), never in the original pre-review
+ *     state.
+ *   - lineage.superseded_by (dogfood-finding.schema.json) ~ T5's 'versions
+ *     supersede, nothing rewrites' — the same non-destructive-history
+ *     principle, expressed as a schema field here and as roadmap sequence
+ *     numbers + immutable finding_events rows on the control-plane side.
+ *
+ * SHARED DISCIPLINE (the same principle, independently earned in each place):
+ *   - a reopen requires a reason — it never happens silently;
+ *   - a closed/terminal state is a PRECONDITION for reopening, never a target;
+ *   - history is additive — nothing here mutates a prior review-event-log
+ *     entry, nothing on the control-plane side edits a prior finding_events
+ *     row or a prior roadmap sequence; every reopen/close is itself a new,
+ *     evidence-bearing record layered on top of what came before.
+ *
+ * DELIBERATELY DISTINCT (do not converge these — they answer different
+ * questions for two different concepts that both happen to be named
+ * 'finding'):
+ *   - Granularity. This file's 'finding' is a distilled, reviewed,
+ *     cross-repo lesson (dogfood-finding.schema.json) — the synthesis
+ *     layer's output. The control-plane's 'finding' is a single dogfood-swarm
+ *     wave's raw defect row, scoped to one run. Merging the two vocabularies
+ *     would blur a reusable lesson with a per-run defect ticket.
+ *   - Status vocabulary. candidate/reviewed/accepted/rejected (TRANSITIONS,
+ *     below) vs. open/deferred/approved/fixed/rejected/recurring
+ *     (packages/dogfood-swarm/lib/finding-status.js). No 1:1 mapping is
+ *     attempted — reopen here targets 'reviewed' (an in-review state), C1
+ *     targets 'recurring' (an explicitly-reopened state distinct from a
+ *     fresh 'open' finding), because the two systems track different things
+ *     at different points in their lifecycle.
+ *   - Evidence shape. This file's REASON_REQUIRED actions attach a free-text
+ *     `decision_reason` (event-log.js) plus, for reject, a structured
+ *     `review.reject_reason` enum. C2 additionally requires `verified_how`
+ *     (independent|self_attested|operator_evidence) — a THIRD 'how do we
+ *     know' axis alongside this schema's own evidence[].evidence_kind (see
+ *     that property's own cross-reference note, F-936c83f4) and
+ *     packages/verify's --provenance=stub|github (see
+ *     validators/provenance.js's file header). Not the same question:
+ *     verified_how asks how a CLOSURE was verified; evidence_kind asks what
+ *     backs a distilled lesson; --provenance asks whether a submitted CI run
+ *     really happened.
+ *
+ * NO BEHAVIOR CHANGE. This is a comment-only fix (F-271b4661's recommendation
+ * option (a)) — it exists so a reader of either mechanism can find the other
+ * without re-deriving the comparison, and so the two vocabularies stay
+ * deliberately-distinct BY DECISION rather than accidentally-distinct because
+ * nobody had looked. C1/C2 are implemented in the swarm control plane
+ * (packages/dogfood-swarm — core/verbs domain, out of this package's scope);
+ * this file's own TRANSITIONS/REQUIRES_CLOSED/REASON_REQUIRED machinery is
+ * unchanged by this note.
+ */
+
 // F-937733ee: family sibling of F-2965699b/F-7ce07baa/verdict.js's
 // VERDICT_RANK. Object.create(null) removes the prototype chain, so
 // `TRANSITIONS['constructor']` is `undefined` rather than

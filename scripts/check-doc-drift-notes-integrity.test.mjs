@@ -290,10 +290,17 @@ test('the real doc-drift-patterns.json wires roadmap-notes-integrity with the tw
   assert.equal(entry.kind, 'roadmap-notes-integrity');
   assert.equal(entry.target, 'dogfood/roadmap/latest.json');
   assert.equal(entry.targetPathField, 'path', 'latest.json is the pointer — targetPathField names the field that points at the real document');
-  assert.equal(entry.notesPath, 'operator_notes');
+  // ADJUDICATED at the wave-39 merge: this pin's draft said 'operator_notes'
+  // (the schema vocabulary, F-fe05c6d7) — but the first REAL compiled
+  // artifact carries its notes at a flat top-level 'notes' array (the CLI
+  // envelope, post-reconciliation). The document-schema-vs-CLI-envelope
+  // field reconciliation is a declared residual for the next audit; until it
+  // lands, the config — and this pin — point at the live shape, because a
+  // gate aimed at a vocabulary the writer does not emit checks nothing.
+  assert.equal(entry.notesPath, 'notes');
 });
 
-test('LIVE TREE: the real roadmap-notes-integrity check contributes zero reports against the actual repo today (no dogfood/roadmap/latest.json exists yet — graceful absence, not a false pass)', async () => {
+test('LIVE TREE: the real roadmap-notes-integrity check contributes zero reports against the actual repo today (graceful absence before the first compile; zero note violations after it — the inaugural artifact has an empty notes array)', async () => {
   const result = await runDriftChecks({ repoRoot, checkId: 'roadmap-notes-integrity' });
   assert.equal(result.clean, true, JSON.stringify(result.reports, null, 2));
   assert.deepEqual(result.reports, []);
