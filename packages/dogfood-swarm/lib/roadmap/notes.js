@@ -120,6 +120,28 @@ export function validateOperatorNotes(notes, opts = {}) {
         });
         continue;
       }
+      // F-96e2d1a5: repoRoot is documented as OPTIONAL at the compileRoadmap
+      // level (this module's own header: "Omitted -> both degrade to their
+      // own documented unavailable/zero-signal shape rather than throwing"),
+      // but join(undefined, ...) throws a raw TypeError instead of that
+      // documented shape — the exact sibling bug drain.js's
+      // compileGrandfatheredManifestDrain already guards against (see that
+      // module's F-874c0683 comment). Sweep result: attention.js's repoPath
+      // use is already ternary-guarded and drain.js's OTHER function
+      // (compileAuthoredDrainState) already checks its path input before
+      // join(); this was the one unguarded instance in lib/roadmap/. A raw
+      // crash here does not just drop THIS note — it propagates straight
+      // through compileRoadmap and kills the ENTIRE artifact compile
+      // (findings, recurrence, attention, drain_queue included), so this
+      // guards the SAME class as drain.js's, at the point where an invariant
+      // note's enforced_by can no longer be verified without a real path.
+      if (typeof repoRoot !== 'string' || repoRoot.length === 0) {
+        dropped_invalid_notes.push({
+          note,
+          reason: 'enforced_by cannot be verified without repoRoot — repoRoot was omitted for this compile',
+        });
+        continue;
+      }
       if (!existsSync(join(repoRoot, note.enforced_by))) {
         dropped_invalid_notes.push({
           note,
