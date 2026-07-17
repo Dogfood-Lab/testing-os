@@ -46,6 +46,33 @@ import { queryLaneFragmentation, queryFindingRecencyByFile } from '../queries/cr
 export const DEFAULT_TOP_K = 20;
 
 /**
+ * Amendment 3 (docs/trajectory-and-closure.dispatch.md, A3.1) conformance:
+ * the schema's `attention.items[]` shape is `{ file, score, components:
+ * { churn, recency, fragmentation } }` — the three factors T2 names
+ * explicitly, ALREADY multiplied together into `score` by the pre-existing
+ * formula below (`churnFactor * (countFactor * recencyFactor) *
+ * domainFactor` — VERIFIED, not assumed: `components.recency` is exactly the
+ * `(countFactor * recencyFactor)` sub-product T2's own header already
+ * describes as ONE factor, "prior-finding recency/count" — so `score` stays
+ * byte-identical to `components.churn * components.recency *
+ * components.fragmentation`, same parenthesization, no reformulation).
+ * `items`/`score`/`components` replace this function's former internal
+ * vocabulary (`top`/`attention_score`/`factors`) so compile.js can embed this
+ * return's `{advisory, items}` pair directly into the persisted artifact with
+ * no intermediate reprojection (A3.1's own text: "emit schema-shaped
+ * sections verbatim, no intermediate vocabulary").
+ *
+ * `churn_available`/`truncated`/`total_candidates` stay on THIS function's
+ * return (genuinely useful — e.g. explaining why every score is 0, or
+ * whether the top-K list is the whole candidate set) even though the
+ * schema's `attention` object has no room for them
+ * (`additionalProperties:false`, exactly `{advisory, items}`). compile.js
+ * narrows to the schema-exact pair when assembling the persisted artifact —
+ * the same "richer raw function, narrower artifact wiring" pattern A3.2a
+ * uses for compileAuthoredDrainState's `{available, entries, overdue_ids}`.
+ * Disclosed, not silent: the DIAGNOSTIC fields are absent from the written
+ * artifact by construction, not by oversight.
+ *
  * @param {import('better-sqlite3').Database} db
  * @param {string} runId
  * @param {object} [opts]
@@ -56,10 +83,10 @@ export const DEFAULT_TOP_K = 20;
  * @param {number} [opts.topK=DEFAULT_TOP_K]
  * @returns {{
  *   advisory: true,
- *   churn_available: boolean,
- *   top: Array<{ file: string, attention_score: number, factors: {
- *     relative_churn: number, finding_count: number, most_recent_wave: number, domain_count: number
+ *   items: Array<{ file: string, score: number, components: {
+ *     churn: number, recency: number, fragmentation: number
  *   } }>,
+ *   churn_available: boolean,
  *   truncated: boolean,
  *   total_candidates: number,
  * }}
@@ -95,16 +122,19 @@ export function computeAttentionScores(db, runId, opts = {}) {
     const recencyFactor = maxWave > 0 ? mostRecentWave / maxWave : 0;
     const domainFactor = maxDomainCount > 0 ? domainCount / maxDomainCount : 0;
 
-    const attention_score = churnFactor * (countFactor * recencyFactor) * domainFactor;
+    // T2's "prior-finding recency/count" is ONE factor, folded here exactly
+    // as this module's own header (RECENCY/COUNT COMPOSITION) already
+    // described — `recencyComponent` IS that fold, not a new derivation.
+    const recencyComponent = countFactor * recencyFactor;
+    const score = churnFactor * recencyComponent * domainFactor;
 
     rows.push({
       file,
-      attention_score,
-      factors: {
-        relative_churn: relativeChurn,
-        finding_count: findingCount,
-        most_recent_wave: mostRecentWave,
-        domain_count: domainCount,
+      score,
+      components: {
+        churn: churnFactor,
+        recency: recencyComponent,
+        fragmentation: domainFactor,
       },
     });
   }
@@ -112,12 +142,12 @@ export function computeAttentionScores(db, runId, opts = {}) {
   // Deterministic tiebreak (file ASC) — T1's "same DB state -> byte-identical
   // artifact" requirement extends to this composed ranking, not only to the
   // raw SQL queries it is built from.
-  rows.sort((a, b) => b.attention_score - a.attention_score || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
+  rows.sort((a, b) => b.score - a.score || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0));
 
   return {
     advisory: true,
+    items: rows.slice(0, topK),
     churn_available: churn.available,
-    top: rows.slice(0, topK),
     truncated: rows.length > topK,
     total_candidates: rows.length,
   };

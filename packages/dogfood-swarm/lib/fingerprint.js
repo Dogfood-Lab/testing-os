@@ -231,7 +231,10 @@ export function computeFingerprint(finding, options = {}) {
   ];
 
   // Fingerprint-fusion rider (wave 41, coordinator forensics on wave-40's
-  // collect()): a file-less finding leaves normalizePath(finding.file) === ''
+  // collect()), retroactively canonicalized as F-52e61f49 (wave 43 coordinator
+  // instruction — no filed F-id existed until then; see
+  // lib/fingerprint-fileless-discrimination.test.js's own @pins tag, this
+  // fix's declared regression pin): a file-less finding leaves normalizePath(finding.file) === ''
   // and, for the common case (no rule_id/symbol/line), every OTHER part above
   // empty too — the whole fingerprint degenerates to ~category-only, so EVERY
   // file-less finding sharing a category collides on ONE base fingerprint.
@@ -951,6 +954,13 @@ export function classifyFindings(currentFindings, priorFingerprints, scope = nul
  *     close path takes: the DECLARING domain's globs must cover the prior's
  *     file (matchesAnyGlob — routing, closing, and now recurring answer to
  *     one authority). A finding with no domain attribution fails closed.
+ *     FILE-LESS PRIORS (F-ec18bc02): a prior with no file_path has no glob
+ *     to match at all — ownership falls back to an EXACT `filed_by_domain`
+ *     equality check instead (never a wildcard, fail-closed when
+ *     filed_by_domain is itself null), the same rule
+ *     lib/findings-filter.js#findingsForDomain already applies for ROUTING
+ *     and commands/collect.js#isVouchableByDomain already applies for
+ *     CONFIRM-queue VOUCHING (F-8a15be4c) — three call sites, one rule.
  *
  *   - THE APPROVED WINDOW. `approved` means "queued for amend": between
  *     `swarm approve` and the amend landing, the defect is KNOWN present, so
@@ -1048,13 +1058,36 @@ export function honorReusedFindingIds(findings, priorFingerprints, domains = [])
     // scopeConfirmedToOwningDomain (a different domain's file, not edited
     // here) — both call sites converge on the same normalize-then-match
     // shape independently.
+    //
+    // F-ec18bc02: a FILE-LESS prior (priorFile === '') has no glob to match
+    // against — matchesAnyGlob('', globs) can never be true for any real
+    // glob pattern (findings-filter.js#matchesAnyGlob's own guard:
+    // `if (!filePath) return false`), so EVERY file-less id-reuse was
+    // refused as unowned unconditionally, regardless of which domain
+    // declared it. Mirrors the identical fix already shipped for the
+    // sibling CONFIRM-queue vouching path (F-8a15be4c,
+    // commands/collect.js#isVouchableByDomain) and this file's own C3-era
+    // ROUTING fallback (lib/findings-filter.js#findingsForDomain,
+    // `f.filed_by_domain != null && f.filed_by_domain === domain.name`,
+    // byte-identical rule): when the prior has a real file, ownership
+    // answers to the glob match, unchanged; when the prior is file-less,
+    // ownership answers to `filed_by_domain` instead — an EXACT match,
+    // never a wildcard, and fail-closed (false) when `filed_by_domain`
+    // is itself null (a pre-v10 row, or any finding upserted before a
+    // caller threaded `_declaringDomain` through — no recorded filer to
+    // vouch through, so "nobody" is the honest answer, never a guess).
     const declaringDomain = domainByName.get(finding._declaringDomain);
-    if (!declaringDomain || !matchesAnyGlob(normalizePath(priorFile), declaringDomain.globs)) {
+    const normalizedPriorFile = normalizePath(priorFile);
+    const owned = normalizedPriorFile
+      ? !!declaringDomain && matchesAnyGlob(normalizedPriorFile, declaringDomain.globs)
+      : prior.filed_by_domain != null && finding._declaringDomain === prior.filed_by_domain;
+    if (!owned) {
       logStage('confirm_id_reuse_unowned', {
         component: 'dogfood-swarm',
         declared_id: finding.id,
         declaring_domain: finding._declaringDomain || null,
         prior_file: priorFile || null,
+        prior_filed_by_domain: prior.filed_by_domain || null,
         prior_status: prior.status || null,
       });
       return finding;

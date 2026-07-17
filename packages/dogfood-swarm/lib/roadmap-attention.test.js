@@ -7,6 +7,15 @@
  * patterns already established in this domain
  * (git-touched-files-churn-stats.test.js and
  * cross-run-analytics-lane-fragmentation.test.js).
+ *
+ * Amendment 3 (docs/trajectory-and-closure.dispatch.md, A3.1) renamed this
+ * function's return shape (`top`->`items`, `attention_score`->`score`,
+ * `factors`->`components`) and folded count×recency into ONE `components
+ * .recency` value — see attention.js's own header for why this is a rename,
+ * not a reformulation. Assertions below updated to match; a new reconciliation
+ * check (not present pre-Amendment-3) proves `score === components.churn *
+ * components.recency * components.fragmentation` for every row, not just
+ * assumed from the source read.
  */
 
 import { describe, it } from 'node:test';
@@ -100,13 +109,24 @@ describe('computeAttentionScores — churn × recency/count × lane-fragmentatio
       assert.equal(result.advisory, true);
       assert.equal(result.churn_available, true);
 
-      const hot = result.top.find((r) => r.file === 'hot.js');
-      const quiet = result.top.find((r) => r.file === 'quiet.js');
+      const hot = result.items.find((r) => r.file === 'hot.js');
+      const quiet = result.items.find((r) => r.file === 'quiet.js');
       assert.ok(hot, 'hot.js must be a candidate');
       assert.ok(quiet, 'quiet.js must be a candidate');
-      assert.equal(hot.attention_score, 1, 'a file at the max of every factor must score exactly 1.0');
-      assert.equal(quiet.attention_score, 0, 'a file with zero findings must score exactly 0 — product semantics, not an average');
-      assert.equal(result.top[0].file, 'hot.js', 'hot.js must rank first');
+      assert.equal(hot.score, 1, 'a file at the max of every factor must score exactly 1.0');
+      assert.equal(quiet.score, 0, 'a file with zero findings must score exactly 0 — product semantics, not an average');
+      assert.equal(result.items[0].file, 'hot.js', 'hot.js must rank first');
+
+      // A3.1 reconciliation (verify, don't assume): `score` must stay the
+      // EXACT product of the three exposed `components`, for every row —
+      // proves the schema-shaped `components` were exposed, not invented
+      // alongside a separately-computed `score`.
+      for (const row of result.items) {
+        const { churn, recency, fragmentation } = row.components;
+        assert.equal(row.score, churn * recency * fragmentation,
+          `score must equal components.churn * components.recency * components.fragmentation for ${row.file}`);
+      }
+      assert.deepEqual(Object.keys(hot.components).sort(), ['churn', 'fragmentation', 'recency']);
     } finally {
       rmSync(repoPath, { recursive: true, force: true });
     }
@@ -121,7 +141,7 @@ describe('computeAttentionScores — churn × recency/count × lane-fragmentatio
     }
 
     const result = computeAttentionScores(db, runId, { topK: 2 });
-    assert.equal(result.top.length, 2);
+    assert.equal(result.items.length, 2);
     assert.equal(result.truncated, true);
     assert.equal(result.total_candidates, 5);
   });
@@ -134,10 +154,12 @@ describe('computeAttentionScores — churn × recency/count × lane-fragmentatio
 
     const result = computeAttentionScores(db, runId, {});
     assert.equal(result.churn_available, false);
-    assert.equal(result.top.find((r) => r.file === 'a.js').attention_score, 0, 'no churn signal at all means every score is 0 — honest, not a crash');
+    const a = result.items.find((r) => r.file === 'a.js');
+    assert.equal(a.score, 0, 'no churn signal at all means every score is 0 — honest, not a crash');
+    assert.equal(a.components.churn, 0, 'the churn component itself must read 0, not merely the product');
   });
 
-  it('orders by attention_score DESC then file ASC (deterministic tiebreak)', () => {
+  it('orders by score DESC then file ASC (deterministic tiebreak)', () => {
     const { db, runId, core, w1 } = seedDb();
     const agent = seedAgentRun(db, w1, core);
     // Two files with IDENTICAL signals (same findings/domain touch, no churn probe) — must tie at score 0 and sort by name.
@@ -146,12 +168,12 @@ describe('computeAttentionScores — churn × recency/count × lane-fragmentatio
       seedFinding(db, runId, { id: `F-${f}`, fp: `fp-${f}`, file: f, wave: w1 });
     }
     const result = computeAttentionScores(db, runId, {});
-    assert.deepEqual(result.top.map((r) => r.file), ['a.js', 'z.js']);
+    assert.deepEqual(result.items.map((r) => r.file), ['a.js', 'z.js']);
   });
 
   it('DEFAULT_TOP_K is used when topK is omitted', () => {
     const { db, runId } = seedDb();
     const result = computeAttentionScores(db, runId, {});
-    assert.equal(result.top.length <= DEFAULT_TOP_K, true);
+    assert.equal(result.items.length <= DEFAULT_TOP_K, true);
   });
 });
