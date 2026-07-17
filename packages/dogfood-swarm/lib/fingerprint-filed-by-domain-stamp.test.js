@@ -85,4 +85,70 @@ describe('upsertFindings — filed_by_domain stamped from _declaringDomain (F-87
     assert.equal(row.status, 'recurring');
     assert.equal(row.filed_by_domain, 'docs', 'filed_by_domain records who FIRST filed it, not who last re-reported it');
   });
+
+  /** @pins F-e71f9e7a */
+  it('BACKFILLS filed_by_domain on recurrence when it is currently NULL — the stranded-history fix', () => {
+    const db = openMemoryDb();
+    const { runId, w1, w2 } = seedRunAndWaves(db);
+
+    // Simulate a pre-attribution row: inserted with NO _declaringDomain, so
+    // filed_by_domain lands NULL — the exact shape of this run's own 40
+    // stranded approved findings (first_seen_wave predates the
+    // _declaringDomain-threading fix).
+    const finding = {
+      id: 'F-004', category: 'missing-feature', severity: 'HIGH',
+      description: 'stable content, no attribution at first report',
+    };
+    const first = classifyFindings([finding], new Map());
+    upsertFindings(db, runId, w1, first);
+    assert.equal(
+      db.prepare('SELECT filed_by_domain FROM findings WHERE run_id = ?').get(runId).filed_by_domain,
+      null,
+    );
+
+    const priorMap = new Map();
+    for (const row of db.prepare('SELECT * FROM findings WHERE run_id = ?').all(runId)) {
+      priorMap.set(row.fingerprint, row);
+    }
+    // Same content re-reported next wave, this time WITH attribution — the
+    // recurring path must backfill the previously-unknown filer rather than
+    // leaving it permanently NULL.
+    const recurring = classifyFindings(
+      [{ ...finding, _declaringDomain: 'swarm-cp-core' }],
+      priorMap,
+    );
+    upsertFindings(db, runId, w2, recurring);
+
+    const row = db.prepare('SELECT filed_by_domain, status FROM findings WHERE run_id = ?').get(runId);
+    assert.equal(row.status, 'recurring');
+    assert.equal(row.filed_by_domain, 'swarm-cp-core', 'a currently-NULL filed_by_domain must backfill from the recurring wave\'s attribution');
+  });
+
+  it('recurred_while_closed (deferred) ALSO backfills a NULL filed_by_domain, without touching status', () => {
+    const db = openMemoryDb();
+    const { runId, w1, w2 } = seedRunAndWaves(db);
+
+    const finding = {
+      id: 'F-005', category: 'bug', severity: 'MEDIUM',
+      description: 'deferred content with no original attribution',
+    };
+    const first = classifyFindings([finding], new Map());
+    upsertFindings(db, runId, w1, first);
+    db.prepare(`UPDATE findings SET status = 'deferred' WHERE run_id = ?`).run(runId);
+
+    const priorMap = new Map();
+    for (const row of db.prepare('SELECT * FROM findings WHERE run_id = ?').all(runId)) {
+      priorMap.set(row.fingerprint, row);
+    }
+    const rediscovered = classifyFindings(
+      [{ ...finding, _declaringDomain: 'docs' }],
+      priorMap,
+    );
+    assert.equal(rediscovered.recurred_while_closed.length, 1, 'a deferred prior rediscovered this wave must route to recurred_while_closed, not recurring');
+    upsertFindings(db, runId, w2, rediscovered);
+
+    const row = db.prepare('SELECT filed_by_domain, status FROM findings WHERE run_id = ?').get(runId);
+    assert.equal(row.status, 'deferred', 'F-130dee59: status must stay untouched by rediscovery-while-closed');
+    assert.equal(row.filed_by_domain, 'docs');
+  });
 });

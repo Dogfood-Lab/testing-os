@@ -61,6 +61,19 @@ describe('validateOperatorNotes — invariant notes require a real enforced_by (
     });
   });
 
+  /** @pins F-96e2d1a5 */
+  it('degrades to a dropped-note reason (never throws) when repoRoot is omitted and an invariant note is present — the unfixed sibling of drain.js\'s repoRoot guard (F-874c0683), mirroring roadmap-drain.test.js\'s own repoRoot-omitted fixture', () => {
+    assert.doesNotThrow(() => {
+      const result = validateOperatorNotes(
+        [{ kind: 'invariant', text: 'x', enforced_by: 'scripts/some-gate.mjs' }],
+        {},
+      );
+      assert.equal(result.accepted.length, 0);
+      assert.equal(result.dropped_invalid_notes.length, 1);
+      assert.match(result.dropped_invalid_notes[0].reason, /cannot be verified without repoRoot/);
+    });
+  });
+
   it('an invariant note whose enforced_by names a REAL file is accepted', () => {
     withRepoRoot((repoRoot) => {
       writeFileSync(join(repoRoot, 'real-test.test.js'), '// a real file\n');

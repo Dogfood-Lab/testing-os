@@ -27,15 +27,28 @@
  * feeds an array into the artifact carries an explicit ORDER BY — SQLite
  * does not guarantee row order without one, and a JOIN/GROUP BY's physical
  * plan can vary even against byte-identical data. The single-row `runs`
- * lookup does not need one (.get() returns at most one row). The ONLY
- * non-deterministic value anywhere in the artifact is `generated_at`,
- * explicitly labeled as a compile-time stamp — every other field is a pure
- * function of (db state, git state, operator notes, `now`). `now` is
- * ALWAYS accepted as an explicit, injectable parameter (never a bare
- * `Date.now()`/`new Date()` buried in a callee) specifically so a caller
- * that needs two compiles to agree byte-for-byte (the cross-process
- * determinism proof, or a test) can pin it to one identical value; the
- * default `new Date()` only applies when the caller supplies nothing.
+ * lookup does not need one (.get() returns at most one row). The ONLY value
+ * anywhere in the artifact that is a direct, unfiltered echo of `now` is
+ * `run_anchored_at` (see its own field doc below for the rename and the
+ * honesty fix, F-fdcf6c9b) — every other field is a pure function of (db
+ * state, git state, operator notes, `now`). `now` is ALWAYS accepted as an
+ * explicit, injectable parameter (never a bare `Date.now()`/`new Date()`
+ * buried in a callee) specifically so a caller that needs two compiles to
+ * agree byte-for-byte (the cross-process determinism proof, or a test) can
+ * pin it to one identical value; the default `new Date()` only applies when
+ * the caller supplies nothing.
+ *
+ * DEAD-CODE CLAIM, FACT-CHECKED AND REJECTED (F-e02e5bfd rider / F-c7b0f47b):
+ * two wave-41 findings independently asserted this module is "imported only
+ * by its own test... dead code in production besides" because
+ * commands/roadmap.js imports compileRoadmapSections from ./compiler.js
+ * rather than compileRoadmap from here directly. Verified false by reading
+ * compiler.js itself: compileRoadmapSections is a two-line delegation that
+ * calls compileRoadmap (this file, line ~58 of compiler.js) and forwards its
+ * result. This module is one indirection layer, not zero callers — deleting
+ * it would delete the only place T1's actual query logic lives. Do not
+ * repeat this investigation a third time without re-reading compiler.js
+ * first.
  */
 
 import { queryRecurringFindings, queryFindingRecurrenceRate } from '../queries/cross-run-analytics.js';
@@ -64,7 +77,7 @@ import { validateOperatorNotes } from './notes.js';
  * @returns {{
  *   run_id: string,
  *   repo: string,
- *   generated_at: string,
+ *   run_anchored_at: string,
  *   findings: { open: object[], deferred: object[], approved: object[] },
  *   recurrence: { recurring_findings: object[], recurrence_rate: object },
  *   attention: ReturnType<typeof computeAttentionScores>,
@@ -126,7 +139,20 @@ export function compileRoadmap(db, runId, opts = {}) {
   return {
     run_id: runId,
     repo: run.repo,
-    generated_at: now.toISOString(),
+    // F-fdcf6c9b: renamed from `generated_at`. HONEST SEMANTICS — this is
+    // `now` verbatim, and on the production callpath (compiler.js's
+    // compileRoadmapSections -> commands/roadmap.js's deterministicNow) `now`
+    // is `runs.created_at`, never a live wall-clock read, specifically so two
+    // compiles of the same DB state agree byte-for-byte (F-feeaef78). The old
+    // name claimed to be "a compile-time stamp" — it never was, by design.
+    // The GENUINE wall-clock moment this artifact version was actually
+    // written lives in db/schema.js's `roadmap_artifacts.created_at`
+    // (`DEFAULT (datetime('now'))`), queryable via
+    // lib/roadmap/artifacts.js#latestRoadmapArtifact — a DB lookup, not a
+    // field on this object, because embedding a second, genuinely
+    // non-deterministic timestamp INTO this pure-function's return value
+    // would itself defeat T1's byte-identity promise for identical DB state.
+    run_anchored_at: now.toISOString(),
     findings: {
       open: openFindings,
       deferred: deferredFindings,

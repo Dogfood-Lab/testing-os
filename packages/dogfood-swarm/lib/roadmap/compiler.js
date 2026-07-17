@@ -21,6 +21,31 @@
  * Dissolving this adapter into either neighbor is the queued follow-up; while
  * it exists it is deliberately thin — no logic beyond naming, placement, and
  * serialization lives here.
+ *
+ * SCHEMA CONFORMANCE (F-e02e5bfd / F-c7b0f47b, wave 41 — READ BEFORE
+ * re-investigating this gap a third time). The artifact commands/roadmap.js
+ * assembles and hands to writeRoadmapArtifact below does NOT validate
+ * against dogfood-roadmap.schema.json today — proven independently by two
+ * wave-41 lanes (backend's schema-side audit, this domain's compiler-side
+ * one). The top-level envelope (runId/compiledAt/notes/expired/attention
+ * [flattened]/drain/sections/notesPath) is assembled entirely in
+ * commands/roadmap.js (swarm-cp-verbs' domain) and this file's own
+ * writeRoadmapArtifact (this domain) — NEITHER of which this wave's
+ * swarm-cp-core lane can unilaterally reshape to snake_case without either
+ * (a) editing commands/roadmap.js, which is outside this domain's globs, or
+ * (b) working against backend's OWN declared resolution (backend's wave-41
+ * brief, F-c7b0f47b's Fix: text): evolve the SCHEMA to describe the CLI's
+ * existing flat camelCase shape rather than rewrite the shipped CLI +
+ * adapter, since three already-passing wave-39 tests
+ * (F-1cd5de59/F-74ba2c79/F-8a97a700) pin that exact shape. This lane's
+ * contribution this wave is scoped to what lib/roadmap/** can do
+ * unilaterally without fighting that direction: `content_hash` is now
+ * actually embedded in the written artifact bytes (see writeRoadmapArtifact
+ * below — it was computed but never written into the file before this), and
+ * compile.js's own `run_anchored_at` rename/honesty fix (F-fdcf6c9b). The
+ * `sections` duplication question and the full top-level rename are
+ * cross-domain and unresolved as of this commit — do not assume either is
+ * done without re-reading commands/roadmap.js and the schema file directly.
  */
 
 import { createHash } from 'node:crypto';
@@ -48,11 +73,12 @@ import { nextSequenceNumber, recordRoadmapArtifact, latestRoadmapArtifact } from
  * the CLI layer, and commands/roadmap.js validates and attaches them itself.
  *
  * `now` forwards to compile.js's own injectable clock (see that module's
- * header on why `generated_at` must never be a bare `new Date()` for T1's
+ * header on why `run_anchored_at` — F-fdcf6c9b, renamed from the dishonestly
+ * -named `generated_at` — must never be a bare `new Date()` for T1's
  * cross-process determinism promise to hold) — commands/roadmap.js derives
  * a DB-stable stand-in (run.created_at) and passes it through here so the
- * inner `generated_at` and the CLI's own top-level `compiledAt` always agree
- * and never drift between two compiles of the same run.
+ * inner `run_anchored_at` and the CLI's own top-level `compiledAt` always
+ * agree and never drift between two compiles of the same run.
  */
 export function compileRoadmapSections(db, runId, { gitRoot, now } = {}) {
   const artifact = compileRoadmap(db, runId, { repoRoot: gitRoot, now });
@@ -100,9 +126,30 @@ export function writeRoadmapArtifact(runId, artifact, { dbPath } = {}) {
   const json = JSON.stringify(body, null, 2);
   const contentHash = createHash('sha256').update(json).digest('hex');
 
+  // F-e02e5bfd / F-c7b0f47b: dogfood-roadmap.schema.json's `content_hash` is
+  // computed right above (sha256 of `body`) but, before this fix, was ONLY
+  // ever passed to recordRoadmapArtifact for the DB ledger row — never
+  // written into the artifact file itself, so the one schema field this
+  // codebase already got right in spirit was unreachable in the real file. A
+  // consumer that fetches dogfood/roadmap/<run-id>.<seq>.json directly (no DB
+  // access) had no way to verify it against latest.json's pointer. Hashed
+  // BEFORE this field is added (`body`, not `bodyWithHash`) to avoid hashing
+  // a value that includes itself — the embedded value and the DB ledger's
+  // column are therefore the same hash of the same underlying content, just
+  // surfaced in two places. Deliberately added ONLY to the sequence-suffixed
+  // history file, never to the sequence-free `<run-id>.json` mirror below:
+  // content_hash is a property of "these exact file bytes as written this
+  // attempt", the same "which write attempt produced it" character
+  // `sequence` already has (see that field's own comment below for why it
+  // is excluded from the mirror) — embedding it there would tie the mirror
+  // to one specific compile attempt, contradicting its own documented
+  // "represents CONTENT, not a historical record" purpose.
+  const bodyWithHash = { ...body, content_hash: contentHash };
+  const jsonWithHash = JSON.stringify(bodyWithHash, null, 2);
+
   const relPath = `dogfood/roadmap/${runId}.${sequence}.json`;
   const absPath = join(run.local_path, relPath);
-  atomicWriteFileSync(absPath, json);
+  atomicWriteFileSync(absPath, jsonWithHash);
 
   // Deliberately WITHOUT `sequence` (unlike the historical file above):
   // sequence increments on every compile purely as a bookkeeping side effect

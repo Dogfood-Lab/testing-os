@@ -15,6 +15,7 @@ import {
   compileGrandfatheredManifestDrain,
   compileDeferredFindingsDrain,
   compileDrainQueue,
+  compileUnroutableApprovedDrain,
   DEFAULT_STALE_WAVE_THRESHOLD,
 } from './roadmap/drain.js';
 
@@ -173,7 +174,7 @@ describe('compileDeferredFindingsDrain — F-6c807f60 deferred-findings half (di
 });
 
 describe('compileDrainQueue — composes both halves and discloses the scope narrowing', () => {
-  it('returns both halves plus an explicit scope-note string', () => {
+  it('returns both halves plus an explicit scope-note string, plus the unroutable-approved advisory (F-32e2ed6f)', () => {
     withRepoRoot({ allow: {} }, (repoRoot) => {
       const db = openMemoryDb();
       db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, status) VALUES ('run-x', 'org/repo', '/tmp/r', ?, 'feature-audit')`).run('a'.repeat(40));
@@ -184,6 +185,101 @@ describe('compileDrainQueue — composes both halves and discloses the scope nar
       assert.ok('deferred_findings' in result);
       assert.equal(typeof result.deferred_findings_scope_note, 'string');
       assert.match(result.deferred_findings_scope_note, /last_seen_wave-based staleness only/);
+      assert.ok('unroutable_approved' in result);
+      assert.equal(result.unroutable_approved.count, 0);
     });
+  });
+});
+
+/**
+ * F-32e2ed6f: the drain queue was blind to approved findings that are
+ * structurally unroutable by ANY mechanism this pass ships — no file_path
+ * to glob-match, and either no filed_by_domain to fall back to, or a
+ * filed_by_domain naming a domain that is not live in this run's CURRENT
+ * frozen map. This proves the section this repo's own drain-visibility
+ * promise (T6: "entries past cadence surface at the top of the next run's
+ * digest") now covers that exact shape.
+ */
+function seedDomain(db, runId, name) {
+  db.prepare(`INSERT INTO domains (run_id, name, globs, ownership_class, frozen) VALUES (?, ?, '[]', 'owned', 1)`)
+    .run(runId, name);
+}
+
+function seedApproved(db, runId, findingId, { filePath = null, filedByDomain = null } = {}) {
+  db.prepare(`
+    INSERT INTO findings (run_id, finding_id, fingerprint, severity, category, file_path, description, status, filed_by_domain)
+    VALUES (?, ?, ?, 'HIGH', 'quality', ?, 'd', 'approved', ?)
+  `).run(runId, findingId, `fp-${findingId}`, filePath, filedByDomain);
+}
+
+/** @pins F-32e2ed6f */
+describe('compileUnroutableApprovedDrain — approved + file-less + unroutable filed_by_domain (F-32e2ed6f)', () => {
+  function seedRun(db, runId = 'run-unroutable') {
+    db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, status) VALUES (?, 'org/repo', '/tmp/r', ?, 'feature-audit')`)
+      .run(runId, 'a'.repeat(40));
+    return runId;
+  }
+
+  it('surfaces an approved, file-less finding with filed_by_domain NULL (pre-attribution history)', () => {
+    const db = openMemoryDb();
+    const runId = seedRun(db);
+    seedApproved(db, runId, 'F-null-domain');
+
+    const result = compileUnroutableApprovedDrain(db, runId);
+    assert.equal(result.count, 1);
+    assert.deepEqual(result.findings, [{ finding_id: 'F-null-domain', filed_by_domain: null }]);
+  });
+
+  it('surfaces an approved, file-less finding whose filed_by_domain names a domain that is NOT live in this run', () => {
+    const db = openMemoryDb();
+    const runId = seedRun(db);
+    seedDomain(db, runId, 'docs');
+    seedApproved(db, runId, 'F-dead-domain', { filedByDomain: 'a-domain-that-no-longer-exists' });
+
+    const result = compileUnroutableApprovedDrain(db, runId);
+    assert.equal(result.count, 1);
+    assert.equal(result.findings[0].finding_id, 'F-dead-domain');
+  });
+
+  it('does NOT surface an approved, file-less finding whose filed_by_domain names a LIVE domain — it is routable', () => {
+    const db = openMemoryDb();
+    const runId = seedRun(db);
+    seedDomain(db, runId, 'docs');
+    seedApproved(db, runId, 'F-routable', { filedByDomain: 'docs' });
+
+    const result = compileUnroutableApprovedDrain(db, runId);
+    assert.equal(result.count, 0);
+    assert.deepEqual(result.findings, []);
+  });
+
+  it('does NOT surface an approved finding that HAS a file_path — glob-routable regardless of filed_by_domain', () => {
+    const db = openMemoryDb();
+    const runId = seedRun(db);
+    seedApproved(db, runId, 'F-has-file', { filePath: 'lib/x.js' });
+
+    const result = compileUnroutableApprovedDrain(db, runId);
+    assert.equal(result.count, 0);
+  });
+
+  it('does NOT surface a file-less finding in a NON-approved status, even with no filed_by_domain', () => {
+    const db = openMemoryDb();
+    const runId = seedRun(db);
+    db.prepare(`
+      INSERT INTO findings (run_id, finding_id, fingerprint, severity, category, file_path, description, status, filed_by_domain)
+      VALUES (?, 'F-new', 'fp-new', 'HIGH', 'quality', NULL, 'd', 'new', NULL)
+    `).run(runId);
+
+    const result = compileUnroutableApprovedDrain(db, runId);
+    assert.equal(result.count, 0);
+  });
+
+  it('orders findings by finding_id ASC, deterministically', () => {
+    const db = openMemoryDb();
+    const runId = seedRun(db);
+    seedApproved(db, runId, 'F-zzz');
+    seedApproved(db, runId, 'F-aaa');
+
+    const result = compileUnroutableApprovedDrain(db, runId);
+    assert.deepEqual(result.findings.map((f) => f.finding_id), ['F-aaa', 'F-zzz']);
   });
 });

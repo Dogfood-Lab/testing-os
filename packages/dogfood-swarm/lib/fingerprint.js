@@ -26,19 +26,42 @@
  *     (disambiguateFingerprints) still covers the residual collisions on this
  *     path and the rare identical-surrounding-source collision on the other.
  *
- * Description is intentionally NOT in the fingerprint. The wave 8 self-inspection
- * (B-BACK-002) caught the original code folding a SHA hash of the description
- * into every fingerprint, which meant that any wave-to-wave rewording of the
- * same defect produced a brand-new fingerprint and double-counted it as both
- * `fixed` (old fp) and `new` (new fp) in the next wave's classifyFindings output.
- * The context-hash is the opposite of that mistake: it folds in EDIT-STABLE
- * surrounding SOURCE (which a rewording does not touch), never the volatile
- * description prose.
+ * Description is intentionally NOT in the fingerprint FOR FILE-BEARING
+ * FINDINGS. The wave 8 self-inspection (B-BACK-002) caught the original code
+ * folding a SHA hash of the description into every fingerprint, which meant
+ * that any wave-to-wave rewording of the same defect produced a brand-new
+ * fingerprint and double-counted it as both `fixed` (old fp) and `new` (new
+ * fp) in the next wave's classifyFindings output. The context-hash is the
+ * opposite of that mistake: it folds in EDIT-STABLE surrounding SOURCE (which
+ * a rewording does not touch), never the volatile description prose.
  *
- * Spec contract: two findings at the same (category, rule_id, path, symbol) AND
- * the same surrounding source are the same finding — even if their description
- * prose differs. When source is unavailable the contract degrades to the
- * historical (…, line-bucket) key.
+ * Spec contract (file-bearing): two findings at the same (category, rule_id,
+ * path, symbol) AND the same surrounding source are the same finding — even
+ * if their description prose differs. When source is unavailable the
+ * contract degrades to the historical (…, line-bucket) key.
+ *
+ * FILE-LESS EXCEPTION (fingerprint-fusion rider, wave 41 — deliberately
+ * narrower than a B-BACK-002 regression, not a silent reintroduction of it).
+ * A file-less finding has NO structural anchor at all — no file to hash
+ * surrounding source from, no line to bucket. Every part of the base
+ * fingerprint besides category collapses to empty, so EVERY file-less
+ * finding sharing a category collided on ONE base fingerprint — proven live
+ * at wave-40 scale (three separate fusion incidents silently merging
+ * unrelated findings, one wrongly reopening an already-closed prior as
+ * recurring). computeFingerprint therefore folds in a normalized-description
+ * component ONLY when `finding.file` is falsy. This KNOWINGLY reopens
+ * B-BACK-002's shape for that one case — an undeclared, reworded re-report of
+ * the SAME file-less finding across waves now usually lands as a new row
+ * instead of auto-recurring — but only for file-less findings, and the
+ * sanctioned fix for THAT is already load-bearing elsewhere in this file
+ * (honorReusedFindingIds' declared-id-reuse path, the CONFIRM-queue
+ * mechanism: an agent re-reporting a still-open finding declares its known
+ * id, which matches by id, never by content). A silent, structurally
+ * unavoidable cross-finding fusion is worse than an occasional visible
+ * duplicate row an operator can merge, so this trade is made deliberately,
+ * not by accident. computeFingerprint's own inline comment carries the full
+ * reasoning and the live proof. File-bearing findings are completely
+ * unaffected — this branch is dead code for any finding that has a file.
  *
  * Classification states:
  *   new        — first time this fingerprint appears
@@ -206,6 +229,58 @@ export function computeFingerprint(finding, options = {}) {
     finding.symbol || '',
     location,
   ];
+
+  // Fingerprint-fusion rider (wave 41, coordinator forensics on wave-40's
+  // collect()): a file-less finding leaves normalizePath(finding.file) === ''
+  // and, for the common case (no rule_id/symbol/line), every OTHER part above
+  // empty too — the whole fingerprint degenerates to ~category-only, so EVERY
+  // file-less finding sharing a category collides on ONE base fingerprint.
+  // PROVEN LIVE at wave-40 scale (three fusion incidents: a 4-, a 22-, and a
+  // 2-occurrence collision group, each merging unrelated findings into one
+  // base fp — see this rider's own write-up for the finding ids) and
+  // reproduced minimally in a throwaway worktree at this repo's pre-fix HEAD
+  // (a7399b7): two unrelated file-less 'integration' findings both hashed to
+  // f86e42eb6b8c1f33fc182757 — the EXACT base fp the wave-40 forensics named.
+  //
+  // Fold in a normalized-description component ONLY on this branch — a
+  // file-bearing finding's fingerprint (the vast majority of this module's
+  // history and every existing cross-wave dedup guarantee) is COMPLETELY
+  // UNTOUCHED: `parts` above is not read again once this branch is entered,
+  // and for `finding.file` truthy this branch never runs at all, so the raw
+  // input to the hash for a file-bearing finding is byte-identical to before
+  // this change.
+  //
+  // DOMAIN ATTRIBUTION DELIBERATELY EXCLUDED, discovered the hard way: an
+  // earlier draft of this fix also folded in `finding._declaringDomain`, and
+  // running the FULL fingerprint test suite (not just this fix's own new
+  // file) caught it breaking fingerprint-filed-by-domain-stamp.test.js's own
+  // pre-existing, deliberately-designed invariant — "the SAME finding
+  // recurring under a DIFFERENT declaring domain must still be recognized as
+  // the same finding" (F-874c0683: filed_by_domain is a first-filed fact
+  // precisely BECAUSE a second wave's re-reporter is expected to differ from
+  // the first). Folding domain into the fingerprint would have silently
+  // reclassified that legitimate cross-domain recurrence as `new`. Content
+  // (category + description) is the correct axis; who is reporting it this
+  // wave is not — a real fusion is proven by two UNRELATED findings sharing
+  // no real content, not by the same finding changing hands.
+  //
+  // TRADE-OFF, DESIGNED CONSCIOUSLY (documented, not silently accepted):
+  // stronger file-less discrimination weakens cross-wave dedup of a
+  // LEGITIMATE re-report of the same file-less finding worded even slightly
+  // differently wave to wave — the content-fingerprint match that would have
+  // caught it before this fix now usually misses. This is the right trade:
+  // honorReusedFindingIds' declared-id-reuse path is the SANCTIONED
+  // cross-wave re-report mechanism for exactly this reason (content alone was
+  // never reliable for prose that legitimately varies), and leaning
+  // discrimination-heavy closes a proven, live data-corruption bug (an
+  // unrelated finding silently reopening/absorbing someone else's closed or
+  // deferred row) in exchange for a bounded, visible cost (an honest
+  // re-report without a declared id occasionally lands as `new` instead of
+  // `recurring` — a duplicate row an operator can see and merge, not a silent
+  // loss).
+  if (!finding.file) {
+    parts.push(normalizeDescription(finding.description));
+  }
 
   const raw = parts.join('|');
   return createHash('sha256').update(raw).digest('hex').slice(0, 24);
@@ -1077,8 +1152,26 @@ export function upsertFindings(db, runId, waveId, classified) {
     VALUES (?, ?, ?, ?)
   `);
 
+  // F-e71f9e7a: filed_by_domain was stamped ONLY on the classified.new INSERT
+  // path below — every other write path left a NULL filed_by_domain (pre-v10
+  // history, or any row inserted by a caller that had not yet threaded
+  // _declaringDomain through) permanently NULL, even when THIS wave's own
+  // classifyFindings output carries positive attribution for the SAME row via
+  // a recurrence. COALESCE(filed_by_domain, ?) backfills ONLY the null case —
+  // it deliberately does NOT touch a row that already has a value, preserving
+  // the documented "first-filed fact, never overwritten on recurrence" contract
+  // this column has always had (see the classified.new loop below, and
+  // fingerprint-filed-by-domain-stamp.test.js's own "does NOT overwrite...
+  // under a different declaring domain" pin, which stays green under COALESCE
+  // because that test's row already has a non-null value by the time it
+  // recurs). updateFixed/updateUnverified are DELIBERATELY excluded from this
+  // backfill: both operate on a PRIOR row that was NOT re-reported this wave
+  // (classifyFindings spreads `prior`, never the current-wave finding, into
+  // those two buckets — see classifyFindings' own result.fixed/result.unverified
+  // pushes), so there is no current-wave `_declaringDomain` to backfill from
+  // in either case; forcing a value there would be guessing, not backfilling.
   const updateRecurring = db.prepare(`
-    UPDATE findings SET status = 'recurring', last_seen_wave = ?, severity = ? WHERE id = ?
+    UPDATE findings SET status = 'recurring', last_seen_wave = ?, severity = ?, filed_by_domain = COALESCE(filed_by_domain, ?) WHERE id = ?
   `);
 
   const updateFixed = db.prepare(`
@@ -1096,8 +1189,13 @@ export function upsertFindings(db, runId, waveId, classified) {
   // currentWaveFindingCount half-state check; commands/revalidate.js's
   // full-coverage reclassification query `WHERE last_seen_wave = ?`) — not
   // off finding_events, which none of them join against today.
+  //
+  // F-e71f9e7a: also used for the 'rejected' insert-conflict recurrence path
+  // below (classified.new loop), which — like recurred_while_closed — has a
+  // real current-wave finding (not just a prior row) in scope, so the same
+  // COALESCE backfill applies there too.
   const updateLastSeenPreserveStatus = db.prepare(`
-    UPDATE findings SET last_seen_wave = ? WHERE id = ?
+    UPDATE findings SET last_seen_wave = ?, filed_by_domain = COALESCE(filed_by_domain, ?) WHERE id = ?
   `);
 
   // Note: unverified does NOT bump last_seen_wave — the agent did not see
@@ -1172,7 +1270,7 @@ export function upsertFindings(db, runId, waveId, classified) {
           'SELECT id, status FROM findings WHERE run_id = ? AND (fingerprint = ? OR finding_id = ?)'
         ).get(runId, f.fingerprint, fid);
         if (existing && existing.status === 'rejected') {
-          updateLastSeenPreserveStatus.run(waveId, existing.id);
+          updateLastSeenPreserveStatus.run(waveId, f._declaringDomain || null, existing.id);
           insertEvent.run(
             existing.id, 'recurred', waveId,
             'recurred-while-rejected: rediscovered by this wave; rejected status preserved'
@@ -1208,7 +1306,7 @@ export function upsertFindings(db, runId, waveId, classified) {
     for (const f of classified.recurring) {
       if (f.prior?.id) {
         const bumpedSeverity = maxSeverity(f.prior.severity, f.severity);
-        updateRecurring.run(waveId, bumpedSeverity, f.prior.id);
+        updateRecurring.run(waveId, bumpedSeverity, f._declaringDomain || null, f.prior.id);
         insertEvent.run(
           f.prior.id, 'recurred', waveId,
           bumpedSeverity !== f.prior.severity
@@ -1230,7 +1328,7 @@ export function upsertFindings(db, runId, waveId, classified) {
     // since classifyFindings already never routed these into `recurring`.
     for (const f of (classified.recurred_while_closed || [])) {
       if (f.prior?.id) {
-        updateLastSeenPreserveStatus.run(waveId, f.prior.id);
+        updateLastSeenPreserveStatus.run(waveId, f._declaringDomain || null, f.prior.id);
         insertEvent.run(
           f.prior.id, 'recurred', waveId,
           `recurred-while-${f.priorStatus}: rediscovered by this wave; ${f.priorStatus} status preserved`

@@ -78,7 +78,7 @@ describe('compileRoadmap — T1 composed artifact (F-874c0683)', () => {
 
     assert.equal(artifact.run_id, runId);
     assert.equal(artifact.repo, 'org/repo');
-    assert.equal(artifact.generated_at, '2026-07-17T00:00:00.000Z');
+    assert.equal(artifact.run_anchored_at, '2026-07-17T00:00:00.000Z');
     assert.ok(Array.isArray(artifact.findings.open));
     assert.ok(Array.isArray(artifact.findings.deferred));
     assert.ok(Array.isArray(artifact.findings.approved));
@@ -148,5 +148,16 @@ describe('compileRoadmap — T1 composed artifact (F-874c0683)', () => {
     const first = JSON.stringify(compileRoadmap(db, runId, { now }));
     const second = JSON.stringify(compileRoadmap(db, runId, { now }));
     assert.equal(first, second);
+  });
+
+  /** @pins F-fdcf6c9b */
+  it('run_anchored_at is exactly `now` verbatim, not a second, independently-computed timestamp (naming-honesty fix — the field never claimed to be wall-clock compile time in the first place)', () => {
+    const db = openMemoryDb();
+    const { runId } = seedBasicRun(db);
+    const now = new Date('2026-03-01T12:34:56.000Z');
+
+    const artifact = compileRoadmap(db, runId, { now });
+    assert.equal(artifact.run_anchored_at, now.toISOString());
+    assert.equal(Object.hasOwn(artifact, 'generated_at'), false, 'the old, dishonestly-named key must not linger alongside the new one');
   });
 });
