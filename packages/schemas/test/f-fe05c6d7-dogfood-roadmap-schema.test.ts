@@ -298,4 +298,159 @@ describe('dogfood-roadmap.schema.json — representative fixtures (fixtures/road
     const fixture = loadFixture('invalid/drain-entry-missing-owner.json');
     expect(validate(fixture)).toBe(false);
   });
+
+  it('invalid/notes-path-absolute.json fails', () => {
+    const fixture = loadFixture('invalid/notes-path-absolute.json');
+    expect(validate(fixture)).toBe(false);
+  });
+
+  it('invalid/sections-not-allowed.json fails', () => {
+    const fixture = loadFixture('invalid/sections-not-allowed.json');
+    expect(validate(fixture)).toBe(false);
+  });
+});
+
+/**
+ * WAVE-41 (F-c7b0f47b): the real committed roadmap artifact failed this
+ * schema with 16 Ajv errors. Coordinator's binding seam call for this wave —
+ * "the schema is the contract; core/verbs conform their emitters to it in
+ * their own worktrees" — leaves exactly four places where the CONTRACT
+ * itself, not an emitter, needed to change. Each gets its own describe block
+ * below, matching this file's existing non-vacuity discipline (pin the
+ * specific Ajv keyword, not a bare valid===false). See the schema's own
+ * top-level $comment for the full seam-decision writeup.
+ */
+describe('dogfood-roadmap.schema.json — wave-41 axis (a): `sections` stays unblessed (F-c7b0f47b)', () => {
+  it('REJECTS a roadmap carrying a `sections` key, non-vacuously (additionalProperties naming it, not merely valid:false)', () => {
+    const roadmap = makeRoadmap({
+      sections: {
+        run_id: 'x', repo: 'y', generated_at: '2026-01-01T00:00:00Z',
+        findings: { open: [], deferred: [], approved: [] },
+      },
+    });
+    const valid = validate(roadmap);
+    expect(valid).toBe(false);
+    const sectionsRejected = (validate.errors ?? []).some(
+      err => err.keyword === 'additionalProperties' && err.params?.additionalProperty === 'sections',
+    );
+    expect(sectionsRejected, JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('invalid/sections-not-allowed.json fails specifically because of `sections`, not some other defect', () => {
+    const fixture = loadFixture('invalid/sections-not-allowed.json');
+    const valid = validate(fixture);
+    expect(valid).toBe(false);
+    const sectionsRejected = (validate.errors ?? []).some(
+      err => err.keyword === 'additionalProperties' && err.params?.additionalProperty === 'sections',
+    );
+    expect(sectionsRejected, JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('a roadmap WITHOUT `sections` (the flat T1-T6 fields alone) validates — proves the rejection above is about `sections` specifically, not about being flat', () => {
+    const roadmap = makeRoadmap();
+    expect('sections' in roadmap).toBe(false);
+    const valid = validate(roadmap);
+    expect(valid, JSON.stringify(validate.errors)).toBe(true);
+  });
+});
+
+describe('dogfood-roadmap.schema.json — wave-41 axis (b): notesPath is optional and repo-relative-only (F-c7b0f47b)', () => {
+  it('accepts a repo-relative notesPath', () => {
+    const roadmap = makeRoadmap({ notesPath: 'dogfood/roadmap-notes.json' });
+    const valid = validate(roadmap);
+    expect(valid, JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('accepts a roadmap with notesPath entirely omitted (optional, not required)', () => {
+    const roadmap = makeRoadmap();
+    expect('notesPath' in roadmap).toBe(false);
+    const valid = validate(roadmap);
+    expect(valid, JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('REJECTS a POSIX-absolute notesPath, non-vacuously (pattern keyword, not merely valid:false)', () => {
+    const roadmap = makeRoadmap({ notesPath: '/abs/path/roadmap-notes.json' });
+    const valid = validate(roadmap);
+    expect(valid).toBe(false);
+    const patternViolation = (validate.errors ?? []).some(
+      err => err.keyword === 'pattern' && err.instancePath.endsWith('/notesPath'),
+    );
+    expect(patternViolation, JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('REJECTS a Windows-drive-absolute notesPath, non-vacuously (pattern keyword) — the finding\'s own proven exhibit shape', () => {
+    const roadmap = makeRoadmap({ notesPath: 'E:\\AI\\testing-os\\dogfood\\roadmap-notes.json' });
+    const valid = validate(roadmap);
+    expect(valid).toBe(false);
+    const patternViolation = (validate.errors ?? []).some(
+      err => err.keyword === 'pattern' && err.instancePath.endsWith('/notesPath'),
+    );
+    expect(patternViolation, JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('the real well-formed-run fixture carries a repo-relative notesPath', () => {
+    const fixture = loadFixture('valid/well-formed-run.json') as { notesPath?: string };
+    expect(fixture.notesPath).toBe('dogfood/roadmap-notes.json');
+    const valid = validate(fixture);
+    expect(valid, JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('invalid/notes-path-absolute.json fails specifically because notesPath is absolute (pattern, not additionalProperties — the key IS now recognized)', () => {
+    const fixture = loadFixture('invalid/notes-path-absolute.json');
+    const valid = validate(fixture);
+    expect(valid).toBe(false);
+    const patternViolation = (validate.errors ?? []).some(
+      err => err.keyword === 'pattern' && err.instancePath.endsWith('/notesPath'),
+    );
+    expect(patternViolation, JSON.stringify(validate.errors)).toBe(true);
+  });
+});
+
+describe('dogfood-roadmap.schema.json — wave-41 axis (c): compiled_at semantics are honest, not wall-clock (F-c7b0f47b)', () => {
+  it('compiled_at stays required — this axis is a description-only fix, not a shape change', () => {
+    expect(roadmapSchema.required).toContain('compiled_at');
+  });
+
+  it('the description no longer claims compiled_at is the compile operation\'s own wall clock', () => {
+    const desc = roadmapSchema.properties.compiled_at.description ?? '';
+    expect(desc).not.toMatch(/compile operation'?s own clock/i);
+  });
+
+  it('the description states the honest DB-derived-determinism semantic, citing F-feeaef78 and runs.created_at', () => {
+    const desc = roadmapSchema.properties.compiled_at.description ?? '';
+    expect(desc).toMatch(/F-feeaef78/);
+    expect(desc).toMatch(/runs\.created_at/);
+    expect(desc).toMatch(/byte-identical/i);
+  });
+
+  it('a well-formed roadmap still validates with compiled_at present (no structural change, description-only fix)', () => {
+    const roadmap = makeRoadmap({ compiled_at: '2026-01-01T00:00:00Z' });
+    const valid = validate(roadmap);
+    expect(valid, JSON.stringify(validate.errors)).toBe(true);
+  });
+});
+
+describe('dogfood-roadmap.schema.json — wave-41 axis (d): content_hash stays optional, self-exclusion semantics specified (F-c7b0f47b)', () => {
+  it('content_hash is NOT in required — stays optional, a deliberate choice this wave, not an oversight', () => {
+    expect(roadmapSchema.required).not.toContain('content_hash');
+  });
+
+  it('the description specifies hash-then-attach (self-exclusion), never hash-including-self', () => {
+    const desc = roadmapSchema.properties.content_hash.description ?? '';
+    expect(desc).toMatch(/ABSENT/);
+    expect(desc).toMatch(/hash-then-attach/i);
+  });
+
+  it('accepts a roadmap WITH content_hash present', () => {
+    const roadmap = makeRoadmap({ content_hash: 'a3f5c9e1d2b4867012f9e6c8a4d1b3e5f7091a2c4e6b8d0f2a4c6e8b0d2f4a6c' });
+    const valid = validate(roadmap);
+    expect(valid, JSON.stringify(validate.errors)).toBe(true);
+  });
+
+  it('minimal-empty-sections.json omits content_hash entirely and still validates (proves optional, not merely nullable)', () => {
+    const fixture = loadFixture('valid/minimal-empty-sections.json') as { content_hash?: string };
+    expect('content_hash' in fixture).toBe(false);
+    const valid = validate(fixture);
+    expect(valid, JSON.stringify(validate.errors)).toBe(true);
+  });
 });
