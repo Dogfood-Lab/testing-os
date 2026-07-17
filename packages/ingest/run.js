@@ -833,25 +833,25 @@ function emitCliErrorEvent({ failedStage, correlationId, submissionId = null, er
 // to live IN the tool, not scattered across docs.
 const USAGE = `ingest — persist a dogfood submission (verify → policy → provenance → write)
 
-USAGE:
+Usage:
   node packages/ingest/run.js --file <path>   --provenance=github|stub
   node packages/ingest/run.js --payload '<json>' --provenance=github|stub
   echo '<json>' | node packages/ingest/run.js --provenance=github|stub
 
-INPUT (exactly one; stdin used when neither flag is given):
+Input (exactly one; stdin used when neither flag is given):
   --file <path>        Read the submission JSON from a file.
   --payload <json>     Pass the submission JSON inline.
   (stdin)              Pipe the submission JSON on stdin.
 
-PROVENANCE (required for an ingest):
+Provenance (required for an ingest):
   --provenance=github  Confirm the source run via the GitHub API.
   --provenance=stub    No-network local confirm (dry-run / dev only).
 
-MODES:
+Modes:
   --verify-only        Run the full pipeline WITHOUT writing or rebuilding
                        indexes; report where a real ingest WOULD have landed.
 
-STANDALONE AUDIT VERBS (no submission, no stdin, no --provenance):
+Standalone audit verbs (no submission, no stdin, no --provenance):
   --verify-chain       Verify the append-only integrity ledger (offline).
     --reconcile        Also fail on genuine torn-write orphans (on-disk records
                        missing from the ledger). Records that predate the
@@ -864,7 +864,7 @@ STANDALONE AUDIT VERBS (no submission, no stdin, no --provenance):
 
   -h, --help           Show this help.
 
-EXIT CODES:
+Exit codes:
   0  success     1  integrity/audit break     2  operator error (flags / IO / JSON)`;
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === resolve(__dirname, 'run.js');

@@ -92,7 +92,7 @@ describe('F-9587adda — a corrupted kv.schema_version fails loud instead of sil
     assert.throws(() => openDb(dbPath), ControlPlaneSchemaCorruptError);
   });
 
-  it('non-regression: an empty-string kv.schema_version also throws (Number("") === 0 is finite but this is not the same class of value as a real 0)', () => {
+  it('non-regression: an empty-string kv.schema_version does NOT throw (schema_version=0 is a real, valid pre-ledger state, not corruption)', () => {
     // schema_version=0 is a genuine, meaningful value (pre-ledger DB) that
     // must NOT throw — but an EMPTY string is not "0", it is absence-shaped
     // corruption. Number('') === 0 would make this pass Number.isFinite if

@@ -11,6 +11,10 @@
  * 4. Auto-detect domains from repo structure
  * 5. Create run + domain draft in control plane DB
  * 6. Print domain proposal for coordinator review
+ *
+ * Steps 4-6 are wrapped in a try/catch that deletes the step-3 save-point
+ * tag before re-throwing (F-53a7d713) — see compensateOrphanedSavePointTag
+ * below.
  */
 
 import { execFileSync } from 'node:child_process';
@@ -62,25 +66,41 @@ export function init(opts) {
   const savePointTag = `swarm-save-${timestamp}`;
   git(repoPath, ['tag', savePointTag]);
 
-  // 4. Auto-detect domains
-  const { domains, unmatched } = detectDomains(repoPath);
+  // 4-6. Auto-detect domains, create the run row, save the domain draft.
+  //
+  // F-53a7d713: the save-point tag above is the one IRREVERSIBLE side effect
+  // init() performs before its own `runs` row exists to point at it. If any
+  // of the three steps below throws (a locked/too-new control-plane.db, a
+  // transient I/O error scanning the target repo, a malformed domain-
+  // detection result), the tag would otherwise survive uncleaned — nothing
+  // else in this package sweeps or prunes an orphaned `swarm-save-*` tag
+  // (rewind.js only ever consumes one by operator-typed name). Named
+  // compensator per the workflow-standards rule (Sagas, Garcia-Molina &
+  // Salem 1987): undo the tag, THEN re-throw the original failure untouched
+  // — the operator must see the real error, not a masked compensator result.
+  let domains, unmatched, runId;
+  try {
+    ({ domains, unmatched } = detectDomains(repoPath));
 
-  // 5. Create run in DB
-  const hex = randomBytes(2).toString('hex');
-  const runId = `swarm-${timestamp}-${hex}`;
+    const hex = randomBytes(2).toString('hex');
+    runId = `swarm-${timestamp}-${hex}`;
 
-  const db = openDb(opts.dbPath);
-  db.prepare(`
-    INSERT INTO runs (id, repo, local_path, commit_sha, branch, save_point_tag, status)
-    VALUES (?, ?, ?, ?, ?, ?, 'initializing')
-  `).run(runId, repo, repoPath, commitSha, branch, savePointTag);
+    const db = openDb(opts.dbPath);
+    db.prepare(`
+      INSERT INTO runs (id, repo, local_path, commit_sha, branch, save_point_tag, status)
+      VALUES (?, ?, ?, ?, ?, ?, 'initializing')
+    `).run(runId, repo, repoPath, commitSha, branch, savePointTag);
 
-  // Save domain draft (unfrozen)
-  saveDomainDraft(db, runId, domains.map(d => ({
-    name: d.name,
-    globs: d.globs,
-    ownership_class: d.ownership_class,
-  })));
+    // Save domain draft (unfrozen)
+    saveDomainDraft(db, runId, domains.map(d => ({
+      name: d.name,
+      globs: d.globs,
+      ownership_class: d.ownership_class,
+    })));
+  } catch (err) {
+    compensateOrphanedSavePointTag(repoPath, savePointTag);
+    throw err;
+  }
 
   return {
     runId,
@@ -109,4 +129,25 @@ export function init(opts) {
 // lib/worktree.js).
 function git(cwd, args) {
   return execFileSync('git', args, { cwd, encoding: 'utf-8', stdio: ['pipe', 'pipe', 'pipe'] });
+}
+
+/**
+ * Named compensator for F-53a7d713 (workflow-standards NAMED_COMPENSATORS):
+ * undoes the ONE irreversible side effect init() performs before its own
+ * `runs` row exists — the save-point git tag created at step 3. Owner:
+ * init() itself; invoked only from its own catch block above, never called
+ * standalone.
+ *
+ * Best-effort by design: a compensator that itself throws must never mask
+ * the real failure the caller is already unwinding from — init()'s catch
+ * always re-throws the original `err` regardless of what happens here. A
+ * tag this fails to delete (e.g. git itself is unavailable) is not a NEW
+ * failure mode — it degrades to exactly the bounded, self-announcing,
+ * LOW-severity residual F-53a7d713 already documents (an operator can
+ * always `git tag -d` it manually via `git tag -l 'swarm-save-*'`).
+ */
+function compensateOrphanedSavePointTag(repoPath, tag) {
+  try {
+    git(repoPath, ['tag', '-d', tag]);
+  } catch { /* best effort — see docstring above */ }
 }

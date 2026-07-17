@@ -67,6 +67,21 @@ class OperatorError extends Error {
   }
 }
 
+/**
+ * V2-CONTRACT-004: appended to EVERY --explain rendering (accepted and
+ * rejected alike) so a preview verdict can never be read as covering the
+ * required_steps gate, which only production ingest enforces (it fetches the
+ * scenario definitions this preview does not have).
+ *
+ * Declared ahead of USAGE and interpolated directly into its own "Not checked
+ * in preview" section below (F-e0c3fa21 — that section used to restate the
+ * header as its own redundant lowercase lead-in, worded slightly differently
+ * than this constant) so --help and --explain describe the identical gap
+ * from one shared string and can never drift apart again.
+ */
+const PREVIEW_GAP_NOTE =
+  'Not checked in preview: required_steps (needs scenario definitions — enforced only by real ingest).';
+
 const USAGE = `verify — local dry-run / explain for dogfood submissions
 
 Usage:
@@ -92,8 +107,7 @@ Provenance (default: stub):
 
   -h, --help           Show this help.
 
-Not checked in preview:
-  not checked in preview: required_steps (needs scenario definitions).
+${PREVIEW_GAP_NOTE}
   Scenario definitions live in the source repo; only a real ingest fetches
   them and enforces success_criteria.required_steps.
 
@@ -362,15 +376,6 @@ function resolveProvenance(provenanceMode, submission) {
  * the routing decision parseRejectionReason() makes; this maps it to operator
  * language so the consumer knows WHOSE problem each reason is.
  */
-/**
- * V2-CONTRACT-004: appended to EVERY --explain rendering (accepted and
- * rejected alike) so a preview verdict can never be read as covering the
- * required_steps gate, which only production ingest enforces (it fetches the
- * scenario definitions this preview does not have).
- */
-const PREVIEW_GAP_NOTE =
-  'Not checked in preview: required_steps (needs scenario definitions — enforced only by real ingest).';
-
 const CLASS_LABEL = {
   'submission-bad': 'SUBMISSION  — fix your payload and resubmit',
   'operational': 'OPERATIONAL — verifier/tooling fault; page ops, do not bounce to submitter',

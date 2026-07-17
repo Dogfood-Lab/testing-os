@@ -952,8 +952,24 @@ export function honorReusedFindingIds(findings, priorFingerprints, domains = [])
       return finding;
     }
 
+    // F-00d67cb6: normalize priorFile through normalizePath() — the SAME
+    // normalize-then-match shape the file-mismatch check three lines above
+    // already uses — before the ownership glob match. Without this, a prior
+    // row whose file_path carries a capitalized directory segment (a
+    // realistic LLM-transcription variant of the real, all-lowercase file
+    // on disk) fails the file-mismatch check's normalized comparison the
+    // SAME way as any other spelling variant (i.e. it still MATCHES, since
+    // normalizePath folds case on both sides there), but then hits this raw,
+    // un-normalized matchesAnyGlob call — minimatch is case-sensitive, so
+    // the same capitalized path that just proved identity three lines up
+    // wrongly fails ownership here, and a faithful same-id re-report of an
+    // OWNED file is refused as confirm_id_reuse_unowned. The identical class
+    // is open as F-f347d858 against commands/collect.js's
+    // scopeConfirmedToOwningDomain (a different domain's file, not edited
+    // here) — both call sites converge on the same normalize-then-match
+    // shape independently.
     const declaringDomain = domainByName.get(finding._declaringDomain);
-    if (!declaringDomain || !matchesAnyGlob(priorFile, declaringDomain.globs)) {
+    if (!declaringDomain || !matchesAnyGlob(normalizePath(priorFile), declaringDomain.globs)) {
       logStage('confirm_id_reuse_unowned', {
         component: 'dogfood-swarm',
         declared_id: finding.id,

@@ -132,9 +132,16 @@ const isProcessExecPath = (node) =>
   (node.property?.name === 'execPath' || node.property?.value === 'execPath');
 
 /**
- * Extract every `{ cmd, args }` object literal. That pair IS the step shape
- * (runStep's @param: `{ name, cmd, args?, optional?, ... }`); requiring both
- * keys is what distinguishes a step fixture from an arbitrary object.
+ * Extract every step-shaped object literal: any ObjectExpression carrying a
+ * literal `cmd` key (runStep's @param: `{ name, cmd, args?, optional?, ... }`,
+ * runner.js:205 — `args` is documented OPTIONAL). `args` itself is NOT
+ * required here: requiring it used to drop cmd-only fixtures before they
+ * were ever considered a candidate (F-2f846533) — invisible to `checked`,
+ * `skipped`, and `violations` alike, which is strictly worse than the
+ * disclosed non-literal-cmd/args gap (that at least reports as `skipped`).
+ * `args: undefined` on the returned record (key absent) is the caller's
+ * signal to default to `[]`, mirroring runStep's own
+ * `const cmdArgs = step.args || [];` (runner.js:226) at runtime.
  */
 function extractStepFixtures(ast) {
   const found = [];
@@ -146,7 +153,7 @@ function extractStepFixtures(ast) {
       const key = p.key?.name ?? p.key?.value;
       if (typeof key === 'string') props.set(key, p.value);
     }
-    if (!props.has('cmd') || !props.has('args')) return;
+    if (!props.has('cmd')) return;
     found.push({ cmd: props.get('cmd'), args: props.get('args'), line: node.loc?.start?.line ?? 0 });
   });
   return found;
@@ -260,14 +267,22 @@ function auditSource(source, label) {
       continue;
     }
 
-    if (fx.args?.type !== 'ArrayExpression') {
+    let args;
+    if (fx.args === undefined) {
+      // No `args` key at all -- default to `[]`, exactly as runStep does
+      // (runner.js:226: `const cmdArgs = step.args || [];`). This is a real,
+      // checked candidate, not a skip: the runtime never treats an absent
+      // key as unverifiable, so neither does this gate.
+      args = [];
+    } else if (fx.args.type !== 'ArrayExpression') {
       skipped.push({ where, why: 'args is not an array literal' });
       continue;
-    }
-    const args = fx.args.elements.map(literalString);
-    if (args.some((a) => a === null)) {
-      skipped.push({ where, why: 'args contains a non-literal element' });
-      continue;
+    } else {
+      args = fx.args.elements.map(literalString);
+      if (args.some((a) => a === null)) {
+        skipped.push({ where, why: 'args contains a non-literal element' });
+        continue;
+      }
     }
 
     checked += 1;
@@ -336,6 +351,44 @@ describe('verify-step fixtures must survive runStep\'s shell:true composition', 
     const { violations, checked } = auditSource(good, 'synthetic-good.js');
     assert.deepEqual(violations, []);
     assert.equal(checked, 3, 'all three must be genuinely checked, not skipped into a vacuous pass');
+  });
+
+  it('a cmd-only fixture (no args key at all) is never invisible to the gate (F-2f846533)', () => {
+    // The exact pre-fix reproduction from the finding: `args` is entirely
+    // absent (not an empty array, not present-but-non-literal) -- the
+    // fixture relies on runStep's own documented default,
+    // `const cmdArgs = step.args || [];` (runner.js:226), and its JSDoc
+    // marks args OPTIONAL (`{ name, cmd, args?, optional?, ... }`,
+    // runner.js:205). Before the fix, extractStepFixtures's precondition
+    // `if (!props.has('cmd') || !props.has('args')) return;` dropped this
+    // object before it was ever a candidate: not checked, not skipped, zero
+    // signal anywhere -- strictly worse than the disclosed
+    // non-literal-cmd/args gap, which at least surfaces as `skipped`.
+    const bad = `const badStep = { name: 'lint', cmd: 'node -e "console.log(1)"', optional: true };`;
+    const { violations, skipped, checked } = auditSource(bad, 'synthetic-cmd-only-bad.js');
+    assert.ok(
+      violations.length + skipped.length + checked > 0,
+      'a cmd-only fixture must register SOME signal (violation, skip, or check) -- it must never vanish without a trace',
+    );
+    // This particular fixture folds the whole invocation into `cmd` itself
+    // (no separate args), so `cmd` carries an embedded space -- exactly the
+    // shell:true word-splitting hazard `cmd-contains-whitespace` exists to
+    // catch, independent of whether `args` was ever supplied.
+    assert.equal(violations.length, 1, 'an embedded-space cmd is unsafe under shell:true regardless of args presence');
+    assert.equal(violations[0].rule, 'cmd-contains-whitespace');
+  });
+
+  it('a clean cmd-only fixture is CHECKED with args defaulted to [] (runner.js:226 parity, F-2f846533)', () => {
+    // Same missing-`args`-key shape as the fixture above, but with a
+    // whitespace-free `cmd` -- this is the case the finding's fix requires
+    // to show up as a genuine check (not a skip, not a violation), because
+    // extractStepFixtures must mirror runStep's own `step.args || []`
+    // default rather than silently dropping the candidate.
+    const good = `const s = { name: 'build', cmd: 'npm', optional: true };`;
+    const { violations, skipped, checked } = auditSource(good, 'synthetic-cmd-only-good.js');
+    assert.deepEqual(violations, []);
+    assert.deepEqual(skipped, []);
+    assert.equal(checked, 1, 'a whitespace-free cmd-only fixture must be genuinely checked with args=[], not silently dropped');
   });
 
   it('every step fixture in packages/** composes to a shell-parseable command', () => {

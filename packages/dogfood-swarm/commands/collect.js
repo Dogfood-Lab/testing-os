@@ -306,10 +306,47 @@ export function scopeConfirmedToOwningDomain(db, runId, domains, agents) {
       // vacuously "close" anything, and it cannot be owned by definition.
       const filePath = pathById.get(String(id).toUpperCase());
       if (filePath == null) continue;
-      if (matchesAnyGlob(filePath, domain.globs)) scoped.push(id);
+      // F-f347d858: normalize BEFORE matching. The raw `file_path` column can
+      // carry a leading './', a doubled/trailing slash (a path-join artifact),
+      // a backslash separator, or a case variant of the identical file — none
+      // of which matchesAnyGlob's minimatch call recognizes as equal to the
+      // canonical spelling a domain's own glob is authored in. Fails CLOSED
+      // today (an unmatched path stays unclosable, never wrongly closed), but
+      // still a reliability gap in the one function now trusted to VOUCH for
+      // closing a finding, not merely route it. Mirrors lib/fingerprint.js's
+      // own (private, unexported) normalizePath byte-for-byte; duplicated
+      // rather than imported because that helper isn't exported and this fix
+      // is scoped to this file's owned glob only — lib/fingerprint.js's
+      // honorReusedFindingIds carries the identical shape at its own
+      // matchesAnyGlob(priorFile, ...) call site, closed independently the
+      // same wave. A third copy would be the signal to promote this to a
+      // shared, exported helper instead of forking again.
+      if (matchesAnyGlob(normalizeFilePathForGlobMatch(filePath), domain.globs)) scoped.push(id);
     }
   }
   return scoped;
+}
+
+/**
+ * F-f347d858: local, private normalization for a `file_path` immediately
+ * before it is matched against a domain's glob list. Same transform as
+ * lib/fingerprint.js's private normalizePath (not importable — that function
+ * is not exported): strips a leading './', collapses doubled/trailing
+ * slashes, converts backslash to forward slash, and lowercases. Domain globs
+ * are authored literals (always forward-slash, always lowercase in this
+ * repo's convention) so only the untrusted file_path side needs normalizing.
+ *
+ * @param {string} filePath
+ * @returns {string}
+ */
+function normalizeFilePathForGlobMatch(filePath) {
+  if (!filePath) return '';
+  return filePath
+    .replace(/\\/g, '/')
+    .replace(/\/{2,}/g, '/')
+    .replace(/^\.\//, '')
+    .replace(/\/$/, '')
+    .toLowerCase();
 }
 
 /**

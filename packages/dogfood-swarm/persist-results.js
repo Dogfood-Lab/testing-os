@@ -16,7 +16,7 @@ import { fileURLToPath } from 'node:url';
 import { buildSubmission } from '@dogfood-lab/report/build-submission.js';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 
-import { readBoundedJson } from './lib/bounded-json-read.js';
+import { readBoundedJson, BoundedJsonError } from './lib/bounded-json-read.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '../..');
@@ -38,6 +38,32 @@ function readJsonDir(dirPath) {
   return readdirSync(dirPath)
     .filter(f => f.endsWith('.json'))
     .map(f => readJson(join(dirPath, f)));
+}
+
+// F-300f63cf: every OTHER input-validation failure in this file prints
+// `ERROR: <reason>` to stderr and process.exit(2) (missing manifest.json,
+// missing required field, zero audit results) — but the three call sites
+// that read JSON off disk via readJson/readJsonDir (manifest.json, audit/*
+// via readJsonDir, remediate/* via readJsonDir) had no try/catch at all, so
+// a malformed or truncated file (the realistic "agent process killed
+// mid-write" or "disk full" shape) escaped as an uncaught BoundedJsonError
+// with a raw Node stack trace and Node's default exit code 1 — not this
+// file's own exit-2 convention. Renders the SAME structured failure through
+// this file's own convention instead of letting it escape raw, naming the
+// specific offending path (BoundedJsonError already carries `.path`) and
+// the specific failure kind (SIZE_LIMIT / READ_FAILED / PARSE_FAILED) —
+// mirroring the multi-line "header + indented detail" shape the
+// dogfood-ingest failure handler below already uses.
+function dieOnReadError(e, label) {
+  if (e instanceof BoundedJsonError) {
+    console.error(`ERROR [${e.kind}]: ${label} could not be read`);
+    console.error(`  Path:  ${e.path}`);
+    console.error(`  Cause: ${e.cause && e.cause.message ? e.cause.message : e.message}`);
+  } else {
+    console.error(`ERROR: ${label} could not be read`);
+    console.error(`  Cause: ${e && e.message ? e.message : String(e)}`);
+  }
+  process.exit(2);
 }
 
 function surfaceFromType(componentType) {
@@ -273,7 +299,12 @@ if (!existsSync(manifestPath)) {
   process.exit(2);
 }
 
-const manifest = readJson(manifestPath);
+let manifest;
+try {
+  manifest = readJson(manifestPath);
+} catch (e) {
+  dieOnReadError(e, 'manifest.json');
+}
 const required = ['repo', 'commit_sha', 'branch', 'swarm_id', 'started_at', 'finished_at'];
 for (const field of required) {
   if (!manifest[field]) {
@@ -282,13 +313,23 @@ for (const field of required) {
   }
 }
 
-const auditResults = readJsonDir(join(absDir, 'audit'));
+let auditResults;
+try {
+  auditResults = readJsonDir(join(absDir, 'audit'));
+} catch (e) {
+  dieOnReadError(e, 'audit result');
+}
 if (auditResults.length === 0) {
   console.error('ERROR: no audit result files found in audit/');
   process.exit(2);
 }
 
-const remediateResults = readJsonDir(join(absDir, 'remediate'));
+let remediateResults;
+try {
+  remediateResults = readJsonDir(join(absDir, 'remediate'));
+} catch (e) {
+  dieOnReadError(e, 'remediation result');
+}
 
 // Path A: Build and ingest dogfood submission
 const scenarioResults = buildScenarioResults(auditResults, remediateResults);

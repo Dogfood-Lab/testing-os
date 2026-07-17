@@ -21,6 +21,20 @@
  * after the JSON line when stderr is a TTY OR DOGFOOD_LOG_HUMAN=1 is
  * set. Both still go to stderr; consumers parsing JSON keep working.
  *
+ * Guard discipline: every console.error call in this function is
+ * individually wrapped in its own try/catch — logStage is the operator's
+ * last forensic channel and must never throw, even when stderr itself is
+ * PERSISTENTLY (not just transiently) broken. Four call sites, each
+ * independently guarded:
+ *   1. the serialization-failure fallback's structured attempt
+ *   2. that fallback's OWN last-resort literal (F-542caea3 — the gap one
+ *      level deeper than #3 below, closed the same wave this comment
+ *      was added)
+ *   3. the ordinary successful-serialization write (F-36fdebca)
+ *   4. the human-banner companion write
+ * A fix to any ONE of these must never assume a sibling's try/catch covers
+ * it — each is its own last-resort and needs its own guard.
+ *
  * Override env var:
  *   DOGFOOD_LOG_HUMAN=1 — force human banner even when piped
  *   DOGFOOD_LOG_HUMAN=0 — suppress human banner even at TTY
@@ -80,9 +94,22 @@ export function logStage(stage, fields = {}) {
     } catch {
       // Absolute last-resort: a fixed-shape literal that is known to
       // serialize. Operator at least sees that SOMETHING tried to log.
-      console.error(
-        '{"stage":"log_stage_serialization_failed","kind":"log_stage_serialization_failed","error":"unable to serialize fallback"}'
-      );
+      //
+      // F-542caea3: this write is ITSELF wrapped in its own try/catch. A
+      // PERSISTENTLY (not merely transiently) broken stderr — the realistic
+      // EPIPE condition, which breaks every subsequent write, not just the
+      // first — used to throw straight out of this catch block, escaping
+      // logStage() entirely from its own deepest fallback. There is no
+      // further channel to hand this failure to, so the catch here is
+      // empty: logStage still returns normally rather than propagating a
+      // write failure over output it does not control.
+      try {
+        console.error(
+          '{"stage":"log_stage_serialization_failed","kind":"log_stage_serialization_failed","error":"unable to serialize fallback"}'
+        );
+      } catch {
+        // Truly nothing further to do — see the comment above.
+      }
     }
     return;
   }
@@ -187,6 +214,22 @@ function buildSummary(line) {
     ['wave',           line.wave_id || line.waveId],
     ['submission',     line.submission_id || line.submissionId],
     ['correlation_id', line.correlation_id || line.correlationId],
+    // F-de9c9160: the four confirm_id_reuse_* stages (lib/fingerprint.js's
+    // honorReusedFindingIds) carry their own identity vocabulary that none
+    // of the fields above recognized, so all four fell through to the bare
+    // '(no fields)' banner below. Each field renders under its OWN label —
+    // never folded together via `||` — because confirm_id_reuse_file_mismatch
+    // populates BOTH finding_file and prior_file at once: the mismatch IS
+    // the two values disagreeing, so collapsing them into one slot would
+    // hide the exact thing the banner exists to show an operator.
+    ['declared_id',          line.declared_id],
+    ['declaring_domain',     line.declaring_domain],
+    ['prior_status',         line.prior_status],
+    ['file',                 line.file],
+    ['finding_file',         line.finding_file],
+    ['prior_file',           line.prior_file],
+    ['prior_fingerprint',    line.prior_fingerprint],
+    ['replaced_fingerprint', line.replaced_fingerprint],
   ];
   for (const [k, v] of idFields) {
     if (v != null && v !== '') parts.push(`${k}=${v}`);

@@ -283,7 +283,21 @@ export function formatVerify(result) {
 export function formatProbe(probes) {
   const lines = ['Adapter probes:', ''];
   for (const p of probes) {
-    const bar = '#'.repeat(Math.round(p.score / 5));
+    // F-d231b91e: p.score is the untrusted adapter-contract return (lib/
+    // verify/registry.js's own JSDoc promises `probe(repoPath) -> { score:
+    // 0-100, ... }`, but nothing validates it before it reaches here). Left
+    // unclamped: a negative score crashes '#'.repeat with an uncaught
+    // RangeError (Math.round(-10/5) = -2, and String.prototype.repeat
+    // throws on a negative count) — taking down the whole `swarm verify
+    // --probe-only` invocation instead of rendering one degraded-but-visible
+    // row; a >100 score renders a bar longer than the printed "/100" scale
+    // promises (score=200 -> a 40-character bar, twice the 20-character
+    // max). Clamp ONLY the bar's input to [0, 100] and fall back to 0 for a
+    // non-finite score (NaN) — the printed score label keeps the RAW,
+    // unclamped `p.score` so an out-of-contract adapter value stays visible
+    // to the operator instead of being silently normalized away.
+    const clampedScore = Math.max(0, Math.min(100, Number.isFinite(p.score) ? p.score : 0));
+    const bar = '#'.repeat(Math.round(clampedScore / 5));
     lines.push(`  ${p.name.padEnd(8)} ${String(p.score).padStart(3)}/100 ${bar}`);
     // F-4773fb77 (wave 20): p.reason is the same untrusted, target-repo-derived
     // value as formatVerify's result.probe.reason above (probeAll() in

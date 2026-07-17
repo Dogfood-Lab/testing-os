@@ -23,10 +23,36 @@
  *     Fullwidth Forms/Signs, and the common pictographic/emoji blocks (Misc
  *     Symbols & Pictographs, Emoticons, Transport & Map, Supplemental
  *     Symbols & Pictographs, Symbols & Pictographs Extended-A).
- *   - ZERO (0 columns): combining marks (U+0300-U+036F), variation selectors
- *     (U+FE00-U+FE0F, U+E0100-U+E01EF), zero-width space/ZWJ/ZWNJ/word-joiner/
- *     BOM (U+200B-U+200D, U+2060, U+FEFF).
+ *   - ZERO (0 columns): any code point whose Unicode general category is Mn
+ *     (Nonspacing_Mark) or Me (Enclosing_Mark) — decided by PROPERTY
+ *     (`\p{Mn}`/`\p{Me}` Unicode property escapes, resolved against V8's own
+ *     Unicode Character Database), not by enumerating one range per script.
+ *     This covers combining marks generically: Latin diacritics, Japanese
+ *     dakuten/handakuten (U+3099/U+309A — F-dc37b009), Hebrew points, Arabic
+ *     diacritics, Thai tone marks, and any other script's Mn/Me block,
+ *     including ones this file's authors never anticipated. (Mc,
+ *     Spacing_Mark — e.g. Devanagari vowel signs — is deliberately EXCLUDED:
+ *     those marks occupy a real terminal column, matching Markus Kuhn's
+ *     reference wcwidth() implementation that most terminal emulators
+ *     follow.) Plus the explicit fast-path ranges below: zero-width space/
+ *     ZWJ/ZWNJ/word-joiner/BOM (U+200B-U+200D, U+2060, U+FEFF) and variation
+ *     selectors (U+FE00-U+FE0F, U+E0100-U+E01EF) — kept as explicit ranges
+ *     for the non-mark members (the zero-width-space/ZWJ/word-joiner/BOM
+ *     code points are General Category Cf, Format, not M, so the property
+ *     check does not reach them at all).
  *   - NARROW (1 column): everything else, including all of ASCII/Latin.
+ *
+ * F-dc37b009 (wave 37): the WIDE_RANGES table's `[0x3041, 0x33ff]` entry
+ * ("Hiragana .. CJK Compatibility") had swallowed U+3099/U+309A — the
+ * standalone combining dakuten/handakuten marks — because nothing carved
+ * them out of the enclosing block range. The narrowest fix would have been
+ * to carve just those two code points into ZERO_WIDTH_RANGES; that is the
+ * enumerated-instance shape this repo has already relearned the cost of
+ * more than once (an enumerated list is a promise to keep enumerating
+ * forever, one script at a time). Deciding zero-width-ness by the Unicode
+ * PROPERTY every combining mark shares, in every script, means no future
+ * combining-mark block can reproduce this bug by sitting undiscovered
+ * inside a WIDE range.
  *
  * Known gap (disclosed, not silently assumed away — "conservative" over
  * "exhaustive"): multi-code-point emoji built from ZWJ sequences or
@@ -101,8 +127,25 @@ function inRanges(cp, ranges) {
   return false;
 }
 
+// F-dc37b009: decide zero-width-ness for combining marks by Unicode general
+// CATEGORY (Mn/Me), not by enumerating a range per script — see the file
+// header for the full rationale. Only ever consulted for a code point
+// neither fast-path range table above already classified, so the common
+// ASCII/CJK/emoji case never pays for a regex test.
+const COMBINING_MARK_RE = /^[\p{Mn}\p{Me}]$/u;
+
+function isCombiningMark(cp) {
+  // No Unicode Mn/Me code point exists below U+0300 (Combining Diacritical
+  // Marks, the first combining-mark block) — a cheap, universally-true
+  // fast-reject for the overwhelmingly common ASCII/Latin-1 case, not a
+  // script-specific carve-out.
+  if (cp < 0x300) return false;
+  return COMBINING_MARK_RE.test(String.fromCodePoint(cp));
+}
+
 function codePointWidth(cp) {
   if (inRanges(cp, ZERO_WIDTH_RANGES)) return 0;
+  if (isCombiningMark(cp)) return 0;
   if (inRanges(cp, WIDE_RANGES)) return 2;
   return 1;
 }

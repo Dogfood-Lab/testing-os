@@ -141,6 +141,19 @@ describe('F-4773fb77 — probe.reason (target-repo-controlled) is escaped before
  * array (the same shape probeAll() produces: `{ name, score, reason }`) --
  * this is a unit test of a pure rendering function, not a mock of a
  * dependency this package doesn't own.
+ *
+ * UPDATE (wave 37, F-d231b91e): the two boundary defects this block
+ * originally left "DEFENSIVE (disclosed, not fixed here)" -- the negative-
+ * score crash and the unclamped >100 bar -- are now fixed in
+ * commands/verify.js by swarm-cp-verbs, the domain this block's own
+ * comments named as owning that file. The two tests below are updated to
+ * assert the FIXED (clamped) behavior instead of pinning the bug; a
+ * dedicated pin test (f-d231b91e-formatprobe-score-clamp.test.js) carries
+ * the `@pins F-d231b91e` declaration and the full boundary-value proof. The
+ * NaN test's assertions are unchanged -- clamping NaN to 0 happens to
+ * render the identical empty bar it always did -- but it is no longer an
+ * accidental/undefended behavior; the Number.isFinite guard now makes it
+ * deliberate.
  */
 describe('F-a16e53ce — formatProbe() score-to-bar-length is proportional, with boundary values pinned', () => {
   function scoreLineFor(score) {
@@ -162,49 +175,54 @@ describe('F-a16e53ce — formatProbe() score-to-bar-length is proportional, with
       'score=100 must render a 20-character bar (Math.round(100/5))');
   });
 
-  it('DEFENSIVE (disclosed, not fixed here -- commands/verify.js is outside this test-only domain\'s owned glob): a NaN score silently renders an empty bar today, with no error signal', () => {
-    // Pins today's REAL behavior so a future change to this path is a
-    // conscious, reviewed diff instead of a silent drift: Math.round(NaN/5)
-    // is NaN, and '#'.repeat(NaN) coerces to zero repetitions per the
-    // ToIntegerOrInfinity spec step (NaN -> +0) -- so a non-numeric score
-    // produces an EMPTY bar with no thrown error, indistinguishable from a
-    // legitimately-scored-zero adapter. Verified directly (see this
-    // finding's own proof): Math.round(NaN / 5) is NaN, '#'.repeat(NaN) is ''.
+  it('a NaN score renders an empty bar via the Number.isFinite guard (F-d231b91e), with no error signal', () => {
+    // Math.round(NaN/5) is NaN, and '#'.repeat(NaN) coerces to zero
+    // repetitions per the ToIntegerOrInfinity spec step (NaN -> +0) -- so a
+    // non-numeric score renders an EMPTY bar with no thrown error,
+    // indistinguishable from a legitimately-scored-zero adapter. F-d231b91e
+    // made this deliberate: formatProbe's Number.isFinite(p.score) guard
+    // falls back to 0 before clamping, so the visual output here is
+    // UNCHANGED from before the fix -- what changed is that it is now a
+    // guarded, intentional fallback rather than an unguarded coincidence of
+    // '#'.repeat's own spec.
     const line = scoreLineFor(NaN);
     assert.match(line, /NaN\/100/,
       `NaN score must render literally as "NaN/100"; got: ${JSON.stringify(line)}`);
     assert.equal(barOf(line), '',
-      `NaN score must render an empty bar today (no '#'); got: ${JSON.stringify(line)}`);
+      `NaN score must render an empty bar (no '#'); got: ${JSON.stringify(line)}`);
   });
 
-  it('DEFENSIVE (disclosed, not fixed here): an out-of-range NEGATIVE score crashes formatProbe with an uncaught RangeError today', () => {
-    // '#'.repeat(n) throws for n < 0 (Math.round(-10/5) = -2, and
+  it('FIXED (F-d231b91e): an out-of-range NEGATIVE score no longer crashes formatProbe -- it renders an empty, clamped bar', () => {
+    // Pre-fix: '#'.repeat(n) throws for n < 0 (Math.round(-10/5) = -2, and
     // String.prototype.repeat's own spec throws RangeError for a negative
-    // count). No adapter shipped in lib/verify/adapters/*.js currently
-    // returns a negative score, so this path is unreached in production
-    // today -- but nothing between an adapter's probe() and formatProbe
-    // clamps or validates the value, so a future adapter bug (or a hand-
-    // crafted --probe-only scenario) producing one would crash the WHOLE
+    // count). No adapter shipped in lib/verify/adapters/*.js naturally
+    // returns a negative score, but nothing between an adapter's probe()
+    // and formatProbe validated the value, so a future adapter bug (or a
+    // hand-crafted --probe-only scenario) producing one crashed the WHOLE
     // `swarm verify --probe-only` invocation instead of rendering a
-    // malformed-but-visible row. Pinned here as a known, named defect
-    // (rather than left silently uncovered) and flagged to swarm-cp-verbs
-    // (owns commands/verify.js) rather than patched in this test-only
-    // domain.
-    assert.throws(
+    // malformed-but-visible row. F-d231b91e (swarm-cp-verbs, wave 37) closed
+    // this by clamping to [0, 100] before the '#'.repeat call. Full boundary
+    // proof (including the exact -10 reproduction and the raw-score-still-
+    // labeled behavior): f-d231b91e-formatprobe-score-clamp.test.js.
+    assert.doesNotThrow(
       () => formatProbe([{ name: 'node', score: -10, reason: 'ok' }]),
-      /Invalid count value/,
-      'a negative score is expected to crash formatProbe today (disclosed defect, not fixed in this domain)'
+      'a negative score must no longer crash formatProbe (F-d231b91e clamped it)',
     );
+    const line = scoreLineFor(-10);
+    assert.match(line, /-10\/100/, 'the raw negative score must still be visible in the label');
+    assert.equal(barOf(line), '', 'a negative score clamps to an empty bar, not a partial or crashing one');
   });
 
-  it('DEFENSIVE (disclosed, not fixed here): a score > 100 renders a misleadingly-long bar with no clamping today', () => {
-    // score=200 -> Math.round(200/5)=40 '#'s against a printed "/100" scale
-    // -- twice the visual length the 0-100 axis promises the operator, with
-    // no upstream clamp. Pinned so a future change to this path (in either
-    // direction: adding a clamp, or drifting further) is a reviewed diff.
+  it('FIXED (F-d231b91e): a score > 100 renders a bar clamped to the 20-character max, not a misleadingly-long one', () => {
+    // Pre-fix: score=200 -> Math.round(200/5)=40 '#'s against a printed
+    // "/100" scale -- twice the visual length the 0-100 axis promises the
+    // operator, with no upstream clamp. F-d231b91e (swarm-cp-verbs, wave 37)
+    // closed this by clamping the bar's input to 100 while keeping the raw
+    // score in the printed label. Full boundary proof:
+    // f-d231b91e-formatprobe-score-clamp.test.js.
     const line = scoreLineFor(200);
-    assert.match(line, /200\/100/);
-    assert.equal(barOf(line).length, 40,
-      `score=200 must render a 40-character bar today (no clamping); got ${barOf(line).length} in: ${JSON.stringify(line)}`);
+    assert.match(line, /200\/100/, 'the raw out-of-range score must still be visible in the label');
+    assert.equal(barOf(line).length, 20,
+      `score=200 must render a bar clamped to the 20-character max, not the pre-fix unclamped 40; got ${barOf(line).length} in: ${JSON.stringify(line)}`);
   });
 });

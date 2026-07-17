@@ -37,12 +37,26 @@
  * than removing it. A contributor who wants `lib/verify/runner.test.js` is still
  * told no; they are just told LOUDLY, at test time, instead of discovering it
  * months later when the test they wrote turns out to have never run once.
+ *
+ * SYMLINK FOLLOWING (F-93c87a69). `readdirSync(dir, {withFileTypes:true})`
+ * reports a Windows junction's dirent as `isDirectory() === false` and
+ * `isSymbolicLink() === true` (verified empirically) — a walk that recurses
+ * only on `isDirectory()` never enters a symlinked/junctioned subdirectory,
+ * so a `.test.js` living inside one would be invisible to BOTH `npm test`'s
+ * glob (the original F-6a5eb347 defect) AND this gate. `walkTestFiles` below
+ * resolves the dirent's target explicitly (`realpathSync` + `statSync`) and
+ * recurses into it when it is a directory, with a visited-realpath guard
+ * against a symlink cycle. Not reachable today — zero symlinks exist
+ * anywhere under this package's tracked tree — but future-proofed the same
+ * way this repo has calibrated other real-but-currently-unreachable gaps
+ * (e.g. F-89b7dcd5, F-937733ee).
  */
 
 import assert from 'node:assert/strict';
-import { readdirSync } from 'node:fs';
+import { readdirSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, existsSync, symlinkSync, realpathSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { dirname, join, relative, sep } from 'node:path';
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach, afterEach } from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 const PKG_ROOT = dirname(fileURLToPath(import.meta.url));
@@ -63,12 +77,49 @@ function isCollectedByTestScript(relPath) {
   return parts.length === 2 && parts[0] === 'lib';
 }
 
-function walkTestFiles(dir, out = []) {
+/**
+ * @param {string} dir
+ * @param {string[]} out
+ * @param {Set<string>} seenRealDirs — realpath-canonicalized dirs already
+ *   recursed into via a symlink, so a cycle (including a symlink pointing
+ *   at an ancestor of itself) terminates instead of looping forever. Only
+ *   symlink targets are tracked here — plain directory recursion below
+ *   cannot cycle on its own, since a real filesystem tree has no loops.
+ */
+function walkTestFiles(dir, out = [], seenRealDirs = new Set()) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (SKIP_DIRS.has(entry.name)) continue; // by name, regardless of dirent kind — see below
+    const full = join(dir, entry.name);
     if (entry.isDirectory()) {
-      if (!SKIP_DIRS.has(entry.name)) walkTestFiles(join(dir, entry.name), out);
+      walkTestFiles(full, out, seenRealDirs);
+    } else if (entry.isSymbolicLink()) {
+      // F-93c87a69: a junction/symlink reports isDirectory()===false here, so
+      // the target must be resolved explicitly rather than trusted from the
+      // dirent. The upfront SKIP_DIRS check above (not gated on isDirectory())
+      // matters concretely for this case: every wave worktree junctions its
+      // OWN node_modules at the worktree root, and following a same-named
+      // junction blindly would walk that entire dependency tree.
+      let real;
+      try {
+        real = realpathSync(full);
+      } catch {
+        continue; // dangling symlink target; nothing to walk
+      }
+      if (seenRealDirs.has(real)) continue; // cycle guard
+      let targetStat;
+      try {
+        targetStat = statSync(real);
+      } catch {
+        continue; // target vanished between readdir and stat; nothing to walk
+      }
+      if (targetStat.isDirectory()) {
+        seenRealDirs.add(real);
+        walkTestFiles(real, out, seenRealDirs);
+      } else if (entry.name.endsWith('.test.js')) {
+        out.push(relative(PKG_ROOT, full).split(sep).join('/'));
+      }
     } else if (entry.name.endsWith('.test.js')) {
-      out.push(relative(PKG_ROOT, join(dir, entry.name)).split(sep).join('/'));
+      out.push(relative(PKG_ROOT, full).split(sep).join('/'));
     }
   }
   return out;
@@ -112,5 +163,90 @@ describe('every .test.js in this package is actually reachable by `npm test` (F-
       assert.equal(isCollectedByTestScript(nested), false,
         `${nested} is NOT collected by the test script and the rule must say so`);
     }
+  });
+});
+
+describe('walkTestFiles follows symlinked/junctioned directories (F-93c87a69)', () => {
+  let scratchRoot;
+  let extraTempDirs;
+
+  beforeEach(() => {
+    scratchRoot = mkdtempSync(join(tmpdir(), 'walk-symlink-'));
+    extraTempDirs = [];
+  });
+  afterEach(() => {
+    for (const d of extraTempDirs) {
+      try { rmSync(d, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
+    }
+    try { rmSync(scratchRoot, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
+  });
+
+  /**
+   * The walk exactly as it existed before this fix, kept ONLY so the fixture
+   * below can prove it is a real discriminator and not a tautology: since
+   * `entry.isDirectory()` is false for a junction/symlink on this platform,
+   * this reference version never recurses into one, matching F-93c87a69's
+   * empirical finding.
+   */
+  function walkTestFilesPreFix(dir, out = []) {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRS.has(entry.name)) walkTestFilesPreFix(join(dir, entry.name), out);
+      } else if (entry.name.endsWith('.test.js')) {
+        out.push(join(dir, entry.name));
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Builds a junction inside `scratchRoot` pointing at a `.test.js`-bearing
+   * directory that lives in a SEPARATE temp dir, entirely outside the tree
+   * being walked. The real target must NOT be reachable by plain recursion
+   * from `scratchRoot` — nesting it inside `scratchRoot` as a sibling of the
+   * junction would let ordinary (non-symlink) recursion find it directly,
+   * masking the exact defect this fixture exists to isolate (a file visible
+   * ONLY through the symlink).
+   */
+  function buildJunctionFixture() {
+    const realTarget = mkdtempSync(join(tmpdir(), 'walk-symlink-target-'));
+    extraTempDirs.push(realTarget);
+    const nestedTest = join(realTarget, 'nested.test.js');
+    writeFileSync(nestedTest, '// fixture only — never executed as a real test\n');
+    const linkPath = join(scratchRoot, 'linked-dir');
+    symlinkSync(realTarget, linkPath, 'junction');
+    return { realTarget, nestedTest, linkPath };
+  }
+
+  it('RED (pre-fix reference): a .test.js inside a junctioned dir is invisible to the OLD walk', () => {
+    const { nestedTest } = buildJunctionFixture();
+
+    // Fixture sanity: the file genuinely exists on disk before asking whether
+    // any walk can see it through the junction.
+    assert.ok(existsSync(nestedTest), 'fixture setup: the nested test file must exist');
+
+    const found = walkTestFilesPreFix(scratchRoot);
+    assert.ok(!found.includes(nestedTest),
+      'fixture sanity: the PRE-FIX walk must NOT see the file through the junction — '
+        + 'if it does, this fixture no longer exercises F-93c87a69 and the GREEN test below is vacuous');
+  });
+
+  it('GREEN: the current walk follows the junction and reports the nested test file', () => {
+    buildJunctionFixture();
+
+    const found = walkTestFiles(scratchRoot);
+    assert.ok(found.some((p) => p.endsWith('nested.test.js')),
+      'the current walk must follow a symlinked/junctioned directory and report the .test.js inside it — '
+        + `got: ${JSON.stringify(found)}`);
+  });
+
+  it('a symlinked directory that cycles back on an ancestor does not hang the walk', () => {
+    // Non-vacuity note: if the cycle guard ever regresses to unbounded
+    // recursion, this call hangs or stack-overflows rather than failing an
+    // assertion — completing at all, within node's default test timeout, IS
+    // the proof the guard fired.
+    symlinkSync(scratchRoot, join(scratchRoot, 'self-link'), 'junction');
+    const found = walkTestFiles(scratchRoot);
+    assert.ok(Array.isArray(found));
   });
 });

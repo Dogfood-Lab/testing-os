@@ -29,7 +29,10 @@ html[data-theme='dark'] {
  * caught by wave-22 CI gate on first deploy of v1.1.2). The dark-mode
  * accent #34d399 (logo emerald) gives 1.92:1 contrast against white,
  * failing WCAG AA 4.5:1 for text. Pa11y recommends #008857 (darker
- * emerald, same hue family) which gives 4.55:1 against white = pass.
+ * emerald, same hue family) which gives 4.51:1 against white = pass —
+ * a thin margin over the 4.5:1 threshold, not a comfortable one (an
+ * earlier revision overstated it as 4.55:1; WCAG relative-luminance
+ * math gives 4.51).
  *
  * Brand identity preserved: dark mode stays #34d399 (logo-matching).
  * Only the light-mode link/text accent shifts darker for legibility.
@@ -45,20 +48,20 @@ html[data-theme='dark'] {
  */
 html[data-theme='light'] {
   --sl-color-accent-low: #a7f3d0;   /* emerald-200 — sidebar accent low (light) */
-  --sl-color-accent: #008857;       /* WCAG-AA-compliant emerald on white (4.55:1) */
+  --sl-color-accent: #008857;       /* WCAG-AA-compliant emerald on white (4.51:1) */
   --sl-color-accent-high: #064e3b;  /* emerald-900 — hover / high-contrast (light) */
 }
 
 /* Light-mode: inline <code> INSIDE <a> — WCAG-AA contrast fix (Path B,
  * post-v1.3.0 handbook deploy). The D-DOCS-004 fix above sized the
- * light-mode accent #008857 for 4.55:1 contrast against PURE WHITE,
+ * light-mode accent #008857 for 4.51:1 contrast against PURE WHITE,
  * not against the inline-code background tint. Starlight's
  * `.sl-markdown-content code` rule paints inline `<code>` with
  * `--sl-color-bg-inline-code` = `--sl-color-gray-6` = `hsl(224, 20%, 94%)`
  * (≈ #ECEFF4). When a link wraps an inline `<code>` — the common
  * cli-reference pattern of `[`swarm revalidate`](…)`-style cross-
  * links — the result is the #008857 accent text rendering on the
- * #ECEFF4 inline-code tint, which lands at 3.89:1: below the 4.5:1
+ * #ECEFF4 inline-code tint, which lands at 3.91:1: below the 4.5:1
  * WCAG AA threshold for normal text.
  *
  * The v1.3.0 pages.yml pa11y sweep (the Stage D MED-3 expansion to
@@ -72,7 +75,7 @@ html[data-theme='light'] {
  *
  * Fix: neutralize the inline-code background for code-inside-links
  * in light mode only. The #008857 link color then renders against
- * the page background (pure white in light mode) at 4.55:1 — the
+ * the page background (pure white in light mode) at 4.51:1 — the
  * same ratio the D-DOCS-004 fix already verified. No global accent
  * change (`scripts/check-accent-color.test.mjs` is intact); no
  * dark-mode change (dark mode's #34d399-on-gray-5 lands at ~6.4:1,

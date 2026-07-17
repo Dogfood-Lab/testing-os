@@ -270,7 +270,7 @@ describe('revalidate — a repaired-to-collected FULL-coverage audit wave closes
   let tmp, dbPath, repoPath;
   const RUN = 'r-reval-fc';
 
-  function seed({ partial }) {
+  function seed({ partial, domainBOutputPath } = {}) {
     const db = openDb(dbPath);
     db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, branch, status)
       VALUES (?, 'org/r', ?, ?, 'main', 'feature-audit')`).run(RUN, repoPath, 'a'.repeat(40));
@@ -298,9 +298,22 @@ describe('revalidate — a repaired-to-collected FULL-coverage audit wave closes
     // domain-a is blocked (invalid_output) — the one we will repair.
     db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status, error_message) VALUES (?, ?, 'invalid_output', 'schema')")
       .run(waveId, domA.id);
-    // domain-b: complete for the full-coverage case, still blocked for partial.
-    db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status, error_message) VALUES (?, ?, ?, ?)")
-      .run(waveId, domB.id, partial ? 'invalid_output' : 'complete', partial ? 'schema' : null);
+    // domain-b: complete for the full-coverage case, still blocked for
+    // partial. F-a9c399ce: every fixture before this one leaves domain-b's
+    // output_path NULL, which means revalidate.js's declarations loop
+    // (`if (!row.output_path...) continue`) drops it before
+    // scopeConfirmedToOwningDomain is ever reached — the cross-domain gate
+    // on THAT call site had never been exercised by any fixture. Passing
+    // domainBOutputPath here wires a real, already-complete agent output
+    // into the same wave, so the GATE RED test below can drive a genuine
+    // cross-domain declaration through revalidate() specifically.
+    if (domainBOutputPath) {
+      db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status, output_path) VALUES (?, ?, 'complete', ?)")
+        .run(waveId, domB.id, domainBOutputPath);
+    } else {
+      db.prepare("INSERT INTO agent_runs (wave_id, domain_id, status, error_message) VALUES (?, ?, ?, ?)")
+        .run(waveId, domB.id, partial ? 'invalid_output' : 'complete', partial ? 'schema' : null);
+    }
 
     // A prior OPEN finding last seen in wave 1 (the earlier wave), in scope, NOT
     // rediscovered in wave 2. last_seen_wave = 1 (NOT the current wave's id=2),
@@ -417,5 +430,52 @@ describe('revalidate — a repaired-to-collected FULL-coverage audit wave closes
     const prior = db.prepare("SELECT status FROM findings WHERE run_id = ? AND finding_id = 'F-PRIOR'").get(RUN);
     closeDb(dbPath);
     assert.equal(prior.status, 'approved', 'a partial repair must NOT close the prior by absence');
+  });
+
+  // F-a9c399ce: the sibling of wave4-swarm-cp-pins.test.js:508's "GATE RED: a
+  // domain cannot close a finding its own globs do not cover (F-18d0ef6d)" —
+  // that test drives the cross-domain check through collect.js. F-18d0ef6d's
+  // fix landed at BOTH call sites (collect.js AND revalidate.js:617's
+  // identical scopeConfirmedToOwningDomain call), but no fixture ever routed
+  // a SECOND domain's own completed output — with a real output_path — through
+  // revalidate()'s repair path: every seed() above leaves domain-b's
+  // agent_run.output_path NULL, which revalidate.js:609's `!row.output_path`
+  // guard drops before the scope check is ever reached. This test closes that
+  // gap: without it, reverting ONLY revalidate.js's scopeConfirmedToOwningDomain
+  // call (leaving collect.js's untouched) would ship with the full suite green
+  // — proven live in a scratch worktree (see this wave's swarm-cp-tests
+  // output for the mutation-proof recipe).
+  it('GATE RED: revalidate() itself cannot let a non-owning domain close another domain\'s finding (F-a9c399ce)', () => {
+    const domainBOutputPath = join(tmp, 'domain-b-existing.json');
+    // domain-b names F-PRIOR, which lives under packages/a/** — domain-b owns
+    // packages/b/** only. The exact "well-meaning agent vouching for
+    // something it saw in the shared confirmation queue" shape F-18d0ef6d
+    // describes, driven through revalidate() instead of collect().
+    writeFileSync(domainBOutputPath, JSON.stringify({
+      domain: 'domain-b', summary: 'clean', features: [], confirmed: ['F-PRIOR'],
+    }));
+    seed({ partial: false, domainBOutputPath });
+
+    const report = revalidate({
+      runId: RUN, dbPath,
+      // domain-a — the actual owner of F-PRIOR — is the one being repaired,
+      // and its OWN corrected output declares nothing. The only declaration
+      // anywhere in this wave for F-PRIOR comes from domain-b, which does not
+      // own it.
+      outputs: { 'domain-a': writeAuditOutput('domain-a', []) },
+      reason: 'repair domain-a; domain-b already complete with a foreign confirmation',
+      apply: true,
+    });
+    assert.equal(report.waveStatusAfter, 'collected', 'full coverage after the repair — the wave still flips');
+
+    const db = openDb(dbPath);
+    const prior = db.prepare("SELECT status FROM findings WHERE run_id = ? AND finding_id = 'F-PRIOR'").get(RUN);
+    closeDb(dbPath);
+    assert.notEqual(prior.status, 'fixed',
+      'a declaration from a domain that does not own the file must not close it through revalidate() either — '
+        + 'pre-this-pin, no fixture could tell the difference between this passing because the call site is '
+        + 'correct and it passing because the call site was never reached at all');
+    assert.ok(isOpenFinding(prior.status),
+      `F-PRIOR must stay OPEN for the domain that actually owns it (got '${prior.status}')`);
   });
 });
