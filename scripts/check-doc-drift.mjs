@@ -311,14 +311,35 @@ const sourceVsTargetCoverageHandler = {
  * information-disclosure leak (see that config entry's own description in
  * scripts/doc-drift-patterns.json for the proof and the fix location, which
  * sits outside ci-tooling's owned globs).
+ *
+ * `allowlist` (optional) — wave-41 post-merge rescope (2026-07-17,
+ * F-cec640b1): per-file exemptions for hits that are PERMANENT BY DESIGN,
+ * added for exactly one live case — dogfood/roadmap/swarm-1784091637-5127.1.json,
+ * whose baked-in absolute path predates the wave-41 emitter fix and can
+ * never be recompiled away because T5 of the pass contract
+ * (docs/trajectory-and-closure.dispatch.md) makes historical sequences
+ * immutable ("versions supersede; nothing rewrites"). Same 3-line resolve+
+ * skip idiom as the sibling handlers (schema-conformance,
+ * source-vs-target-coverage). The skip is silent while the exemption is
+ * doing its documented job — a warning that can never be acted on and never
+ * goes away is wallpaper, not signal — but the moment an allowlisted file
+ * stops containing any forbidden pattern (deleted, rewritten, pattern
+ * retired), the entry surfaces as a non-blocking 'warn' marked safe to
+ * delete, mirroring check-finding-regression-pins.mjs's unused_allow_entries
+ * discipline so a dead exemption cannot linger invisibly (Liargkovas 2023,
+ * unaudited suppression-registry debt).
  */
 const forbiddenPatternInTargetsHandler = {
   kind: 'forbidden-pattern-in-targets',
-  description: 'No target file may contain any of the forbidden patterns.',
+  description: 'No target file may contain any of the forbidden patterns. Allowlisted files are exempt while they still hit a pattern; a stale allowlist entry warns.',
   requiredFields: ['patterns', 'targets'],
   async run(check, repoRoot) {
     const reports = [];
     const targetFiles = expandGlobs(check.targets ?? [], repoRoot);
+    const allowlist = new Set((check.allowlist ?? []).map((p) => resolve(repoRoot, p)));
+    // Tracks whether each allowlist entry actually exempted at least one hit
+    // this run — the input to the stale-entry warn below.
+    const allowlistDidWork = new Map([...allowlist].map((p) => [p, false]));
 
     // F-cca3ed17: zero matched targets means the gate protects NOTHING — a
     // renamed docs dir or a typo'd glob turned the check silently green
@@ -337,6 +358,7 @@ const forbiddenPatternInTargetsHandler = {
     for (const file of targetFiles) {
       const text = readFileSync(file, 'utf8');
       const lines = text.split(/\r?\n/);
+      const isAllowlisted = allowlist.has(file);
       for (const pattern of check.patterns ?? []) {
         const re = new RegExp(pattern.regex, 'g');
         const hits = [];
@@ -347,6 +369,12 @@ const forbiddenPatternInTargetsHandler = {
           re.lastIndex = 0;
         });
         if (hits.length > 0) {
+          if (isAllowlisted) {
+            // Exempt, and the exemption is live (the file still hits) — no
+            // report, per the permanent-carve-out semantics in the docstring.
+            allowlistDidWork.set(file, true);
+            continue;
+          }
           const rel = relative(repoRoot, file).replace(/\\/g, '/');
           for (const hit of hits) {
             reports.push({
@@ -360,6 +388,22 @@ const forbiddenPatternInTargetsHandler = {
           }
         }
       }
+    }
+
+    // Stale-exemption surfacing (2026-07-17 rescope): an allowlist entry that
+    // exempted nothing this run — the named file is gone, no longer matched
+    // by targets, or no longer contains any forbidden pattern — is dead
+    // config and must not linger silently. Non-blocking by design: staleness
+    // means the gate is now STRICTER than its config claims, not weaker.
+    for (const [p, worked] of allowlistDidWork) {
+      if (worked) continue;
+      const rel = relative(repoRoot, p).replace(/\\/g, '/');
+      reports.push({
+        checkId: check.id,
+        severity: 'warn',
+        message: `[${check.id}] stale allowlist entry: ${rel} exempted no forbidden-pattern hit this run (file missing, outside targets, or clean) — safe to delete`,
+        hint: 'Remove the entry from this check\'s allowlist in scripts/doc-drift-patterns.json. A dead exemption left in place is unaudited suppression debt waiting to mask a future real hit on that path.',
+      });
     }
 
     return reports;
@@ -655,6 +699,22 @@ const helperAdoptionSweepHandler = {
  * currently disagree on 16 points, and scripts/check-doc-drift-roadmap.test.mjs
  * for the fixture-isolation tests that keep this handler's behavior pinned
  * independent of that still-in-flight cross-domain reconciliation.
+ *
+ * `suspendedTargets` (optional) — wave-41 post-merge rescope (2026-07-17,
+ * F-f52fc700): a DATED, NAMED, LOUD suspension, distinct from `allowlist` on
+ * both axes. `allowlist` is for PERMANENT structural exclusions (a file the
+ * check should never judge — e.g. latest.json's pointer shape under the
+ * full-document check) and is silent by design; `suspendedTargets` is for
+ * TRANSITIONAL exemptions with a named end state, and every entry emits a
+ * non-blocking 'warn' report on EVERY run — the suspension stays visible in
+ * CI output until someone deletes it, so it cannot quietly become permanent
+ * (the Liargkovas 2023 unaudited-suppression failure mode this repo's own
+ * drain-queue doctrine exists to prevent). Each entry requires non-empty
+ * string fields { glob, reason, until }; a malformed entry is a config-error
+ * (fail loud — a broken suspension must not silently widen or narrow the
+ * gate). Files matched by a suspended glob are excluded from validation even
+ * when a `targets` glob also matches them: suspension wins, so overlap can
+ * never produce the contradictory "validated AND suspended" state.
  */
 const schemaConformanceHandler = {
   kind: 'schema-conformance',
@@ -779,7 +839,38 @@ const schemaConformanceHandler = {
     }
 
     const reports = [];
+
+    // Wave-41 post-merge rescope (2026-07-17, F-f52fc700): dated transitional
+    // suspensions. See this handler's docstring for the allowlist-vs-
+    // suspendedTargets split (permanent-silent vs transitional-loud). The
+    // warn fires on every run, matched files or not, so a suspension can
+    // never fall out of sight before someone deletes it at its named
+    // milestone (wave 42 for the roadmap full-document check).
+    const suspendedFiles = new Set();
+    for (const susp of check.suspendedTargets ?? []) {
+      const fieldOk = (v) => typeof v === 'string' && v.length > 0;
+      if (!susp || !fieldOk(susp.glob) || !fieldOk(susp.reason) || !fieldOk(susp.until)) {
+        reports.push({
+          checkId: check.id,
+          severity: 'config-error',
+          message: `[${check.id}] malformed suspendedTargets entry — each entry requires non-empty string fields { glob, reason, until }: ${JSON.stringify(susp)}`,
+          hint: 'A suspension without a scope, a reason, and a named end state is unaudited suppression debt. Fix the entry in scripts/doc-drift-patterns.json or delete it.',
+        });
+        continue;
+      }
+      const matched = expandGlobs([susp.glob], repoRoot, { recursive: true });
+      for (const f of matched) suspendedFiles.add(f);
+      const relNames = matched.map((f) => relative(repoRoot, f).replace(/\\/g, '/'));
+      reports.push({
+        checkId: check.id,
+        severity: 'warn',
+        message: `[${check.id}] SUSPENDED until ${susp.until}: ${susp.glob} — ${matched.length} file(s) skipped, NOT validated against ${check.schema}${relNames.length > 0 ? ` (${relNames.join(', ')})` : ''} — ${susp.reason}`,
+        hint: 'A suspended target is skipped loudly on every run. Delete this suspendedTargets entry the moment its named milestone lands and the files conform — a suspension that outlives its reason is exactly the unaudited-suppression debt this repo\'s drain-queue doctrine exists to prevent.',
+      });
+    }
+
     for (const file of targetFiles) {
+      if (suspendedFiles.has(file)) continue;
       if (allowlist.has(file)) continue;
       const basename = file.replace(/\\/g, '/').split('/').pop() ?? file;
       const isNegative = negFilenameRe.test(basename);

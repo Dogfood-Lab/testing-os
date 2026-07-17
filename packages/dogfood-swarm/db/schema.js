@@ -618,8 +618,13 @@ export const MIGRATIONS_MANIFEST = [
  * array (same reference, not a second copy), so the two can never diverge the
  * way an independently-typed duplicate could. v10 (C3) adds 'reopened' (the
  * operator-asserted fixed|deferred|rejected -> recurring transition, `swarm
- * reopen`) and 'operator_closed' (the `swarm close` verb's forced disposal) —
- * both are pure JS-constant additions; neither requires a schema migration.
+ * reopen`) and 'operator_closed' — RESERVED, never written: cmdClose's
+ * event_type mirrors its --as value ('fixed'), with closure_kind='operator'
+ * carrying the operator provenance (the wave-41 amendment to the C3 contract
+ * records this as the shipped design; docs/trajectory-and-closure.dispatch.md).
+ * The member stays in the enum so historical contract references stay legal
+ * and f-c0b12add's enum pin holds. Both additions are pure JS constants;
+ * neither requires a schema migration.
  */
 export const EVENT_TYPES = Object.freeze([
   'reported', 'approved', 'fixed', 'unverified', 'deferred', 'rejected', 'recurred',

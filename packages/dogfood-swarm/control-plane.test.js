@@ -203,9 +203,12 @@ describe('Fingerprint', () => {
     const f3 = { category: 'docs', description: 'CHANGELOG missing' };
 
     assert.equal(computeFingerprint(f1), computeFingerprint(f2));
-    // f1 and f3 collapse — both are category=docs with no other identity. To
-    // differentiate, give them rule_ids or file paths:
-    assert.equal(computeFingerprint(f1), computeFingerprint(f3));
+    // f1 and f3 no longer collapse: file-less findings fold a normalized
+    // description component into the fingerprint (the wave-41 fusion fix —
+    // wave 40's collect donated three distinct file-less reports to unrelated
+    // priors because category was the only discriminating input). Same
+    // description still dedups (f1/f2 above); different descriptions differ:
+    assert.notEqual(computeFingerprint(f1), computeFingerprint(f3));
 
     const f4 = { category: 'docs', file: 'README.md' };
     const f5 = { category: 'docs', file: 'CHANGELOG.md' };

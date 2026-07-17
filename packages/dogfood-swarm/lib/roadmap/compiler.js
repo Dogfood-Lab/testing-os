@@ -168,7 +168,12 @@ export function writeRoadmapArtifact(runId, artifact, { dbPath } = {}) {
 
   recordRoadmapArtifact(db, { runId, path: relPath, contentHash });
 
-  return { path: absPath, currentPath, latestPath, sequence };
+  // content_hash returned so the CLI envelope surfaces the SAME self-excluded
+  // hash embedded above and recorded in the ledger — the merge of the two
+  // wave-41 halves briefly had commands/roadmap.js re-hashing the final file
+  // bytes (hash-including-the-embedded-hash), which can never equal the
+  // ledger's self-excluded value; one derivation, surfaced everywhere.
+  return { path: absPath, currentPath, latestPath, sequence, content_hash: contentHash };
 }
 
 /**

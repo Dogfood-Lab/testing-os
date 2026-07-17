@@ -276,7 +276,7 @@ describe('F-648f8b51 — cmdReopen apply-success hint never echoes raw --ids', (
 
   afterEach(() => {
     try { closeDb(dbPath); } catch { /* not opened by this test */ }
-    rmSync(tmp, { recursive: true, force: true });
+    try { rmSync(tmp, { recursive: true, force: true }); } catch { /* Windows lock lag — F-8ad2d58d class */ }
   });
 
   it('LIVE PROOF: a raw ANSI byte smuggled via a second, non-matching --ids entry never reaches stdout, and the hint names only the real, flipped id', () => {

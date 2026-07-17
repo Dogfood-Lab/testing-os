@@ -57,11 +57,21 @@ describe('compileGrandfatheredManifestDrain — F-6c807f60 grandfathered-manifes
     });
   });
 
-  it('an entry whose revalidate_by is TODAY (exactly at the boundary) is overdue — inclusive per this file\'s own date convention', () => {
+  it('an entry whose revalidate_by is TODAY (exactly at the boundary) is NOT yet overdue — exclusive per the shared revalidation-cadence convention (F-780490da)', () => {
     const allowlist = { allow: { 'F-1': { reason: 'r', file: 'f', owner: 'o', revalidate_by: '2026-07-17' } } };
     withRepoRoot(allowlist, (repoRoot) => {
       const result = compileGrandfatheredManifestDrain(repoRoot, new Date('2026-07-17T00:00:00Z'));
-      assert.equal(result.overdue.length, 1, 'a revalidate_by of TODAY must already be overdue, not "due tomorrow"');
+      assert.equal(result.overdue.length, 0,
+        'revalidate_by === today must NOT be overdue — the boundary is exclusive (revalidate_by < today), ' +
+        'matching scripts/lib/revalidation-cadence.mjs so one definition of overdue exists');
+    });
+  });
+
+  it('an entry whose revalidate_by was YESTERDAY is overdue (exclusive boundary, one day past)', () => {
+    const allowlist = { allow: { 'F-1': { reason: 'r', file: 'f', owner: 'o', revalidate_by: '2026-07-16' } } };
+    withRepoRoot(allowlist, (repoRoot) => {
+      const result = compileGrandfatheredManifestDrain(repoRoot, new Date('2026-07-17T00:00:00Z'));
+      assert.equal(result.overdue.length, 1);
     });
   });
 

@@ -204,6 +204,18 @@
       "file": "packages/dogfood-swarm/db/schema.js",
       "owner": "coordinator",
       "revalidate_by": "2026-08-17"
+    },
+    "F-B40-002": {
+      "reason": "Wave-41 backend rider provenance cross-reference, not a fix pin: F-B40-002 is the backend lane's wave-40 LOCAL label whose report was fingerprint-swallowed at collect (fused into F-f86e42eb, see that finding's close event) and therefore has no canonical DB id yet — the wave-42 audit mints one. The comment corrects transitions.js's false reopen-reason-symmetry claim; comment-only, no behavior change, no non-tautological test exists for a comment.",
+      "file": "packages/findings/review/transitions.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
+    },
+    "F-c7b0f47b": {
+      "reason": "Cross-reference, not a fix pin: lib/roadmap/compile.js documents the schema-vs-emitter vocabulary decision (still in flight, wave-42) and the compile.js-is-not-dead-code refutation by citing the canonical wave-40 finding id. The fix for F-c7b0f47b itself is backend's schema amendment with its own vitest suite; this mention exists so the next reader does not re-investigate.",
+      "file": "packages/dogfood-swarm/lib/roadmap/compile.js",
+      "owner": "coordinator",
+      "revalidate_by": "2026-08-17"
     }
   }
 }

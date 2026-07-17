@@ -238,17 +238,23 @@ test('F-7493be3c: every committed fixture is pointer-shaped ({ run_id, sequence,
 // and which side moves is a cross-domain decision still in flight this same
 // wave (backend may amend the schema; core/verbs may conform the emitters).
 //
-// Consequently this file does NOT assert running the live repoRoot's
-// roadmap-artifact-full-document-schema check is clean — it structurally
-// cannot be until that reconciliation lands AND the affected run is
-// recompiled (see the coordinator's own wave-41 seam note). What CAN be
-// pinned permanently: (1) the check is wired with the shape this finding
-// specifies, independent of the reconciliation's outcome; (2) the FIXTURES
-// this lane authored are schema-accurate against the schema as it exists in
-// THIS worktree right now, proven in isolation from the live (currently
-// nonconformant) dogfood/roadmap/*.json data — so if the schema is the side
-// that ends up moving, these fixtures either still pass or fail loud with a
-// clear Ajv diff, never silently.
+// RESCOPED 2026-07-17 (post-wave-41 merge; tracked to WAVE 42): the paragraph
+// that used to sit here said this file could not assert the live check clean
+// "until that reconciliation lands AND the affected run is recompiled" — and
+// predicted the coordinator's end-of-wave recompile would be what turned it
+// green. That prediction did not survive contact with the merge: the emitter
+// reconciliation was PARTIAL (four axes landed — compiled_at rename, sections
+// dropped, notesPath relativized, content_hash — but the schema's full
+// vocabulary was adopted by neither compiler, and the residual gap is
+// SEMANTIC: $defs/drainEntry cadence-in-RUNS vs both implementations'
+// cadence-in-DATES). That decision is a wave-42 cross-domain finding, so the
+// check was rescoped for the transitional state: `targets` narrowed to the
+// fixtures glob (still fully enforcing — the non-vacuous half), and the live
+// dogfood/roadmap/swarm-*.json glob moved to `suspendedTargets`, which skips
+// validation but emits a non-blocking WARN on every run until wave 42
+// deletes it. This file NOW pins that rescoped design: the live check IS
+// clean (warn-only) against the real tree, the suspension is loud, and the
+// fixtures half still fails red when a fixture stops conforming.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const documentFixturesDir = join(repoRoot, 'scripts/__roadmap-document-fixtures__');
@@ -333,12 +339,35 @@ test('F-f52fc700: direct-Ajv proof that each invalid document fixture violates t
   assert.equal(validate({ ...missingRequired, drain_queue: [] }), true,
     'fixing the ONE claimed violation must make it pass — proves the schema requirement, not an unrelated typo, rejected it');
 
+  // RESCOPE 2026-07-17 (wave-41 seam repair, tracked with the wave-42 items):
+  // this fixture originally used `notesPath` as its unknown extra property.
+  // The backend lane's same-wave schema amendment (F-c7b0f47b) LEGALIZED
+  // notesPath as an optional, repo-relative-only top-level property, so the
+  // old fixture stopped violating additionalProperties and started violating
+  // the new pattern instead — failing for a different reason than its name
+  // claims, which is exactly what this test exists to catch. The extra
+  // property is now `sections`, the CLI-envelope key the amended schema
+  // deliberately dropped (and therefore the most valuable additionalProperties
+  // pin available: it asserts the old envelope vocabulary stays unrecognized).
+  // The absolute-notesPath shape moved to its own correctly-named fixture,
+  // asserted below.
   const extraProperty = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-extra-top-level-property.json'), 'utf8'));
   assert.equal(validate(extraProperty), false);
-  assert.ok(validate.errors.some((e) => e.keyword === 'additionalProperties' && e.params.additionalProperty === 'notesPath'),
-    `expected an additionalProperties(notesPath) error, got: ${JSON.stringify(validate.errors)}`);
-  const { notesPath, ...withoutExtra } = extraProperty;
+  assert.ok(validate.errors.some((e) => e.keyword === 'additionalProperties' && e.params.additionalProperty === 'sections'),
+    `expected an additionalProperties(sections) error, got: ${JSON.stringify(validate.errors)}`);
+  const { sections, ...withoutExtra } = extraProperty;
   assert.equal(validate(withoutExtra), true);
+
+  // RESCOPE 2026-07-17: the schema-side half of the F-cec640b1 absolute-path
+  // story — notesPath is legal ONLY when repo-relative; a drive-letter value
+  // must fail on the pattern, and relativizing that ONE value must make the
+  // whole document pass.
+  const absoluteNotesPath = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-absolute-notes-path.json'), 'utf8'));
+  assert.equal(validate(absoluteNotesPath), false);
+  assert.ok(validate.errors.some((e) => e.keyword === 'pattern' && e.instancePath === '/notesPath'),
+    `expected a pattern violation at /notesPath, got: ${JSON.stringify(validate.errors)}`);
+  assert.equal(validate({ ...absoluteNotesPath, notesPath: 'dogfood/roadmap-notes.json' }), true,
+    'relativizing the one offending value must make the document pass — proves the pattern, not an unrelated defect, rejected it');
 
   const missingEnforcedBy = JSON.parse(readFileSync(join(documentFixturesDir, 'invalid-invariant-note-missing-enforced-by.json'), 'utf8'));
   assert.equal(validate(missingEnforcedBy), false);
@@ -351,7 +380,7 @@ test('F-f52fc700: direct-Ajv proof that each invalid document fixture violates t
   assert.equal(validate(repaired), true);
 });
 
-test('F-f52fc700: the real doc-drift-patterns.json wires roadmap-artifact-full-document-schema with the shape the finding specifies (permanent — independent of the cross-domain schema/compiler reconciliation)', () => {
+test('F-f52fc700: the real doc-drift-patterns.json wires roadmap-artifact-full-document-schema with the RESCOPED shape (2026-07-17 transitional design — fixtures enforcing, live artifacts suspended-with-WARN until wave 42)', () => {
   const config = JSON.parse(readFileSync(join(repoRoot, 'scripts/doc-drift-patterns.json'), 'utf8'));
   const entry = config.checks.find((c) => c.id === 'roadmap-artifact-full-document-schema');
   assert.ok(entry, 'expected a roadmap-artifact-full-document-schema check entry in scripts/doc-drift-patterns.json');
@@ -359,12 +388,32 @@ test('F-f52fc700: the real doc-drift-patterns.json wires roadmap-artifact-full-d
   assert.equal(entry.schema, realSchemaRel);
   assert.equal(entry.schemaPointer, undefined,
     'this check validates the FULL document against the schema TOP LEVEL — unlike roadmap-artifact-schema, it must not set schemaPointer');
-  assert.ok(entry.targets.includes('dogfood/roadmap/*.json'),
-    'must target the real committed per-run documents, not just fixtures — that is this finding\'s whole point');
+  // RESCOPE 2026-07-17 (wave 42 revisit): this assertion used to require
+  // entry.targets to INCLUDE 'dogfood/roadmap/*.json'. The wave-41 emitter
+  // reconciliation landed only four of the schema's axes, the residual
+  // drainEntry runs-vs-dates gap is a wave-42 cross-domain decision, and no
+  // live artifact can pass the current schema until it resolves — so the
+  // live glob is now REQUIRED to be absent from targets and present in
+  // suspendedTargets instead. When wave 42 lands, flip these assertions back.
+  assert.ok(!entry.targets.some((t) => t.startsWith('dogfood/roadmap/')),
+    'during the wave-42 suspension, no live dogfood/roadmap glob may sit in targets — it belongs in suspendedTargets so the skip stays loud');
   assert.ok(entry.targets.some((t) => t.includes('__roadmap-document-fixtures__')),
-    'must also target committed fixtures, so the gate has a guaranteed-non-vacuous target independent of the live artifacts\' current shape');
-  assert.deepEqual(entry.allowlist, ['dogfood/roadmap/latest.json'],
-    'latest.json is the separate, already-covered latestPointer shape — validating it against the full-document top level would be a category error, not a real finding');
+    'must target committed fixtures, so the gate has a guaranteed-non-vacuous, still-enforcing target throughout the suspension');
+  assert.ok(Array.isArray(entry.suspendedTargets) && entry.suspendedTargets.length === 1,
+    'exactly one transitional suspension — the live per-run artifacts');
+  const susp = entry.suspendedTargets[0];
+  assert.equal(susp.glob, 'dogfood/roadmap/swarm-*.json',
+    'the suspension covers the per-run artifacts only — latest.json is matched by neither this glob nor the fixtures glob, so it needs no allowlist mechanism');
+  assert.equal(susp.until, 'wave 42', 'the suspension names its end state — this is the tracked-to-wave-42 marker');
+  assert.match(susp.reason, /2026-07-17/, 'the suspension is dated');
+  assert.match(susp.reason, /wave 42/i, 'the suspension names the owning wave in its reason');
+  assert.match(susp.reason, /runs?.*dates?|dates?.*runs?/i,
+    'the reason records the SEMANTIC residual (drainEntry cadence-in-RUNS vs implementations\' cadence-in-DATES), not just a vague "not reconciled yet"');
+  // RESCOPE 2026-07-17 (wave 42 revisit): allowlist used to carry
+  // latest.json; with the live glob out of targets there is nothing for an
+  // allowlist to exclude, and dead config would misdescribe the mechanism.
+  assert.deepEqual(entry.allowlist, [],
+    'no allowlist entries during the suspension — latest.json exclusion is structural now (see the suspension-glob assertion above)');
   assert.equal(entry.negativeFilenamePattern, '^invalid-');
   assert.notEqual(entry.allowEmpty, true, 'a zero-match glob here must fail loud, not silently pass');
 });
@@ -379,4 +428,117 @@ test('F-f52fc700: the document-fixtures directory has both valid- and invalid-*.
     assert.ok('operator_notes' in parsed || name.startsWith('invalid-missing-required'),
       `${name} should look like the FULL roadmap document shape (operator_notes present), not the latestPointer shape — these fixtures target the OTHER check`);
   }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-07-17 rescope pins (WAVE 42 revisit): the transitional suspension
+// itself. Three properties, each independently red-able: (1) the live check
+// runs clean-with-WARN against the real tree; (2) a suspension genuinely
+// suspends (a nonconformant file under a suspended glob does not drift —
+// proven against the same file drifting once the suspension is removed);
+// (3) a malformed suspension entry fails loud as config-error rather than
+// silently widening or narrowing the gate. When wave 42 deletes the
+// suspendedTargets entry, test (1) must be updated in the same commit — that
+// is deliberate: this pin is the forcing function that keeps the check's
+// config and its documented scope moving together.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @pins F-f52fc700 */
+test('rescope 2026-07-17: the LIVE full-document check is clean against the real tree, with exactly one loud wave-42 suspension WARN and zero drift/config-error', async () => {
+  const result = await runDriftChecks({ repoRoot, checkId: 'roadmap-artifact-full-document-schema' });
+  assert.equal(result.clean, true, JSON.stringify(result.reports, null, 2));
+  const warns = result.reports.filter((r) => r.severity === 'warn');
+  const blocking = result.reports.filter((r) => r.severity !== 'warn');
+  assert.equal(blocking.length, 0,
+    `the fixtures half must pass and nothing else may report: ${JSON.stringify(blocking, null, 2)}`);
+  assert.equal(warns.length, 1, 'exactly one suspension entry, so exactly one WARN per run');
+  assert.match(warns[0].message, /SUSPENDED until wave 42/,
+    'the WARN names its end state — the tracked-to-wave-42 surfacing the rescope requires');
+  assert.match(warns[0].message, /dogfood\/roadmap\/swarm-\*\.json/,
+    'the WARN names the suspended glob so a CI reader can see exactly what is not being validated');
+});
+
+test('rescope 2026-07-17: suspendedTargets genuinely suspends — a nonconformant live-shaped artifact under the suspended glob does not drift, and the SAME file drifts once the suspension is removed', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-suspension-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  // Real schema, one conforming fixture (keeps the targets glob non-vacuous),
+  // and one deliberately nonconformant camelCase artifact — the exact live
+  // shape the wave-41 partial reconciliation left behind.
+  mkdirSync(dirname(join(dir, realSchemaRel)), { recursive: true });
+  writeFileSync(join(dir, realSchemaRel), readFileSync(join(repoRoot, realSchemaRel)));
+  mkdirSync(join(dir, 'scripts/__roadmap-document-fixtures__'), { recursive: true });
+  writeFileSync(
+    join(dir, 'scripts/__roadmap-document-fixtures__/valid-minimal.json'),
+    readFileSync(join(documentFixturesDir, 'valid-minimal.json')),
+  );
+  mkdirSync(join(dir, 'dogfood/roadmap'), { recursive: true });
+  writeFileSync(join(dir, 'dogfood/roadmap/swarm-test-1.2.json'), JSON.stringify({
+    runId: 'swarm-test-1', repo: 'o/r', compiled_at: '2026-07-15T09:00:38.000Z',
+    notes: [], expired: [], attention: [], drain: {}, notesPath: 'dogfood/roadmap-notes.json',
+  }, null, 2));
+
+  const baseCheck = {
+    id: 'roadmap-artifact-full-document-schema',
+    kind: 'schema-conformance',
+    title: 'suspension semantics probe',
+    schema: realSchemaRel,
+    targets: ['scripts/__roadmap-document-fixtures__/*.json'],
+    negativeFilenamePattern: '^invalid-',
+  };
+  const writeConfig = (check) => {
+    const p = join(dir, 'doc-drift-config.json');
+    writeFileSync(p, JSON.stringify({ checks: [check] }, null, 2));
+    return p;
+  };
+
+  // WITH the suspension: clean, one warn, the nonconformant file untouched.
+  let result = await runDriftChecks({
+    repoRoot: dir,
+    configPath: writeConfig({
+      ...baseCheck,
+      suspendedTargets: [{ glob: 'dogfood/roadmap/swarm-*.json', reason: 'probe of the 2026-07-17 rescope semantics', until: 'wave 42' }],
+    }),
+  });
+  assert.equal(result.clean, true, JSON.stringify(result.reports, null, 2));
+  assert.equal(result.reports.filter((r) => r.severity === 'warn').length, 1);
+
+  // WITHOUT the suspension, same tree, live glob back in targets: the same
+  // file must drift — proof the suspension was doing real work, not that the
+  // check was vacuous all along.
+  result = await runDriftChecks({
+    repoRoot: dir,
+    configPath: writeConfig({
+      ...baseCheck,
+      targets: [...baseCheck.targets, 'dogfood/roadmap/swarm-*.json'],
+    }),
+  });
+  assert.equal(result.clean, false, 'removing the suspension must expose the nonconformant artifact');
+  assert.ok(result.reports.some((r) => r.severity === 'drift' && /swarm-test-1\.2\.json/.test(r.message)));
+});
+
+test('rescope 2026-07-17: a malformed suspendedTargets entry (missing until) is a config-error, never a silent scope change', async (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'roadmap-suspension-bad-'));
+  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(dirname(join(dir, realSchemaRel)), { recursive: true });
+  writeFileSync(join(dir, realSchemaRel), readFileSync(join(repoRoot, realSchemaRel)));
+  mkdirSync(join(dir, 'scripts/__roadmap-document-fixtures__'), { recursive: true });
+  writeFileSync(
+    join(dir, 'scripts/__roadmap-document-fixtures__/valid-minimal.json'),
+    readFileSync(join(documentFixturesDir, 'valid-minimal.json')),
+  );
+  const configPath = join(dir, 'doc-drift-config.json');
+  writeFileSync(configPath, JSON.stringify({
+    checks: [{
+      id: 'roadmap-artifact-full-document-schema',
+      kind: 'schema-conformance',
+      title: 'malformed suspension probe',
+      schema: realSchemaRel,
+      targets: ['scripts/__roadmap-document-fixtures__/*.json'],
+      suspendedTargets: [{ glob: 'dogfood/roadmap/swarm-*.json', reason: 'no end state named' }],
+    }],
+  }, null, 2));
+  const result = await runDriftChecks({ repoRoot: dir, configPath });
+  assert.equal(result.clean, false);
+  assert.ok(result.reports.some((r) => r.severity === 'config-error' && /malformed suspendedTargets entry/.test(r.message)),
+    JSON.stringify(result.reports, null, 2));
 });

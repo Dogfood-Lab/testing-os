@@ -101,7 +101,12 @@ export function compileGrandfatheredManifestDrain(repoRoot, now = new Date()) {
     if (!entry || typeof entry.revalidate_by !== 'string') continue;
     const dueAt = new Date(`${entry.revalidate_by}T00:00:00Z`);
     if (Number.isNaN(dueAt.getTime())) continue;
-    if (dueAt.getTime() <= now.getTime()) {
+    // Boundary matches scripts/lib/revalidation-cadence.mjs's exclusive
+    // `revalidate_by < today` convention exactly (F-780490da: two
+    // independently-evolving definitions of "overdue" disagreed by a day at
+    // the boundary; the shared-helper convention is canonical, pinned by
+    // scripts/revalidation-cadence-drain-parity.test.mjs).
+    if (entry.revalidate_by < now.toISOString().slice(0, 10)) {
       overdue.push({
         finding_id: findingId,
         reason: entry.reason || '',

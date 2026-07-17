@@ -354,7 +354,8 @@ Operator closure for findings that cannot close by owning-domain declaration —
 ```text
 Usage: swarm close <run-id> --ids F-001,F-002 --as fixed
                    --reason "<text>" --evidence "<text>"
-                   --verified-how <mode> [--apply] [--format=text|json]
+                   --verified-how <mode> [--apply]
+                   [--format=text|json]
 
 Example:
   $ swarm close <run-id> --ids F-001 --as fixed \
@@ -370,7 +371,8 @@ Compile and inspect the trajectory artifact — the compiled-never-authored road
 
 ```text
 Usage: swarm roadmap compile <run-id> [--format=text|json]
-       swarm roadmap show <run-id> [--version=N] [--format=text|json]
+       swarm roadmap show <run-id> [--version=N]
+                          [--format=text|json]
 
 Example:
   $ swarm roadmap compile <run-id>

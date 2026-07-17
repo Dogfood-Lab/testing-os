@@ -220,7 +220,7 @@ describe('F-8595faf8/F-5164d456 — transitionFindings (shared C1/C2 core)', () 
     assert.equal(report.flipped, 0);
   });
 
-  it("close --apply: an open finding flips to 'fixed', persists closure_kind='operator' + the supplied verified_how, and writes an 'operator_closed' event", () => {
+  it("close --apply: an open finding flips to 'fixed', persists closure_kind='operator' + the supplied verified_how, and writes a 'fixed' event (event_type mirrors --as, as cmdClose does in production; 'operator_closed' is a reserved, never-written EVENT_TYPES member)", () => {
     const { runId, waveId } = seedRun(db);
     const fid = seedFinding(db, runId, waveId, { status: 'approved', severity: 'MEDIUM' });
 
@@ -228,7 +228,7 @@ describe('F-8595faf8/F-5164d456 — transitionFindings (shared C1/C2 core)', () 
       verb: 'close',
       sourceStatuses: CLOSE_SOURCE_STATUSES,
       targetStatus: 'fixed',
-      eventType: 'operator_closed',
+      eventType: 'fixed',
       extraSetColumns: { closure_kind: 'operator', verified_how: 'independent' },
       buildNotes: (r, e) => `reason: ${r} | evidence: ${e} | verified_how: independent`,
     }, { runId, ids: [fid], reason: 'unowned file, director-directed disposal', evidence: 'confirmed by reviewer', apply: true, dbPath });
@@ -241,7 +241,7 @@ describe('F-8595faf8/F-5164d456 — transitionFindings (shared C1/C2 core)', () 
 
     const events = db.prepare('SELECT * FROM finding_events').all();
     assert.equal(events.length, 1);
-    assert.equal(events[0].event_type, 'operator_closed');
+    assert.equal(events[0].event_type, 'fixed');
     assert.equal(events[0].actor, 'operator');
     assert.match(events[0].notes, /verified_how: independent/);
   });

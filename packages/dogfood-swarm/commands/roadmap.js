@@ -63,8 +63,7 @@
  * ============================================================================
  */
 
-import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { relative as relativePath, resolve as resolvePath, join as joinPath, sep } from 'node:path';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { openDb } from '../db/connection.js';
@@ -194,26 +193,22 @@ export function compileRoadmap(opts) {
   };
 
   const written = writeRoadmapArtifact(runId, artifact, { dbPath });
-  // F-113eefea/F-520023e7 axis 4 (content_hash): necessarily NOT embedded in
-  // the artifact's own JSON body above (a document cannot contain the hash
-  // of itself) — computed here by re-reading the bytes writeRoadmapArtifact
-  // (core's lib/roadmap/compiler.js) just wrote, sha256 hex, matching that
-  // module's own internal hashing algorithm/convention
-  // (lib/persist/export.js's existing sha256-truncated-hex precedent, full
-  // digest here since the schema leaves length unconstrained). This is the
-  // SAME bytes the ledger's roadmap_artifacts.content_hash column already
-  // records (recordRoadmapArtifact, core's file) — surfaced to the CLI
-  // report rather than re-derived by a second, potentially-diverging
-  // algorithm.
-  const contentHash = createHash('sha256').update(readFileSync(written.path)).digest('hex');
-
+  // F-113eefea/F-520023e7 axis 4 (content_hash): ONE derivation, core's.
+  // writeRoadmapArtifact computes the schema-blessed SELF-EXCLUDED hash
+  // (sha256 of the serialized body BEFORE the content_hash field is embedded
+  // into the written file), records it in the roadmap_artifacts ledger, and
+  // returns it. An earlier merge state re-hashed the final file bytes here —
+  // bytes that now CONTAIN the embedded hash — which can never equal the
+  // ledger's self-excluded value; the wave-41 pin (showRoadmap surfaces the
+  // SAME content_hash the ledger records) caught the divergence on the
+  // merged tree.
   return {
     ...artifact,
     sequence: written.sequence,
     path: written.path,
     currentPath: written.currentPath,
     latestPath: written.latestPath,
-    content_hash: contentHash,
+    content_hash: written.content_hash,
   };
 }
 

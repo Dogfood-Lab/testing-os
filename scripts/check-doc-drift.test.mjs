@@ -284,6 +284,89 @@ test('F-cec640b1: roadmap-artifact-no-absolute-paths check: relative artifact pa
   );
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 2026-07-17 rescope (F-cec640b1, T5 carve-out): forbidden-pattern-in-targets
+// gained per-file `allowlist` support so the ONE unfixable historical hit —
+// dogfood/roadmap/swarm-1784091637-5127.1.json, immutable per T5 of
+// docs/trajectory-and-closure.dispatch.md ("versions supersede; nothing
+// rewrites") — can be carved out BY NAME without weakening the gate for
+// latest.json or any future artifact. NOT wave-42-tracked: wave 42 cannot
+// repair an immutable historical sequence; this exemption is permanent by
+// design, which is exactly why the stale-entry WARN below matters — it is
+// the only path by which the carve-out ever gets cleaned up.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** @pins F-cec640b1 */
+test('rescope 2026-07-17: forbidden-pattern allowlist exempts the named file while still catching every other file, silently while the exemption does work', async (t) => {
+  const fx = makeFixture(t);
+  // The T5-frozen shape: an immutable historical artifact with the leak...
+  fx.write('dogfood/roadmap/run-1.1.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'E:\\AI\\testing-os\\dogfood\\roadmap-notes.json',
+  }, null, 2));
+  // ...and a NEWER artifact that regresses the same leak — must still fail.
+  fx.write('dogfood/roadmap/run-1.2.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'C:\\other\\machine\\roadmap-notes.json',
+  }, null, 2));
+  const cfg = fx.config({
+    checks: [{
+      id: 'roadmap-artifact-no-absolute-paths',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'allowlist semantics probe',
+      patterns: [{ regex: '"[A-Za-z]:[\\\\/]', label: 'Windows drive-letter absolute path' }],
+      targets: ['dogfood/roadmap/*.json'],
+      allowlist: ['dogfood/roadmap/run-1.1.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, false, 'the non-allowlisted sibling must still drift');
+  assert.ok(result.reports.some((r) => r.severity === 'drift' && /run-1\.2\.json/.test(r.file)),
+    'the fresh leak is caught');
+  assert.ok(!result.reports.some((r) => /run-1\.1\.json/.test(r.file ?? '') || /run-1\.1\.json/.test(r.message)),
+    'the T5-carved-out file produces NO report of any severity — a live exemption is silent (a warning nobody can act on, forever, is wallpaper, not signal)');
+});
+
+test('rescope 2026-07-17: a STALE forbidden-pattern allowlist entry (file clean, or gone) surfaces as a non-blocking WARN marked safe to delete', async (t) => {
+  const fx = makeFixture(t);
+  // The allowlisted file exists but no longer contains any forbidden pattern.
+  fx.write('dogfood/roadmap/run-1.1.json', JSON.stringify({
+    runId: 'run-1', notesPath: 'dogfood/roadmap-notes.json',
+  }, null, 2));
+  const cfg = fx.config({
+    checks: [{
+      id: 'roadmap-artifact-no-absolute-paths',
+      kind: 'forbidden-pattern-in-targets',
+      title: 'stale allowlist probe',
+      patterns: [{ regex: '"[A-Za-z]:[\\\\/]', label: 'Windows drive-letter absolute path' }],
+      targets: ['dogfood/roadmap/*.json'],
+      allowlist: ['dogfood/roadmap/run-1.1.json', 'dogfood/roadmap/never-existed.json'],
+    }],
+  });
+  const result = await runDriftChecks({ repoRoot: fx.dir, configPath: cfg });
+  assert.equal(result.clean, true, 'staleness means the gate is now STRICTER than its config claims — never a block');
+  const warns = result.reports.filter((r) => r.severity === 'warn');
+  assert.equal(warns.length, 2, 'one WARN per dead entry — the clean file AND the missing file');
+  for (const w of warns) {
+    assert.match(w.message, /stale allowlist entry/);
+    assert.match(w.message, /safe to delete/);
+  }
+});
+
+test('rescope 2026-07-17: the real no-absolute-paths config carries EXACTLY the one T5-frozen carve-out — silent allowlist growth is a pin failure, not a config tweak', () => {
+  const config = JSON.parse(readFileSync(resolve(repoRoot, 'scripts/doc-drift-patterns.json'), 'utf8'));
+  const entry = config.checks.find((c) => c.id === 'roadmap-artifact-no-absolute-paths');
+  assert.ok(entry, 'expected a roadmap-artifact-no-absolute-paths check entry');
+  // RESCOPE 2026-07-17: this pin is deliberately exact-match, not subset —
+  // every future allowlist addition must edit this assertion in the same
+  // commit and justify itself against the hint's own rule ("do NOT add new
+  // allowlist entries for freshly-leaked artifacts — recompile supersedes
+  // them instead"). Only a T5-immutable historical sequence qualifies.
+  assert.deepEqual(entry.allowlist, ['dogfood/roadmap/swarm-1784091637-5127.1.json']);
+  assert.match(entry.description, /2026-07-17/, 'the carve-out is dated in the description');
+  assert.match(entry.description, /T5/, 'the carve-out cites the T5 immutability rule that makes it permanent');
+  assert.ok(entry.targets.includes('dogfood/roadmap/*.json'),
+    'the targets glob still covers latest.json and every future artifact — the carve-out must never narrow the protected set');
+});
+
 test('self-consistency check: must[] passes when present, fails when missing', async (t) => {
   const fx = makeFixture(t);
   fx.write('swarms/PROTOCOL.md', '## The 10-Phase Play\n**Stage D** — Visual Polish\n');
