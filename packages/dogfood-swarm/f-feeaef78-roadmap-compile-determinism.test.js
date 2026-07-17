@@ -57,7 +57,7 @@ import {
   mkdtempSync, rmSync, mkdirSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, dirname } from 'node:path';
+import { join, dirname, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { openDb, closeDb } from './db/connection.js';
@@ -230,28 +230,87 @@ function* walkJs(dir) {
   }
 }
 
+/**
+ * F-2ba518c2 (wave-42 audit, this domain's own wave-42 HIGH): discover the
+ * roadmap-compile-path files BY RELATIVE PATH, not by basename. The prior
+ * version of this scan tested only `rel.slice(rel.lastIndexOf('/') + 1)`
+ * (the basename) against /roadmap/i — every file under lib/roadmap/
+ * (artifacts.js, attention.js, compile.js, compiler.js, drain.js, notes.js)
+ * was silently excluded, because none of THEIR basenames contain "roadmap"
+ * even though the directory does; only commands/roadmap.js and
+ * commands/lib/roadmap-notes.js ever matched. PROVEN LIVE (red-proof, see
+ * this wave's output.json): in a throwaway scratch worktree, deleting
+ * lib/roadmap/drain.js's real `LEFT JOIN waves ... ORDER BY f.finding_id
+ * ASC` left the OLD scan green at 0 offenders — it never looked at the
+ * file. relative(PKG_DIR, file) (not an absolute-path substring test) means
+ * this can never accidentally match on an unrelated ancestor directory
+ * name, mirroring the intent (though not the no-filter breadth — see below)
+ * of the safe full-tree-walk-plus-content-match shape f-a3af1ac5/
+ * f-c0b12add already use correctly. A path filter is kept, rather than
+ * dropping it entirely like those two siblings, because THIS scan's own
+ * name and purpose is specifically "the roadmap compiler module" — widening
+ * it to the whole package would catch unrelated SQL elsewhere with no
+ * bearing on T1's determinism claim, which is scope creep, not a fix.
+ */
+function discoverRoadmapCandidates() {
+  const candidates = [];
+  for (const file of walkJs(PKG_DIR)) {
+    const rel = file.replace(/\\/g, '/');
+    if (/\.test\.(js|mjs|cjs)$/.test(rel)) continue;
+    if (rel.endsWith('/f-feeaef78-roadmap-compile-determinism.test.js')) continue;
+    const relFromPkg = relative(PKG_DIR, file).replace(/\\/g, '/');
+    if (!/roadmap/i.test(relFromPkg)) continue;
+    candidates.push(file);
+  }
+  return candidates;
+}
+
 describe('F-feeaef78 — roadmap compiler ORDER BY static scan', () => {
-  it('every JOIN/UNION/GROUP BY SQL string in the roadmap compiler module carries an explicit ORDER BY', () => {
-    // Discover the compiler module BY NAME PATTERN rather than a hardcoded
-    // path — core may land it as lib/roadmap-compile.js, commands/roadmap.js,
-    // or both; this scan picks up whichever exists so it does not need
-    // updating just because core chose a different file layout than this
-    // test's docstring guessed.
-    const candidates = [];
-    for (const file of walkJs(PKG_DIR)) {
-      const rel = file.replace(/\\/g, '/');
-      if (/\.test\.(js|mjs|cjs)$/.test(rel)) continue;
-      if (rel.endsWith('/f-feeaef78-roadmap-compile-determinism.test.js')) continue;
-      const basename = rel.slice(rel.lastIndexOf('/') + 1);
-      if (!/roadmap/i.test(basename)) continue;
-      candidates.push(file);
+  it('discovery: the candidate filter finds every known roadmap-compile-path file (PROTOCOL.md sub-law 2 — enumerate the population independently, diff against the detector)', () => {
+    // Independent enumeration, NOT reusing discoverRoadmapCandidates' own
+    // logic: an explicit directory listing of lib/roadmap/ (whatever files
+    // happen to live there today) plus the two commands/-layer files named
+    // directly in F-2ba518c2's own text. If a future regression narrows the
+    // discovery filter again (or someone adds a new lib/roadmap/*.js file
+    // the filter somehow doesn't catch), this fails HERE with the specific
+    // missing filename — not silently, and not by coincidence of the same
+    // logic checking itself.
+    const knownRoadmapDir = join(PKG_DIR, 'lib', 'roadmap');
+    const independentlyEnumerated = existsSync(knownRoadmapDir)
+      ? readdirSync(knownRoadmapDir)
+          .filter((f) => /\.(js|mjs|cjs)$/.test(f) && !/\.test\.(js|mjs|cjs)$/.test(f))
+          .map((f) => `lib/roadmap/${f}`)
+      : [];
+    for (const known of ['commands/roadmap.js', 'commands/lib/roadmap-notes.js']) {
+      if (existsSync(join(PKG_DIR, known))) independentlyEnumerated.push(known);
     }
+    assert.ok(independentlyEnumerated.length > 0,
+      'sanity: the independent enumeration itself found nothing — either lib/roadmap/ is missing or ' +
+      'this test is running against the wrong package directory; a scan that cannot enumerate a known ' +
+      'population cannot prove the detector is complete.');
+
+    const candidateRelSet = new Set(
+      discoverRoadmapCandidates().map((f) => relative(PKG_DIR, f).replace(/\\/g, '/'))
+    );
+    const missedByDetector = independentlyEnumerated.filter((f) => !candidateRelSet.has(f));
+
+    assert.deepEqual(
+      missedByDetector,
+      [],
+      `the ORDER BY scan's discovery filter misses known roadmap-compile-path file(s): ` +
+      `${JSON.stringify(missedByDetector)} — a detector's blind spot IS the defect (PROTOCOL.md, ` +
+      `"Fixing a class, not an instance", sub-law 2).`
+    );
+  });
+
+  it('every JOIN/UNION/GROUP BY SQL string in the roadmap compiler module carries an explicit ORDER BY', () => {
+    const candidates = discoverRoadmapCandidates();
 
     if (candidates.length === 0) {
       assert.fail(
-        'No roadmap-compiler module found under packages/dogfood-swarm (searched for any non-test ' +
-        '.js/.mjs/.cjs file whose basename contains "roadmap"). This assertion needs swarm-cp-core to ' +
-        'land T1\'s compiler (e.g. lib/roadmap-compile.js or commands/roadmap.js) before it can scan ' +
+        'No roadmap-compiler module found under packages/dogfood-swarm (searched every non-test ' +
+        '.js/.mjs/.cjs file whose RELATIVE PATH contains "roadmap"). This assertion needs swarm-cp-core ' +
+        'to land T1\'s compiler (e.g. lib/roadmap/compile.js or commands/roadmap.js) before it can scan ' +
         'its SQL for ORDER BY clauses — awaiting that lane.'
       );
     }

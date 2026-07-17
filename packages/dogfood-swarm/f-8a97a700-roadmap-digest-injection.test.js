@@ -41,13 +41,36 @@
  *       under test (opt-in, not the exact key spelling) is what's load-
  *       bearing.
  *
- * Honesty note on (c)'s negative half: "no flag -> no leak" is TRUE today,
- * but only because dispatch.js has literally zero roadmap-reading code yet —
- * a vacuous pass, not a verified gate. It becomes non-vacuous only once
- * paired with its positive sibling test ("with flag -> digest present"),
- * which is genuinely RED today. Do not read the negative test's current
- * green as evidence the opt-in gate works; read the positive test's red as
- * the honest state of this claim until swarm-cp-core lands the flag.
+ * Honesty note on (c)'s negative half, UPDATED (wave 43 — the original claim
+ * below is now STALE and is corrected here, not deleted, per this repo's
+ * own doc-drift discipline): dispatch.js no longer has "literally zero
+ * roadmap-reading code" — commands/dispatch.js#loadRoadmapDigestSource /
+ * #buildRoadmapDigest shipped in a later wave, gated on opts.seedRoadmap.
+ * "no flag -> no leak" is now a REAL, non-vacuous negative (dispatch simply
+ * never calls buildRoadmapDigest without the flag) — it was the (b)/(c)-
+ * positive halves that were vacuous-until-paired, and per the reading below
+ * those are the halves this wave's A3 fixture rewrite affects.
+ *
+ * A3 DEPENDENCY, DISCLOSED (docs/trajectory-and-closure.dispatch.md,
+ * Amendment 3, wave 42): this file's fixture-writing helper below is
+ * rewritten to A3's artifact shapes (attention {advisory, items}, drain_
+ * queue.{entries, overdue_ids}) — a CONTRACT PIN. Unlike f-1cd5de59/
+ * f-74ba2c79, whose only dependency is commands/roadmap.js's COMPILE-side
+ * emitter (explicitly in A3's scope), (b)/(c)-positive ALSO depend on
+ * commands/dispatch.js's buildRoadmapDigest/loadRoadmapDigestSource — the
+ * CONSUME-side reader — being updated to read `.attention.items` and
+ * `.drain_queue.entries` instead of the flat shapes it reads today. A3's
+ * own text (T1-T6, A3.1-A3.6) is scoped to the COMPILED ARTIFACT, never
+ * mentions dispatch.js's digest-consumption code, and neither this wave's
+ * brief names an owner for that update. Verified directly (this worktree,
+ * pre-fix): with this file's new fixture shape, buildRoadmapDigest's
+ * `Array.isArray(source.attention)` / `Array.isArray(source.drain)` checks
+ * both go false (attention is now an object, drain is now named drain_
+ * queue), so BOTH sections render empty and (b)/(c)-positive fail — for
+ * that reason, not a typo. This is a genuine open dependency, not an
+ * assumption I could privately resolve from this domain's own glob
+ * (packages/dogfood-swarm/*.test.js does not include commands/dispatch.js)
+ * — flagged in this wave's output.json rather than silently assumed covered.
  */
 
 import { describe, it, after } from 'node:test';
@@ -130,38 +153,46 @@ function setupDispatchFixture(runId) {
 }
 
 /**
- * WAVE-43 UPDATE (A3, docs/trajectory-and-closure.dispatch.md "Amendment
- * 3"): this fixture used to write the pre-A3 flat shape
- * (`{attention: [...], drain: [...], notes: []}`) directly. commands/
- * dispatch.js's own digest reader (buildRoadmapDigest/
- * loadRoadmapDigestSource) was updated this wave to read A3's actual
- * schema-shaped sections (`attention.items[]`, `drain_queue.entries[]`,
- * `operator_notes[]`) — reading the OLD flat shape silently produced an
- * EMPTY digest (every `Array.isArray(source.attention)` / `source.drain`
- * check failed against an object/renamed-key input), which is exactly the
- * "seeded-digest feature ships reading nothing" defect this update closes.
- * This fixture is updated to match; the sub-claims under test (position,
- * bounds/truncation, opt-in gating) are UNCHANGED — only the artifact's
- * field vocabulary is.
+ * A3 UPDATE (docs/trajectory-and-closure.dispatch.md, Amendment 3, wave 42;
+ * MERGE-RECONCILED wave 43 — both the tests lane and the verbs lane
+ * re-authored this fixture to the same contract independently): the fixture
+ * writes A3.1/A3.2's actual schema shapes — `attention` is `{advisory,
+ * items[+components]}`, never a flat array; the drain half this file
+ * exercises is `drain_queue.{entries, overdue_ids}` (A3.2(a),
+ * compileAuthoredDrainState's runs-ordinal shape); the SEPARATE
+ * `grandfathered_drain.{frozen_total, drained, outstanding}` section
+ * (A3.2(b)) is also present, structurally valid but empty, so the fixture
+ * carries BOTH of "the two drain sections". `notes` -> `operator_notes`.
+ * The same wave updated commands/dispatch.js's digest reader
+ * (buildRoadmapDigest/loadRoadmapDigestSource) to read these shapes —
+ * against the OLD flat shape it silently produced an EMPTY digest, the
+ * "seeded-digest feature ships reading nothing" defect. Neither (b) nor
+ * (c) below asserts drain CONTENT — drainCount only bulks the artifact for
+ * truncation testing; the sub-claims under test (position, bounds/
+ * truncation, opt-in gating) are unchanged.
  */
 function writeRoadmapArtifact(repoDir, { attentionCount, drainCount, uniqueMarkerFile }) {
   mkdirSync(join(repoDir, 'dogfood', 'roadmap'), { recursive: true });
-  const items = Array.from({ length: attentionCount }, (_, i) => ({
-    file: i === 0 && uniqueMarkerFile ? uniqueMarkerFile : `packages/a/src/attn-file-${i}.js`,
-    score: attentionCount - i,
-    components: { churn: 1, recency: 1, fragmentation: 1 },
-  }));
-  const entries = Array.from({ length: drainCount }, (_, i) => ({
+  const attention = {
+    advisory: true,
+    items: Array.from({ length: attentionCount }, (_, i) => ({
+      file: i === 0 && uniqueMarkerFile ? uniqueMarkerFile : `packages/a/src/attn-file-${i}.js`,
+      score: attentionCount - i,
+      components: { churn: 1, recency: 1, fragmentation: 1 },
+    })),
+  };
+  const drainEntries = Array.from({ length: drainCount }, (_, i) => ({
     id: `F-${String(i).padStart(6, '0')}`,
     owner: 'coordinator',
     cadence_runs: 5,
-    runs_since_review: 6,
-    overdue: true,
+    runs_since_review: 1,
+    overdue: false,
     reason: `drain entry ${i}`,
   }));
   writeFileSync(join(repoDir, 'dogfood', 'roadmap', 'latest.json'), JSON.stringify({
-    attention: { advisory: true, items },
-    drain_queue: { entries, overdue_ids: entries.map((e) => e.id) },
+    attention,
+    drain_queue: { entries: drainEntries, overdue_ids: [] },
+    grandfathered_drain: { frozen_total: 0, drained: 0, outstanding: [] },
     operator_notes: [],
   }, null, 2));
 }
@@ -178,9 +209,10 @@ describe('F-8a97a700(b) — roadmap digest BOUNDS when the underlying artifact i
     // only at the tail with the worst score, which is what this override does.
     writeRoadmapArtifact(repoDir, { attentionCount: 200, drainCount: 500 });
     const artifact = JSON.parse(readFileSync(join(repoDir, 'dogfood', 'roadmap', 'latest.json'), 'utf-8'));
-    artifact.attention.items[artifact.attention.items.length - 1] = {
-      file: uniqueMarkerFile, score: -1, components: { churn: 0, recency: 0, fragmentation: 0 },
-    };
+    // A3 contract pin: attention is {advisory, items[+components]} (A3.1),
+    // never a flat array — the marker override reaches into .items now.
+    const lastIdx = artifact.attention.items.length - 1;
+    artifact.attention.items[lastIdx] = { file: uniqueMarkerFile, score: -1, components: { churn: 0, recency: 0, fragmentation: 0 } };
     writeFileSync(join(repoDir, 'dogfood', 'roadmap', 'latest.json'), JSON.stringify(artifact, null, 2));
 
     const result = dispatch({
@@ -220,9 +252,9 @@ describe('F-8a97a700(c) — roadmap digest is OPT-IN, never silently read from a
     assert.ok(!promptText.includes(uniqueMarkerFile),
       `a prior run's roadmap content must NEVER leak into a new run's brief absent an explicit opt-in ` +
       `flag — found "${uniqueMarkerFile}" anyway (Semgrep's explicit opt-in triage-propagation precedent, ` +
-      `Q5 in the dispatch). NOTE: this assertion is TRUE today only because dispatch.js has no roadmap-` +
-      `reading code at all yet — it is not yet evidence the opt-in GATE works. See this file's opening ` +
-      `docstring.`);
+      `Q5 in the dispatch). This IS a real, non-vacuous negative today (dispatch.js only calls ` +
+      `buildRoadmapDigest when opts.seedRoadmap is set) — see this file's opening docstring for the ` +
+      `wave-43 correction of an earlier, now-stale "vacuous because unimplemented" claim here.`);
   });
 
   it('the SAME prior roadmap DOES inject when the run opts in — so the negative test above is not vacuous in either direction', () => {
@@ -237,9 +269,18 @@ describe('F-8a97a700(c) — roadmap digest is OPT-IN, never silently read from a
     });
 
     const promptText = readFileSync(result.agents[0].promptPath, 'utf-8');
+    // A3 contract pin — goes green at wave-43 merge, dependent on
+    // commands/dispatch.js's buildRoadmapDigest/loadRoadmapDigestSource
+    // being updated to read attention.items instead of a flat attention
+    // array (this file's opening docstring's "A3 DEPENDENCY, DISCLOSED"
+    // note has the full reasoning). opts.seedRoadmap itself already exists
+    // and works — the marker fails to appear because the digest's attention
+    // section renders empty against the new fixture shape, not because the
+    // flag is unimplemented.
     assert.ok(promptText.includes(uniqueMarkerFile),
       `with the explicit seed flag set, the prior run's roadmap content MUST appear in the new brief ` +
-      `— awaiting swarm-cp-core to land opts.seedRoadmap (or equivalent) in dispatch(). This is the red ` +
-      `half that makes the negative test above meaningful once both pass together.`);
+      `— awaiting commands/dispatch.js's digest reader to be updated to A3's attention.items/` +
+      `drain_queue.entries shapes (opts.seedRoadmap itself already works). This is the red half that ` +
+      `makes the negative test above meaningful once both pass together.`);
   });
 });

@@ -38,6 +38,19 @@
  * code — "Unknown command: 'roadmap'" (today's actual output) always exits
  * 1, so a bare "exit 1 == refused" check would pass vacuously for the wrong
  * reason on every one of these fixtures. Content-checking closes that gap.
+ *
+ * A3 UPDATE (docs/trajectory-and-closure.dispatch.md, Amendment 3, wave 42):
+ * the CLI-level refusal/expiry BEHAVIOR this file pins (spawnSync + stderr
+ * content, never a direct import of either notes module) is exactly what
+ * survives F-4b9c3d89's two-module consolidation regardless of which
+ * implementation core keeps — that finding requires the LIVE, fail-closed
+ * policy to win, which is this file's own refusal behavior. What DOES
+ * change is the artifact's field NAMES: flat `notes`/`expired` leave the
+ * envelope (A3.1) — renamed to `operator_notes` (matching
+ * dogfood-roadmap.schema.json's existing property of that name) and
+ * `expired_notes` (A3.4, "renamed from expired", required/empty-allowed) —
+ * CONTRACT PINS below, not yet true in this worktree until commands/
+ * roadmap.js's emitter is rewired at merge.
  */
 
 import { describe, it, after } from 'node:test';
@@ -120,8 +133,10 @@ describe('F-74ba2c79 — operator notes: bound of 7', () => {
       `7 operator notes (at the documented bound) must be accepted; stderr:\n${r.stderr}`);
     const artifact = readArtifact(repoDir, runId);
     assert.ok(artifact, `expected a compiled artifact at ${repoDir}/dogfood/roadmap/${runId}.json`);
-    assert.equal(Array.isArray(artifact.notes) && artifact.notes.length, 7,
-      `all 7 notes must appear in the compiled artifact's notes list; got: ${JSON.stringify(artifact.notes)}`);
+    // A3 contract pin — goes green at wave-43 merge (A3.1: flat `notes`
+    // leaves the envelope, renamed to `operator_notes`).
+    assert.equal(Array.isArray(artifact.operator_notes) && artifact.operator_notes.length, 7,
+      `all 7 notes must appear in the compiled artifact's operator_notes list; got: ${JSON.stringify(artifact.operator_notes)}`);
   });
 
   it('an 8th note is refused (bound of 7 exceeded)', () => {
@@ -187,8 +202,10 @@ describe('F-74ba2c79 — operator notes: enforced_by must resolve on disk', () =
       `an invariant note whose enforced_by resolves to a REAL file must be ACCEPTED; stderr:\n${r.stderr}`);
     const artifact = readArtifact(repoDir, runId);
     assert.ok(artifact, `expected a compiled artifact at ${repoDir}/dogfood/roadmap/${runId}.json`);
-    assert.equal(artifact.notes?.length, 1,
-      `the valid invariant note must appear in the compiled artifact; got: ${JSON.stringify(artifact.notes)}`);
+    // A3 contract pin — goes green at wave-43 merge (see the bound-of-7 test
+    // above for the A3.1 rationale).
+    assert.equal(artifact.operator_notes?.length, 1,
+      `the valid invariant note must appear in the compiled artifact; got: ${JSON.stringify(artifact.operator_notes)}`);
   });
 });
 
@@ -206,7 +223,8 @@ describe('F-74ba2c79 — operator notes: expiry drops loudly (both halves)', () 
     assert.ok(artifact, `expected a compiled artifact at ${repoDir}/dogfood/roadmap/${runId}.json`);
 
     // Half 1: the expired note must NOT be in the live notes list.
-    const liveTexts = (artifact.notes || []).map(n => n.text);
+    // A3 contract pin — goes green at wave-43 merge (A3.1: `notes` -> `operator_notes`).
+    const liveTexts = (artifact.operator_notes || []).map(n => n.text);
     assert.ok(!liveTexts.includes('this note expired long ago'),
       `expired note must be excluded from live notes; live notes were: ${JSON.stringify(liveTexts)}`);
     assert.ok(liveTexts.includes('this note is still alive'),
@@ -215,12 +233,16 @@ describe('F-74ba2c79 — operator notes: expiry drops loudly (both halves)', () 
     // Half 2: the expired note must be reported, with enough identifying
     // detail (kind/text/expires) to audit what was dropped — a compiler that
     // silently drops it (passing half 1 alone) must fail THIS half.
-    assert.ok(Array.isArray(artifact.expired) && artifact.expired.length > 0,
-      `compile must report expired notes in a separate "expired" list; got: ${JSON.stringify(artifact.expired)}`);
-    const expiredEntry = artifact.expired.find(n => n.text === 'this note expired long ago');
+    // A3 contract pin — goes green at wave-43 merge (A3.4: `expired` ->
+    // `expired_notes`, required/empty-allowed — the refusal/fail-closed
+    // semantics and the required-not-optional "always report, even when
+    // empty" contract are unchanged, only the key name is).
+    assert.ok(Array.isArray(artifact.expired_notes) && artifact.expired_notes.length > 0,
+      `compile must report expired notes in a separate "expired_notes" list; got: ${JSON.stringify(artifact.expired_notes)}`);
+    const expiredEntry = artifact.expired_notes.find(n => n.text === 'this note expired long ago');
     assert.ok(expiredEntry,
-      `the expired listing must identify the dropped note by its text; got: ${JSON.stringify(artifact.expired)}`);
-    assert.equal(expiredEntry.kind, 'theme', 'expired listing must preserve the note\'s kind');
-    assert.equal(expiredEntry.expires, '2020-01-01', 'expired listing must preserve the note\'s expires value');
+      `the expired_notes listing must identify the dropped note by its text; got: ${JSON.stringify(artifact.expired_notes)}`);
+    assert.equal(expiredEntry.kind, 'theme', 'expired_notes listing must preserve the note\'s kind');
+    assert.equal(expiredEntry.expires, '2020-01-01', 'expired_notes listing must preserve the note\'s expires value');
   });
 });
