@@ -596,6 +596,41 @@ function extractTestCount(stdout) {
     found = true;
   }
 
+  // node --test SPEC reporter: "ℹ tests 42" at LINE START. Node >= 23 made
+  // spec the DEFAULT reporter even when stdout is not a TTY (nodejs/node
+  // #54548), so a plain `node --test` script emits THIS summary — not TAP —
+  // on every Node-24 consumer of `swarm verify`. First hit live on this
+  // repo's own CI Node-24 leg (run 29635789922): a fixture repo driven
+  // through the real verify path scored `unmeasured_tests` while the
+  // identical fixture measured fine on the Node-22 leg. Same discipline as
+  // the TAP branch above, point for point:
+  //   ANCHOR — the summary block is flush-left, while every result line is
+  //   prefixed (pass/fail glyph or the suite marker) and nested lines are
+  //   indented, so `^` (with /m) excludes a test literally NAMED
+  //   "ℹ tests 0" the same way the TAP anchor excludes its own name-echo.
+  //   SUM — `npm test --workspaces` emits one spec summary per workspace;
+  //   summed, not first-match, or a fan-out under-counts exactly as TAP
+  //   defect #2 did. A mixed Node-24 fan-out (spec workspaces + a vitest
+  //   workspace) lands in this same summed group for the same reason as
+  //   defect #3.
+  //   COUNT SEMANTICS — `ℹ tests N` is the run TOTAL (pass + fail +
+  //   cancelled + skipped + todo), the same semantic as TAP's `# tests N`.
+  //   The sibling `ℹ pass N` / `ℹ fail N` breakdown lines deliberately do
+  //   NOT match (`tests?` requires the literal `test`/`tests` token), and
+  //   they must not: pass/fail feeds the verdict through the child's exit
+  //   code (a failing spec run exits non-zero and still gets its total
+  //   measured on the catch path), never through this count. `ℹ tests 0`
+  //   reads as 0 — not null — so a genuinely empty spec run flows into the
+  //   same runner-level no_tests refinement as TAP `# tests 0`.
+  // The `ℹ` (U+2139) literal is what the reporter actually prints on a
+  // non-TTY stream; runStep pins NO_COLOR=1 / FORCE_COLOR=0 in the child
+  // env, so no ANSI prefix can sit between line start and the glyph on any
+  // stream this floor measures.
+  for (const m of stdout.matchAll(/^ℹ tests? (\d+)/gm)) {
+    total += parseInt(m[1], 10);
+    found = true;
+  }
+
   // jest "Tests:  42 passed" / vitest "  Tests  144 passed (144)". Colon
   // optional; indent tolerated (vitest indents), but still line-anchored — a
   // TAP name line begins with `#`/`ok`/`not ok` after its indent, never
