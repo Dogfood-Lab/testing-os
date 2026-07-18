@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>dogfood-dashboard-v1.0</title>
+<title>dogfood-dashboard-v1.1</title>
 <!--
-  dogfood-dashboard v1.0 — single-file fleet status for testing-os.
+  dogfood-dashboard v1.1 — single-file fleet status for testing-os.
   All data URLs live in CONFIG below (first script block). Re-point `base`
   and `paths` when mounting into the Astro site; nothing else hardcodes a URL.
   v0.2 adds: per-row run-history modal, badge deep-links (shields, modal-only),
@@ -14,6 +14,10 @@
   ages, status tab-title prefix, live auto-refresh countdown.
   v1.0: nits ledger closed (deep-link race, skeleton cursor), auto-refresh persisted
   (dogfood-dashboard.autorefresh; legacy .auto read as fallback), release stamp.
+  v1.1: platform trajectory panel — renders the dogfood-roadmap artifact (pointer at
+  dogfood/roadmap/latest.json, then the artifact it names, both under CONFIG.base):
+  provenance + commit link, open-summary ledger, advisory attention (top 5), drain
+  state, operator notes incl. EXPIRED; roadmap endpoint joins refresh + footer stamps.
 -->
 <script>
 "use strict";
@@ -24,7 +28,8 @@ const CONFIG = {
     trends:    "indexes/trends.json",
     stale:     "indexes/stale.json",
     failing:   "indexes/failing.json",
-    aggregate: "indexes/badges/_aggregate.json"
+    aggregate: "indexes/badges/_aggregate.json",
+    roadmapLatest: "dogfood/roadmap/latest.json"           // v1.1: pointer, names the roadmap artifact (two-hop)
   },
   refreshMs: 5 * 60 * 1000,      // auto-refresh interval
   staleDaysFallback: 30,         // local staleness threshold if stale.json is unavailable
@@ -33,7 +38,8 @@ const CONFIG = {
     repoBase:    "https://github.com/",
     readModel:   "https://dogfood-lab.github.io/testing-os/handbook/read-model/",
     integration: "https://dogfood-lab.github.io/testing-os/handbook/integration/",
-    dashboard:   "https://dogfood-lab.github.io/testing-os/dashboard/"        // v0.2: markdown deep-link target
+    dashboard:   "https://dogfood-lab.github.io/testing-os/dashboard/",       // v0.2: markdown deep-link target
+    trajectory:  "https://dogfood-lab.github.io/testing-os/handbook/trajectory/"  // v1.1: trajectory panel handbook
   },
   badgeJsonBase: "indexes/badges/",                        // v0.2: badge JSON dir under base; slug = org--repo--surface.json
   shieldsEndpoint: "https://img.shields.io/endpoint?url=", // v0.2: badge renderer — loaded ONLY inside an opened modal
@@ -280,6 +286,37 @@ dialog::backdrop { background: rgba(5, 9, 14, .62); }
 .serrs { color: var(--bad-text); font-weight: 650; }
 .scap { margin: 2px 0 8px; font-size: 12px; color: var(--faint); font-variant-numeric: tabular-nums; }
 
+/* v1.1: platform trajectory panel */
+.tj { margin: 0 0 18px; }
+.tj-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 10px; padding: 13px 16px 11px; border-bottom: 1px solid var(--border); }
+.tj-head h2, .tj h3 { margin: 0; font-size: 11.5px; font-weight: 650; text-transform: uppercase; letter-spacing: .07em; color: var(--dim); }
+.tj h3 { margin-bottom: 6px; }
+.tj-sub { font-size: 12px; color: var(--faint); }
+.tj-sec { padding: 11px 16px 12px; border-top: 1px solid var(--border); }
+.tj-sec:first-child { border-top: 0; }
+.tj-prov { margin: 0; font-size: 12.5px; color: var(--dim); }
+.tj-prov b { color: var(--text); font-weight: 600; }
+.tj-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.tj-chip { padding: 6px 11px; border-radius: 6px; gap: 7px; }
+.tj-chip .cnum { font-size: 15px; }
+.tj-chip .clab { font-size: 11.5px; }
+.tj-tint-ok { background: var(--ok-tint); }
+.tj-tint-wrn { background: var(--wrn-tint); }
+.tj-file { font-size: 12px; }
+.tj-score { font-weight: 650; flex: none; }
+.tj .rlist li.more { color: var(--dim); font-size: 12.5px; }
+.tj-line { margin: 2px 0; font-size: 13px; }
+.tj-meter { height: 4px; max-width: 340px; margin: 7px 0 3px; background: var(--neu-tint); border-radius: 2px; overflow: hidden; }
+.tj-meter span { display: block; height: 100%; background: var(--ok); }
+.tag-bad { background: var(--bad-tint); color: var(--bad-text); }
+.tj-notes { list-style: none; margin: 0; padding: 0; }
+.tj-notes li { padding: 6px 0; border-top: 1px solid var(--border); font-size: 13px; white-space: normal; overflow-wrap: anywhere; }
+.tj-notes li:first-child { border-top: 0; }
+.tj-exp { color: var(--faint); }
+.tj-extag { margin-left: 0; margin-right: 8px; }
+.tj-none { margin: 12px 16px; font-size: 13px; color: var(--dim); }
+.tj-foot { padding: 10px 16px; border-top: 1px solid var(--border); font-size: 12.5px; }
+
 @media (max-width: 820px) {
   .chips { grid-template-columns: 1fr 1fr; }
   .rail { grid-template-columns: 1fr; }
@@ -354,6 +391,15 @@ dialog::backdrop { background: rgba(5, 9, 14, .62); }
     </article>
   </section>
 
+  <section class="panel tj" id="trajPanel" aria-labelledby="trajH">
+    <div class="tj-head">
+      <h2 id="trajH">platform trajectory</h2>
+      <span class="tj-sub">testing-os's own swarm compile — self-accountability, not fleet data</span>
+    </div>
+    <div id="trajBody"><p class="tj-none" aria-hidden="true"><span class="skel" style="width:min(360px,60%)"></span></p></div>
+    <div class="tj-foot"><a id="trajLink" href="#" target="_blank" rel="noopener">trajectory handbook ↗</a></div>
+  </section>
+
   <section id="emptyFleet" class="hero" hidden>
     <h2>no evidence recorded yet</h2>
     <p>the read-model published an empty fleet — no repository has recorded a dogfood run.</p>
@@ -382,7 +428,7 @@ dialog::backdrop { background: rgba(5, 9, 14, .62); }
   <div class="wrap">
     <p>reads the public testing-os read-model · no auth, no telemetry · <a id="rmLink" href="#" target="_blank" rel="noopener">read-model handbook ↗</a></p>
     <p id="fetchStamps" class="stamps num"></p>
-    <p class="credit">v1.0 · built in Claude Design · verified &amp; shipped by Claude Code · <a id="repoLink" href="#" target="_blank" rel="noopener">dogfood-lab/testing-os ↗</a></p>
+    <p class="credit">v1.1 · built in Claude Design · verified &amp; shipped by Claude Code · <a id="repoLink" href="#" target="_blank" rel="noopener">dogfood-lab/testing-os ↗</a></p>
   </div>
 </footer>
 
@@ -423,8 +469,11 @@ const EP = {
   trends:    { name: "trends",         hint: "sparklines and pass-rates are unavailable until it is back." },
   aggregate: { name: "aggregate",      hint: "per-surface verdicts in the table are unaffected." },
   stale:     { name: "stale",          hint: "staleness falls back to a local " + CONFIG.staleDaysFallback + "-day threshold." },
-  failing:   { name: "failing",        hint: "verdict chips in the table still show failures." }
+  failing:   { name: "failing",        hint: "verdict chips in the table still show failures." },
+  roadmap:   { name: "roadmap",        hint: "the trajectory panel is unavailable until it is back — fleet data is unaffected." }
 };
+const epPath = k => CONFIG.paths[k === "roadmap" ? "roadmapLatest" : k];   // v1.1: roadmap's CONFIG.paths key differs from its EP key
+
 const SHAPE = { latest: "object", trends: "object", stale: "array", failing: "array", aggregate: "object" };
 const VERDICT = {
   pass:    { icon: "✓", cls: "v-pass" },
@@ -445,6 +494,7 @@ Object.keys(EP).forEach(k => { state.ep[k] = { status: "pending", data: null, er
 async function fetchOne(k) {
   const ep = state.ep[k];
   try {
+    if (k === "roadmap") { await fetchRoadmap(ep); return; }   // v1.1: two-hop fetch, shared error accounting
     const res = await fetch(CONFIG.base + CONFIG.paths[k], { cache: "no-store" });
     if (!res.ok) throw new Error("HTTP " + res.status);
     const data = await res.json();
@@ -454,6 +504,26 @@ async function fetchOne(k) {
   } catch (err) {
     ep.status = "error"; ep.error = (err && err.message) || String(err);
   }
+}
+
+/* v1.1: roadmap = pointer hop + artifact hop; a 404 on hop 1 means "not yet published" — normal, not a fault */
+async function fetchRoadmap(ep) {
+  const res = await fetch(CONFIG.base + CONFIG.paths.roadmapLatest, { cache: "no-store" });
+  if (res.status === 404) {
+    ep.data = { published: false }; ep.status = "ok"; ep.okAt = Date.now(); ep.error = null;
+    return;
+  }
+  if (!res.ok) throw new Error("HTTP " + res.status);
+  const ptr = await res.json();
+  const ptrOk = ptr && typeof ptr === "object" && !Array.isArray(ptr) &&
+    typeof ptr.path === "string" && ptr.path.indexOf("dogfood/roadmap/") === 0 && ptr.path.indexOf("..") === -1;
+  if (!ptrOk) throw new Error("unexpected pointer shape");
+  const res2 = await fetch(CONFIG.base + ptr.path, { cache: "no-store" });
+  if (!res2.ok) throw new Error("artifact " + ptr.path + ": HTTP " + res2.status);
+  const art = await res2.json();
+  if (!art || typeof art !== "object" || Array.isArray(art)) throw new Error("artifact " + ptr.path + ": unexpected JSON shape");
+  ep.data = { published: true, artifact: art };
+  ep.status = "ok"; ep.okAt = Date.now(); ep.error = null;
 }
 
 async function refreshAll() {
@@ -798,6 +868,111 @@ function renderRail() {
   railCard("stale", "#staleList", "#staleN", "nothing stale — evidence is fresh", false);
 }
 
+/* ---------- v1.1: platform trajectory (roadmap artifact) ---------- */
+const isCount = v => typeof v === "number" && isFinite(v) && v >= 0;
+const TJ_TONE = {                                           // ledger chip tones per spec; order = render order
+  open: v => v > 0 ? "wrn" : "ok", approved: v => v > 0 ? "wrn" : "ok",
+  deferred: () => "neu", fixed: () => "ok", rejected: () => "neu", recurring: () => "neu"
+};
+function tjProvenance(a) {
+  const segs = [];
+  if (typeof a.run_id === "string" && a.run_id) segs.push('run <b class="mono">' + esc(a.run_id) + "</b>");
+  if (typeof a.sequence === "number" && isFinite(a.sequence)) segs.push("seq <b>" + esc(a.sequence) + "</b>");
+  const t = parseISO(a.compiled_at);
+  segs.push("compiled <b" + (t != null ? ' title="' + new Date(t).toISOString() + '"' : "") + ">" + (t != null ? esc(relAge(t)) : "no date") + "</b>");
+  const sha = a.compiled_from && typeof a.compiled_from === "object" ? a.compiled_from.commit_sha : null;
+  if (typeof sha === "string" && /^[0-9a-f]{40}$/i.test(sha)) {
+    const repo = (typeof a.repo === "string" && sha.indexOf("/") === -1 && a.repo.indexOf("/") > 0) ? a.repo : CONFIG.selfRepo;
+    segs.push('<a class="mono" href="' + esc(CONFIG.links.repoBase + repo + "/commit/" + sha) + '" target="_blank" rel="noopener" title="compiled from commit ' + esc(sha) + '">' + esc(sha.slice(0, 7)) + "</a>");
+  }
+  return '<p class="tj-prov">' + segs.join(" · ") + "</p>";
+}
+function tjLedger(a) {
+  const os = a.open_summary;
+  if (!os || typeof os !== "object" || Array.isArray(os)) return "";
+  const chips = Object.keys(TJ_TONE).filter(k => isCount(os[k])).map(k => {
+    const tone = TJ_TONE[k](os[k]);
+    return '<span class="chip tj-chip chip-' + tone + (tone === "ok" ? " tj-tint-ok" : tone === "wrn" ? " tj-tint-wrn" : "") + '">' +
+      '<span class="cnum">' + os[k] + '</span><span class="clab">' + k + "</span></span>";
+  });
+  return chips.length
+    ? '<div class="tj-sec tj-chips" role="group" aria-label="open-findings ledger from this compile — counts only, not fleet filters">' + chips.join("") + "</div>"
+    : "";
+}
+function tjAttention(a) {
+  const at = a.attention;
+  if (!at || typeof at !== "object" || !Array.isArray(at.items)) return "";
+  const items = at.items.filter(it => it && typeof it === "object" && it.file != null);
+  let inner;
+  if (!items.length) {
+    inner = '<li class="zero">no attention signal this compile</li>';
+  } else {
+    inner = items.slice(0, 5).map(it => {
+      const c = it.components, parts = [];
+      if (c && typeof c === "object") {
+        for (const ck of ["churn", "recency", "fragmentation"]) {
+          if (typeof c[ck] === "number" && isFinite(c[ck])) parts.push(ck + " " + c[ck]);
+        }
+      }
+      return "<li" + (parts.length ? ' title="' + esc(parts.join(" · ")) + '"' : "") +
+        '><span class="rrepo mono tj-file">' + esc(it.file) + "</span>" +
+        (typeof it.score === "number" && isFinite(it.score) ? '<span class="tj-score num">' + it.score.toFixed(2) + "</span>" : "") + "</li>";
+    }).join("");
+    if (items.length > 5) inner += '<li class="more">+' + (items.length - 5) + " more</li>";
+  }
+  return '<div class="tj-sec"><h3 id="tjAttH" title="ranked audit-brief context — never a gate, never a predictor, never auto-blame">attention · advisory</h3>' +
+    '<ul class="rlist" aria-labelledby="tjAttH">' + inner + "</ul></div>";
+}
+function tjDrain(a) {
+  const lines = [];
+  const gd = a.grandfathered_drain;
+  if (gd && typeof gd === "object" && isCount(gd.frozen_total) && isCount(gd.drained)) {
+    lines.push('<p class="tj-line">grandfathered migration debt · <b class="num">' + gd.drained + "/" + gd.frozen_total + "</b> drained</p>");
+    if (gd.frozen_total > 0) {
+      const pct = Math.max(0, Math.min(100, gd.drained / gd.frozen_total * 100));
+      lines.push('<div class="tj-meter" aria-hidden="true"><span style="width:' + pct.toFixed(1) + '%"></span></div>');
+    }
+  }
+  const dq = a.drain_queue;
+  if (dq && typeof dq === "object" && Array.isArray(dq.entries) && dq.entries.length) {
+    const n = dq.entries.length;
+    const over = Array.isArray(dq.overdue_ids) ? dq.overdue_ids.length : 0;
+    lines.push('<p class="tj-line">drain queue · <b class="num">' + n + "</b> entr" + (n === 1 ? "y" : "ies") +
+      (over > 0 ? ' ·<span class="tag tag-bad">' + over + " overdue</span>" : ' · <span class="dim">0 overdue</span>') + "</p>");
+  }
+  return lines.length ? '<div class="tj-sec">' + lines.join("") + "</div>" : "";
+}
+function tjNotes(a) {
+  const live = Array.isArray(a.operator_notes) ? a.operator_notes.filter(n => n && typeof n.text === "string" && n.text) : [];
+  const dead = Array.isArray(a.expired_notes) ? a.expired_notes.filter(n => n && typeof n.text === "string" && n.text) : [];
+  if (!live.length && !dead.length) return "";
+  const lis = live.map(n => "<li>" + esc(n.text) + "</li>").concat(
+    dead.map(n => '<li class="tj-exp"><span class="tag tag-wrn tj-extag">EXPIRED</span>' + esc(n.text) + "</li>"));
+  return '<div class="tj-sec"><h3 id="tjNotesH">operator notes</h3><ul class="tj-notes" aria-labelledby="tjNotesH">' + lis.join("") + "</ul></div>";
+}
+function renderTrajectory() {
+  const box = $("#trajBody");
+  if (!box) return;
+  const ep = state.ep.roadmap;
+  if (!ep.data) {
+    box.innerHTML = ep.status === "error"
+      ? '<div class="perr"><strong>⚠ couldn\'t fetch ' + esc(CONFIG.paths.roadmapLatest) + '</strong> <span class="dim">(' + esc(ep.error || "unknown error") + ")</span><br>" + esc(EP.roadmap.hint) + "</div>"
+      : '<p class="tj-none" aria-hidden="true"><span class="skel" style="width:min(360px,60%)"></span></p>';
+    return;
+  }
+  if (!ep.data.published) {                                 // hop-1 404: pre-first-compile, calm by design
+    box.innerHTML = '<p class="tj-none">no roadmap artifact published yet</p>';
+    return;
+  }
+  const a = ep.data.artifact;
+  let h = "";
+  if (ep.status === "error") {
+    h += '<div class="tj-sec"><span class="note">⚠ last refresh of ' + esc(CONFIG.paths.roadmapLatest) + " failed (" + esc(ep.error || "") + ") — showing the artifact fetched at " + clock(ep.okAt) + "</span></div>";
+  }
+  h += '<div class="tj-sec">' + tjProvenance(a) + "</div>" + tjLedger(a) + tjAttention(a) + tjDrain(a) + tjNotes(a);
+  box.innerHTML = h;
+}
+
 /* ---------- render: footer + modes ---------- */
 function renderFooter() {
   $("#fetchStamps").innerHTML = Object.keys(EP).map(k => {
@@ -806,7 +981,7 @@ function renderFooter() {
     if (ep.okAt) v = '<span class="fok">✓ ' + clock(ep.okAt) + "</span>" + (ep.status === "error" ? ' <span class="ferr">✕</span>' : "");
     else if (ep.status === "error") v = '<span class="ferr">✕ never</span>';
     else v = "…";
-    const tip = CONFIG.paths[k] + (ep.error ? " — last attempt failed: " + ep.error : (ep.okAt ? " — last successful fetch" : ""));
+    const tip = epPath(k) + (ep.error ? " — last attempt failed: " + ep.error : (ep.okAt ? " — last successful fetch" : ""));
     return '<span class="stamp" title="' + esc(tip) + '"><span class="sname">' + EP[k].name + "</span> " + v + "</span>";
   }).join("");
 }
@@ -823,13 +998,14 @@ function renderModes() {
   $("#stripPanel").hidden = !showMain;
   $("#tablePanel").hidden = !showMain;
   $("#rail").hidden = !showMain;
+  $("#trajPanel").hidden = !showMain;                      // v1.1: trajectory follows the main sections
   if (allFailed) {
     $("#allFailList").innerHTML = keys.map(k =>
-      "<li><b>" + esc(CONFIG.base + CONFIG.paths[k]) + "</b> — " + esc(eps[k].error || "failed") + "</li>").join("");
+      "<li><b>" + esc(CONFIG.base + epPath(k)) + "</b> — " + esc(eps[k].error || "failed") + "</li>").join("");
   }
 }
 function renderAll() {
-  renderPill(); renderLastEvidence(); renderChips(); renderStrip(); renderTablePanel(); renderRail(); renderFooter(); renderModes(); updateTitle();
+  renderPill(); renderLastEvidence(); renderChips(); renderStrip(); renderTablePanel(); renderRail(); renderTrajectory(); renderFooter(); renderModes(); updateTitle();
 }
 
 /* ---------- diff flash ---------- */
@@ -1222,6 +1398,7 @@ function sanitizeSort(s) {
 function init() {
   $("#rmLink").href = CONFIG.links.readModel;
   $("#integrationLink").href = CONFIG.links.integration;
+  $("#trajLink").href = CONFIG.links.trajectory;           // v1.1
   $("#repoLink").href = CONFIG.links.repoBase + (CONFIG.selfRepo || "");   // v1.0: footer credit link, CONFIG-derived
   $("#autoLbl").textContent = "auto-refresh · " + intervalLabel();
 
