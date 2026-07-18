@@ -1,0 +1,40 @@
+{
+  "notes": [
+    {
+      "kind": "theme",
+      "text": "STANDING ORDER — Releases are waypoints. The audit is designed to always find something, so when the bump is due: stop, publish with a version bump, queue the tail, keep the run open. A spotless audit is never the bar for shipping.",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "theme",
+      "text": "STANDING ORDER — The housekeeping ritual (docs/housekeeping-ritual.md) runs at the start of every swarm session and after every release: revisit these notes first, delete stale exemptions, drain frozen debt on cadence, keep wave briefs on their diet, glance the fleet.",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "invariant",
+      "text": "STANDING ORDER — The grandfathered pin manifest only shrinks: additions are forbidden, and every drain recomputes the content hash in the same commit.",
+      "enforced_by": "scripts/check-finding-regression-pins.mjs",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "theme",
+      "text": "STANDING ORDER — Think in solutions, not problems. Sessions arrive with the fix or the plan; a problem report without a proposed path is half a report.",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "theme",
+      "text": "STANDING ORDER — This repo is being built up to test the other repos. Every feature must serve that eventual fleet use; the surfaces other repos touch (dispatch, badges, onboarding, the dashboard) stay first-class.",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "theme",
+      "text": "TRAJECTORY — Build up the dashboard with more visual components that represent the data in useful ways: trend lines over time, drain-meter progress, ledger movement between compiles, fleet freshness. Each swarm cycle should move this visibly. Retire this note when the Director calls the dashboard done.",
+      "expires": "2026-10-16"
+    },
+    {
+      "kind": "open-question",
+      "text": "TRAJECTORY — Fold environment health-checks (the claude-guardian job: disk free, log and control-plane bloat, worktree residue) into swarm doctor's preflight. Direction chosen: extend doctor, do not fork the guardian repo. Retire this note when the doctor extension ships.",
+      "expires": "2026-10-16"
+    }
+  ]
+}
