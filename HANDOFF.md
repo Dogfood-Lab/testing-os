@@ -186,7 +186,9 @@
 > - **`--isolate` worktrees CAN commit a root `*.test.js`** (bridge fallback grants any domain a claim on `packages/dogfood-swarm/*.test.js` when no `owned` domain claims it). Agents pin in-worktree; don't defer verb/CLI pins to a merge step.
 > - **Open disposition:** `F-3b70bc65` deferred (cmdFindings/buildDigest, cross-domain seam). The `task_e4df06a3` zero-evidence chip is resolved (committed `52c9ac2`). `runs.branch` reads `main` — inert, `dispatch_sha` wins; not a bug to chase.
 >
-> ## BURNDOWN SESSION TWO — dashboard v1.1 mounted, the map redrafted, the three approved verbs built (2026-07-18) — commits `04fda9b` + `f260a83`, roadmap sequence 5
+> ## BURNDOWN SESSION TWO — dashboard v1.1 mounted, the map redrafted, the three approved verbs built (2026-07-18) — commits `69803ba` (dashboard) + `0a1eff3` (verbs), roadmap sequence 5
+>
+> *(Sha correction, same session: the ingest loop moved main mid-push and the rebase rewrote the local shas this entry and three DB close-evidence rows were written against — `04fda9b` → `69803ba`, `f260a83` → `0a1eff3`. The DB rows are immutable history and keep the pre-rebase shas; this mapping is what makes them resolvable. The staleness class this file warns about, caught by its own author within minutes.)*
 >
 > **Ledger: 487 fixed / 17 rejected / 3 deferred / 0 open.** The Director answered the parked questions same-day: the map call delegated, the three feature verbs approved, the windows dispatch green-lit, and Claude Design delivered the dashboard patch.
 >
