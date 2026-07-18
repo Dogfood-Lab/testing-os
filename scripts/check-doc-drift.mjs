@@ -207,6 +207,17 @@ export async function runDriftChecks({ repoRoot, configPath, checkId }) {
  * that are intentionally code-only (internal plumbing not surfaced to
  * operators).
  */
+// F-8c6c0deb sibling sweep (assessed, not fixed): this handler's own
+// `allowlist` below (line ~273 at assessment time) is a set of TOKENS, not
+// file paths — it exempts a token from the "must be documented somewhere"
+// requirement (intentionally code-only plumbing). That is not the same
+// staleness class the finding named: a schema-conformance/helper-adoption
+// allowlist entry SKIPS a pass/fail check on a file, so the file's content
+// can silently drift into "would have passed anyway." A token allowlist
+// entry means "this token need not appear in the docs" — the token
+// incidentally showing up in a target's prose later doesn't fail or
+// invalidate anything, so there is no analogous "started conforming"
+// event to detect. No companion pass added here.
 const sourceVsTargetCoverageHandler = {
   kind: 'source-vs-target-coverage',
   description: 'Every token extracted from sources must appear in at least one target.',
@@ -613,6 +624,14 @@ const helperAdoptionSweepHandler = {
     }
 
     const allowlist = new Set((check.allowlist ?? []).map((p) => resolve(repoRoot, p)));
+    // F-8c6c0deb sibling sweep: this by-name allowlist is the same
+    // permanent-silent-file-skip shape the finding named at the
+    // schema-conformance handler, and check-doc-drift.mjs already has a
+    // working precedent for the fix — forbiddenPatternInTargetsHandler's
+    // 2026-07-17 stale-exemption rescope, reused here verbatim (a map of
+    // "did this entry exempt anything live this run", warned on at the end
+    // when it didn't).
+    const allowlistDidWork = new Map([...allowlist].map((p) => [p, false]));
     const includeTests = check.includeTests === true;
     const forbiddenRe = new RegExp(check.forbiddenPattern);
     const importRe = new RegExp(
@@ -621,15 +640,50 @@ const helperAdoptionSweepHandler = {
 
     const reports = [];
     for (const file of callerFiles) {
-      if (file === helperAbs) continue;
-      if (allowlist.has(file)) continue;
+      if (file === helperAbs) {
+        // This module's own docstring names the helper file itself as a
+        // LEGITIMATE, PERMANENT allowlist reason ("files that legitimately
+        // use the primitive (e.g. the helper itself, test fixtures)") — the
+        // helper necessarily contains the raw primitive internally (it IS
+        // the implementation), which has nothing to do with "hasn't adopted
+        // the helper yet." Confirmed live: every one of this repo's 5 real
+        // helper-adoption-sweep checks with a non-empty allowlist lists its
+        // own helper file in it — without this branch, landing the
+        // staleness pass would have produced 5 permanent false-positive
+        // WARNs on every run (caught before shipping by running the fix
+        // against the real config, not just synthetic fixtures). There is
+        // no "started conforming" event possible for the helper file, so it
+        // can never be stale.
+        if (allowlist.has(file)) allowlistDidWork.set(file, true);
+        continue;
+      }
       const base = file.replace(/\\/g, '/');
-      if (!includeTests && /\.test\.(?:js|mjs|cjs)$/.test(base)) continue;
+      if (!includeTests && /\.test\.(?:js|mjs|cjs)$/.test(base)) {
+        // Same reasoning as the helper-file branch above: this module's own
+        // docstring names "test fixtures" as the OTHER legitimate,
+        // permanent allowlist reason, structurally covered by the default
+        // test-file exclusion — never subject to the "did it adopt the
+        // helper" question the staleness pass asks below.
+        if (allowlist.has(file)) allowlistDidWork.set(file, true);
+        continue;
+      }
 
+      const isAllowlisted = allowlist.has(file);
       const src = readFileSync(file, 'utf8');
       const stripped = stripCommentsAndStrings(src);
-      if (!forbiddenRe.test(stripped)) continue;
-      if (importRe.test(src)) continue;
+      const usesRawPrimitive = forbiddenRe.test(stripped);
+      const importsHelper = importRe.test(src);
+
+      if (isAllowlisted) {
+        // "Still needed" means the file is in the EXACT shape that would be
+        // reported as drift below (raw primitive present, helper not
+        // imported) — anything else (helper adopted, raw call removed) means
+        // today's exemption exempts nothing live.
+        if (usesRawPrimitive && !importsHelper) allowlistDidWork.set(file, true);
+        continue;
+      }
+
+      if (!usesRawPrimitive || importsHelper) continue;
 
       const rel = relative(repoRoot, file).replace(/\\/g, '/');
       reports.push({
@@ -640,6 +694,21 @@ const helperAdoptionSweepHandler = {
         forbidden: [check.forbiddenPattern],
         hint: check.wrapperHint
           ?? `Import { ${check.exportName} } from '${check.helper}' (via @dogfood-lab/<pkg> if cross-package) and replace the raw call. Wrappers that delegate to the helper are allowed; the wrapper file must import the helper.`,
+      });
+    }
+
+    // F-8c6c0deb sibling fix: non-blocking by design — staleness here means
+    // the gate is now STRICTER than its config claims (a caller that quietly
+    // did the right thing, or a caller/file that no longer exists), never
+    // weaker.
+    for (const [p, worked] of allowlistDidWork) {
+      if (worked) continue;
+      const rel = relative(repoRoot, p).replace(/\\/g, '/');
+      reports.push({
+        checkId: check.id,
+        severity: 'warn',
+        message: `[${check.id}] stale allowlist entry: ${rel} exempted nothing this run (file missing, outside callers, adopted the helper import, or dropped the raw call) — safe to delete`,
+        hint: 'Remove the entry from this check\'s allowlist in scripts/doc-drift-patterns.json. A dead exemption left in place is unaudited suppression debt waiting to mask a future real regression on that path.',
       });
     }
 
@@ -940,6 +1009,44 @@ const schemaConformanceHandler = {
               ?? `Fix the agent output to match ${check.schema}. The canonical shape is documented in the schema's description and in the brief's output-format section.`,
           },
           hint: check.hint,
+        });
+      }
+    }
+
+    // F-8c6c0deb: staleness companion pass. `allowlist` (see this handler's
+    // module docstring) is a PERMANENT, SILENT structural exclusion — the
+    // main loop above never even looks at an allowlisted file's content, so
+    // nothing previously re-checked whether the reason for the exemption
+    // still holds. Mirrors forbiddenPatternInTargetsHandler's own 2026-07-17
+    // stale-exemption rescope (allowlistDidWork, below in this file) and
+    // check-finding-regression-pins.mjs's unused_allow_entries convention:
+    // for every by-name entry that still resolves to a file on disk, run the
+    // SAME validate() used for real targets and WARN — never block, since a
+    // human decides whether a now-conforming file should be un-exempted —
+    // when the file now validates. Phrased as a factual observation ("now
+    // VALIDATES"), not a demand ("remove this") — an allowlist entry can be
+    // permanent for a reason unrelated to conformance (e.g. T5 immutability:
+    // a historical artifact that happens to validate today is still
+    // forbidden from being edited, and a future schema tightening could make
+    // it nonconformant again with nobody touching the file).
+    for (const file of allowlist) {
+      if (!existsSync(file)) continue; // dangling entry: a separate, unfiled concern, not staleness
+      let allowlistedParsed;
+      try {
+        allowlistedParsed = JSON.parse(readFileSync(file, 'utf8'));
+      } catch {
+        // Invalid JSON cannot be a false grant — it plainly does not
+        // conform, so there is nothing stale to report.
+        continue;
+      }
+      if (validate(allowlistedParsed)) {
+        const rel = relative(repoRoot, file).replace(/\\/g, '/');
+        reports.push({
+          checkId: check.id,
+          severity: 'warn',
+          message: `[${check.id}] ${rel}: allowlisted file now VALIDATES against ${check.schema} — the exemption may be stale`,
+          file: rel,
+          hint: 'This file is permanently exempted from validation via "allowlist" in scripts/doc-drift-patterns.json (silent by design), but it currently conforms to the schema. Confirm whether the exemption reason still applies (e.g. an immutability rule unrelated to conformance) and remove the entry if not, or leave it with an updated reason if so.',
         });
       }
     }

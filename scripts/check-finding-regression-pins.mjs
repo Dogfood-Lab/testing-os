@@ -354,6 +354,15 @@ export function grandfatherManifestFingerprint(manifest) {
  * that forgets this step is caught by its own gate failing, the same
  * fail-closed posture as every other check in this file — not a special
  * case, just the cost of "deliberate and reviewed."
+ *
+ * Tamper-EVIDENT, not tamper-PROOF — the inverse of the lawful case above:
+ * an actor who edits scripts/grandfathered-pins.json AND recomputes this
+ * constant from the edited content in the SAME commit produces a manifest
+ * that re-verifies clean, mechanically indistinguishable from a lawful
+ * drain. The backstop for that coordinated edit is commit-message and diff
+ * review (CODEOWNERS), never the hash itself, which cannot see past a
+ * same-commit recompute by construction. The full threat-model disclosure
+ * lives in this file's header docstring bullet and DISCLOSED_GAPS.
  */
 export const EXPECTED_GRANDFATHER_MANIFEST_HASH =
   'b30bd267d5d294fa970677aec45df80c6f6beb0f903c4325ee318b84e386d829';

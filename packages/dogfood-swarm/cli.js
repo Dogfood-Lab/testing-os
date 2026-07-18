@@ -1278,14 +1278,30 @@ function cmdHistory(args) {
 function cmdVerify(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm verify <run-id> [--adapter node|python|rust] [--probe-only]');
+    console.error('Usage: swarm verify <run-id> [--adapter node|python|rust] [--probe-only] [--format=text|json]');
     process.exit(1);
   }
+
+  // F-04ecea6d: --format=json, enum-validated by the SAME parseFormatFlag/
+  // VERIFY_FORMATS guard the four verify-* sibling verbs already share —
+  // pre-fix, neither this normal-run branch nor --probe-only below had any
+  // machine-readable output at all.
+  const format = parseFormatFlag(args);
 
   // --probe-only: just show probe results
   if (args.includes('--probe-only')) {
     const probes = probeRepo({ runId, dbPath: getDbPath() });
-    console.log(formatProbe(probes));
+    if (format === 'json') {
+      // F-04ecea6d: raw, unescaped, lossless — matches this package's
+      // universal "format=json bypasses escapeReasonForDisplay and stays
+      // lossless" convention (commands/lib/escape-reason.js's own file
+      // header: JSON's own string escaping already makes control bytes
+      // safe and machine-parseable). The default text path is unchanged —
+      // still routes through the clamped, escaped formatProbe.
+      console.log(JSON.stringify(probes, null, 2));
+    } else {
+      console.log(formatProbe(probes));
+    }
     return;
   }
 
@@ -1301,7 +1317,21 @@ function cmdVerify(args) {
     override,
   });
 
-  console.log(formatVerify(result));
+  // F-04ecea6d: identity-projection JSON path (mirrors cmdStatus/cmdDoctor/
+  // checkGates — verify()'s return is already fully JSON-serializable, no
+  // divergent shape between the human and machine surfaces). Deliberately
+  // NOT an early `return` the way most of this file's other --format=json
+  // branches are shaped: the exit-code gating immediately below (cli-p-002)
+  // is the entire reason this verb exists as a gate rather than a report,
+  // and must fire identically for both formats — `swarm verify ... --format
+  // =json | jq` is exactly the CI consumer cli-p-002 was written for, and an
+  // early return here would silently reintroduce that bug for JSON callers
+  // only.
+  if (format === 'json') {
+    console.log(JSON.stringify(result, null, 2));
+  } else {
+    console.log(formatVerify(result));
+  }
 
   // cli-p-002: `swarm verify` is billed as a wave gate, yet it used to exit
   // 0 on every verdict — a CI step (or a `swarm verify <run> && swarm
@@ -3150,10 +3180,28 @@ async function cmdRoadmap(args) {
     const undoRaw = parseValueFlag(args, '--undo');
     if (undoRaw !== undefined) {
       const sequence = Number(undoRaw);
-      if (!Number.isInteger(sequence) || sequence <= 0) {
-        console.error(`roadmap compile --undo: sequence must be a positive integer (got ${JSON.stringify(undoRaw)})`);
-        process.exit(1);
-      }
+      // F-920a93bf: this used to duplicate undoRoadmapCompile's own typed
+      // ROADMAP_UNDO_INVALID_SEQUENCE guard right here, as an untyped
+      // `console.error` + `process.exit(1)` checking the textually IDENTICAL
+      // condition (`!Number.isInteger(sequence) || sequence <= 0`) first —
+      // making the typed throw inside undoRoadmapCompile permanently dead
+      // through the real CLI (reachable only by calling that function
+      // directly, which is exactly what wave41-4091637-5127-swarm-cp-pins
+      // .test.js:570-579 did, never through this binary). Proven live
+      // pre-fix: `--undo 0`, `--undo -5`, `--undo abc --apply` each printed
+      // the bare untyped message with no `ERROR [ROADMAP_UNDO_INVALID_
+      // SEQUENCE]:` envelope. Deleting the duplicate guard and letting
+      // undoRoadmapCompile's own check throw is proven-by-execution (same
+      // three values, same scratch state) to cover every input shape the
+      // deleted guard covered — the coerced `sequence` value reaching the
+      // typed check is byte-identical to what this guard used to test, and
+      // main()'s `ret.catch` seam (cmdRoadmap is async) routes the throw
+      // through renderTopLevelError exactly like every other typed roadmap
+      // error already does. See f-920a93bf-roadmap-undo-typed-error.test.js
+      // for the subprocess proof. This also matches the single-validation-
+      // layer shape already used by `adjudicate --undo` and `roadmap show
+      // --version` (cli.js) — neither duplicates its downstream function's
+      // own check, whichever layer that single check happens to live in.
       const apply = args.includes('--apply');
       const report = undoRoadmapCompile({ runId, dbPath, sequence, apply });
       if (format === 'json') {
@@ -3374,7 +3422,7 @@ export const USAGE = {
     'other runs\' rows are never touched (re-verified inside the delete',
     'transaction — a violated invariant rolls everything back).',
   ].join('\n'),
-  verify: 'Usage: swarm verify <run-id> [--adapter node|python|rust] [--probe-only]',
+  verify: 'Usage: swarm verify <run-id> [--adapter node|python|rust] [--probe-only] [--format=text|json]',
   'verify-fixed': 'Usage: swarm verify-fixed <run-id> [--threshold=N] [--format=text|markdown|json] [--legacy-v1]',
   'verify-recurring': 'Usage: swarm verify-recurring <run-id> [--threshold=N] [--format=text|markdown|json]',
   'verify-unverified': 'Usage: swarm verify-unverified <run-id> [--threshold=N] [--format=text|markdown|json]',

@@ -83,6 +83,45 @@ Set \`verification_skipped: true\` at the top level of your output JSON to make 
 `;
 
 /**
+ * F-166ab759 (HIGH): no size bound anywhere on generated wave-brief .md
+ * files. T4's roadmap-digest injection (ROADMAP_DIGEST_TOP_K, below) rests
+ * on Lost-in-the-Middle (Liu et al. 2023, arXiv:2307.03172) -- a bounded
+ * digest at the TOP of a brief is worthless if the REST of the brief is
+ * free to grow unbounded underneath it wave over wave. This constant is the
+ * WARN-first ceiling that closes that gap.
+ *
+ * Grounded in the measured, real distribution -- every wave-<N>/<domain>.md
+ * brief this run has ever produced (276 files, `wc -c`, see this finding's
+ * own amend-lane report for the exact command): sizes range from 2,573 bytes
+ * (wave 1) to 1,090,242 bytes (wave 44, the current latest). The corpus is
+ * NOT uniformly large -- it is two tiers, cleanly separable by phase:
+ * `*-audit` waves (health-audit-a/b, stage-d-audit, feature-audit) carry
+ * the accumulated findings-history + roadmap digest and grow ~monotonically
+ * wave over wave (wave 3: 105KB -> wave 27: 718KB -> wave 44: 1,090KB);
+ * `*-amend`/`*-execute` waves are scoped to just that wave's routed
+ * findings and stay small throughout the run's entire history (a few KB to
+ * ~30KB, NO growth trend). 750,000 sits at the real historical crossover
+ * between the two tiers: the first brief to ever exceed it was wave 28's
+ * health-audit-b (753,134 bytes), and every `*-audit` wave since has
+ * stayed above it -- including feature-audit, which reset to a small base
+ * at wave 38 (a fresh phase family, no accumulated digest yet) and has
+ * ALREADY grown back past this threshold by wave 40. That makes this a
+ * real, persistent, non-flaky signal on the current corpus, not a number
+ * reverse-engineered to just barely catch today's max -- a threshold tuned
+ * to ~1.09MB would need re-tuning within 1-2 more waves at the observed
+ * growth rate; this one has 16+ waves of headroom behind it already.
+ *
+ * WARN, never fail: the live corpus already exceeds this ceiling on every
+ * recent audit-phase wave, so a hard gate here would brick THIS run's own
+ * next dispatch. Putting the corpus on a diet -- paginating findings-
+ * history, capping the roadmap digest's own growth further, or archiving
+ * old wave sections out of the live brief -- is next-cycle Director
+ * material, not a call this WARN-first observability pass makes
+ * unilaterally.
+ */
+export const WAVE_BRIEF_SIZE_WARN_THRESHOLD_BYTES = 750_000;
+
+/**
  * Derive the would-create worktree path + branch for a domain WITHOUT creating
  * anything. Mirrors lib/worktree.js#createWorktree's naming byte-for-byte so
  * the `--dry-run --isolate` preview names the exact path the apply path would
@@ -993,6 +1032,36 @@ export function dispatch(opts) {
     }
 
     const promptPath = join(promptDir, `${domain.name}.md`);
+
+    // F-166ab759: WARN-first ceiling on the composed brief, checked here —
+    // the one point every prompt-writing path WITHIN dispatch() (audit,
+    // feature-audit, amend, the generic fallback) already funnels through
+    // before the write. The package's only OTHER brief-write site,
+    // commands/resume.js's redispatch loop, carries the same check against
+    // this same exported constant (found by this finding's sibling sweep;
+    // its line carries `context: 'resume_redispatch'` to tell the two
+    // apart in the NDJSON stream). Byte
+    // length, not `.length` (UTF-16 code units), so multi-byte characters in
+    // findings text/paths/roadmap-digest content don't undercount. See
+    // WAVE_BRIEF_SIZE_WARN_THRESHOLD_BYTES's own comment for how 750,000 was
+    // grounded in this run's measured on-disk corpus. WARN only — never
+    // blocks the write — because the live corpus already exceeds this
+    // ceiling on every recent audit-phase wave; a hard gate here would brick
+    // this very run's own next dispatch.
+    const promptByteSize = Buffer.byteLength(prompt, 'utf-8');
+    if (promptByteSize > WAVE_BRIEF_SIZE_WARN_THRESHOLD_BYTES) {
+      logStage('wave_brief_oversized', {
+        component: 'dogfood-swarm',
+        correlation_id: mintCorrelationId(),
+        runId: opts.runId,
+        waveNumber,
+        phase: opts.phase,
+        domain: domain.name,
+        byteSize: promptByteSize,
+        thresholdBytes: WAVE_BRIEF_SIZE_WARN_THRESHOLD_BYTES,
+      });
+    }
+
     atomicWriteFileSync(promptPath, prompt, 'utf-8');
 
     builtAgents.push({

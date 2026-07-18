@@ -38,11 +38,11 @@
  * own top-level $comment for the full seam-decision writeup this wave. The
  * "representative fixtures" describe block below loads repo-root fixtures
  * under fixtures/roadmaps/ — OUT OF this package's domain (backend owns
- * packages/schemas/** only) — so 5 of those assertions are EXPECTED red
- * until the coordinator relands the amended fixture content proposed in this
- * wave's backend/output.json (`coordinator_reland`); see the comment
- * directly above that describe block for the exact list and why each one is
- * still trustworthy as a regression pin once the fixtures land.
+ * packages/schemas/** only) — so 5 of those assertions were EXPECTED red
+ * for the wave-43 staleness window, until the coordinator's fixture reland
+ * (commit eadd83f) closed it; they are permanent regression pins, green
+ * since. See the comment directly above that describe block for the exact
+ * list and why each one stayed trustworthy as a pin through the window.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -164,27 +164,27 @@ describe('dogfood-roadmap.schema.json — T2 attention.advisory (non-optional si
     expect(constViolation, JSON.stringify(validate.errors)).toBe(true);
   });
 
-  // WAVE-43 / AMENDMENT 3 (A3.2) FIXTURE-STALENESS DISCLOSURE, stated once
-  // here and pointed back to at every other repo-root-fixture `valid===true`
-  // assertion below: fixtures/roadmaps/** is OUT OF this package's domain
-  // (backend owns packages/schemas/** only — .claude/rules and this wave's
-  // brief both name fixtures/ as ownership-gated, wave-41 precedent), so this
-  // amendment could not update the fixture files directly. The 5 assertions
-  // below that call `validate(fixture)` and expect `true` on
-  // valid/well-formed-run.json or valid/minimal-empty-sections.json are
-  // EXPECTED RED until the coordinator lands the amended fixture content this
-  // wave's backend/output.json proposes under `coordinator_reland` (both
-  // fixtures still carry the pre-amendment bare-array drain_queue and lack
-  // expired_notes). Every OTHER fixture-based assertion in this file stays
-  // green through this same staleness window, either because it asserts
-  // generic `valid===false` (still true — a stale fixture is invalid for an
-  // additional, unrelated reason on top of its intended one) or because its
-  // keyword-specific check targets an Ajv error unrelated to drain_queue —
-  // Ajv's allErrors:true still reports that specific error alongside the new,
-  // unrelated ones. These are real regression pins, not vacuous ones: each
-  // was proven red-then-green against inline (non-fixture) fixtures in the
-  // describe blocks above and below, and will additionally cover the real
-  // committed data once the fixture content lands.
+  // WAVE-43 / AMENDMENT 3 (A3.2) FIXTURE-STALENESS NOTE (historical), stated
+  // once here and pointed back to at every other repo-root-fixture
+  // `valid===true` assertion below: fixtures/roadmaps/** is OUT OF this
+  // package's domain (backend owns packages/schemas/** only — .claude/rules
+  // and the wave-43 brief both name fixtures/ as ownership-gated, wave-41
+  // precedent), so the amendment could not update the fixture files directly.
+  // The 5 assertions below that call `validate(fixture)` and expect `true` on
+  // valid/well-formed-run.json or valid/minimal-empty-sections.json were
+  // EXPECTED RED for that window (both fixtures still carried the
+  // pre-amendment bare-array drain_queue and lacked expired_notes) until the
+  // coordinator's fixture reland (commit eadd83f, wave-43 merge
+  // reconciliation) closed it; they are permanent regression pins, green
+  // since. Every OTHER fixture-based assertion in this file stayed green
+  // through that window, either because it asserts generic `valid===false`
+  // (a stale fixture was invalid for an additional, unrelated reason on top
+  // of its intended one) or because its keyword-specific check targets an
+  // Ajv error unrelated to drain_queue — Ajv's allErrors:true still reported
+  // that specific error alongside the unrelated ones. These are real
+  // regression pins, not vacuous ones: each was proven red-then-green against
+  // inline (non-fixture) fixtures in the describe blocks above and below, and
+  // now additionally covers the real committed data.
   it('the real well-formed-run fixture carries advisory:true', () => {
     const fixture = loadFixture('valid/well-formed-run.json') as { attention: { advisory: boolean } };
     expect(fixture.attention.advisory).toBe(true);
@@ -547,14 +547,14 @@ describe('dogfood-roadmap.schema.json — $defs/latestPointer (companion micro-s
   });
 });
 
-// WAVE-43 / AMENDMENT 3 (A3.2) fixture-staleness disclosure: see the shared
-// comment above the T2 block's "the real well-formed-run fixture carries
-// advisory:true" test for the full explanation. The two `valid===true`
-// assertions immediately below (well-formed-run.json, minimal-empty-
-// sections.json) are EXPECTED RED until the coordinator lands this wave's
-// proposed fixture content; every `valid===false` assertion in this block
-// stays green throughout (a stale fixture is still invalid, now for an
-// additional reason on top of its intended one).
+// WAVE-43 / AMENDMENT 3 (A3.2) fixture-staleness note (historical): see the
+// shared comment above the T2 block's "the real well-formed-run fixture
+// carries advisory:true" test. The two `valid===true` assertions immediately
+// below (well-formed-run.json, minimal-empty-sections.json) were EXPECTED
+// RED for the wave-43 window and went green at the coordinator's fixture
+// reland (commit eadd83f); every `valid===false` assertion in this block
+// stayed green throughout (a stale fixture was invalid for an additional
+// reason on top of its intended one).
 describe('dogfood-roadmap.schema.json — representative fixtures (fixtures/roadmaps/)', () => {
   it('valid/well-formed-run.json validates', () => {
     const fixture = loadFixture('valid/well-formed-run.json');
@@ -677,10 +677,10 @@ describe('dogfood-roadmap.schema.json — wave-41 axis (b): notesPath is optiona
     expect(patternViolation, JSON.stringify(validate.errors)).toBe(true);
   });
 
-  // WAVE-43 / AMENDMENT 3 (A3.2) fixture-staleness disclosure: see the T2
-  // block's shared comment. The `valid===true` assertion below is EXPECTED
-  // RED until the coordinator relands this wave's proposed fixture content
-  // (the notesPath VALUE assertion above it is unaffected and stays green).
+  // WAVE-43 / AMENDMENT 3 (A3.2) fixture-staleness note (historical): see
+  // the T2 block's shared comment. The `valid===true` assertion below was
+  // EXPECTED RED for the wave-43 window, green since the fixture reland
+  // (commit eadd83f); the notesPath VALUE assertion above it was unaffected.
   it('the real well-formed-run fixture carries a repo-relative notesPath', () => {
     const fixture = loadFixture('valid/well-formed-run.json') as { notesPath?: string };
     expect(fixture.notesPath).toBe('dogfood/roadmap-notes.json');
@@ -740,11 +740,12 @@ describe('dogfood-roadmap.schema.json — wave-41 axis (d): content_hash stays o
     expect(valid, JSON.stringify(validate.errors)).toBe(true);
   });
 
-  // WAVE-43 / AMENDMENT 3 (A3.2) fixture-staleness disclosure: see the T2
-  // block's shared comment. The `valid===true` assertion below is EXPECTED
-  // RED until the coordinator relands this wave's proposed fixture content
-  // (the content_hash-absence assertion above it is unaffected and stays
-  // green — content_hash's own optionality is untouched by this amendment).
+  // WAVE-43 / AMENDMENT 3 (A3.2) fixture-staleness note (historical): see
+  // the T2 block's shared comment. The `valid===true` assertion below was
+  // EXPECTED RED for the wave-43 window, green since the fixture reland
+  // (commit eadd83f); the content_hash-absence assertion above it was
+  // unaffected throughout — content_hash's optionality is untouched by the
+  // amendment.
   it('minimal-empty-sections.json omits content_hash entirely and still validates (proves optional, not merely nullable)', () => {
     const fixture = loadFixture('valid/minimal-empty-sections.json') as { content_hash?: string };
     expect('content_hash' in fixture).toBe(false);

@@ -275,3 +275,40 @@ jobs:
       - run: npm run build
       - run: npm run test:scripts
       - run: npm test
+
+  # F-92a05b18 (ci-tooling amend, run swarm-1784091637-5127): scripts/check-
+  # step-fixtures.test.mjs carries a win32-only branch in its local
+  # resolveSh() helper (walks `git --exec-path` upward for Git-for-Windows'
+  # bundled usr/bin/sh.exe / bin/sh.exe) that has executed zero times in CI
+  # across every wave of this run — build-and-test above is ubuntu-latest
+  # only, and on Linux the preceding plain spawnSync('sh', ...) probe always
+  # succeeds first, short-circuiting before the win32 branch is ever reached.
+  # If that branch regresses, nobody would know until a human happened to run
+  # the suite locally on Windows (this repo's own primary dev platform per
+  # root CLAUDE.md).
+  #
+  # This job gives the branch a real, repeatable, CI-visible proof-of-life
+  # WITHOUT adding a standing windows-latest leg to the default push/PR
+  # matrix: github-actions.md says "Avoid windows-latest unless Windows-
+  # only", and windows-latest runs at roughly 2x the per-minute cost of
+  # ubuntu-latest. `if: github.event_name == 'workflow_dispatch'` means this
+  # job does not even queue a runner on push or pull_request — standing cost
+  # is zero; the 2x-cost minutes are spent only when a human deliberately
+  # dispatches this workflow to re-prove the branch, e.g. after touching
+  # resolveSh() or its Git-for-Windows discovery logic. Runs ONLY this one
+  # test file, not the full suite/matrix (narrow, already-loud-on-failure
+  # surface — see the finding for the assert.deepEqual(allViolations, [])
+  # failure shape). Every action reference below is the SAME pin used by
+  # build-and-test above.
+  windows-step-fixtures-proof-of-life:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v6.0.3 (node24 runtime)
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: node --test scripts/check-step-fixtures.test.mjs

@@ -254,11 +254,19 @@ export function formatVerify(result) {
     // restriction; rust.js's probe() extracts Cargo.toml's `name` via a
     // regex whose `[^"]` class matches raw newlines and ANSI bytes alike).
     // Reachable by simply being the repo `swarm verify` audits — no
-    // operator --reason flag involved anywhere in this package. Neither
-    // `swarm verify` nor `swarm verify --probe-only` supports
-    // `--format=json`, so this text render is the ONLY surface this value
-    // reaches; there is no lossless escape hatch to fall back on the way
-    // there is for every other reason-render site in this package.
+    // operator --reason flag involved anywhere in this package.
+    //
+    // F-04ecea6d (wave 44): `swarm verify` and `swarm verify --probe-only`
+    // now DO support `--format=json` (cli.js's cmdVerify) — this text
+    // render is no longer the only surface this value reaches. The lossless
+    // escape hatch every other reason-render site in this package already
+    // had now exists here too: cmdVerify's JSON branch emits the raw
+    // `result` (or, under --probe-only, the raw `probes` array) via
+    // `JSON.stringify` directly, never calling formatVerify/formatProbe —
+    // so escapeReasonForDisplay still runs on exactly the one path that
+    // renders to a plain-text/terminal surface (this one), and the JSON
+    // path stays the unescaped canonical form, per this package's universal
+    // format=json convention (commands/lib/escape-reason.js's file header).
     lines.push(`Probe: score ${result.probe.score} — ${escapeReasonForDisplay(result.probe.reason)}`);
   }
   lines.push(`Duration: ${result.duration_ms}ms`);

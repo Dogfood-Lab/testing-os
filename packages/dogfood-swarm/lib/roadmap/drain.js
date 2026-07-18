@@ -338,6 +338,16 @@ const ROADMAP_DRAIN_STATE_RELATIVE_PATH = 'dogfood/roadmap-drain-state.json';
  * }}
  */
 export function compileAuthoredDrainState(db, run) {
+  // F-00c2b7fd: same absent-vs-degraded split as
+  // compileGrandfatherManifestDrainState above (see that function's own
+  // comment for the full rationale) — a missing `run.local_path` or a
+  // missing drain-state file is the NORMAL unfed state (this repo's own
+  // dogfood/roadmap-drain-state.json does not exist on disk today, per this
+  // function's own doc comment above: "a fresh repo compiling its first
+  // roadmap has no authored drain state, and that is not an error"); only a
+  // PRESENT-but-unreadable-or-malformed file earns `degraded_reason`, read
+  // by compile.js's warnIfDrainStateDegraded and dropped before the artifact
+  // is assembled.
   if (!run || typeof run.local_path !== 'string' || run.local_path.length === 0) {
     return { available: false, entries: [], overdue_ids: [] };
   }
@@ -348,9 +358,11 @@ export function compileAuthoredDrainState(db, run) {
   try {
     parsed = readBoundedJson(path);
   } catch {
-    return { available: false, entries: [], overdue_ids: [] };
+    return { available: false, entries: [], overdue_ids: [], degraded_reason: 'unreadable' };
   }
-  if (!parsed || !Array.isArray(parsed.entries)) return { available: false, entries: [], overdue_ids: [] };
+  if (!parsed || !Array.isArray(parsed.entries)) {
+    return { available: false, entries: [], overdue_ids: [], degraded_reason: 'invalid_shape' };
+  }
 
   // "Runs ago" needs a cross-run ordinal — `waves` is scoped to a single
   // run and cannot supply this; `runs` rows sharing the same repo, ordered
@@ -523,6 +535,21 @@ export const FROZEN_GRANDFATHER_MANIFEST_TOTAL = 256;
 export function compileGrandfatherManifestDrainState(repoRoot) {
   const unavailable = { available: false, frozen_total: 0, drained: 0, outstanding: [] };
 
+  // F-00c2b7fd: `unavailable` used to mean two different things — a MISSING
+  // repoRoot/manifest (the normal, unfed state: this file's own doc comment
+  // above already calls a missing manifest "a legitimate state for any
+  // audited repo OTHER than dogfood-lab/testing-os itself") versus a
+  // PRESENT-but-broken one (malformed JSON, or parsed JSON with the wrong
+  // top-level shape — a genuine degradation compile.js's caller should be
+  // warned about). Only the two `return` sites below that follow a
+  // successful `existsSync` now attach `degraded_reason` — the missing-input
+  // and missing-file returns stay the exact pre-existing `unavailable`
+  // object on purpose, so roadmap-drain.test.js's existing
+  // `assert.deepEqual(result, { available: false, frozen_total: 0, drained: 0,
+  // outstanding: [] })` absent-manifest pin (outside this domain's globs)
+  // keeps passing unchanged. `degraded_reason` is consumed by
+  // compile.js's own warnIfDrainStateDegraded and never reaches the
+  // schema-narrowed persisted artifact.
   if (typeof repoRoot !== 'string' || repoRoot.length === 0) return unavailable;
   const path = join(repoRoot, GRANDFATHER_MANIFEST_RELATIVE_PATH);
   if (!existsSync(path)) return unavailable;
@@ -531,10 +558,10 @@ export function compileGrandfatherManifestDrainState(repoRoot) {
   try {
     parsed = readBoundedJson(path);
   } catch {
-    return unavailable;
+    return { ...unavailable, degraded_reason: 'unreadable' };
   }
   if (!parsed || typeof parsed.grandfathered !== 'object' || parsed.grandfathered === null || Array.isArray(parsed.grandfathered)) {
-    return unavailable;
+    return { ...unavailable, degraded_reason: 'invalid_shape' };
   }
 
   const outstanding = [];

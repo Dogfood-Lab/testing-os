@@ -89,6 +89,45 @@
 import { queryRecurringFindings, queryFindingRecurrenceRate } from '../queries/cross-run-analytics.js';
 import { computeAttentionScores } from './attention.js';
 import { compileAuthoredDrainState, compileGrandfatherManifestDrainState } from './drain.js';
+import { logStage } from '../log-stage.js';
+
+/**
+ * F-00c2b7fd: compileGrandfatherManifestDrainState/compileAuthoredDrainState
+ * (drain.js) each compute a real `available` boolean, but the schema-narrowed
+ * assembly below (grandfathered_drain/drain_queue are both
+ * additionalProperties:false, with no `available` slot) drops it before the
+ * section reaches the persisted artifact — so a degraded read was
+ * indistinguishable from a genuinely empty one in the artifact itself. Adding
+ * a persisted signal is a schema amendment (out of this domain's call per
+ * this finding's own scoping); a compile-time logStage warning is the part
+ * fully actionable from here.
+ *
+ * Both producers now attach an in-memory-only `degraded_reason` — but ONLY
+ * on the "file exists but is unreadable/malformed" path, never on "file (or
+ * repoRoot/local_path) is simply absent," which both producers' own doc
+ * comments already establish as the NORMAL unfed state (this repo's own
+ * dogfood/roadmap-drain-state.json does not exist on disk today, and a
+ * foreign audited repo genuinely has no grandfather-manifest concept). A
+ * warning that fired on every ordinary compile would be noise that teaches
+ * operators to ignore it — the same defect class as a gate that cannot fire.
+ * `degraded_reason` never reaches the returned artifact: the narrowing below
+ * (`{ frozen_total, drained, outstanding }` / `{ entries, overdue_ids }`)
+ * drops it the same way it already drops `available`.
+ *
+ * @param {'grandfathered_drain'|'drain_queue'} section — the persisted
+ *   artifact key this state compiles into (for the log line only).
+ * @param {{ degraded_reason?: string }} state
+ * @param {string} runId
+ */
+function warnIfDrainStateDegraded(section, state, runId) {
+  if (!state || !state.degraded_reason) return;
+  logStage('roadmap_drain_section_degraded', {
+    component: 'dogfood-swarm',
+    section,
+    reason: state.degraded_reason,
+    run_id: runId,
+  });
+}
 
 /**
  * Split ALREADY-VALIDATED notes into active vs. expired. Deliberately NOT a
@@ -221,6 +260,7 @@ export function compileRoadmap(db, runId, opts = {}) {
   // `swarm roadmap show` + the digest, never persisted. compileDrainQueue
   // itself is untouched and still exported for that use.
   const authoredDrainState = compileAuthoredDrainState(db, run);
+  warnIfDrainStateDegraded('drain_queue', authoredDrainState, runId);
 
   // A3.2b: grandfathered_drain = {frozen_total, drained, outstanding} over
   // the 256-entry FROZEN manifest (scripts/grandfathered-pins.json) — NOT
@@ -229,6 +269,7 @@ export function compileRoadmap(db, runId, opts = {}) {
   // the frozen_total constant and the EXPECTED_GRANDFATHER_MANIFEST_HASH
   // coverage proof this design depends on.
   const grandfatherDrainState = compileGrandfatherManifestDrainState(repoRoot);
+  warnIfDrainStateDegraded('grandfathered_drain', grandfatherDrainState, runId);
 
   // A3.4: split, don't validate — see splitExpiredNotes' own doc comment
   // and this module's header.

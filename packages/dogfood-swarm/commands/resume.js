@@ -48,7 +48,7 @@ import { buildAuditPrompt, buildAmendPrompt, buildFeatureAuditPrompt } from '../
 import { findingsForDomain } from '../lib/findings-filter.js';
 import { createWorktree, worktreeDisposition } from '../lib/worktree.js';
 import { IsolationError } from '../lib/errors.js';
-import { SKIP_VERIFY_DIRECTIVE } from './dispatch.js';
+import { SKIP_VERIFY_DIRECTIVE, WAVE_BRIEF_SIZE_WARN_THRESHOLD_BYTES } from './dispatch.js';
 import {
   applyTimeoutPolicy, getTimeoutPolicy,
   isBlocked, isTerminal, isRedispatchable, isInFlight,
@@ -352,6 +352,30 @@ export function resume(opts) {
     const promptDir = join(opts.outputDir, `wave-${wave.wave_number}-resume`);
     if (!existsSync(promptDir)) mkdirSync(promptDir, { recursive: true });
     const promptPath = join(promptDir, `${ar.domain_name}.md`);
+
+    // F-166ab759: the SAME WARN-first brief-size ceiling as dispatch.js's
+    // write site — that finding's sibling sweep found this second, unguarded
+    // brief-write path (the redispatch brief). One shared threshold constant,
+    // exported by and documented in dispatch.js (see its distribution
+    // writeup + the WARN-not-fail rationale), so the two sites can never
+    // drift apart on the number. `context` marks the resume path within the
+    // shared `wave_brief_oversized` stage, mirroring this file's own
+    // isolate_failed `context: 'resume_redispatch'` convention above.
+    const promptByteSize = Buffer.byteLength(prompt, 'utf-8');
+    if (promptByteSize > WAVE_BRIEF_SIZE_WARN_THRESHOLD_BYTES) {
+      logStage('wave_brief_oversized', {
+        component: 'dogfood-swarm',
+        correlation_id: mintCorrelationId(),
+        runId: opts.runId,
+        waveNumber: wave.wave_number,
+        phase: wave.phase,
+        domain: ar.domain_name,
+        byteSize: promptByteSize,
+        thresholdBytes: WAVE_BRIEF_SIZE_WARN_THRESHOLD_BYTES,
+        context: 'resume_redispatch',
+      });
+    }
+
     atomicWriteFileSync(promptPath, prompt, 'utf-8');
 
     report.redispatch.push({
