@@ -297,9 +297,6 @@
         "packages/ingest/lib/atomic-write.js",
         "packages/ingest/persist.js",
         "packages/ingest/rebuild-indexes.js",
-        "packages/findings/review/event-log.js",
-        "packages/portfolio/generate.js",
-        "packages/report/build-submission.js",
         "packages/report/cli.js",
         "packages/report/init.js"
       ],
@@ -349,8 +346,7 @@
         "packages/**/*.js"
       ],
       "allowlist": [
-        "packages/findings/lib/atomic-write.js",
-        "packages/ingest/persist.js"
+        "packages/findings/lib/atomic-write.js"
       ],
       "wrapperHint": "F-916867-005 follow-up: extract the canonical unsafeSegment() to a shared module (likely packages/dogfood-swarm/lib/path-safety.js) and update this config entry's helper/exportName fields. Until then, every additional callsite must be added to the allowlist with a cross-ref."
     },
