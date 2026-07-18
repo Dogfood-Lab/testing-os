@@ -1,6 +1,6 @@
 {
-  "color": "red",
+  "color": "orange",
   "label": "dogfood",
-  "message": "fail",
+  "message": "stale",
   "schemaVersion": 1
 }
