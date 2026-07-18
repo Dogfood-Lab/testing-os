@@ -33,7 +33,7 @@ import { runDoctor, formatDoctor } from './commands/doctor.js';
 import { revalidate, formatRevalidate } from './commands/revalidate.js';
 import { status, formatStatus } from './commands/status.js';
 import { resume, formatResume } from './commands/resume.js';
-import { history, formatHistory } from './commands/history.js';
+import { history, formatHistory, findingHistory, formatFindingHistory, pad, truncate } from './commands/history.js';
 import { rewind, formatRewind } from './commands/rewind.js';
 import { redrive, formatRedrive } from './commands/redrive.js';
 import { clean, formatClean } from './commands/clean.js';
@@ -65,6 +65,7 @@ import {
 } from './lib/domains.js';
 import { setTimeoutPolicy, getTimeoutPolicy } from './lib/state-machine.js';
 import { CLOSED_FINDING_STATUSES } from './lib/finding-status.js';
+import { STATUS } from './db/schema.js';
 // F-19f86582: cmdFindings no longer calls the all-in-one buildDigest() —
 // it needs to attach a `.code`/`.hint` to the directory-resolution throws
 // (typed-error surface owned by THIS file, cli.js) and to annotate each
@@ -1247,20 +1248,51 @@ function cmdCleanClaims(args) {
 function cmdHistory(args) {
   // F-264ab3aa: --help/-h is centralized in main() now — see USAGE.history
   // above `const commands` (cmdRewind's note above has the full rationale).
-  const waveIdArg = args[0];
-  if (!waveIdArg) {
-    console.error('Usage: swarm history <wave-id> [--format=text|json]');
+  const idArg = args[0];
+  if (!idArg) {
+    console.error('Usage: swarm history <wave-id>|<finding-id> [--run <run-id>] [--format=text|json]');
     process.exit(1);
   }
 
-  // --format=json emits the structured history() report ({waveId,wave,events})
-  // instead of the text table. The report is already JSON-serializable — the
-  // identity-projection seam matches the status/runs sites. parseFormatFlag
-  // enum-validates + carries the `--`-swallow guard.
+  // --format=json emits the structured history()/findingHistory() report
+  // instead of the text table. Both reports are already JSON-serializable —
+  // the identity-projection seam matches the status/runs sites.
+  // parseFormatFlag enum-validates + carries the `--`-swallow guard.
   const format = parseFormatFlag(args);
 
+  // F-e4557bf5: dispatch on the SHAPE of the FIRST argument, checked BEFORE
+  // the wave-id branch so the two paths can never both fire for one
+  // invocation. A bare positive integer falls through UNCHANGED to the
+  // pre-existing wave_state_events path below (zero regression — that block
+  // is untouched, byte-for-byte, from before this feature). An `F-`-prefixed
+  // token is a finding id: render finding_events' chronological lifecycle
+  // instead (findingHistory/formatFindingHistory, commands/history.js).
+  // finding_id is only unique WITHIN a run (db/schema.js's
+  // UNIQUE(run_id, finding_id)), so this positional-only invocation resolves
+  // it by searching every run — `--run <run-id>` narrows the search for the
+  // rare cross-run 8-hex-prefix collision; findingHistory's own errors name
+  // the resolution attempted on failure.
+  if (/^F-/i.test(idArg)) {
+    const runFilter = parseValueFlag(args, '--run');
+    try {
+      const report = findingHistory({ findingId: idArg, runId: runFilter, dbPath: getDbPath() });
+      if (format === 'json') {
+        console.log(JSON.stringify(report, null, 2));
+        return;
+      }
+      console.log(formatFindingHistory(report));
+    } catch (e) {
+      if (e.code === 'FINDING_NOT_FOUND' || e.code === 'FINDING_ID_AMBIGUOUS') {
+        console.error(e.message);
+        process.exit(1);
+      }
+      throw e;
+    }
+    return;
+  }
+
   try {
-    const report = history({ waveId: waveIdArg, dbPath: getDbPath() });
+    const report = history({ waveId: idArg, dbPath: getDbPath() });
     if (format === 'json') {
       console.log(JSON.stringify(report, null, 2));
       return;
@@ -2842,10 +2874,180 @@ function annotateCanonicalFindingIds(model, { runId, waveNumber, dbPath }) {
   }
 }
 
+/**
+ * F-a7c10cee: canonical finding-status enum for `--status`, re-exported by
+ * reference (not re-declared) from db/schema.js's STATUS.finding — the
+ * single source of truth cmdApprove/disposeFindings/transitionFindings
+ * already write against. Mirrors lib/finding-status.js's own rationale for
+ * re-exporting rather than copying: two independently-typed copies of the
+ * same enum is exactly the drift class this package's culture rejects.
+ */
+const FINDING_STATUSES = STATUS.finding;
+
+/**
+ * F-a7c10cee: typed usage error for an out-of-enum (or empty) `--status`
+ * value, same plain-Error-with-`.code` shape as formatError/juryError above
+ * so main()'s renderTopLevelError seam prints the structured envelope and
+ * exits 1 without a new error class.
+ */
+function statusFilterError(raw, invalidTokens) {
+  const e = new Error(
+    invalidTokens.length > 0
+      ? `--status: unknown status ${invalidTokens.map((t) => `'${t}'`).join(', ')} (got '${raw}') — valid statuses: ${FINDING_STATUSES.join('|')}`
+      : `--status expects at least one status; got '${raw}' — valid statuses: ${FINDING_STATUSES.join('|')}`
+  );
+  e.code = 'CLI_INVALID_STATUS';
+  e.received = raw;
+  e.hint = `pass one or more of: ${FINDING_STATUSES.join(', ')} (comma-separated, case-insensitive) — e.g. \`--status=fixed,deferred\` or \`--status=NEW\``;
+  return e;
+}
+
+/**
+ * F-a7c10cee: parse + case-insensitive-enum-validate `--status` for `swarm
+ * findings <run-id> --status=<status>[,<status>...]`. Returns undefined when
+ * the flag is absent (caller stays on the wave-artifact digest path below,
+ * completely unreached, so that path stays provably byte-identical to
+ * before this feature) — same undefined-if-absent / throw-if-invalid
+ * contract as parseFormatFlag/parseJuryFlag above.
+ *
+ * Every token must resolve to a canonical value or the WHOLE flag is
+ * rejected (fail closed, not partial): a typo'd status silently querying
+ * zero rows would be indistinguishable from "this run genuinely has none",
+ * the exact silent-wrong-answer class this package's culture rejects.
+ *
+ * @param {string[]} args
+ * @returns {string[] | undefined} canonical lowercase statuses, deduplicated,
+ *   in STATUS.finding's declared order (not input order — so the rendered
+ *   header/JSON is stable regardless of how the operator typed the list)
+ */
+export function parseFindingStatusFlag(args) {
+  const raw = parseValueFlag(args, '--status');
+  if (raw === undefined) return undefined;
+
+  const tokens = raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (tokens.length === 0) throw statusFilterError(raw, []);
+
+  const resolved = new Set();
+  const invalid = [];
+  for (const token of tokens) {
+    const canonical = FINDING_STATUSES.find((s) => s.toLowerCase() === token.toLowerCase());
+    if (canonical) resolved.add(canonical);
+    else invalid.push(token);
+  }
+  if (invalid.length > 0) throw statusFilterError(raw, invalid);
+
+  return FINDING_STATUSES.filter((s) => resolved.has(s));
+}
+
+const FINDINGS_SEVERITY_RANK = { CRITICAL: 0, HIGH: 1, MEDIUM: 2, LOW: 3 };
+
+/**
+ * F-a7c10cee: live control-plane query backing `swarm findings <run-id>
+ * --status=...`. Deliberately NOT routed through buildDigestModel/
+ * findLatestWave (lib/findings-digest.js) — those resolve a WAVE's on-disk
+ * artifact, an entirely different question ("what did this wave's agents
+ * report") from this one ("what does the DB say right now"). Queries the
+ * same run_id + status columns cmdApprove/disposeFindings/transitionFindings
+ * already treat as canonical; rows are sorted severity-first (CRITICAL ..
+ * LOW) then finding_id, matching this package's established
+ * sortVerifyFindings severity ordering (lib/findings-render.js).
+ *
+ * @returns {{ runId: string, statuses: string[], count: number, findings: object[] }}
+ */
+export function queryFindingsByStatus(db, runId, statuses) {
+  const placeholders = statuses.map(() => '?').join(',');
+  const rows = db.prepare(
+    `SELECT finding_id, severity, category, status, file_path, first_seen_wave, last_seen_wave, description
+     FROM findings WHERE run_id = ? AND status IN (${placeholders})`
+  ).all(runId, ...statuses);
+
+  rows.sort((a, b) => {
+    const ra = FINDINGS_SEVERITY_RANK[a.severity] ?? 9;
+    const rb = FINDINGS_SEVERITY_RANK[b.severity] ?? 9;
+    if (ra !== rb) return ra - rb;
+    return (a.finding_id || '').localeCompare(b.finding_id || '');
+  });
+
+  return { runId, statuses, count: rows.length, findings: rows };
+}
+
+/**
+ * F-a7c10cee text renderer for queryFindingsByStatus()'s model. Mirrors the
+ * STYLE lib/findings-render.js's renderText established for the wave-scoped
+ * digest (verdict/total banner first, aligned columns, free-text description
+ * clamped and rendered last) — reimplemented locally rather than imported,
+ * because this verb's row shape (status/category/first_seen_wave/
+ * last_seen_wave straight from the `findings` table) is a live-DB-row shape,
+ * not the per-wave agent-report shape buildDigestModel produces, so the two
+ * renderers are siblings in style, not the same function. pad/truncate are
+ * commands/history.js's exported pair (F-e4557bf5 promoted them from private
+ * to shared this same wave) — escapeReasonForDisplay/escapePathForDisplay
+ * are the same canonical escapers every other free-text render site in this
+ * package uses. Column widths are fixed (not content-measured): id/sev/
+ * status/category are schema-enum-bounded (STATUS.finding / SEVERITY_ENUM /
+ * AUDIT_CATEGORIES+FEATURE_CATEGORIES all have a known max length today),
+ * and pad()'s truncate-with-ellipsis fallback protects any future longer
+ * value the same way it already protects formatHistory's FROM/TO columns.
+ */
+export function renderFindingsByStatusText(model) {
+  const lines = [];
+  const header = `Findings — ${model.runId} — status: ${model.statuses.join(', ')} (live query)`;
+  lines.push(header);
+  lines.push('='.repeat(header.length));
+  lines.push('');
+
+  if (model.count === 0) {
+    lines.push(`No findings with status ${model.statuses.join(', ')} for ${model.runId}.`);
+    return lines.join('\n');
+  }
+
+  const counts = { CRITICAL: 0, HIGH: 0, MEDIUM: 0, LOW: 0 };
+  for (const f of model.findings) {
+    if (counts[f.severity] !== undefined) counts[f.severity]++;
+  }
+  lines.push(`Total: ${model.count} | CRITICAL ${counts.CRITICAL} | HIGH ${counts.HIGH} | MEDIUM ${counts.MEDIUM} | LOW ${counts.LOW}`);
+  lines.push('');
+
+  const ID_W = 12, SEV_W = 8, STATUS_W = 10, CATEGORY_W = 22, WAVE_W = 5, FILE_W = 40;
+
+  // Raw rows — deliberately UNESCAPED here. escapeReasonForDisplay/
+  // escapePathForDisplay are called INLINE on the render line below, not in
+  // this mapping step: reason-escaping-discipline.test.js's field-family
+  // sweep requires the escaping call to sit on the SAME line as the audited-
+  // field access (file_path/description), so an auditor scanning render
+  // lines sees the escaping happen at the point of render, not several lines
+  // away in a different function scope.
+  const rows = model.findings.map((f) => ({
+    id: f.finding_id || '—',
+    sev: f.severity || '?',
+    status: f.status || '?',
+    category: f.category || '—',
+    first: f.first_seen_wave != null ? String(f.first_seen_wave) : '—',
+    last: f.last_seen_wave != null ? String(f.last_seen_wave) : '—',
+    file_path: f.file_path || null,
+    description: f.description || '',
+  }));
+
+  lines.push(
+    `${pad('ID', ID_W)}  ${pad('Sev', SEV_W)}  ${pad('Status', STATUS_W)}  ${pad('Category', CATEGORY_W)}  ` +
+    `${pad('First', WAVE_W)}  ${pad('Last', WAVE_W)}  ${pad('File', FILE_W)}  Description`
+  );
+  for (const r of rows) {
+    lines.push(
+      `${pad(r.id, ID_W)}  ${pad(r.sev, SEV_W)}  ${pad(r.status, STATUS_W)}  ${pad(escapeReasonForDisplay(String(r.category)), CATEGORY_W)}  ` +
+      `${pad(r.first, WAVE_W)}  ${pad(r.last, WAVE_W)}  ` +
+      `${pad(r.file_path ? escapePathForDisplay(String(r.file_path)) : '(no file)', FILE_W)}  ` +
+      `${truncate(escapeReasonForDisplay(String(r.description)), 100)}`
+    );
+  }
+
+  return lines.join('\n');
+}
+
 function cmdFindings(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm findings <run-id> [wave-number] [--format=text|markdown|json]');
+    console.error('Usage: swarm findings <run-id> [wave-number] [--status=<status>[,<status>...]] [--format=text|markdown|json]');
     process.exit(1);
   }
   // First positional after run-id is the wave number ONLY when it's numeric.
@@ -2864,6 +3066,50 @@ function cmdFindings(args) {
   // token raw, silently emitting a DIFFERENT format than requested (or
   // swallowing a following flag). parseFormatFlag closes both gaps.
   const format = parseFormatFlag(args.slice(1));
+
+  // F-a7c10cee: --status=<status>[,...] is an ADDITIVE bypass — when
+  // present, this verb answers "what does the LIVE control-plane DB say
+  // right now" instead of "what did this wave's agents report", skipping
+  // wave-artifact resolution ENTIRELY (no wave-N directory needs to exist on
+  // disk for this path — a run whose artifacts were pruned, or a fresh
+  // clone with only the DB, still answers). Checked here, before any of the
+  // waveArg/runDir/findLatestWave resolution below, so that logic is
+  // completely unreached — and therefore provably byte-identical to before
+  // this feature — whenever --status is absent. Any stray wave-number
+  // positional is silently ignored on this path (bypass is total, not
+  // partial): --status answers a different question than "which wave", so
+  // there is nothing to reconcile between the two.
+  //
+  // Deliberately informational, not a gate: unlike the wave-artifact path's
+  // 3-way exitCode (buildDigestModel's clean/findings/pipeline_broken),
+  // this path always exits 0 on a successful query — "here are the findings
+  // matching this status filter" carries no pass/fail verdict of its own,
+  // the way a raw SQL SELECT would not. Only a thrown CLI_INVALID_STATUS
+  // (bad --status value) exits non-zero, via main()'s renderTopLevelError
+  // seam, matching cmdRuns/cmdTrends's identical live-DB-read posture.
+  //
+  // Format is deliberately text/json only (no markdown mode): the
+  // wave-artifact path's markdown mode exists for CI-pipe back-compat with
+  // pre-wave-23 output specific to THAT code path; this is a brand-new flag
+  // with no back-compat obligation, and the finding's own recommendation
+  // names only "the existing findings-render idiom for text" + a lossless
+  // JSON — so an explicit `--format=markdown` here renders the same text
+  // table rather than inventing a third renderer nothing asked for.
+  const statusFilter = parseFindingStatusFlag(args.slice(1));
+  if (statusFilter !== undefined) {
+    const db = openDb(getDbPath());
+    const findingsModel = queryFindingsByStatus(db, runId, statusFilter);
+    if (format === 'json') {
+      // Identity-projection JSON, matching this package's universal
+      // "format=json bypasses the escaper and stays lossless" convention
+      // (commands/lib/escape-reason.js's own file header) — the text branch
+      // above is the only one that escapes.
+      console.log(JSON.stringify(findingsModel, null, 2));
+    } else {
+      console.log(renderFindingsByStatusText(findingsModel));
+    }
+    return;
+  }
 
   // F-19f86582: resolve digest artifacts relative to the ACTIVE control
   // plane (dirname(getDbPath())) — mirrors cmdCollect's --all
@@ -3434,12 +3680,34 @@ export const USAGE = {
   resume: 'Usage: swarm resume <run-id> [--force]',
   history: [
     'Usage: swarm history <wave-id> [--format=text|json]',
+    '   or: swarm history <finding-id> [--run <run-id>] [--format=text|json]',
     '',
-    'Render the full wave_state_events transition chain for <wave-id>.',
-    'Each row shows: from_status -> to_status, when, and the operator-',
-    'supplied reason text (override transitions via `swarm revalidate`',
-    'carry their --reason text here prefixed with `revalidate:`).',
-    '--format=json emits the structured {waveId,wave,events} report.',
+    '<wave-id> (a bare positive integer): render the full wave_state_events',
+    'transition chain for that wave. Each row shows: from_status -> to_status,',
+    'when, and the operator-supplied reason text (override transitions via',
+    '`swarm revalidate` carry their --reason text here prefixed with',
+    '`revalidate:`). --format=json emits the structured {waveId,wave,events}',
+    'report.',
+    '',
+    '<finding-id> (an `F-`-prefixed id, e.g. F-a7c10cee): render that',
+    'finding\'s full finding_events lifecycle, chronologically, across every',
+    'wave it was ever touched in. Each row shows: wave, event type, the',
+    'derived from -> to status (see below), when, and the reason/evidence',
+    'notes recorded with that event. finding_id is only unique WITHIN a run,',
+    'so this searches every run by default; --run <run-id> narrows the search',
+    '(required only if the same 8-hex-prefix id happens to exist in more than',
+    'one run — an unresolvable id names the resolution attempted).',
+    '--format=json emits the structured {findingId,runId,finding,events}',
+    'report.',
+    '',
+    'The FROM/TO status columns are DERIVED, not stored: finding_events has',
+    'no from_status/to_status column (unlike wave_state_events). Most event',
+    'types map to exactly one resulting status (e.g. `fixed` -> fixed,',
+    '`reopened` -> recurring — note reopened\'s event_type and its resulting',
+    'status are deliberately different literals). `recurred` is the one',
+    'exception: it leaves status untouched while the finding is',
+    'deferred/rejected, or resets it to recurring otherwise — resolved from',
+    'the finding\'s own running history, not guessed.',
   ].join('\n'),
   approve: 'Usage: swarm approve <run-id> [--all | --ids F-001,F-002]',
   defer: 'Usage: swarm defer <run-id> --ids F-001,F-002 --reason "<text>"',
@@ -3497,7 +3765,25 @@ export const USAGE = {
     'is a legal db/schema.js EVENT_TYPES value but this verb never writes it).',
   ].join('\n'),
   persist: 'Usage: swarm persist <run-id> [--ingest] [--dry-run]',
-  findings: 'Usage: swarm findings <run-id> [wave-number] [--format=text|markdown|json]',
+  findings: [
+    'Usage: swarm findings <run-id> [wave-number] [--format=text|markdown|json]',
+    '   or: swarm findings <run-id> --status=<status>[,<status>...] [--format=text|json]',
+    '',
+    'Default: findings digest for a wave\'s on-disk audit artifacts (latest',
+    'wave unless [wave-number] is given). Format defaults to text on TTY,',
+    'markdown when piped/redirected.',
+    '',
+    '--status=<status>[,...]: an ADDITIVE bypass — skips wave-artifact',
+    'resolution entirely and lists findings straight from the LIVE',
+    'control-plane DB for this run + status set (comma-separated,',
+    `case-insensitive). Valid statuses: ${FINDING_STATUSES.join('|')}.`,
+    'Shows finding_id, severity, category, status, file_path,',
+    'first/last_seen_wave, and description (clamped in text, lossless in',
+    'JSON). Informational — always exits 0 on a successful query, even when',
+    'it matches zero findings (not a wave gate). Any [wave-number] positional',
+    'is ignored on this path. Format is text (default) or json — no',
+    'markdown mode.',
+  ].join('\n'),
   runs: 'Usage: swarm runs [--format=text|json]',
   trends: 'Usage: swarm trends --query <recurring|history|recurrence> [--format=text|json]',
   roadmap: [
