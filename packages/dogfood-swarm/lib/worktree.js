@@ -15,7 +15,10 @@
  * destroy the other run's live worktree including uncommitted agent edits.
  *
  * Lifecycle:
- *   dispatch → create worktree per agent
+ *   dispatch → create worktree per agent. npm-workspaces repos additionally
+ *              get their workspace self-links provisioned INSIDE the worktree
+ *              and realpath-containment gated (lib/workspace-links.js;
+ *              observed in run swarm-1784601601-bd4a).
  *   agent works in its worktree
  *   collect  → read diff from worktree, validate ownership. Collect does NOT
  *              merge: merging an isolated branch back is an out-of-band
@@ -33,6 +36,7 @@ import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync } from 'nod
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
 import { join } from 'node:path';
 import { logStage } from './log-stage.js';
+import { provisionWorkspaceLinks, checkWorkspaceRealpathContainment } from './workspace-links.js';
 
 /**
  * Validate that a domain name is safe to interpolate into both a filesystem
@@ -146,6 +150,36 @@ export function createWorktree(repoPath, opts) {
 
   // Create worktree with new branch from HEAD.
   gitArgs(repoPath, ['worktree', 'add', '-b', branch, wtDir]);
+
+  // Observed in run swarm-1784601601-bd4a (ai-rpg-engine): `git worktree add`
+  // materializes tracked files only, and because the worktree nests INSIDE
+  // the audited repo, an npm-workspaces repo's bare @scope/* imports walked
+  // up out of the worktree and silently resolved against the MAIN checkout's
+  // node_modules — the agent tested main's code, not its own edits. Recreate
+  // the workspace self-links here (junctions on Windows, symlinks on POSIX;
+  // no npm subprocess, so package-lock.json cannot be rewritten), then gate
+  // on the realpath-containment preflight. A containment failure throws:
+  // same fail-loud isolation contract as F-693631-001 — dispatch/resume wrap
+  // this into IsolationError. No-op for non-npm-workspaces repos.
+  const provisioned = provisionWorkspaceLinks(wtDir);
+  if (provisioned.isWorkspacesRepo) {
+    logStage('worktree_workspace_links_provisioned', {
+      component: 'dogfood-swarm',
+      worktreePath: wtDir,
+      linked: provisioned.linked.length,
+      unsupportedPatterns: provisioned.unsupportedPatterns,
+      skipped: provisioned.skipped,
+    });
+    const containment = checkWorkspaceRealpathContainment(wtDir);
+    if (containment.status === 'fail') {
+      logStage('worktree_workspace_containment_failed', {
+        component: 'dogfood-swarm',
+        worktreePath: wtDir,
+        violations: containment.violations,
+      });
+      throw new Error(`${containment.id} failed for ${wtDir}: ${containment.message}`);
+    }
+  }
 
   return { worktreePath: wtDir, branch };
 }

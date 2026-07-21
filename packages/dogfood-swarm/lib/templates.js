@@ -498,6 +498,45 @@ function renderRoadmapDigestSection(roadmapDigest) {
 }
 
 /**
+ * Render the isolated-worktree setup note. Empty string when the agent runs
+ * against the shared tree (non---isolate dispatch).
+ *
+ * Observed in run swarm-1784601601-bd4a (ai-rpg-engine): an isolated agent
+ * in an npm-workspaces repo found its worktree's workspace imports silently
+ * resolving to the MAIN checkout (nested worktree + no node_modules → walk-up
+ * resolution), and "repaired" it with `npm install` — rewriting
+ * package-lock.json, an out-of-scope edit. Provisioning now happens at
+ * dispatch (lib/workspace-links.js); this section tells the agent that, gives
+ * it the one-liner to verify containment, and names the ONE forbidden repair.
+ *
+ * @param {boolean} [isolatedWorktree]
+ * @returns {string}
+ */
+function renderWorktreeSection(isolatedWorktree) {
+  if (!isolatedWorktree) return '';
+  return `
+## Isolated worktree (provisioned)
+
+The path above is an ISOLATED git worktree, not the main checkout. If this
+repo is an npm-workspaces monorepo, its workspace links
+(\`node_modules/<name>\` → this worktree's own package dirs) were provisioned
+at dispatch, so bare workspace imports resolve to THIS worktree's code.
+
+Before trusting any test run, you may spot-check containment:
+
+\`\`\`
+node -e "console.log(require('fs').realpathSync('node_modules/<workspace-pkg-name>'))"
+\`\`\`
+
+That path must sit UNDER this worktree. If any workspace package resolves
+OUTSIDE the worktree (into the main checkout), STOP trusting test results and
+report it in your output summary. Do NOT "repair" resolution with
+\`npm install\` / \`npm ci\` — that can rewrite package-lock.json, which is
+outside every domain's scope.
+`;
+}
+
+/**
  * Render the per-domain ownership block — globs + ownership class + (optional)
  * frozen-snapshot ID. Agents read the SAME ownership facts the collect-time
  * checkOwnership() will enforce against, not a paraphrased coordinator brief.
@@ -644,6 +683,9 @@ Prioritize by impact. Estimate effort (small/medium/large).`,
  * @param {string} [opts.roadmapDigest] — T4 cross-run targeting context from a
  *   prior run's compiled roadmap. Advisory only; rendered at the TOP of the
  *   brief. See renderRoadmapDigestSection's header for the full contract.
+ * @param {boolean} [opts.isolatedWorktree] — repoPath is a provisioned
+ *   --isolate worktree; render the worktree setup note (see
+ *   renderWorktreeSection, run swarm-1784601601-bd4a).
  * @returns {string}
  */
 export function buildAuditPrompt(opts) {
@@ -659,6 +701,7 @@ export function buildAuditPrompt(opts) {
     opts.ownershipClass,
     opts.domainSnapshotId,
   );
+  const worktreeSection = renderWorktreeSection(opts.isolatedWorktree);
   const outputContract = renderAuditOutputContract();
 
   return `# Swarm Audit — ${lens.label}
@@ -667,7 +710,7 @@ export function buildAuditPrompt(opts) {
 **Path:** ${opts.repoPath}
 **Domain:** ${opts.domainName}
 **Wave:** ${opts.waveNumber}
-${roadmapSection}
+${roadmapSection}${worktreeSection}
 ${domainContract}
 
 ## Your Scope
@@ -727,6 +770,10 @@ Be thorough. Every finding must have a severity and a concrete recommendation.`;
  * @param {Array<object>} opts.findings — approved findings filtered for this domain
  * @param {string} [opts.ownershipClass]
  * @param {string} [opts.domainSnapshotId]
+ * @param {boolean} [opts.isolatedWorktree] — repoPath is a provisioned
+ *   --isolate worktree; render the worktree setup note. The AMEND prompt is
+ *   the one that matters most here — amend agents run tests, and the
+ *   green-illusion class (run swarm-1784601601-bd4a) is a test-run defect.
  * @returns {string}
  */
 export function buildAmendPrompt(opts) {
@@ -745,6 +792,7 @@ export function buildAmendPrompt(opts) {
     opts.ownershipClass,
     opts.domainSnapshotId,
   );
+  const worktreeSection = renderWorktreeSection(opts.isolatedWorktree);
   const outputContract = renderAmendOutputContract();
 
   return `# Swarm Amend — Fix Approved Findings
@@ -753,7 +801,7 @@ export function buildAmendPrompt(opts) {
 **Path:** ${opts.repoPath}
 **Domain:** ${opts.domainName}
 **Wave:** ${opts.waveNumber}
-
+${worktreeSection}
 ${domainContract}
 
 ## Your Scope
@@ -832,6 +880,9 @@ illustrates shape; the canonical contract above is load-bearing:
  *   param; see renderOpenPriorSection's header for the F-f86e42eb history.
  * @param {string} [opts.roadmapDigest] — T4 cross-run targeting context.
  *   Same contract as buildAuditPrompt's identically-named param.
+ * @param {boolean} [opts.isolatedWorktree] — repoPath is a provisioned
+ *   --isolate worktree; render the worktree setup note. Same contract as
+ *   buildAuditPrompt's identically-named param.
  * @returns {string}
  */
 export function buildFeatureAuditPrompt(opts) {
@@ -846,6 +897,7 @@ export function buildFeatureAuditPrompt(opts) {
     opts.ownershipClass,
     opts.domainSnapshotId,
   );
+  const worktreeSection = renderWorktreeSection(opts.isolatedWorktree);
   const outputContract = renderFeatureOutputContract();
 
   return `# Swarm Feature Audit
@@ -854,7 +906,7 @@ export function buildFeatureAuditPrompt(opts) {
 **Path:** ${opts.repoPath}
 **Domain:** ${opts.domainName}
 **Wave:** ${opts.waveNumber}
-${roadmapSection}
+${roadmapSection}${worktreeSection}
 ${domainContract}
 
 ## Your Scope
