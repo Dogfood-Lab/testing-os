@@ -312,7 +312,7 @@ export function formatAdjudication({ result, adjudicationId, receiptPath }) {
     lines.push(`Brief: ${bs.chars} chars (~${bs.estimated_tokens} tokens, ${bs.estimator}; reserve ${bs.output_reserve_tokens}) — ${
       bs.all_fit
         ? `read whole by all ${bs.seats.length} seats`
-        : `OVERFLOWED ${overCount} of ${bs.seats.length} seats — verdicts came from truncated reads`
+        : `OVERFLOWED ${overCount} of ${bs.seats.length} seats — dispatched under --allow-oversize; verdicts came from truncated reads`
     }`);
   }
   lines.push('');

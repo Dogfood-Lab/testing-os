@@ -1692,7 +1692,7 @@ async function cmdAdjudicate(args) {
 
   const caseFilePath = parseValueFlag(args, '--case-file');
   if (!runId || !caseFilePath) {
-    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]');
+    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--allow-oversize] [--format=json] [--dry-run]');
     console.error('   or: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]');
     process.exit(1);
   }
@@ -1708,6 +1708,11 @@ async function cmdAdjudicate(args) {
   const tier = parseJuryFlag(args);
   const format = parseFormatFlag(args);
   const dryRun = args.includes('--dry-run');
+  // Escape hatch for the local tier's brief-size guard: converts the
+  // JURY_BRIEF_OVERFLOW refusal into a logged, receipt-recorded warning
+  // (brief_size.all_fit: false). The operator is choosing truncated reads,
+  // knowingly — the receipt says so either way.
+  const allowOversize = args.includes('--allow-oversize');
 
   const db = openDb(getDbPath());
   const caseFile = readBoundedJson(resolve(caseFilePath));
@@ -1746,7 +1751,10 @@ async function cmdAdjudicate(args) {
   }
 
   const log = (m) => console.error(`  · ${m}`);
-  const runJury = tier === 'prism' ? makePrismJury({ log }) : makeOllamaJury({ log });
+  if (allowOversize && tier === 'prism') {
+    console.error('note: --allow-oversize applies to the local tier only — the prism tier trims per criterion (receipted as criteria[].brief_omitted) instead of dispatching oversize.');
+  }
+  const runJury = tier === 'prism' ? makePrismJury({ log }) : makeOllamaJury({ log, allowOversize });
   // F-18a5579c: run-scoped output dir, matching every other artifact-writing
   // verb — receipt (getOutputDir), persist, all four verify-*. Pre-fix this
   // was dirname(getDbPath()), the swarms/ ROOT: every run's receipts piled

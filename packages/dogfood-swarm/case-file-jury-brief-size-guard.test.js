@@ -37,6 +37,11 @@
  * assert.rejects sees a resolved promise) while the fitting-path tests keep
  * passing — a discriminating red. Restoring the throw returns the suite to
  * green.
+ *
+ * The --allow-oversize escape hatch (a separate commit on this branch) is
+ * pinned at the bottom: it must dispatch, must log, and must receipt
+ * all_fit:false — an oversize read is allowed to happen knowingly, never
+ * silently.
  */
 
 import { describe, it, beforeEach } from 'node:test';
@@ -336,5 +341,47 @@ describe('runAdjudicate — the verb core under the guard', () => {
 
     // The human render is not blind to the field (the F-9acd2df3 lesson).
     assert.match(formatAdjudication(out), /Brief: \d+ chars .*read whole by all 5 seats/);
+  });
+});
+
+describe('--allow-oversize — the escape hatch is recorded, never silent', () => {
+  it('dispatches despite overflow, warns per overflowing seat, and receipts all_fit:false', async () => {
+    const calls = [];
+    const logged = [];
+    const runJury = makeOllamaJury({
+      allowOversize: true,
+      resolveSeatContexts: fixedContexts(4096),
+      fetchImpl: recordingFetch(calls),
+      log: m => logged.push(m),
+    });
+
+    const result = await adjudicate(oversizedCaseFile(), { runJury, seats: LOCAL_JURY_SEATS });
+
+    assert.equal(calls.length, LOCAL_JURY_SEATS.length, 'the hatch dispatches every seat');
+    assert.equal(
+      logged.filter(m => /OVERSIZE \(--allow-oversize\)/.test(m)).length,
+      LOCAL_JURY_SEATS.length,
+      'one loud warning per overflowing seat — the wave-5 silence is the failure this line ends',
+    );
+    assert.equal(result.brief_size.all_fit, false, 'the receipt records the overflow fact');
+    assert.ok(result.brief_size.seats.every(s => s.fits === false), 'per-seat map on the receipt');
+    assert.match(
+      formatAdjudication({ result, adjudicationId: 1, receiptPath: null }),
+      /OVERFLOWED 5 of 5 seats — dispatched under --allow-oversize/,
+      'the human surface names the hatch and the truncated reads',
+    );
+  });
+
+  it('without the hatch the same jury still refuses (the default stays fail-closed)', async () => {
+    const calls = [];
+    const runJury = makeOllamaJury({
+      resolveSeatContexts: fixedContexts(4096),
+      fetchImpl: recordingFetch(calls),
+    });
+    await assert.rejects(
+      () => adjudicate(oversizedCaseFile(), { runJury, seats: LOCAL_JURY_SEATS }),
+      JuryBriefOverflowError,
+    );
+    assert.equal(calls.length, 0);
   });
 });

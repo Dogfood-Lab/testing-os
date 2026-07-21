@@ -314,7 +314,9 @@ export class JuryBriefOverflowError extends Error {
       'Split the case-file into slices the panel can read whole, or trim the artifact ' +
       'to the hunks the criteria actually judge. The guard refuses the whole panel even ' +
       'when some seats fit — a silently-shrunk panel is the roster-shrink failure the ' +
-      'case-file contract documents.';
+      'case-file contract documents. To dispatch anyway, re-run with --allow-oversize: ' +
+      'the overflow is then stamped on the receipt (brief_size.all_fit: false) and the ' +
+      'verdicts come from truncated reads.';
   }
 }
 
@@ -426,6 +428,7 @@ export function parseJurorResponse(text, criterionIds) {
  * @param {typeof fetch} [opts.fetchImpl] — injectable transport (tests; default global fetch)
  * @param {typeof resolveSeatContextsViaOllama} [opts.resolveSeatContexts] — injectable seat-context resolver (tests; default live /api/ps + /api/show + fallback table)
  * @param {number} [opts.assumedNumCtx] — see DEFAULT_ASSUMED_NUM_CTX
+ * @param {boolean} [opts.allowOversize] — the `--allow-oversize` escape hatch: converts the overflow refusal into a logged, receipt-recorded warning (brief_size.all_fit: false); the seats then judge truncated reads, knowingly
  * @returns {(spec: object) => Promise<Array<{seat: string, model: string, criteria: object, out_of_brief: string[], brief_fit?: object, error?: string}>>}
  */
 export function makeOllamaJury(opts = {}) {
@@ -436,6 +439,7 @@ export function makeOllamaJury(opts = {}) {
   const fetchImpl = opts.fetchImpl || fetch;
   const resolveSeatContexts = opts.resolveSeatContexts || resolveSeatContextsViaOllama;
   const assumedNumCtx = opts.assumedNumCtx ?? DEFAULT_ASSUMED_NUM_CTX;
+  const allowOversize = opts.allowOversize === true;
 
   return async function runJury(spec) {
     const { system, user, criterionIds } = buildJurorPrompt(spec.payload);
@@ -450,7 +454,13 @@ export function makeOllamaJury(opts = {}) {
       assumedNumCtx,
     });
     if (seatFit.some(s => !s.fits)) {
-      throw new JuryBriefOverflowError(measurement, seatFit, numPredict);
+      if (!allowOversize) throw new JuryBriefOverflowError(measurement, seatFit, numPredict);
+      // --allow-oversize: the refusal becomes a warning the operator SEES and
+      // the receipt RECORDS (brief_fit.fits:false → brief_size.all_fit:false).
+      // Never silent — silence is the wave-5 failure this guard exists to end.
+      for (const s of seatFit.filter(f => !f.fits)) {
+        log(`OVERSIZE (--allow-oversize): dispatching ~${measurement.estimated_tokens}-token brief to ${s.model} (budget ${s.budget_tokens}, over by ${s.overflow_tokens}) — its verdict will come from a truncated read`);
+      }
     }
     // Per-verdict brief_fit: measurement + this seat's limit, no seat/model
     // duplication (the verdict row already names both). Attached on the error

@@ -115,7 +115,10 @@ contexts resolve via `/api/ps` (the actual runtime window of a loaded instance),
 number's provenance is labeled `context_source`, and an assumption is never passed off
 as a measurement. Every measured run stamps the receipt with `brief_size` (panel
 measurement + per-seat `context_tokens` / `context_source` / `fits`), so a post-hoc
-read can distinguish "the seats read the whole brief" from "unknown". The two tiers
+read can distinguish "the seats read the whole brief" from "unknown". `--allow-oversize`
+on the verb is the recorded escape hatch: the refusal becomes a logged warning, the
+dispatch proceeds, and the receipt says so (`brief_size.all_fit: false`, per-seat
+`fits`) — a knowingly-truncated read, never a silent one. The two tiers
 legitimately read different briefs; that asymmetry is documented in the honest-boundary
 table rather than papered over.
 
