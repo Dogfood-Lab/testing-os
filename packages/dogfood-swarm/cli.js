@@ -53,7 +53,7 @@ import {
   previewAdjudicate, formatAdjudicationPreview,
   undoAdjudication, formatAdjudicationUndo,
 } from './commands/adjudicate.js';
-import { makeOllamaJury, LOCAL_JURY_SEATS } from './lib/case-file/ollama-jury.js';
+import { makeOllamaJury, LOCAL_JURY_SEATS, JuryBriefOverflowError } from './lib/case-file/ollama-jury.js';
 import { makePrismJury, PRISM_JURY_SEATS, PRISM_CLOUD_SEATS } from './lib/case-file/prism-jury.js';
 import { DEFAULT_JURY_SEATS } from './lib/case-file/adjudicate.js';
 import { CaseFileNeutralityError } from './lib/case-file/handoff.js';
@@ -1765,6 +1765,21 @@ async function cmdAdjudicate(args) {
     // error table, since the verb renders it directly).
     if (e instanceof CaseFileNeutralityError) {
       console.error(`ADJUDICATION REFUSED: ${e.message}`);
+      if (e.hint) console.error(`Hint: ${e.hint}`);
+      process.exit(1);
+    }
+    // A brief no seat can read whole is refused before any seat call (observed
+    // in run swarm-1784601601-bd4a wave 5: a silently-truncated 252KB brief
+    // made all 5 seats abstain on all 14 criteria with zero operator signal).
+    // Same fail-closed posture and rendering as the neutrality gate above.
+    if (e instanceof JuryBriefOverflowError) {
+      console.error(`ADJUDICATION REFUSED: ${e.message}`);
+      console.error(`Seat fit map (brief ≈${e.measurement.estimated_tokens} tokens est., output reserve ${e.output_reserve_tokens}):`);
+      for (const s of e.seat_fit) {
+        console.error(s.fits
+          ? `  ${s.model}: fits (ctx ${s.context_tokens} via ${s.context_source}, budget ${s.budget_tokens})`
+          : `  ${s.model}: OVER by ${s.overflow_tokens} tokens (ctx ${s.context_tokens} via ${s.context_source}, budget ${s.budget_tokens})`);
+      }
       if (e.hint) console.error(`Hint: ${e.hint}`);
       process.exit(1);
     }

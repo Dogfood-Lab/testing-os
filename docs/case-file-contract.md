@@ -94,10 +94,30 @@ withheld: an assembler that cannot understand a value must fail toward *deliveri
 evidence, never toward silently starving a criterion. An explicit `[]` is the one
 exception — it is unambiguous, means nothing, and the lint rejects it.
 
-**The local tier ignores it.** `--jury=local` sends one call per seat over all criteria
-with no cap, so it reads the whole pack regardless. The two tiers legitimately read
-different briefs; that asymmetry is documented in the honest-boundary table rather than
-papered over.
+**The local tier ignores it.** `--jury=local` sends one call per seat over all criteria —
+the RUNNER applies no per-criterion cap, so the whole pack is rendered into every seat's
+prompt. An earlier revision of this document said the tier "reads the whole pack (no
+cap)": true of the runner, **false of the seats**. Each seat has a finite effective
+context window — the applied Ollama `num_ctx`, not the trained `context_length` that
+`/api/show` reports — and a rendered brief that exceeds it is silently truncated
+server-side: the seats judge a document they never fully read and correctly abstain,
+with zero operator signal (observed in run swarm-1784601601-bd4a wave 5, ai-rpg-engine:
+a 252KB case-file returned `insufficient_context` on all 14 criteria from all 5 seats,
+while a 42K-char brief on the same panel had produced clean 4/0/1 verdicts). The tier
+therefore carries a **fail-closed brief-size guard** (`lib/case-file/ollama-jury.js`):
+the rendered prompt is measured — chars plus a token estimate explicitly labeled
+`chars/4-heuristic` — against every seat's resolved context minus the `num_predict`
+output reserve, BEFORE any seat call; any overflow refuses the WHOLE panel
+(`JURY_BRIEF_OVERFLOW`, carrying the per-seat fit map), because dispatching only the
+seats that fit would be the roster-shrink failure documented for prism below. Seat
+contexts resolve via `/api/ps` (the actual runtime window of a loaded instance), then
+`/api/show` (`num_ctx` / trained ceiling), then a maintained fallback table — each
+number's provenance is labeled `context_source`, and an assumption is never passed off
+as a measurement. Every measured run stamps the receipt with `brief_size` (panel
+measurement + per-seat `context_tokens` / `context_source` / `fits`), so a post-hoc
+read can distinguish "the seats read the whole brief" from "unknown". The two tiers
+legitimately read different briefs; that asymmetry is documented in the honest-boundary
+table rather than papered over.
 
 #### The budget ceiling (measured, not derived)
 
@@ -310,6 +330,7 @@ Both satisfy the same `runJury(spec)` boundary and are fused by the same
 | L4 submodularity | ✗ | ✓ collapse-**refusal** (`LENS_COLLAPSE` → abstain) |
 | Out-of-brief findings | ✓ (asked for explicitly) | ✗ — see below |
 | Receipt | the swarm's | the swarm's **+ prism's signed Ed25519 receipt per call** |
+| Brief-size boundary | fail-closed guard: the rendered brief must fit every seat's context (minus the output reserve) or the whole panel refuses (`JURY_BRIEF_OVERFLOW`); measurement receipted as `brief_size` | 4 000-char per-criterion `intent` cap with priority trimming; drops receipted as `criteria[].brief_omitted` |
 | Cost | free (local seats) | free (local seats), slower |
 
 `--jury=prism` is the stronger tier: it is the only one that answers "would four
@@ -443,7 +464,7 @@ Scored against the six [workflow standards](../.claude/rules/workflow-standards.
 | Standard | Score | Evidence |
 |----------|-------|----------|
 | **PIN_PER_STEP** | 3 | The schema is the single source of shape; `VERDICT_LEAK_PATTERNS` / `REASONING_LEAK_PATTERNS` / `MIN_EXTRACTION_RATIO` are exported and pinned by `case-file.test.js`, so the enforced vocabulary can't drift silently. Real fixtures under `fixtures/case-files/{valid,invalid,lint}/` pin one case per pass and severity. |
-| **ANDON_AUTHORITY** | 2 | The handoff **fail-closes** — `toJuryRequest` throws `CaseFileNeutralityError` on any error finding, so a defective briefing halts before it reaches the jury (tested). *Remediation (owner: `swarm adjudicate` slice):* wire the lint into `npm run verify` / CI as a repo-wide halt gate over any committed case-file, the way `policy-lint` is wired. |
+| **ANDON_AUTHORITY** | 2 | The handoff **fail-closes** — `toJuryRequest` throws `CaseFileNeutralityError` on any error finding, so a defective briefing halts before it reaches the jury (tested). The local jury tier halts the same way on brief overflow — `JuryBriefOverflowError` before any seat call, whole-panel (tested; observed in run swarm-1784601601-bd4a wave 5). *Remediation (owner: `swarm adjudicate` slice):* wire the lint into `npm run verify` / CI as a repo-wide halt gate over any committed case-file, the way `policy-lint` is wired. |
 | **NAMED_COMPENSATORS** | 3 | This slice performs **no irreversible tool calls** — it is a pure lint + transform that writes no world-state, so there is nothing to compensate (not a skip: genuinely no irreversible action). The irreversibles — dispatching to the jury, persisting a signed receipt — land in the `swarm adjudicate` verb, which carries the compensators table per the no-skip rule. |
 | **DECOMPOSE_BY_SECRETS** | 3 | `schema.js` (shape) / `lint.js` (neutrality semantics) / `handoff.js` (transform + fail-closed gate) each change for a different reason; the verdict-leak, reasoning-leak, and grounding passes are separate functions; the pattern sets are data, not control flow. A clean Parnas split. |
 | **UNCERTAINTY_GATED_HUMANS** | 3 | The abstention rubric makes `insufficient_context` first-class; the grounding **warning** (vs error) gates on confidence — high-precision errors block, genuinely-ambiguous thin grounding only warns; the whole contract exists so the clerk *proposes* and the Director *disposes* with the human above, framed contrastively. |
