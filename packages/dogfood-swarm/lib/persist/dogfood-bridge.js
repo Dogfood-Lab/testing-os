@@ -167,12 +167,21 @@ export function buildDogfoodSubmission(exportData, overallVerdict) {
   // to `new Date()` for an INCOMPLETE run (run.completed null) made finished_at
   // wall-clock-at-persist, so it shifted on every invocation, the duplicate
   // probe never matched, and each re-persist minted a NEW corpus record (which
-  // ingest.yml commits to main). Derive both timestamps from a STABLE run
-  // column — run.created is non-null for any persisted run — so the dedup key
-  // is deterministic for a given run regardless of completion state, making
+  // ingest.yml commits to main). Derive both timestamps from STABLE DB truth
+  // so the dedup key is deterministic for a given run state, making
   // `swarm persist --ingest` idempotent on re-run even mid-flight.
+  //
+  // Observed in run swarm-1784601601-bd4a (ai-rpg-engine): the direct
+  // completed→created fallback made an open run report
+  // started_at == finished_at and duration_ms 0 against ~52 minutes of
+  // recorded wave activity. run.last_terminal_event_at (buildRunExport) is
+  // the latest completion/receipt/promotion timestamp in the DB — honest,
+  // and still DB-derived rather than the export wall clock, so fp-p-003's
+  // stability survives: re-persisting the SAME DB state reuses the same
+  // finished_at (new activity legitimately moves it). run.created remains
+  // the last-resort fallback for a run with zero terminal events.
   const startedAt = run.created || new Date().toISOString();
-  const finishedAt = run.completed || run.created || new Date().toISOString();
+  const finishedAt = run.completed || run.last_terminal_event_at || run.created || new Date().toISOString();
 
   return buildSubmission({
     repo: run.repo,

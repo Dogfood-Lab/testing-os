@@ -18,6 +18,7 @@ import { createHash } from 'node:crypto';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../queries/latest-agent-runs.js';
 import { SCHEMA_VERSION } from '../../db/schema.js';
 import { isOpenFinding } from '../finding-status.js';
+import { toRfc3339Utc } from './sqlite-datetime.js';
 
 /**
  * D3B-014 (Phase 10 Step 1): version of the canonical export ENVELOPE
@@ -31,8 +32,13 @@ import { isOpenFinding } from '../finding-status.js';
  * schema are independent contracts — the DB might bump for a column
  * add without affecting any exported field, and vice versa. One
  * constant per concept, each owned by its consumer.
+ *
+ * 1.1.0 (observed in run swarm-1784601601-bd4a, ai-rpg-engine): every
+ * exported timestamp is now RFC 3339 UTC (was raw SQLite
+ * 'YYYY-MM-DD HH:MM:SS' — see lib/persist/sqlite-datetime.js), and
+ * run gains the additive `last_terminal_event_at` field.
  */
-export const EXPORT_VERSION = '1.0.0';
+export const EXPORT_VERSION = '1.1.0';
 
 /**
  * Build a canonical run export from DB truth.
@@ -104,10 +110,60 @@ export function buildRunExport(db, runId) {
         exit_code: verification.exit_code,
       } : null,
       violations: violations.map(v => ({ file: v.file_path, domain: v.domain_name })),
-      created: w.created_at,
-      completed: w.completed_at,
+      // Read boundary: DB columns default to SQLite datetime('now') — convert
+      // to RFC 3339 UTC here so every consumer (dogfood-bridge, repoknowledge-
+      // bridge, run-export.json) inherits schema-valid timestamps. Observed in
+      // run swarm-1784601601-bd4a (ai-rpg-engine): ingest rejected the raw
+      // SQLite shape with record_schema_invalid_from_submission.
+      created: toRfc3339Utc(w.created_at),
+      completed: toRfc3339Utc(w.completed_at),
     };
   });
+
+  // Latest TERMINAL event recorded for this run — completion timestamps plus
+  // the receipt-shaped ledgers (verification receipts, promotions), never
+  // creation/start timestamps (a dispatched-but-unfinished wave is not
+  // evidence anything ended). This is the honest finished_at for a run whose
+  // runs.completed_at is still NULL at export time: in run
+  // swarm-1784601601-bd4a the bridge's completed→created fallback produced
+  // started_at == finished_at and duration_ms 0 for ~52 minutes of recorded
+  // wave activity. Derived from DB truth rather than the export wall clock so
+  // fp-p-003's idempotency holds: the same DB state exports the same
+  // finished_at, keeping ingest's (run_id, repo, timing.finished_at) dedup
+  // key stable across re-persists.
+  //
+  // MAX happens in JS, not SQL: the columns mix SQLite datetime('now') rows
+  // with Date#toISOString() rows (lib/state-machine.js), and a lexicographic
+  // SQL MAX across those shapes mis-orders ('T' > ' '). Normalize each value
+  // first, then compare as epoch ms — Date.parse is safe ONLY after
+  // normalization pins the UTC marker.
+  //
+  // The agent_runs branch carries the wave-9 filter (F-H8 family, see the
+  // agents query above): a superseded failed row is non-canonical, and the
+  // surviving redispatched row completes later by construction, so excluding
+  // stale rows never lowers the honest maximum.
+  const terminalTimestamps = db.prepare(`
+    SELECT completed_at AS t FROM waves WHERE run_id = ? AND completed_at IS NOT NULL
+    UNION ALL
+    SELECT ar.completed_at FROM agent_runs ar JOIN waves w ON ar.wave_id = w.id
+      WHERE w.run_id = ? AND ar.completed_at IS NOT NULL
+      ${LATEST_AGENT_RUN_PER_DOMAIN}
+    UNION ALL
+    SELECT vr.created_at FROM verification_receipts vr JOIN waves w ON vr.wave_id = w.id
+      WHERE w.run_id = ? AND vr.created_at IS NOT NULL
+    UNION ALL
+    SELECT created_at FROM promotions WHERE run_id = ? AND created_at IS NOT NULL
+  `).all(runId, runId, runId, runId);
+  let lastTerminalEventAt = null;
+  let lastTerminalEventMs = -Infinity;
+  for (const row of terminalTimestamps) {
+    const normalized = toRfc3339Utc(row.t);
+    const ms = normalized === null ? NaN : Date.parse(normalized);
+    if (Number.isFinite(ms) && ms > lastTerminalEventMs) {
+      lastTerminalEventMs = ms;
+      lastTerminalEventAt = normalized;
+    }
+  }
 
   // Finding set
   const findingSet = findings.map(f => ({
@@ -144,7 +200,7 @@ export function buildRunExport(db, runId) {
     gates: JSON.parse(p.gates_checked),
     overrides: p.overrides ? JSON.parse(p.overrides) : null,
     finding_snapshot: p.finding_snapshot ? JSON.parse(p.finding_snapshot) : null,
-    at: p.created_at,
+    at: toRfc3339Utc(p.created_at),
   }));
 
   // Compute content hash for provenance.
@@ -171,8 +227,9 @@ export function buildRunExport(db, runId) {
       commit_sha: run.commit_sha,
       status: run.status,
       save_point_tag: run.save_point_tag,
-      created: run.created_at,
-      completed: run.completed_at,
+      created: toRfc3339Utc(run.created_at),
+      completed: toRfc3339Utc(run.completed_at),
+      last_terminal_event_at: lastTerminalEventAt,
     },
     domains: domains.map(d => ({
       name: d.name,
