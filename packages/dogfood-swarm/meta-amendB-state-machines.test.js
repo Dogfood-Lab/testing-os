@@ -21,8 +21,13 @@
  *                                          dependent `worktree add`) and
  *                                          `worktree prune` swallowed failures
  *                                          with no audit row. Now logStage'd to
- *                                          the NDJSON stream (no control-flow
- *                                          change — still best-effort).
+ *                                          the NDJSON stream. (2026-07-22 — the
+ *                                          Windows-teardown fix additionally
+ *                                          fs-reclaims a stale worktree the git
+ *                                          remove leaves behind, so the
+ *                                          dependent `add` now SUCCEEDS instead
+ *                                          of failing on the occupied path;
+ *                                          see worktree-windows-teardown.test.js.)
  *   sm-p-004 (LOW)  db/connection.js     — foreign_keys=ON parity between the
  *                                          file-backed (openDb) and in-memory
  *                                          (openMemoryDb) factories, now routed
@@ -211,39 +216,47 @@ describe('sm-p-003 — worktree cleanup failures emit a forensic NDJSON row', ()
     rmSync(repo, { recursive: true, force: true });
   });
 
-  it('a failed stale-worktree-remove logs worktree_stale_remove_failed before the add throws', () => {
-    // Force the line-82 stale-remove to FAIL while the wtDir exists: pre-create
-    // the worktree directory as a plain (non-worktree) dir with a file in it, so
-    // `git worktree remove --force` errors ("is not a working tree") and the
-    // downstream `git worktree add` then fails on the occupied path. Pre-fix the
-    // operator saw only the `add` error; the fix emits a greppable breadcrumb
-    // for the precursor failure first.
-    // F-527dc73e: worktree dir names now carry the run-short slug
-    // (w<N>-<domain>-<runShort>) so concurrent runs cannot collide.
+  it('a failed stale-worktree-remove logs worktree_stale_remove_failed, then fs-reclaims so the add succeeds', () => {
+    // Force the stale-remove to FAIL while the wtDir exists: pre-create the
+    // worktree directory as a plain (non-worktree) dir with a file in it, so
+    // `git worktree remove --force` errors ("is not a working tree"). The
+    // precursor breadcrumb still lands — AND (2026-07-22 Windows-teardown fix)
+    // the fs-level reclaim then clears the occupied path, so the dependent `git
+    // worktree add` SUCCEEDS instead of failing on it. That occupied-path
+    // failure was the exact strand that broke resume / re-dispatch onto a
+    // stale Windows junction worktree; worktree-windows-teardown.test.js is the
+    // primary coverage, this pins the sm-p-003 breadcrumb + the create-path reclaim.
+    // F-527dc73e: worktree dir names carry the run-short slug (w<N>-<domain>-<runShort>).
     const wtDir = join(repo, '.swarm', 'worktrees', 'w1-backend-smp3');
     mkdirSync(wtDir, { recursive: true });
     writeFileSync(join(wtDir, 'occupied.txt'), 'not a worktree\n');
 
     let threw = null;
+    let result = null;
     const lines = captureStderr(() => {
       try {
-        createWorktree(repo, { runId: 'swarm-smp3', waveNumber: 1, domainName: 'backend' });
+        result = createWorktree(repo, { runId: 'swarm-smp3', waveNumber: 1, domainName: 'backend' });
       } catch (e) {
         threw = e;
       }
     });
 
-    // The downstream add still fails (control flow unchanged — best-effort cleanup).
-    assert.ok(threw, 'the occupied path still makes worktree add fail (behavior unchanged)');
+    // The stale strand is reclaimed, so the dependent add now lands cleanly.
+    assert.equal(threw, null, 'the occupied path is fs-reclaimed, so worktree add no longer fails on it');
+    assert.ok(result && existsSync(join(result.worktreePath, '.git')),
+      'createWorktree returns a real git worktree at the reclaimed path');
 
-    // The new breadcrumb landed on the NDJSON stream FIRST.
-    const row = lines
-      .map((l) => { try { return JSON.parse(l); } catch { return null; } })
-      .find((o) => o && o.stage === 'worktree_stale_remove_failed');
-    assert.ok(row, 'a worktree_stale_remove_failed NDJSON row must be emitted');
-    assert.equal(row.component, 'dogfood-swarm');
-    assert.equal(row.branch, 'swarm/smp3/w1-backend');
-    assert.ok(typeof row.err === 'string' && row.err.length > 0, 'the underlying git error is captured');
+    const rows = lines.map((l) => { try { return JSON.parse(l); } catch { return null; } });
+    // The precursor breadcrumb still lands (git could not remove the plain dir).
+    const removeFailed = rows.find((o) => o && o.stage === 'worktree_stale_remove_failed');
+    assert.ok(removeFailed, 'a worktree_stale_remove_failed NDJSON row must be emitted');
+    assert.equal(removeFailed.component, 'dogfood-swarm');
+    assert.equal(removeFailed.branch, 'swarm/smp3/w1-backend');
+    assert.ok(typeof removeFailed.err === 'string' && removeFailed.err.length > 0, 'the underlying git error is captured');
+    // And the fs-reclaim breadcrumb records that the occupied path was cleared.
+    const reclaimed = rows.find((o) => o && o.stage === 'worktree_stale_fs_reclaimed');
+    assert.ok(reclaimed, 'a worktree_stale_fs_reclaimed row records the fs-level reclaim of the occupied path');
+    assert.equal(reclaimed.branch, 'swarm/smp3/w1-backend');
   });
 
   it('the happy path emits NO worktree_stale_remove_failed row', () => {

@@ -32,9 +32,12 @@
  */
 
 import { execSync, execFileSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, appendFileSync, rmSync } from 'node:fs';
+import {
+  existsSync, mkdirSync, readFileSync, appendFileSync, rmSync,
+  lstatSync, readdirSync, chmodSync,
+} from 'node:fs';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
-import { join } from 'node:path';
+import { join, relative, isAbsolute } from 'node:path';
 import { logStage } from './log-stage.js';
 import { provisionWorkspaceLinks, checkWorkspaceRealpathContainment } from './workspace-links.js';
 
@@ -126,12 +129,20 @@ export function createWorktree(repoPath, opts) {
   // so wtDir cannot trigger metacharacter interpretation.
   //
   // sm-p-003: this runs ONLY when wtDir is present and the `--force` remove
-  // FAILED, yet the `worktree add` below will then fail too. Bare-swallowing
-  // the precursor failure left the operator with only the downstream `add`
-  // error and no breadcrumb that cleanup failed first. Log to the NDJSON
-  // stream (no control-flow change — still best-effort) so the precursor is
-  // greppable when the subsequent add blows up. Same forensic channel D3B-012
-  // gave applyTimeoutPolicy's NULL started_at skip.
+  // FAILED, yet the `worktree add` below will then fail too. Log to the NDJSON
+  // stream (best-effort) so the precursor is greppable when the subsequent add
+  // blows up. Same forensic channel D3B-012 gave applyTimeoutPolicy's NULL
+  // started_at skip.
+  //
+  // Windows --isolate strand (ai-rpg-engine v2.8): a stale npm-workspaces
+  // worktree survives `git worktree remove --force` — its provisioned
+  // node_modules junctions block git's removal (see forceRemoveDir) — so the
+  // `worktree add` below would fail on the still-occupied path, breaking resume
+  // / re-dispatch onto the same wtDir (proven: git worktree remove reports "not
+  // a working tree" for the orphan, then add errors "already exists"). Reclaim
+  // the survivor at the fs level, same as removeWorktree's teardown path, so
+  // the add always lands on a clean path. wtDir is built under .swarm/worktrees/
+  // above, so the jail guard holds by construction — kept for uniformity.
   if (existsSync(wtDir)) {
     try {
       gitArgs(repoPath, ['worktree', 'remove', wtDir, '--force']);
@@ -142,6 +153,27 @@ export function createWorktree(repoPath, opts) {
         branch,
         err: e.message,
       });
+    }
+    if (existsSync(wtDir) && isUnderSwarmWorktrees(repoPath, wtDir)) {
+      try {
+        forceRemoveDir(wtDir);
+        logStage('worktree_stale_fs_reclaimed', {
+          component: 'dogfood-swarm',
+          wtDir,
+          branch,
+          note: 'stale worktree survived `git worktree remove --force` (Windows --isolate junction strand); reclaimed at the fs level before re-create',
+        });
+      } catch (e) {
+        // The `git worktree add` below will surface the still-occupied path as
+        // the loud failure; this names the fs-level cause first.
+        logStage('worktree_stale_reclaim_failed', {
+          component: 'dogfood-swarm',
+          wtDir,
+          branch,
+          err: e.message,
+        });
+      }
+      try { gitArgs(repoPath, ['worktree', 'prune']); } catch { /* advisory */ }
     }
   }
 
@@ -218,19 +250,98 @@ export function mergeWorktree(repoPath, branch) {
 }
 
 /**
+ * True when worktreePath sits at or under <repoPath>/.swarm/worktrees/ — the
+ * only tree the fs-level force-remove (forceRemoveDir, below) is ever allowed
+ * to bulldoze. createWorktree always builds worktrees there, and both call
+ * sites that reach removeWorktree pass swarm worktree paths — from
+ * listWorktrees (git-porcelain form, forward slashes on Windows) or from the
+ * runs/agent_runs worktree_path column (join form, backslashes). path.relative
+ * on win32 normalizes separators and case, so the guard holds for both shapes
+ * (proven across separator/case variants before shipping). A survivor OUTSIDE
+ * this jail is left stranded rather than force-removed — defense in depth so a
+ * mis-derived path can never turn removeWorktree into an arbitrary `rm -rf`.
+ */
+function isUnderSwarmWorktrees(repoPath, worktreePath) {
+  const base = join(repoPath, '.swarm', 'worktrees');
+  const rel = relative(base, worktreePath);
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+/**
+ * Clear the read-only attribute across a tree so a subsequent rm cannot EPERM
+ * on a read-only entry. Uses lstat and NEVER follows a symlink/junction into
+ * its target — chmod-ing through a workspace junction would touch content
+ * outside the worktree (the isolation invariant workspace-links.js enforces).
+ * Best-effort per entry: a chmod that itself fails must not abort the walk.
+ */
+function clearReadonlyRecursive(target) {
+  let st;
+  try { st = lstatSync(target); } catch { return; }
+  if (st.isSymbolicLink()) return; // a junction/symlink is a leaf — unlinked by rm, never recursed
+  try { chmodSync(target, st.isDirectory() ? 0o777 : 0o666); } catch { /* best-effort */ }
+  if (st.isDirectory()) {
+    let entries;
+    try { entries = readdirSync(target); } catch { return; }
+    for (const entry of entries) clearReadonlyRecursive(join(target, entry));
+  }
+}
+
+/**
+ * Force-remove a directory that `git worktree remove --force` could not delete.
+ *
+ * Windows --isolate strand (reproduced live, ai-rpg-engine v2.8, run
+ * swarm-1784601601-bd4a shape): `git worktree remove --force` on an
+ * npm-workspaces worktree deletes its git-tracked content AND drops the
+ * worktree admin ref, but LEAVES the untracked node_modules/ subtree holding
+ * the workspace directory JUNCTIONS provisionWorkspaceLinks created. Those
+ * reparse points (plus any read-only node_modules content) strand the whole
+ * worktree path on disk while `git worktree list` already reports clean — so a
+ * second `swarm clean` cannot even see the orphan. This is the fs-level `rm -rf`
+ * the incident needed, made routine.
+ *
+ * rmSync({recursive,force}) is the fast path: on a modern Node it clears the
+ * read-only attribute itself AND unlinks a junction as a LEAF — it does NOT
+ * recurse through a reparse point into its target (verified on this rig: a
+ * junction's external target survives). The read-only pre-clear + retry is the
+ * portability fallback for a Node build whose internal EPERM handler does not
+ * chmod: only reached if the first rm throws, and it re-raises the ORIGINAL
+ * error if the retry still fails so the caller sees the true cause.
+ *
+ * @param {string} dir
+ * @throws re-raises the removal error when the path cannot be reclaimed.
+ */
+export function forceRemoveDir(dir) {
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+  } catch (firstErr) {
+    try {
+      clearReadonlyRecursive(dir);
+      rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+    } catch {
+      throw firstErr;
+    }
+  }
+}
+
+/**
  * Remove a worktree and optionally delete its branch.
  *
- * PH-DS-01: completion-path parity with rewind.js's --apply teardown. The
- * `git worktree remove --force` can silently fail (the path is occupied by a
- * plain non-worktree directory, is locked, or git no longer tracks it). The
- * prior bare-catch reported success regardless — a survivor was indistinguishable
- * from a clean removal. We now re-check existsSync AFTER the remove attempt and
- * emit a `worktree_cleanup_failed` breadcrumb naming the surviving path so the
- * operator can `git worktree prune` + remove it manually, and return a
- * structured { removed, stranded } so callers (cleanupAllWorktrees) can count
- * survivors instead of trusting a silent best-effort. Mirrors rewind.js's
- * rewind_worktree_cleanup_failed recheck verbatim (different stage name so the
- * two paths are greppable apart).
+ * PH-DS-01: completion-path parity with rewind.js's --apply teardown — a
+ * survivor must never be silently reported as a clean removal.
+ *
+ * Windows robustness (ai-rpg-engine v2.8 dogfood cycle): `git worktree remove
+ * --force` on an npm-workspaces --isolate worktree STRANDS the directory (the
+ * provisioned node_modules junctions survive git's removal; see forceRemoveDir).
+ * When the path is still present after the git remove — and only while it is
+ * inside the `.swarm/worktrees/` jail — we reclaim it at the fs level, then
+ * `git worktree prune`. The prune is idempotent AND load-bearing for the branch
+ * delete below: a branch still "checked out" in a registered-but-gone worktree
+ * refuses `git branch -D`, so prune first, then delete. A successful reclaim
+ * emits `worktree_fs_reclaimed` (so the operator has a durable record the
+ * Windows path fired); only a path that survives even the fs reclaim is
+ * reported stranded via `worktree_cleanup_failed` (a genuinely locked resource
+ * / permission wall). Mirrors rewind.js's recheck (distinct stage names so the
+ * paths stay greppable apart).
  *
  * @param {string} repoPath
  * @param {string} worktreePath
@@ -240,10 +351,24 @@ export function mergeWorktree(repoPath, branch) {
 export function removeWorktree(repoPath, worktreePath, branch) {
   try {
     gitArgs(repoPath, ['worktree', 'remove', worktreePath, '--force']);
-  } catch { /* fall through to the existsSync recheck below */ }
+  } catch { /* fall through to the fs-level reclaim below */ }
+
+  // git left the path on disk (the Windows junction strand, or a plain orphan
+  // git no longer tracks). Reclaim it — but only inside the swarm-worktrees
+  // jail, so a mis-derived path can never become an arbitrary force-remove.
+  let fsReclaimAttempted = false;
+  if (existsSync(worktreePath) && isUnderSwarmWorktrees(repoPath, worktreePath)) {
+    fsReclaimAttempted = true;
+    try {
+      forceRemoveDir(worktreePath);
+    } catch { /* the final existsSync check below records the stranded outcome */ }
+    // Prune git's now-dangling worktree bookkeeping AND unblock the branch
+    // delete below (a still-"checked out" branch refuses -D).
+    try { gitArgs(repoPath, ['worktree', 'prune']); } catch { /* advisory */ }
+  }
 
   if (branch) {
-    try { gitArgs(repoPath, ['branch', '-D', branch]); } catch { /* already deleted */ }
+    try { gitArgs(repoPath, ['branch', '-D', branch]); } catch { /* already deleted / not present */ }
   }
 
   if (existsSync(worktreePath)) {
@@ -252,9 +377,20 @@ export function removeWorktree(repoPath, worktreePath, branch) {
       repoPath,
       worktreePath,
       branch: branch || null,
-      reason: 'worktree path still present after `git worktree remove --force`',
+      reason: fsReclaimAttempted
+        ? 'worktree path still present after `git worktree remove --force` and fs-level reclaim'
+        : 'worktree path still present after `git worktree remove --force` (outside .swarm/worktrees jail — left for manual handling)',
     });
     return { removed: false, stranded: true };
+  }
+  if (fsReclaimAttempted) {
+    logStage('worktree_fs_reclaimed', {
+      component: 'dogfood-swarm',
+      repoPath,
+      worktreePath,
+      branch: branch || null,
+      note: '`git worktree remove --force` left the path on disk (Windows --isolate junction strand); reclaimed at the fs level',
+    });
   }
   return { removed: true, stranded: false };
 }

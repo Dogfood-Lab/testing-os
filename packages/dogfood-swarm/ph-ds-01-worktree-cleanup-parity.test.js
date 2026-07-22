@@ -21,15 +21,30 @@
  *     a survivor, returning { removed, stranded }.
  *   - cleanupAllWorktrees() aggregates and returns { removed, stranded, total }.
  *
- * Test invariants (RED→GREEN):
- *   1. SURVIVOR BREADCRUMB: a worktree path that survives the remove attempt
- *      (a plain non-worktree directory occupying the recorded path) emits a
- *      `worktree_cleanup_failed` NDJSON row naming the surviving path, and is
- *      counted as stranded.
- *   2. AGGREGATE: cleanupAllWorktrees returns { removed, stranded } and counts
- *      a survivor as stranded alongside a healthy removal.
- *   3. HEALTHY INPUT STILL PASSES: a real swarm worktree is removed, counted as
- *      removed (not stranded), and emits NO worktree_cleanup_failed row.
+ * EVOLUTION (2026-07-22 — Windows --isolate teardown fix, see
+ * worktree-windows-teardown.test.js): removeWorktree now RECLAIMS a survivor
+ * that `git worktree remove --force` leaves on disk instead of only reporting
+ * it. The Windows npm-workspaces junction strand leaves exactly this shape (a
+ * git-orphaned directory under .swarm/worktrees/), so the fs-level fallback
+ * force-removes it. "Stranded" now means the fs reclaim ALSO failed (a
+ * genuinely locked resource / permission wall). Invariant #1 below was updated
+ * from "survivor → stranded" to "survivor → reclaimed"; the durable breadcrumb
+ * the operator gets on the reclaim path is `worktree_fs_reclaimed`, not
+ * `worktree_cleanup_failed`. The graceful-degradation intent is preserved — a
+ * survivor is never SILENTLY treated as a clean removal — it is just resolved
+ * (reclaimed) rather than left for manual cleanup.
+ *
+ * Test invariants:
+ *   1. SURVIVOR RECLAIMED: a worktree path that `git worktree remove --force`
+ *      leaves on disk (a plain non-worktree directory occupying the recorded
+ *      path, inside the .swarm/worktrees jail) is reclaimed by the fs-level
+ *      fallback, counted as removed, and emits a `worktree_fs_reclaimed` row —
+ *      NOT `worktree_cleanup_failed`.
+ *   2. AGGREGATE: cleanupAllWorktrees returns { removed, stranded, total } and
+ *      counts healthy removals correctly.
+ *   3. HEALTHY INPUT STILL PASSES: a real swarm worktree is removed via the
+ *      clean git path, counted as removed (not stranded), and emits NO
+ *      worktree_cleanup_failed row (and no fs-reclaim breadcrumb).
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
@@ -95,19 +110,25 @@ describe('PH-DS-01 — completion-path worktree cleanup parity with rewind', () 
   beforeEach(() => { repo = initRepo(); });
   afterEach(() => { try { rmSync(repo, { recursive: true, force: true }); } catch { /* best-effort */ } });
 
-  it('a survivor path emits worktree_cleanup_failed and is counted as stranded', () => {
+  it('a survivor path is reclaimed at the fs level and emits worktree_fs_reclaimed', () => {
+    // makeSurvivor leaves a git-orphaned directory under .swarm/worktrees/ —
+    // the identical on-disk shape the Windows npm-workspaces junction strand
+    // leaves. The fs-level fallback reclaims it (was: reported stranded).
     const wt = makeSurvivor(repo, 1, 'backend');
 
     const { value, rows } = capture(() => removeWorktree(repo, wt.worktreePath, wt.branch));
 
-    assert.equal(value.removed, false, 'a survivor is not counted as removed');
-    assert.equal(value.stranded, true, 'a survivor is counted as stranded');
+    assert.equal(value.stranded, false, 'a reclaimable survivor is no longer reported stranded');
+    assert.equal(value.removed, true, 'the survivor is reclaimed by the fs-level fallback');
+    assert.ok(!existsSync(wt.worktreePath), 'the survivor directory is gone from disk');
 
-    const row = rows.find(o => o.stage === 'worktree_cleanup_failed');
-    assert.ok(row, 'a worktree_cleanup_failed NDJSON row must reach the operator for a survivor');
+    const row = rows.find(o => o.stage === 'worktree_fs_reclaimed');
+    assert.ok(row, 'the operator gets a durable worktree_fs_reclaimed record that the fs path fired');
     assert.equal(row.component, 'dogfood-swarm');
-    assert.equal(row.worktreePath, wt.worktreePath, 'the breadcrumb must name the surviving worktree path');
+    assert.equal(row.worktreePath, wt.worktreePath, 'the breadcrumb names the reclaimed worktree path');
     assert.equal(row.branch, wt.branch, 'the breadcrumb names the branch');
+    assert.ok(!rows.some(o => o.stage === 'worktree_cleanup_failed'),
+      'a successful reclaim must NOT also report cleanup_failed');
   });
 
   it('cleanupAllWorktrees returns a structured {removed, stranded, total} summary', () => {

@@ -33,17 +33,20 @@
  *      branches are deleted.
  *   2. HEALTHY INPUT STILL PASSES: a dry-run (no --apply) leaves every
  *      worktree intact — cleanup only happens on the destructive --apply path.
- *   3. BEST-EFFORT + BREADCRUMB: when a worktree path is un-removable (a plain
- *      directory occupies the recorded path, so `git worktree remove` errors
- *      and the dir survives), --apply still completes the abort (rows
- *      transitioned, report.db_transaction_done true) and emits a
- *      rewind_worktree_cleanup_failed NDJSON row naming the surviving path so
- *      the operator can prune it manually.
+ *   3. RECLAIM + BEST-EFFORT: a worktree `git worktree remove --force` leaves
+ *      on disk (a plain directory occupying the recorded path under
+ *      .swarm/worktrees/ — the exact Windows npm-workspaces junction-strand
+ *      shape) is now RECLAIMED by removeWorktree's fs-level fallback (2026-07-22
+ *      Windows-teardown fix, worktree-windows-teardown.test.js), so --apply
+ *      cleans it AND completes the abort. When cleanup GENUINELY cannot remove
+ *      a path (the fs reclaim also fails), --apply still completes the abort and
+ *      emits a rewind_worktree_cleanup_failed breadcrumb — proven POSIX-side,
+ *      where a read-only parent makes removal fail deterministically.
  */
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, existsSync, chmodSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -225,17 +228,16 @@ describe('B002 — rewind --apply cleans up the aborted agents\' worktrees', () 
 // Best-effort + breadcrumb — an un-removable worktree does not sink the rewind
 // ═══════════════════════════════════════════
 
-describe('B002 — rewind worktree cleanup is best-effort with a forensic breadcrumb', () => {
-  it('completes the abort and logs rewind_worktree_cleanup_failed when a worktree survives removal', () => {
-    // Construct the genuinely-stuck case: a plain (non-worktree) directory
-    // occupies the recorded worktree_path. `git worktree remove --force`
-    // errors ("is not a working tree"), removeWorktree swallows that
-    // internally (best-effort), and the directory SURVIVES. The rewind wiring
-    // must (a) still complete the abort, and (b) emit a structured breadcrumb
-    // naming the surviving path so the operator can prune it manually.
+describe('B002 — rewind worktree cleanup: reclaim, then best-effort breadcrumb', () => {
+  it('reclaims a git-stranded survivor under --apply and still completes the abort', () => {
+    // The Windows junction-strand shape, portable: a plain (non-worktree)
+    // directory occupies the recorded worktree_path under .swarm/worktrees/ —
+    // exactly what `git worktree remove --force` leaves behind on Windows for an
+    // npm-workspaces --isolate worktree. removeWorktree's fs-level fallback now
+    // RECLAIMS it, so the rewind cleans it AND completes the abort (was:
+    // reported stranded, left for the operator to prune manually).
     const { tempDir, dbPath, waveId, agents } = setupFixtureWithWorktrees({ createOnDisk: false });
 
-    // Replace each recorded path with a plain occupied directory.
     for (const a of agents) {
       mkdirSync(a.worktreePath, { recursive: true });
       writeFileSync(join(a.worktreePath, 'occupied.txt'), 'not a worktree\n', 'utf-8');
@@ -244,41 +246,83 @@ describe('B002 — rewind worktree cleanup is best-effort with a forensic breadc
     try {
       const { result: r, lines } = captureRun(() => rewind({
         savePointTag: 'swarm-save-fixture-1',
-        reason: 'cleanup with a stuck worktree',
+        reason: 'reclaim a stranded worktree on rewind',
         cwd: tempDir,
         dbPath,
         apply: true,
       }));
 
-      // The lawful rewind STILL completed — a stuck worktree does not sink it.
+      // The lawful rewind landed AND the strand-shape survivors are reclaimed.
       assert.equal(r.git_reset_done, true);
       assert.equal(r.db_transaction_done, true);
+      for (const a of agents) {
+        assert.ok(!existsSync(a.worktreePath),
+          `the strand-shape survivor is reclaimed by --apply: ${a.worktreePath}`);
+      }
 
       const db = openDb(dbPath);
-      const w = db.prepare('SELECT status FROM waves WHERE id = ?').get(waveId);
-      assert.equal(w.status, 'aborted_for_rewind',
-        'the DB abort must complete regardless of worktree-cleanup outcome');
+      assert.equal(db.prepare('SELECT status FROM waves WHERE id = ?').get(waveId).status,
+        'aborted_for_rewind', 'the DB abort completes regardless of worktree-cleanup outcome');
       closeDb(dbPath);
 
-      // The breadcrumb: a rewind_worktree_cleanup_failed row naming a surviving
-      // path. At least one of the occupied paths must be reported.
+      const failedRows = lines
+        .map(l => { try { return JSON.parse(l); } catch { return null; } })
+        .filter(o => o && o.stage === 'rewind_worktree_cleanup_failed');
+      assert.equal(failedRows.length, 0,
+        'a reclaimed survivor is not reported as a cleanup failure');
+    } finally {
+      teardown(tempDir, dbPath);
+    }
+  });
+
+  // POSIX-only: a read-only PARENT directory makes child removal fail
+  // deterministically (rmSync + force cannot chmod the parent to unlink the
+  // child). On this rig's Node/Windows there is no comparably reliable way to
+  // force removal to fail — an open handle does not block it (Node opens with
+  // FILE_SHARE_DELETE) — so the "cleanup genuinely failed" branch is proven
+  // POSIX-side, where CI runs. The rewind wiring under test is platform-agnostic.
+  it('completes the abort and logs rewind_worktree_cleanup_failed when cleanup genuinely fails',
+    { skip: process.platform === 'win32' }, () => {
+    const { tempDir, dbPath, waveId, agents } = setupFixtureWithWorktrees({ createOnDisk: false });
+
+    for (const a of agents) {
+      mkdirSync(a.worktreePath, { recursive: true });
+      writeFileSync(join(a.worktreePath, 'occupied.txt'), 'stuck\n', 'utf-8');
+    }
+    // Freeze the swarm-worktrees parent read-only so the fs reclaim cannot
+    // delete its children — a genuinely-unremovable worktree.
+    const worktreesDir = join(tempDir, '.swarm', 'worktrees');
+    chmodSync(worktreesDir, 0o555);
+
+    try {
+      const { result: r, lines } = captureRun(() => rewind({
+        savePointTag: 'swarm-save-fixture-1',
+        reason: 'cleanup with a genuinely stuck worktree',
+        cwd: tempDir,
+        dbPath,
+        apply: true,
+      }));
+
+      // A stuck cleanup does not sink the rewind.
+      assert.equal(r.git_reset_done, true);
+      assert.equal(r.db_transaction_done, true);
+      const db = openDb(dbPath);
+      assert.equal(db.prepare('SELECT status FROM waves WHERE id = ?').get(waveId).status,
+        'aborted_for_rewind', 'the DB abort completes regardless of worktree-cleanup outcome');
+      closeDb(dbPath);
+
       const rows = lines
         .map(l => { try { return JSON.parse(l); } catch { return null; } })
         .filter(o => o && o.stage === 'rewind_worktree_cleanup_failed');
       assert.ok(rows.length > 0,
-        'a rewind_worktree_cleanup_failed NDJSON row must be emitted for a surviving worktree');
-      const row = rows[0];
-      assert.equal(row.component, 'dogfood-swarm');
-      assert.ok(
-        agents.some(a => a.worktreePath === row.worktreePath),
-        `the breadcrumb must name a recorded worktree path; got ${row.worktreePath}`,
-      );
-
-      // The surviving dirs are still on disk (proving the cleanup genuinely
-      // could not remove them — the breadcrumb is a true signal).
+        'a rewind_worktree_cleanup_failed row is emitted for a genuinely-stuck worktree');
+      assert.equal(rows[0].component, 'dogfood-swarm');
+      assert.ok(agents.some(a => a.worktreePath === rows[0].worktreePath),
+        `the breadcrumb names a recorded worktree path; got ${rows[0].worktreePath}`);
       assert.ok(agents.some(a => existsSync(a.worktreePath)),
-        'at least one occupied worktree dir survives (the breadcrumb is honest)');
+        'the stuck dir genuinely survives — the breadcrumb is honest');
     } finally {
+      try { chmodSync(worktreesDir, 0o755); } catch { /* restore for teardown */ }
       teardown(tempDir, dbPath);
     }
   });
