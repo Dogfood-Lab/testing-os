@@ -303,6 +303,36 @@ export function normalizeAdjudication(jurorVerdicts, juryRequest, opts = {}) {
     .filter(jv => Boolean(jv.error))
     .map(jv => ({ seat: jv.seat, error: jv.error }));
 
+  // Brief size, onto the RECEIPT — observed in run swarm-1784601601-bd4a
+  // wave 5 (ai-rpg-engine): a 252KB case-file overflowed every local seat's
+  // effective context, the server silently truncated, and the panel abstained
+  // on all 14 criteria with zero receipt evidence the brief never fit. The
+  // local tier (ollama-jury.js) now measures the rendered prompt against each
+  // seat's resolved context BEFORE dispatch and stamps `brief_fit` on every
+  // verdict; this fuses it panel-level so a post-hoc read distinguishes "the
+  // seats read the whole brief" from "unknown". Same conventions as
+  // brief_omitted: ABSENT (not zeroed) when no verdict carries the record
+  // (prism tier, pre-guard receipts, injected test juries), and the panel
+  // numbers take the WORST across seats (max chars/tokens) so a future
+  // per-seat prompt cannot under-report.
+  const briefFits = jurorVerdicts.filter(jv => jv.brief_fit && typeof jv.brief_fit === 'object');
+  const briefSize = briefFits.length > 0
+    ? {
+        chars: Math.max(...briefFits.map(jv => Number(jv.brief_fit.chars) || 0)),
+        estimated_tokens: Math.max(...briefFits.map(jv => Number(jv.brief_fit.estimated_tokens) || 0)),
+        estimator: briefFits[0].brief_fit.estimator,
+        output_reserve_tokens: Math.max(...briefFits.map(jv => Number(jv.brief_fit.output_reserve_tokens) || 0)),
+        all_fit: briefFits.every(jv => jv.brief_fit.fits === true),
+        seats: briefFits.map(jv => ({
+          seat: jv.seat,
+          model: jv.model,
+          context_tokens: jv.brief_fit.context_tokens,
+          context_source: jv.brief_fit.context_source,
+          fits: jv.brief_fit.fits,
+        })),
+      }
+    : undefined;
+
   return {
     overall,
     authority: 'advisory',       // the jury is EVIDENCE, not law
@@ -313,6 +343,7 @@ export function normalizeAdjudication(jurorVerdicts, juryRequest, opts = {}) {
     panel_size: jurorVerdicts.length,
     seats: jurorVerdicts.map(jv => jv.seat).filter(Boolean),
     seats_errored: seatsErrored,
+    ...(briefSize ? { brief_size: briefSize } : {}),
     excluded_family: EXCLUDED_FAMILY,
   };
 }

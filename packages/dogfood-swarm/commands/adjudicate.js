@@ -301,6 +301,20 @@ export function formatAdjudication({ result, adjudicationId, receiptPath }) {
       seatsErrored.map(s => `${s.seat || '(unknown seat)'} — ${escapeReasonForDisplay(s.error)}`).join('; ')
     }`);
   }
+  // Brief size on the human surface too (the F-9acd2df3 lesson: a receipt
+  // field the default render is blind to might as well not exist). Absent
+  // brief_size = a tier/jury that does not measure (prism, pre-guard) — say
+  // nothing rather than fake a number. all_fit:false means an oversize
+  // dispatch was explicitly allowed past the guard; render it loudly.
+  if (result.brief_size) {
+    const bs = result.brief_size;
+    const overCount = bs.seats.filter(s => !s.fits).length;
+    lines.push(`Brief: ${bs.chars} chars (~${bs.estimated_tokens} tokens, ${bs.estimator}; reserve ${bs.output_reserve_tokens}) — ${
+      bs.all_fit
+        ? `read whole by all ${bs.seats.length} seats`
+        : `OVERFLOWED ${overCount} of ${bs.seats.length} seats — dispatched under --allow-oversize; verdicts came from truncated reads`
+    }`);
+  }
   lines.push('');
   lines.push('Criteria:');
   for (const c of result.criteria) {
