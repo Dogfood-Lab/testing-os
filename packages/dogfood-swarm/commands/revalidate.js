@@ -56,6 +56,7 @@ import { logStage } from '../lib/log-stage.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { readBoundedJson } from '../lib/bounded-json-read.js';
 import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings, honorReusedFindingIds } from '../lib/fingerprint.js';
+import { applyDeclaredFixes } from '../lib/declared-closures.js';
 import { getActualTouchedFiles, resolveWorktreeBaseRef } from '../lib/git-touched-files.js';
 // F-67ddcd02: the file_claims reconciliation step is shared with collect.js
 // (both write paths superseded the SAME way) — see reconcileFileClaims's own
@@ -455,21 +456,55 @@ export function revalidate(opts) {
               `).run(r.agent_run_id, v.file, domain.id);
             }
           }
+
+          // Collect-parity for the amend closure path (observed in run
+          // swarm-1784601601-bd4a): a repaired amend agent's fixes[] must
+          // close its approved findings exactly as collect() now does — the
+          // wave-31 lesson is that this file is where a collect-only sweep
+          // goes to die. Same helper, same authority rules; the repair just
+          // reached 'complete' via the override transition above.
+          const declared = applyDeclaredFixes(db, {
+            runId,
+            waveId: wave.id,
+            agentRunId: r.agent_run_id,
+            domainName: r.domain,
+            domainGlobs: domainByName.get(r.domain).globs,
+            fixes: Array.isArray(r.output.fixes) ? r.output.fixes : [],
+          });
+          r.fixes_closed = declared.closed.length;
+          if (declared.skipped.length > 0) r.fixes_skipped = declared.skipped;
         }
 
         // F-8efffdd1: stage the corrected audit output's findings for the
         // collect-parity ingestion below. Fingerprints use the same
         // sourceText path as collect.js (see the cache above).
+        //
+        // Two collect-parity gaps closed here, both proven at pass scale in
+        // run swarm-1784601601-bd4a (wave-4: 24 corrected features dropped;
+        // wave-10: 27 — zero feature rows ever landed via this path):
+        //   - feature-audit reads features[] FIRST: a canonicalized envelope
+        //     carrying `findings: []` beside populated features[] made
+        //     `findings || features` short-circuit on the truthy empty array.
+        //   - SCHEMA-A-001 parity: features carry `priority`, not `severity`;
+        //     findings.severity is TEXT NOT NULL, so an un-normalized feature
+        //     reached upsertFindings' INSERT OR IGNORE with severity NULL and
+        //     was SILENTLY skipped (changes=0) — no throw, no row, and the
+        //     repair tx still committed. Normalize on a copy exactly as
+        //     collect.js does; severity is not folded into the fingerprint,
+        //     so this does not perturb dedup.
         if (isAudit) {
-          const findings = r.output.findings || r.output.features || [];
+          const findings = wave.phase === 'feature-audit'
+            ? (r.output.features || r.output.findings || [])
+            : (r.output.findings || r.output.features || []);
           const sourceRoot = r.agent_run.worktree_path || run.local_path;
           for (const f of findings) {
             const sourceText = readFindingSource(sourceRoot, f.file);
-            f.fingerprint = computeFingerprint(f, { sourceText });
+            const stored = f.severity == null ? { ...f, severity: f.priority } : f;
+            stored.fingerprint = computeFingerprint(stored, { sourceText });
             // Same domain attribution collect.js stamps — the id-reuse
             // ownership gate must hold on the repair path too.
-            f._declaringDomain = r.domain;
-            repairedFindings.push(f);
+            stored._declaringDomain = r.domain;
+            repairedFindings.push(stored);
           }
         }
 
@@ -505,15 +540,51 @@ export function revalidate(opts) {
         // ownership authority (the frozen map).
         const reconciled = honorReusedFindingIds(repairedFindings, priorMap, domains);
         const classified = classifyFindings(reconciled, priorMap);
+        // TERMINAL PRESERVATION (observed in run swarm-1784601601-bd4a): a
+        // fingerprint/id match against a 'fixed' prior lands in
+        // classified.recurring — classifyFindings' deliberate regression-
+        // reopen, correct for a LIVE re-audit through collect(). A corrected
+        // envelope is not live evidence: it repairs output authored BEFORE
+        // the repair — and before any closure that landed in between — so
+        // applying that bucket verbatim resurrected closed rows on stale
+        // observations. Strip terminal-prior matches, log each, and report
+        // the count. 'deferred' matches never reach this bucket
+        // (recurred_while_closed, which this point repair already drops) and
+        // 'rejected' rows are excluded from the prior map — both filtered
+        // here anyway so a future widening of either upstream contract
+        // cannot silently reopen this exact gap. A live regression is still
+        // catchable by the next REAL audit wave; the repair path just may
+        // not assert it from stale evidence.
+        const keptRecurring = [];
+        let resurrectionsSkipped = 0;
+        for (const f of classified.recurring) {
+          const priorStatus = f.prior?.status;
+          if (priorStatus === 'fixed' || priorStatus === 'deferred' || priorStatus === 'rejected') {
+            resurrectionsSkipped++;
+            logStage('revalidate_resurrection_skipped', {
+              component: 'dogfood-swarm',
+              correlation_id: mintCorrelationId(),
+              runId,
+              waveId: wave.id,
+              waveNumber: wave.wave_number,
+              finding_id: f.prior?.finding_id || null,
+              prior_status: priorStatus,
+              fingerprint: f.fingerprint || null,
+            });
+            continue;
+          }
+          keptRecurring.push(f);
+        }
         const stats = upsertFindings(db, runId, wave.id, {
           new: classified.new,
-          recurring: classified.recurring,
+          recurring: keptRecurring,
           fixed: [],
           unverified: [],
         });
         report.findings = {
           new: stats.inserted,
           recurring: stats.updated,
+          ...(resurrectionsSkipped > 0 ? { resurrections_skipped: resurrectionsSkipped } : {}),
         };
       }
 

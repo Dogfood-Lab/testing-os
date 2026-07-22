@@ -21,6 +21,7 @@ import { minimatch } from 'minimatch';
 import { validateAuditOutput, validateFeatureOutput, validateAmendOutput } from '../lib/output-schema.js';
 import { validateAgentOutput, AgentOutputValidationError } from '../lib/validate-agent-output.js';
 import { computeFingerprint, classifyFindings, buildPriorMap, upsertFindings, honorReusedFindingIds } from '../lib/fingerprint.js';
+import { applyDeclaredFixes } from '../lib/declared-closures.js';
 import { matchesAnyGlob } from '../lib/findings-filter.js';
 import { transitionAgent, canTransition } from '../lib/state-machine.js';
 import { transitionWave } from '../lib/wave-state-machine.js';
@@ -1002,9 +1003,18 @@ export function collect(opts) {
       }
     }
 
-    // Collect findings for dedup
+    // Collect findings for dedup.
+    //
+    // Feature waves read features[] FIRST (observed in run
+    // swarm-1784601601-bd4a): a canonicalized feature envelope can carry
+    // `findings: []` beside a populated features[], and `[] || features`
+    // short-circuits on the truthy empty array — silently dropping every
+    // feature. Phase-aware ordering keys the read off what the wave's own
+    // validator (validateFeatureOutput) just required.
     const findings = isAudit
-      ? (output.findings || output.features || [])
+      ? (wave.phase === 'feature-audit'
+        ? (output.features || output.findings || [])
+        : (output.findings || output.features || []))
       : [];
 
     const sourceRoot = ar.worktree_path || run.local_path;
@@ -1038,6 +1048,28 @@ export function collect(opts) {
       tryTransition(db, ar.id, 'complete', 'Output collected and validated', domain.name);
       db.prepare('UPDATE agent_runs SET output_path = ? WHERE id = ?')
         .run(outputPath, ar.id);
+    }
+
+    // A COMPLETE amend agent's fixes[] closes the approved findings it names
+    // (observed in run swarm-1784601601-bd4a: fixes[] was schema-required,
+    // prompt-demanded, README-promised — and consumed by nothing, so amended
+    // findings stayed 'approved' and later audit lenses swept them to
+    // 'unverified'). Gated on 'complete': a blocked agent's declarations are
+    // exactly as untrusted as its diff. Runs inside the L3-003 loop tx, so a
+    // mid-collect crash rolls the closures back with everything else.
+    // Ownership/status/idempotency rules live in lib/declared-closures.js.
+    if (isAmend && agentReport.status === 'complete') {
+      const declared = applyDeclaredFixes(db, {
+        runId: opts.runId,
+        waveId: wave.id,
+        agentRunId: ar.id,
+        domainName: domain.name,
+        domainGlobs: domain.globs,
+        fixes: Array.isArray(output.fixes) ? output.fixes : [],
+      });
+      agentReport.fixes_closed = declared.closed.length;
+      if (declared.skipped.length > 0) agentReport.fixes_skipped = declared.skipped;
+      report.findings.fixed += declared.closed.length;
     }
 
     // Item 5: propagate the per-agent `verification_skipped` flag into the

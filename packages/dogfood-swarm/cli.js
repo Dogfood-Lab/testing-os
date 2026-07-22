@@ -665,7 +665,7 @@ function cmdDispatch(args) {
       console.log(`  ${f.finding_id} [${f.severity}] ${f.file_path ? escapePathForDisplay(f.file_path) : '(no file_path — cannot match any domain glob)'}`);
     }
     console.log('  These findings stay OPEN and block the severity gate, but no amend agent will receive them.');
-    console.log('  Close them via the coordinator_resolved path: land the fix yourself, and for anchorless (architectural/doc-level) ones attach `coordinator_resolved: true` + a one-line `verified_via_evidence` so `swarm verify-fixed <run-id>` classifies the closure as allowlist instead of unverifiable.');
+    console.log('  Close them via the coordinator_resolved path: land the fix yourself, then `swarm resolve <run-id> --ids F-001,F-002 --evidence "<one line>"` — it persists coordinator_resolved + verified_via_evidence so `swarm verify-fixed <run-id>` classifies the closure as allowlist instead of unverifiable (no raw SQL).');
     console.log('  Or dispose without a fix: `swarm defer <run-id> --ids F-001,F-002 --reason "<text>"` (accepted/postponed) / `swarm reject <run-id> --ids F-001,F-002 --reason "<text>"` (not-a-defect) — both close the finding for the gate.');
   }
 
@@ -2408,14 +2408,18 @@ function parseClosureFormatFlag(args) {
  * @param {'reopened'|'fixed'} spec.eventType — the two values this function
  *   actually ever receives today (cmdReopen passes 'reopened'; cmdClose
  *   passes `asRaw`, always 'fixed' since C2's --as enum is narrowed to
- *   fixed-only). 'operator_closed' remains a legal db/schema.js EVENT_TYPES
- *   member but is never passed here (F-68cf9b48) — see the eventType
- *   comment at this function's insertEvent call site, below.
- * @param {Object<string, string|null>} spec.extraSetColumns — fixed,
+ *   fixed-only; cmdResolve passes the literal 'fixed' — same
+ *   event-mirrors-target convention). 'operator_closed' remains a legal
+ *   db/schema.js EVENT_TYPES member but is never passed here (F-68cf9b48) —
+ *   see the eventType comment at this function's insertEvent call site,
+ *   below.
+ * @param {Object<string, string|number|null>} spec.extraSetColumns — fixed,
  *   code-controlled column -> bound value pairs applied to every matched row
- *   on --apply (never operator-derived — safe to splice as literal column
- *   names since the keys always come from this file's own two call sites,
- *   never from args)
+ *   on --apply (the KEYS are never operator-derived — safe to splice as
+ *   literal column names since they always come from this file's own three
+ *   call sites, never from args; VALUES are bound parameters, so cmdResolve's
+ *   operator-supplied verified_via_evidence text rides a placeholder like
+ *   every other bound value)
  * @param {(reason: string, evidence: string) => string} spec.buildNotes
  * @param {object} opts
  * @param {string} opts.runId
@@ -2527,7 +2531,9 @@ export function transitionFindings(spec, opts) {
  * JSON consumers unescaped, per that file's own established invariant.
  */
 export function formatTransitionReport(report) {
-  const verbLabel = report.verb === 'reopen' ? 'Reopen' : 'Close';
+  const verbLabel = report.verb === 'reopen' ? 'Reopen'
+    : report.verb === 'resolve' ? 'Resolve'
+      : 'Close';
   const mode = report.apply ? `${verbLabel} (APPLIED)` : `${verbLabel} (DRY-RUN)`;
   const lines = [];
   lines.push(`${mode} — run ${report.runId}`);
@@ -2786,6 +2792,111 @@ function cmdClose(args) {
   console.log(formatTransitionReport(report));
   if (!report.apply) {
     console.log(`Next: re-run with --apply to close ${pluralize(report.eligible.length, 'finding')} as ${report.targetStatus}.`);
+  }
+}
+
+/**
+ * `swarm resolve <run-id> --ids F-001,F-002 --evidence "<text>" [--reason "<text>"] [--apply] [--format=text|json]`
+ *
+ * The coordinator_resolved closure, given a verb (observed in run
+ * swarm-1784601601-bd4a). The dispatch banner (dispatch.js's
+ * unrouted_approved_findings hint) and cmdApprove's console hint have always
+ * instructed: "land the fix yourself and attach coordinator_resolved: true +
+ * a one-line verified_via_evidence so `swarm verify-fixed` classifies the
+ * closure as allowlist" — while shipping no verb that writes those columns.
+ * `swarm close` persists closure_kind/verified_how but NOT
+ * coordinator_resolved/verified_via_evidence, so the banner's path was
+ * reachable only by raw SQL; in the live run the coordinator hand-edited 16
+ * rows to 'fixed' + coordinator_resolved=1 with zero finding_events —
+ * closures invisible to the append-only audit trail.
+ *
+ * Distinction from `swarm close`: close records HOW the operator verified
+ * (--verified-how, operator's choice); resolve IS the evidence-carrying
+ * coordinator attestation — verified_how is pinned to 'operator_evidence'
+ * and the --evidence text is persisted on the ROW (verified_via_evidence),
+ * where lib/verify-classifier-v2.js reads it as the allowlist channel. Same
+ * closure family otherwise: third caller of transitionFindings, open-row
+ * source set, dry-run by default, event_type mirrors the target status.
+ * --reason is optional — the banner's contract is a single evidence line, so
+ * the evidence doubles as the reason unless a separate rationale is given.
+ */
+function cmdResolve(args) {
+  const runId = args[0];
+  if (!runId || runId.startsWith('--')) {
+    console.error('Usage: swarm resolve <run-id> --ids F-001,F-002 --evidence "<text>" [--reason "<text>"] [--apply] [--format=text|json]');
+    process.exit(1);
+  }
+
+  const idsArg = parseValueFlag(args, '--ids');
+  const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
+  if (ids.length === 0) {
+    console.error('Specify --ids F-001,F-002 (resolve is targeted — there is no --all)');
+    process.exit(1);
+  }
+
+  const evidence = parseValueFlag(args, '--evidence');
+  if (!evidence || !evidence.trim()) {
+    console.error(
+      'resolve: --evidence "<text>" is required (non-empty) — this verb EXISTS to persist the evidence ' +
+      'line the dispatch banner asks for (findings.verified_via_evidence); without it there is nothing to attest.'
+    );
+    process.exit(1);
+  }
+
+  // Optional here, unlike reopen/close: the banner's contract is one evidence
+  // line. Supplied-but-blank is still refused — an explicit empty reason is
+  // an operator mistake, not an omission.
+  const reasonRaw = parseValueFlag(args, '--reason');
+  if (reasonRaw !== undefined && !reasonRaw.trim()) {
+    console.error('resolve: --reason "<text>" must be non-empty when provided (omit it to let the evidence carry the rationale)');
+    process.exit(1);
+  }
+  const reason = reasonRaw ?? evidence;
+
+  const format = parseClosureFormatFlag(args);
+  const apply = args.includes('--apply');
+  const dbPath = getDbPath();
+  const idsUpper = ids.map(s => s.toUpperCase());
+
+  const report = transitionFindings({
+    verb: 'resolve',
+    sourceStatuses: CLOSE_SOURCE_STATUSES,
+    targetStatus: 'fixed',
+    // Event mirrors the target status — the same convention defer/reject/
+    // close follow; operator provenance rides actor='operator' +
+    // closure_kind='operator', never a distinct event_type (F-68cf9b48).
+    eventType: 'fixed',
+    // coordinator_resolved=1 + verified_via_evidence are the v4 columns
+    // lib/verify-classifier-v2.js reads as the allowlist channel — the whole
+    // point of this verb. closure_kind='operator' because this IS an
+    // operator-forced closure ('declared' belongs to amend fixes[],
+    // 'absence' to full-coverage silence).
+    extraSetColumns: {
+      closure_kind: 'operator',
+      verified_how: 'operator_evidence',
+      coordinator_resolved: 1,
+      verified_via_evidence: evidence,
+    },
+    buildNotes: (r, e) => r === e
+      ? `coordinator_resolved | evidence: ${e}`
+      : `coordinator_resolved | reason: ${r} | evidence: ${e}`,
+  }, { runId, ids, reason, evidence, apply, dbPath });
+
+  if (report.eligible.length === 0 && report.ineligible.length === 0) {
+    refuseIfNoIdsExist(openDb(dbPath), runId, ids, idsUpper);
+    return;
+  }
+
+  if (format === 'json') {
+    console.log(JSON.stringify(report, null, 2));
+    return;
+  }
+
+  console.log(formatTransitionReport(report));
+  if (report.apply && report.flipped > 0) {
+    console.log(`Next: swarm verify-fixed ${runId} classifies the closure as allowlist (coordinator_resolved + evidence).`);
+  } else if (!report.apply) {
+    console.log(`Next: re-run with --apply to resolve ${pluralize(report.eligible.length, 'finding')}.`);
   }
 }
 
@@ -3544,6 +3655,7 @@ export const commands = {
   reject: cmdReject,
   reopen: cmdReopen,
   close: cmdClose,
+  resolve: cmdResolve,
   persist: cmdPersist,
   findings: cmdFindings,
   runs: cmdRuns,
@@ -3786,6 +3898,37 @@ export const USAGE = {
     'Writes one finding_events row per finding actually flipped;',
     'event_type mirrors --as (currently always \'fixed\' — \'operator_closed\'',
     'is a legal db/schema.js EVENT_TYPES value but this verb never writes it).',
+  ].join('\n'),
+  resolve: [
+    'Usage: swarm resolve <run-id> --ids F-001,F-002 --evidence "<text>" [--reason "<text>"] [--apply] [--format=text|json]',
+    '',
+    'The coordinator_resolved closure the dispatch banner instructs — as a',
+    'verb instead of raw SQL. Closes OPEN rows (new/recurring/approved/',
+    'unverified) as \'fixed\' AND persists coordinator_resolved=1 +',
+    'verified_via_evidence=<--evidence> on the row, so `swarm verify-fixed`',
+    'classifies the closure as allowlist (the operator-attested channel).',
+    'For a fix the coordinator landed and verified out-of-band — e.g. an',
+    'approved finding routed to zero agents (the unrouted-findings banner).',
+    'Targeted only (no --all). Dry-run by default; --apply required to',
+    'mutate.',
+    '',
+    'Required:',
+    '  --ids F-001,F-002       Targeted finding ids (case-insensitive)',
+    '  --evidence "<text>"     Non-empty evidence line, persisted on the row',
+    '                          (findings.verified_via_evidence)',
+    '',
+    'Optional:',
+    '  --reason "<text>"       Separate rationale; the evidence doubles as',
+    '                          the reason when omitted',
+    '  --apply                 Mutate (default: dry-run preview)',
+    '  --format=text|json       Output format (default: text)',
+    '',
+    'Persists closure_kind=\'operator\', verified_how=\'operator_evidence\'.',
+    'How it differs from `swarm close`: close records how YOU verified',
+    '(--verified-how, no row-level evidence); resolve IS the evidence-',
+    'carrying attestation verify-fixed\'s allowlist channel reads.',
+    'Writes one finding_events row per finding actually flipped',
+    '(event_type=\'fixed\', actor=\'operator\').',
   ].join('\n'),
   persist: 'Usage: swarm persist <run-id> [--ingest] [--dry-run]',
   findings: [
@@ -4186,6 +4329,17 @@ Commands:
                              optional. Targeted only (no --all). Dry-run by
                              default; --apply required to mutate.
                              --format=text|json.
+  resolve <run-id> --ids F-001,F-002 --evidence "<text>" [opts]
+                             The coordinator_resolved closure the dispatch
+                             banner instructs, as a verb: closes open rows as
+                             'fixed' AND persists coordinator_resolved=1 +
+                             verified_via_evidence on the row, so \`swarm
+                             verify-fixed\` classifies the closure as
+                             allowlist. For fixes the coordinator landed and
+                             verified out-of-band (e.g. unrouted approved
+                             findings). --reason optional (evidence doubles
+                             as the reason). Targeted only. Dry-run by
+                             default; --apply required to mutate.
   findings <run-id> [wave] [--format=text|markdown|json]
                              Findings digest for a wave (default: latest).
                              Format auto-detects: text on TTY, markdown when
