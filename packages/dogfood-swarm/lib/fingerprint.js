@@ -1207,8 +1207,15 @@ export function upsertFindings(db, runId, waveId, classified) {
     UPDATE findings SET status = 'recurring', last_seen_wave = ?, severity = ?, filed_by_domain = COALESCE(filed_by_domain, ?) WHERE id = ?
   `);
 
+  // closure_kind='absence' is this path's C3 label (db/schema.js: "closed by
+  // a full-coverage wave's silence — see upsertFindings' 'closed by absence'
+  // event note") — previously specified but never written, leaving absence
+  // closures indistinguishable from pre-v10 rows once the sibling 'declared'
+  // closure (lib/declared-closures.js, observed in run swarm-1784601601-bd4a)
+  // went live. verified_how stays NULL: silence has no verification method to
+  // assert, and NULL already reads "unknown" per the column contract.
   const updateFixed = db.prepare(`
-    UPDATE findings SET status = 'fixed', last_seen_wave = ? WHERE id = ?
+    UPDATE findings SET status = 'fixed', last_seen_wave = ?, closure_kind = 'absence' WHERE id = ?
   `);
 
   // F-833dff6f: recurred-while-closed findings need last_seen_wave bumped

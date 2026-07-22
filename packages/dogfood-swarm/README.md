@@ -297,6 +297,8 @@ Three verbs act on an open finding:
 | `swarm defer` | Accepted and postponed: a real defect, but not this wave. | Yes, without a fix |
 | `swarm reject` | Not a defect: the finding itself is wrong. | Yes, without a fix |
 
+"The amend's fix is what marks it `fixed`" is mechanical, not aspirational: when `swarm collect` accepts an amend agent as `complete`, the agent's `fixes[]` declarations close the approved findings they name — status `fixed`, `closure_kind='declared'`, `verified_how='self_attested'`, one `finding_events` row naming the wave, the agent, and the declaring domain (observed missing in run swarm-1784601601-bd4a, where amended findings stayed `approved` forever and later audit lenses swept them to `unverified`). The declaration is gated by the same one-rule authority as routing and vouching: only `approved` findings the declaring domain owns (glob match on the file, `filed_by_domain` for file-less rows) can close; unknown, unowned, and non-approved ids are skipped loudly on the collect report. The closure is self-attested by design — `swarm verify-fixed` is the independent pass that audits every `fixed` row afterwards.
+
 ```bash
 # Approve every open finding, or a subset by id
 swarm approve <run-id> --all
@@ -336,6 +338,18 @@ swarm close <run-id> --ids F-001,F-002 \
 ```
 
 `--verified-how` is one of `independent` (someone other than the fixer verified it), `self_attested` (the fixer's own claim, unverified by anyone else), or `operator_evidence` (the Director's own direct evidence) — it is mandatory, not optional, since it is the field that predicts whether a closure holds or reopens later.
+
+### Coordinator-resolved closure — `swarm resolve`
+
+The dispatch banner for unrouted approved findings has always named a recovery path: land the fix yourself, then attach `coordinator_resolved: true` plus a one-line `verified_via_evidence` so `swarm verify-fixed` classifies the closure as **allowlist** (operator-attested) instead of unverifiable. `swarm resolve` is that path as a verb — before it, the columns were reachable only by editing the database directly, which left zero `finding_events` rows (observed in run swarm-1784601601-bd4a: 16 hand-closed rows, no audit trail):
+
+```bash
+swarm resolve <run-id> --ids F-001,F-002 \
+  --evidence "fix landed in commit abc123; package suite green" \
+  --apply
+```
+
+It closes open rows as `fixed` and persists `coordinator_resolved=1` + `verified_via_evidence=<--evidence>` on the row — the exact columns `swarm verify-fixed`'s allowlist channel reads — plus `closure_kind='operator'`, `verified_how='operator_evidence'`, and one `finding_events` row per closure. `--reason` is optional (the evidence doubles as the reason); dry-run by default, `--apply` to mutate. Where `swarm close` records how *you* verified a fix, `resolve` *is* the evidence-carrying attestation.
 
 ## Control plane
 
