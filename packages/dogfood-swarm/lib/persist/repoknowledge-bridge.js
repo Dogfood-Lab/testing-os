@@ -12,6 +12,54 @@
 import { isOpenFinding } from '../finding-status.js';
 
 /**
+ * The fixed repo-knowledge audit-domain enum, mirrored here as the contract the
+ * audit payload must honour. These two repos share NO code dependency, so this
+ * is a hand-maintained mirror of repo-knowledge's `DOMAINS`
+ * (src/audit/controls.ts — also the CHECK enum in migration-002-audit.sql and
+ * AUDIT-CONTRACT.md's "Domains (fixed enum)"). `rk audit import` REJECTS any
+ * finding whose domain is outside this set, and the reject fails the ENTIRE
+ * atomic import — one bad domain drops the whole evidence bundle. If rk ever
+ * extends its enum, update this list too. lib/repoknowledge-bridge-domain-map
+ * .test.js keeps its own independent copy and pins that the two agree.
+ */
+export const RK_AUDIT_DOMAINS = Object.freeze([
+  'inventory', 'code_quality', 'security_sast', 'dependencies_sca',
+  'licenses', 'secrets', 'config_iac', 'containers', 'runtime',
+  'performance', 'observability', 'testing', 'cicd', 'deployment',
+  'backup_dr', 'monitoring', 'compliance_privacy', 'supply_chain',
+  'integrations',
+]);
+
+/**
+ * Map a swarm finding category to a repo-knowledge audit domain. Every value on
+ * the right MUST be a member of RK_AUDIT_DOMAINS above.
+ *
+ * `docs` → `inventory`: rk has no `documentation` domain (emitting one caused
+ * the ai-rpg-engine v2.8 `rk audit import` failure, 2026-07-22). `inventory`
+ * is rk's documentation-artifact domain — its controls are README currency,
+ * manifest/entrypoint identification, and ownership docs (INV-001 is literally
+ * "README present and materially current"). Mapping there keeps docs findings
+ * queryable as a DISTINCT domain rather than collapsing them into the
+ * `code_quality` fallback that already absorbs seven other categories.
+ *
+ * An unmapped category falls back to `code_quality` (see the `||` at the call
+ * site) — the neutral general bucket, also a valid rk domain.
+ */
+export const CATEGORY_TO_AUDIT_DOMAIN = Object.freeze({
+  bug: 'code_quality',
+  security: 'security_sast',
+  quality: 'code_quality',
+  types: 'code_quality',
+  tests: 'testing',
+  docs: 'inventory',
+  defensive: 'code_quality',
+  observability: 'monitoring',
+  degradation: 'code_quality',
+  ux: 'code_quality',
+  accessibility: 'code_quality',
+});
+
+/**
  * Build a repo-knowledge audit payload from a canonical run export.
  *
  * @param {object} exportData — output of buildRunExport()
@@ -32,24 +80,11 @@ export function buildAuditPayload(exportData) {
     rejected: 'false_positive',
   };
 
-  // Map swarm categories to audit domains
-  const domainMap = {
-    bug: 'code_quality',
-    security: 'security_sast',
-    quality: 'code_quality',
-    types: 'code_quality',
-    tests: 'testing',
-    docs: 'documentation',
-    defensive: 'code_quality',
-    observability: 'monitoring',
-    degradation: 'code_quality',
-    ux: 'code_quality',
-    accessibility: 'code_quality',
-  };
-
-  // Build audit findings
+  // Build audit findings. Category → domain via CATEGORY_TO_AUDIT_DOMAIN
+  // (module scope); an unmapped category falls back to the neutral
+  // `code_quality` bucket. Both are guaranteed rk-valid — see RK_AUDIT_DOMAINS.
   const auditFindings = findingItems.map(f => ({
-    domain: domainMap[f.category] || 'code_quality',
+    domain: CATEGORY_TO_AUDIT_DOMAIN[f.category] || 'code_quality',
     title: `[${f.severity}] ${f.description.slice(0, 80)}`,
     description: f.description,
     severity: f.severity.toLowerCase(),
