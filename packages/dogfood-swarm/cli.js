@@ -1387,8 +1387,10 @@ function cmdVerify(args) {
     // (F-4773fb77, wave 20) — result.reason is runner.js's own fixed
     // template-string output (never target-repo content), and the
     // failedStep fallback branch interpolates only failedStep.name (always
-    // one of five hardcoded adapter step-name literals: lint/typecheck/
-    // test/build/check) and failedStep.exit_code (a number). This is a
+    // one of six hardcoded adapter step-name literals: lint/typecheck/
+    // typecheck:tests/test/build/check — ve-tc-001 added the colon-bearing
+    // one, still a fixed literal, never target-repo content) and
+    // failedStep.exit_code (a number). This is a
     // SECOND, independent render of the same invariant on the non-pass
     // exit path — see commands/verify.js's comment above its own
     // `if (result.reason) lines.push(...)` line for the full argument; a

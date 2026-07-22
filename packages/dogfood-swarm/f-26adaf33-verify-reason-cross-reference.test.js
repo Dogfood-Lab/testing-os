@@ -70,7 +70,17 @@ describe('F-26adaf33 -- the "result.reason is safe by construction" invariant is
   });
 
   it('the safety invariant itself: every adapter\'s step `name` is drawn from a small, fixed, hardcoded set -- never target-repo or operator-controlled content', () => {
-    const nameLiterals = (src) => Array.from(src.matchAll(/\bname:\s*'([a-z]+)'/g), (m) => m[1]);
+    // ve-tc-001: the character class is `[a-z:]`, not `[a-z]`, so the colon in
+    // the node adapter's `typecheck:tests` step name is captured rather than
+    // silently split (a bare `[a-z]+` would match `typecheck` up to the colon
+    // and drop the literal from the set — the pin would stay green while going
+    // BLIND to a real new step-name literal, the exact multi-occurrence-drift
+    // shape this pin exists to catch). Re-audit, per this pin's own charter:
+    // `typecheck:tests` is a hardcoded per-adapter literal exactly like the
+    // other five — it is NOT target-repo or operator content — so F-26adaf33's
+    // (and F-4773fb77's) safety argument for leaving `result.reason` / cli.js's
+    // `why` unescaped still holds. The set grew; the invariant did not change.
+    const nameLiterals = (src) => Array.from(src.matchAll(/\bname:\s*'([a-z:]+)'/g), (m) => m[1]);
     const allNames = new Set([
       ...nameLiterals(NODE_ADAPTER_SRC),
       ...nameLiterals(PYTHON_ADAPTER_SRC),
@@ -78,8 +88,8 @@ describe('F-26adaf33 -- the "result.reason is safe by construction" invariant is
     ]);
     assert.deepEqual(
       [...allNames].sort(),
-      ['build', 'check', 'lint', 'test', 'typecheck'],
-      `expected exactly the 5 hardcoded step-name literals this finding's safety argument counts on -- if this ever grows, F-26adaf33's (and F-4773fb77's) safety argument needs re-auditing, not just this pin updating: ${JSON.stringify([...allNames].sort())}`,
+      ['build', 'check', 'lint', 'test', 'typecheck', 'typecheck:tests'],
+      `expected exactly the 6 hardcoded step-name literals this finding's safety argument counts on -- if this ever grows, F-26adaf33's (and F-4773fb77's) safety argument needs re-auditing, not just this pin updating: ${JSON.stringify([...allNames].sort())}`,
     );
   });
 
