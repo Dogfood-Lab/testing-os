@@ -323,6 +323,10 @@ export function resume(opts) {
       domainSnapshotId: wave.domain_snapshot_id,
       phase: wave.phase,
       waveNumber: wave.wave_number,
+      // Run swarm-1784601601-bd4a: same worktree setup note the dispatch
+      // path renders — a redispatched isolated agent gets a FRESH provisioned
+      // worktree (createWorktree above) and the same do-not-npm-install rule.
+      isolatedWorktree: !!worktreePath,
     };
 
     let prompt;

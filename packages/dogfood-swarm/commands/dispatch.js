@@ -1002,6 +1002,10 @@ export function dispatch(opts) {
       phase: opts.phase,
       waveNumber,
       roadmapDigest,
+      // Run swarm-1784601601-bd4a: tell an isolated agent its worktree's
+      // workspace links are provisioned + what to do if resolution escapes
+      // (report, never `npm install`) — see templates.js#renderWorktreeSection.
+      isolatedWorktree: !!a.worktreePath,
     };
 
     let prompt;
