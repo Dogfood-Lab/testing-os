@@ -29,6 +29,16 @@ function probe(repoPath) {
       evidence.hasTest = !!pkg.scripts?.test;
       evidence.hasLint = !!(pkg.scripts?.lint || pkg.scripts?.['lint:check']);
       evidence.hasBuild = !!pkg.scripts?.build;
+      // ve-tc-001: detect the repo's OWN test-file type gate. The generic
+      // `typecheck` step (commands() below) runs `npx tsc --noEmit` against
+      // the ROOT tsconfig, which by convention EXCLUDES test files — so a type
+      // error living only in a *.test.ts is invisible to it, and `npm test`
+      // (vitest/ts-node) strips types before running. A repo that declares a
+      // `typecheck:tests` script (e.g. `tsc -p tsconfig.tests.json`, whose
+      // config INCLUDES the test files) is naming exactly where its test-file
+      // type gate lives; commands() promotes that into a REQUIRED step.
+      // Mirrors hasTest/hasLint/hasBuild.
+      evidence.hasTypecheckTests = !!pkg.scripts?.['typecheck:tests'];
       evidence.name = pkg.name;
       if (evidence.hasTest) score += 20;
     } catch (e) {
@@ -68,7 +78,7 @@ function probe(repoPath) {
   return { score: Math.min(score, 100), reason, evidence };
 }
 
-function commands(overrides = {}) {
+function commands(overrides = {}, evidence = {}) {
   const steps = [];
 
   // Lint
@@ -86,6 +96,39 @@ function commands(overrides = {}) {
     args: ['tsc', '--noEmit'],
     optional: true,
   });
+
+  // Typecheck (test files) — ve-tc-001.
+  //
+  // WHY THIS EXISTS (ai-rpg-engine v2.8 incident, 2026-07-22): the generic
+  // `typecheck` step above runs `npx tsc --noEmit`, which uses the ROOT
+  // tsconfig. That config almost always EXCLUDES test files (it compiles src,
+  // not *.test.ts), so a real TS error confined to a test file sails through
+  // it — and `npm test` (vitest/ts-node) strips types before running, so the
+  // `test` step passes too. The result was a false green: a genuine TS2345 in
+  // a new *.test.ts passed `swarm verify` clean, caught only because a
+  // concurrent session happened to run the repo's own `typecheck:tests`.
+  //
+  // A repo that cares about test-file types declares its own gate — by strong
+  // convention a `typecheck:tests` npm script (e.g. `tsc -p tsconfig.tests.json`,
+  // whose config INCLUDES the test files). When the probe found that script
+  // (evidence.hasTypecheckTests) — or an explicit override is supplied — run
+  // it, and make it REQUIRED (no `optional` flag): a failing test-file
+  // typecheck must block the wave exactly as a failing `test` step does.
+  //
+  // Requiring it is safe precisely BECAUSE it is script-detected: it is added
+  // only when the repo declares it, so it can never false-fail a repo (JS-only,
+  // or one with no separate test tsconfig) that has no such gate — the
+  // "optional-if-absent" property, achieved by omitting the step entirely when
+  // absent rather than by an `optional` flag. Additive: the generic `typecheck`
+  // step above is untouched; this catches exactly what that one cannot.
+  const typecheckTestsStep = overrides['typecheck:tests'];
+  if (typecheckTestsStep || evidence.hasTypecheckTests) {
+    steps.push(typecheckTestsStep ?? {
+      name: 'typecheck:tests',
+      cmd: 'npm',
+      args: ['run', 'typecheck:tests'],
+    });
+  }
 
   // Test
   steps.push(overrides.test ?? {
@@ -106,7 +149,13 @@ function commands(overrides = {}) {
 }
 
 function run(repoPath, overrides) {
-  const steps = commands(overrides);
+  // ve-tc-001: probe once up front. The command list is now script-sensitive
+  // (commands() adds the REQUIRED typecheck:tests gate only when the repo
+  // declares that script), and the no_tests reason-refinement below reuses the
+  // same evidence — so this is one probe, not the two the prior shape ran
+  // (build-time commands() + a second probe() inside the no_tests branch).
+  const { evidence } = probe(repoPath);
+  const steps = commands(overrides, evidence);
   const result = runSteps(repoPath, steps, { continueOnError: true });
 
   // ve-004 / ds-verify-001: the runner now makes the pass→no_tests DECISION
@@ -119,7 +168,6 @@ function run(repoPath, overrides) {
   // operator's deliberate choice and keeps the runner's generic reason.
   const usingDefaultTest = !(overrides && overrides.test);
   if (usingDefaultTest && result.verdict === 'no_tests') {
-    const { evidence } = probe(repoPath);
     if (evidence && evidence.hasTest === false) {
       return {
         ...result,
