@@ -200,6 +200,70 @@ export function transitionAgent(db, agentRunId, toStatus, reason, override = fal
  */
 export function applyTimeoutPolicy(db, waveId, timeoutMs, nowMs) {
   const now = nowMs || Date.now();
+  const { timedOut: overdue, unknown } = classifyTimeouts(db, waveId, timeoutMs, now);
+
+  // The classifier is pure, so the structured skip-log for a NULL started_at
+  // belongs here — the mutating pass is the one an operator is watching, and a
+  // read-only probe must not emit events that look like the policy ran.
+  for (const agent of unknown) {
+    logStage('timeout_skip_null_started_at', {
+      component: 'dogfood-swarm',
+      agent_run_id: agent.agentRunId,
+      agentRunId: agent.agentRunId,
+      domain: agent.domain,
+      status: agent.status,
+      wave_id: waveId,
+      waveId,
+      reason: 'started_at NULL despite in-flight status — state-machine bypass somewhere; skipping timeout this pass',
+    });
+  }
+
+  const timedOut = [];
+  for (const agent of overdue) {
+    transitionAgent(db, agent.agentRunId, 'timed_out',
+      `Exceeded timeout policy: ${Math.round(agent.elapsedMs / 1000)}s > ${Math.round(timeoutMs / 1000)}s`);
+    timedOut.push({ agentRunId: agent.agentRunId, domain: agent.domain });
+  }
+
+  return timedOut;
+}
+
+/**
+ * READ-ONLY sibling of {@link applyTimeoutPolicy} — classify a wave's in-flight
+ * agents against the timeout policy WITHOUT transitioning anything.
+ *
+ * Why this exists (F-liveness-probe). The only way to get a truthful liveness
+ * answer used to be `swarm resume`, which is an ACTION verb: crossing the
+ * timeout makes it redispatch. Operators following that guidance to answer a
+ * read-only question ("which agents are still alive?") re-ran expensive agents
+ * as a side effect. Observed live on run `swarm-1785831762-2a42`, where a
+ * liveness check printed `Action: redispatched — Redispatched 9 agents`.
+ *
+ * The load-bearing property is that this shares ONE predicate with the mutating
+ * pass. A probe that computes staleness its own way is worse than no probe: it
+ * can report "alive" for an agent `applyTimeoutPolicy` would reap, and the
+ * operator has no way to know which one lied. `applyTimeoutPolicy` is now a thin
+ * mutating wrapper over this function, so the two cannot drift.
+ *
+ * Purity contract: no INSERT/UPDATE, no `transitionAgent`, and no `logStage` —
+ * the caller decides whether an observation is worth an event. Callers may run
+ * it as often as they like.
+ *
+ * @param {Database} db
+ * @param {number} waveId
+ * @param {number} timeoutMs
+ * @param {number} [nowMs] — override for deterministic tests (default: Date.now())
+ * @returns {{
+ *   timedOut: Array<{ agentRunId: number, domain: string, status: string, startedAt: string, elapsedMs: number }>,
+ *   stillRunning: Array<{ agentRunId: number, domain: string, status: string, startedAt: string, elapsedMs: number }>,
+ *   unknown: Array<{ agentRunId: number, domain: string, status: string, startedAt: null }>
+ * }} — `timedOut` are overdue and not yet reaped; `stillRunning` are genuinely
+ *   within policy; `unknown` have a NULL `started_at` and are deliberately NOT
+ *   classified either way (we cannot prove timing we do not have — the same
+ *   defensive posture the mutating pass takes).
+ */
+export function classifyTimeouts(db, waveId, timeoutMs, nowMs) {
+  const now = nowMs || Date.now();
   const agents = db.prepare(`
     SELECT ar.id, ar.status, ar.started_at, d.name as domain_name
     FROM agent_runs ar
@@ -208,6 +272,8 @@ export function applyTimeoutPolicy(db, waveId, timeoutMs, nowMs) {
   `).all(waveId);
 
   const timedOut = [];
+  const stillRunning = [];
+  const unknown = [];
 
   for (const agent of agents) {
     // Defense in depth at the law engine: an agent_run with status in
@@ -224,32 +290,40 @@ export function applyTimeoutPolicy(db, waveId, timeoutMs, nowMs) {
     // which already terminates with 'Z'. Appending another 'Z' yielded NaN
     // and caused every timeout check to silently no-op. See F-742440-001.
     if (!agent.started_at) {
-      // D3B-012 (Wave A2 Stage C): the prior console.warn was an
-      // unstructured message buried inside stderr — operators tailing the
-      // NDJSON stream had no way to detect it. Replace with a structured,
-      // coded, greppable logStage event. The defensive skip stays — we
-      // still cannot prove timing — but the operator now sees it.
-      logStage('timeout_skip_null_started_at', {
-        component: 'dogfood-swarm',
-        agent_run_id: agent.id,
+      // D3B-012 (Wave A2 Stage C): a NULL started_at on an in-flight row means
+      // the state machine was bypassed somewhere (a direct INSERT, a manual SQL
+      // repair, a stale fixture). We cannot prove how long it has been running,
+      // so we MUST NOT instant-time-out — but we also must not silently call it
+      // healthy. It goes to `unknown`, and the MUTATING caller emits the
+      // structured skip event (this function stays pure).
+      //
+      // started_at is written by executeTransition() via Date#toISOString(),
+      // which already terminates with 'Z'. Appending another 'Z' yielded NaN
+      // and caused every timeout check to silently no-op. See F-742440-001.
+      unknown.push({
         agentRunId: agent.id,
         domain: agent.domain_name,
         status: agent.status,
-        wave_id: waveId,
-        waveId,
-        reason: 'started_at NULL despite in-flight status — state-machine bypass somewhere; skipping timeout this pass',
+        startedAt: null,
       });
       continue;
     }
     const startedAt = new Date(agent.started_at).getTime();
-    if (now - startedAt > timeoutMs) {
-      transitionAgent(db, agent.id, 'timed_out',
-        `Exceeded timeout policy: ${Math.round((now - startedAt) / 1000)}s > ${Math.round(timeoutMs / 1000)}s`);
-      timedOut.push({ agentRunId: agent.id, domain: agent.domain_name });
-    }
+    const elapsedMs = now - startedAt;
+    const row = {
+      agentRunId: agent.id,
+      domain: agent.domain_name,
+      status: agent.status,
+      startedAt: agent.started_at,
+      elapsedMs,
+    };
+    // The predicate. `applyTimeoutPolicy` reaps exactly this set; a read-only
+    // caller reports exactly this set. One comparison, one source of truth.
+    if (elapsedMs > timeoutMs) timedOut.push(row);
+    else stillRunning.push(row);
   }
 
-  return timedOut;
+  return { timedOut, stillRunning, unknown };
 }
 
 /**

@@ -551,11 +551,41 @@ Read state with `swarm status <run-id>` — it renders the run, the frozen domai
 ## Resuming an Interrupted Swarm
 
 ```bash
-swarm status <run-id>    # what phase/wave, which agents completed vs. missing
-swarm resume <run-id>    # redispatch only the incomplete agents
+swarm status <run-id>              # READ-ONLY: phase/wave, which agents completed
+                                   # vs. missing, and which are [STALE] past the
+                                   # timeout policy. Start here.
+swarm resume <run-id> --dry-run    # READ-ONLY: what a real resume WOULD time out
+                                   # and redispatch. Writes nothing.
+swarm resume <run-id>              # MUTATES: redispatch the incomplete agents
 ```
 
 `swarm resume` is state-machine-driven: it reads `agent_runs` from the control plane, applies the run's timeout policy to transition stale agents deterministically, and redispatches only what is genuinely incomplete. Agents already `complete` are never re-run.
+
+### ⚠ `swarm resume` is NOT a liveness probe
+
+"Are these agents still alive?" and "redispatch the dead ones" are different
+questions, and the bare verb only knows how to answer the second. Applying the
+timeout policy **transitions** overdue agents to `timed_out`, which is the first
+domino of a redispatch — so an operator who runs `swarm resume` in order to
+*look* gets a redispatch as a side effect. This has happened in a live run: a
+liveness check on `swarm-1785831762-2a42` printed
+`Action: redispatched — Redispatched 9 agents` when nothing was meant to re-run.
+
+Use the read-only surfaces instead:
+
+| Question | Verb | Writes? |
+|---|---|---|
+| Which agents are overdue right now? | `swarm status <run-id>` — overdue rows render `[STALE — past timeout policy]`, and the summary carries `stalePastTimeout` | no |
+| What exactly would a resume DO right now? | `swarm resume <run-id> --dry-run` (alias `--preview`) — reports `wouldTimeOut` / `wouldRedispatch` | no |
+| Redispatch the dead agents. | `swarm resume <run-id>` | **yes** — new `agent_runs`, new state events, prompts, and any `--isolate` worktrees **recreated from HEAD** |
+
+Both read-only paths and the mutating pass share **one** timeout predicate
+(`classifyTimeouts` in `lib/state-machine.js`; `applyTimeoutPolicy` is a thin
+mutating wrapper over it), so a preview cannot disagree with the outcome it is
+predicting. That property is pinned by `liveness-probe.test.js`, which asserts
+the predicted set equals the set actually reaped.
+
+Reserve `swarm resume` for when you have already decided to redispatch.
 
 Three distinct recovery verbs exist, and picking the wrong one wastes a wave — see [Recovery verbs](#recovery-verbs) below for when each applies.
 

@@ -994,7 +994,7 @@ function cmdStatus(args) {
 function cmdResume(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm resume <run-id> [--force]');
+    console.error('Usage: swarm resume <run-id> [--dry-run] [--force]');
     process.exit(1);
   }
 
@@ -1006,13 +1006,39 @@ function cmdResume(args) {
   // time, with the flag silently discarded.
   const force = args.includes('--force');
 
+  // F-liveness-probe: `--dry-run` (alias `--preview`, matching cmdDispatch) is
+  // the READ-ONLY liveness surface. Before it existed, the only verb that
+  // applied the timeout policy was this one — and applying it MUTATES, so an
+  // operator asking the read-only question "which agents are still alive?" got
+  // an answer plus nine redispatched agents. Observed live on run
+  // swarm-1785831762-2a42: a liveness check printed
+  // `Action: redispatched — Redispatched 9 agents`.
+  //
+  // Note `swarm status` also reports staleness read-only (COORD-003) and is the
+  // cheaper first stop; this flag exists for the stronger question status does
+  // not answer — "what exactly WOULD a resume do right now?"
+  const dryRun = args.includes('--dry-run') || args.includes('--preview');
+
   const r = resume({
     runId,
     dbPath: getDbPath(),
     outputDir: getOutputDir(runId),
     force,
+    dryRun,
   });
   console.log(formatResume(r));
+
+  // F-liveness-probe: announce the mutation AFTER the report (which names the
+  // domains) but as its own labelled line, so a redispatch is never something
+  // the operator discovers by reading a wall of prompt paths. Printed only on
+  // the real path — a preview mutates nothing and says so itself.
+  if (!dryRun && r.action === 'redispatched' && r.redispatch?.length) {
+    console.log(
+      `\n[MUTATED] Redispatched ${r.redispatch.length} agent(s). This was NOT a read-only check — ` +
+      `new agent_runs were created and any --isolate worktrees were recreated from HEAD.\n` +
+      `          To ask "what would this do?" without mutating, use: swarm resume ${runId} --dry-run`
+    );
+  }
 
   // F-3c489002 (Stage C): the SUCCESS actions used to end with no next verb,
   // breaking the "every terminal surface hands the operator the next step"
@@ -3814,7 +3840,7 @@ export const USAGE = {
   advance: 'Usage: swarm advance <run-id> [--override --reason "..."] [--check-only] [--history] [--format=json]',
   adjudicate: 'Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]\n   or: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]',
   status: 'Usage: swarm status <run-id> [--format=text|json]',
-  resume: 'Usage: swarm resume <run-id> [--force]',
+  resume: 'Usage: swarm resume <run-id> [--dry-run] [--force]',
   history: [
     'Usage: swarm history <wave-id> [--format=text|json]',
     '   or: swarm history <finding-id> [--run <run-id>] [--format=text|json]',
@@ -4291,12 +4317,24 @@ Commands:
                              structured status object (run/waves/agents/
                              findings/assessment) for machine consumers;
                              default is the text frame.
-  resume <run-id> [--force]  Redispatch incomplete agents. --force: proceed
-                             even when a redispatch candidate's --isolate
-                             worktree has uncommitted/unmerged work that
-                             recreation would destroy (default: refuse and
-                             name the at-risk worktree(s); no undo once
-                             --force accepts the loss).
+  resume <run-id> [opts]     Redispatch incomplete agents. MUTATES by default.
+                             --dry-run (alias --preview): READ-ONLY. Applies the
+                             timeout policy to a projection and reports what a
+                             real resume WOULD time out and redispatch, writing
+                             nothing — no agent_runs, no state events, no
+                             prompts, no worktrees. Use this to answer "which
+                             agents are actually alive?"; the bare verb is NOT a
+                             liveness probe, because crossing the timeout makes
+                             it redispatch. (\`swarm status\` also reports
+                             staleness read-only and is the cheaper first stop —
+                             it marks overdue agents [STALE]. Reach for
+                             --dry-run for the stronger question: what exactly
+                             would resume DO right now?)
+                             --force: proceed even when a redispatch candidate's
+                             --isolate worktree has uncommitted/unmerged work
+                             that recreation would destroy (default: refuse and
+                             name the at-risk worktree(s); no undo once --force
+                             accepts the loss).
   history <wave-id> [--format=text|json]
                              Render the wave_state_events transition chain for
                              a wave. Deep audit verb for the override-and-reason

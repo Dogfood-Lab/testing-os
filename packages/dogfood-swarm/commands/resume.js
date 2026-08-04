@@ -50,7 +50,7 @@ import { createWorktree, worktreeDisposition } from '../lib/worktree.js';
 import { IsolationError } from '../lib/errors.js';
 import { SKIP_VERIFY_DIRECTIVE, WAVE_BRIEF_SIZE_WARN_THRESHOLD_BYTES } from './dispatch.js';
 import {
-  applyTimeoutPolicy, getTimeoutPolicy,
+  applyTimeoutPolicy, getTimeoutPolicy, classifyTimeouts,
   isBlocked, isTerminal, isRedispatchable, isInFlight,
   transitionAgent,
 } from '../lib/state-machine.js';
@@ -95,9 +95,25 @@ export function resume(opts) {
     return { action: 'none', reason: 'No waves found — run `swarm dispatch` first' };
   }
 
-  // Step 1: Apply timeout policy to in-flight agents (deterministic)
+  // Step 1: Apply timeout policy to in-flight agents (deterministic).
+  //
+  // F-liveness-probe: under `--dry-run` this MUST NOT run — applyTimeoutPolicy
+  // transitions overdue agents to `timed_out`, which is a control-plane write
+  // and the first domino of the redispatch. The preview instead classifies with
+  // the shared PURE predicate and simulates the transition in memory, so the
+  // buckets below are computed from exactly the state a real resume would see
+  // without a single row being written.
   const timeoutMs = getTimeoutPolicy(db, opts.runId);
-  const timedOutAgents = applyTimeoutPolicy(db, wave.id, timeoutMs, opts.nowMs);
+  const dryRun = !!opts.dryRun;
+  let timedOutAgents;
+  let simulatedTimedOutIds = new Set();
+  if (dryRun) {
+    const c = classifyTimeouts(db, wave.id, timeoutMs, opts.nowMs);
+    timedOutAgents = c.timedOut.map(a => ({ agentRunId: a.agentRunId, domain: a.domain }));
+    simulatedTimedOutIds = new Set(c.timedOut.map(a => a.agentRunId));
+  } else {
+    timedOutAgents = applyTimeoutPolicy(db, wave.id, timeoutMs, opts.nowMs);
+  }
 
   // Step 2: Read the LATEST agent_run per domain (after timeout policy applied).
   //
@@ -121,7 +137,14 @@ export function resume(opts) {
     JOIN domains d ON ar.domain_id = d.id
     WHERE ar.wave_id = ?
       ${LATEST_AGENT_RUN_PER_DOMAIN}
-  `).all(wave.id);
+  `).all(wave.id)
+    // F-liveness-probe: on the real path applyTimeoutPolicy has already written
+    // `timed_out` before this read, so the classifier below sees it. Under
+    // --dry-run nothing was written, so overlay the simulated transition here
+    // — same rows, same downstream buckets, zero writes. Reading the DB and
+    // then patching the projection is what keeps the preview faithful to the
+    // action instead of being a second, hand-rolled model of it.
+    .map(ar => (simulatedTimedOutIds.has(ar.id) ? { ...ar, status: 'timed_out' } : ar));
 
   const report = {
     runId: opts.runId,
@@ -188,6 +211,40 @@ export function resume(opts) {
     if (isRedispatchable(ar.status)) {
       redispatchCandidates.push(ar);
     }
+  }
+
+  // F-liveness-probe: the preview returns HERE — before the COORD-002 worktree
+  // probe, before the redispatch transaction, before any prompt is written.
+  // Everything above this line is a read plus in-memory projection, so a
+  // `--dry-run` invocation is provably side-effect-free: an operator asking
+  // "which agents are actually alive?" can no longer answer that question by
+  // accident-redispatching nine agents.
+  //
+  // The report shape deliberately MATCHES the real run's (same buckets, same
+  // key names) so scripts can diff a preview against an outcome. `action` is
+  // 'dry-run' and `wouldRedispatch` names what the real call would do.
+  if (dryRun) {
+    const n = redispatchCandidates.length;
+    return {
+      ...report,
+      action: 'dry-run',
+      // formatResume renders `${action} — ${reason}`; without this it printed
+      // "Action: dry-run — undefined". Say what a real run would do, in the
+      // same breath as saying nothing happened.
+      reason: n === 0
+        ? 'nothing would be redispatched — no agent is eligible'
+        : `${pluralize(n, 'agent')} would be redispatched (nothing was written)`,
+      dryRun: true,
+      wouldRedispatch: redispatchCandidates.map(ar => ({
+        domain: ar.domain_name,
+        agentRunId: ar.id,
+        status: ar.status,
+        isolated: !!(ar.worktree_path || ar.worktree_branch),
+      })),
+      // Named separately from `timed_out` so a reader can tell "already reaped
+      // by a prior resume" from "this call is what would reap it".
+      wouldTimeOut: timedOutAgents,
+    };
   }
 
   // COORD-002: refuse BEFORE any mutation when a redispatch candidate's
@@ -489,6 +546,27 @@ export function formatResume(r) {
     for (const a of r.redispatch) {
       lines.push(`  [>>  ] ${a.domain} (was: ${a.previousStatus}) → ${a.promptPath}`);
     }
+  }
+
+  // F-liveness-probe: the preview's own bucket. Rendered with [WOULD] rather
+  // than the real path's [>>  ] so a pasted transcript can never be mistaken
+  // for evidence that a redispatch happened.
+  if (r.dryRun) {
+    if (r.wouldTimeOut && r.wouldTimeOut.length > 0) {
+      lines.push(`Would time out (${r.wouldTimeOut.length}) — past the ${r.timeoutPolicy} policy, not yet reaped:`);
+      for (const a of r.wouldTimeOut) lines.push(`  [WOULD] ${a.domain}`);
+    }
+    if (r.wouldRedispatch && r.wouldRedispatch.length > 0) {
+      lines.push(`Would redispatch (${r.wouldRedispatch.length}):`);
+      for (const a of r.wouldRedispatch) {
+        lines.push(`  [WOULD] ${a.domain} (currently: ${a.status})${a.isolated ? ' [isolated — worktree would be RECREATED from HEAD, destroying its current contents]' : ''}`);
+      }
+    } else if (!r.wouldTimeOut || r.wouldTimeOut.length === 0) {
+      lines.push('Would redispatch: nothing — no agent is eligible right now.');
+    }
+    lines.push('');
+    lines.push('DRY RUN — nothing was written. No agent_runs, no state events, no prompts, no worktrees.');
+    lines.push('Re-run without --dry-run to actually redispatch.');
   }
 
   if (r.manual_fix.length > 0) {

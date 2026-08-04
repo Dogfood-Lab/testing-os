@@ -8,7 +8,7 @@
  */
 
 import { openDb } from '../db/connection.js';
-import { isBlocked, isInFlight, getTimeoutPolicy } from '../lib/state-machine.js';
+import { isBlocked, isInFlight, getTimeoutPolicy, classifyTimeouts } from '../lib/state-machine.js';
 import { getWaveTransitionHistory, BLOCKED_STATUSES } from '../lib/wave-state-machine.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { FINDING_GATED_PHASES, PHASE_MAP } from '../lib/advance.js';
@@ -187,22 +187,25 @@ export function status(opts) {
   // Timeout policy
   const timeoutPolicy = getTimeoutPolicy(db, opts.runId);
 
-  // COORD-003: read-only staleness detection. `applyTimeoutPolicy` (lib/
-  // state-machine.js) is the ONE non-test caller of the timeout policy —
-  // and it is resume.js's, which MUTATES (transitions a stale agent_run to
-  // `timed_out`). status must stay a pure read (it is the operator's
-  // inspect-only verb), so this recomputes the IDENTICAL predicate
-  // (now - started_at > timeoutMs) without calling transitionAgent — a dead
-  // agent should not have to wait for `swarm resume` to be told it is dead,
-  // and status already holds both inputs (timeoutPolicy above, started_at
-  // on every agent row) without ever doing the subtraction pre-fix.
-  // nowMs is overridable for deterministic tests, mirroring resume's own
-  // opts.nowMs. A NULL started_at is never stale — same defensive posture
-  // as applyTimeoutPolicy's own NULL-started_at skip: we cannot prove
-  // timing we do not have, so we do not guess.
+  // COORD-003: read-only staleness detection — a dead agent should not have to
+  // wait for `swarm resume` to be told it is dead, and status already holds both
+  // inputs (timeoutPolicy above, started_at on every agent row).
+  //
+  // F-liveness-probe: this used to RE-IMPLEMENT the predicate by hand, and its
+  // own comment claimed it "recomputes the IDENTICAL predicate" as
+  // applyTimeoutPolicy. Identical-by-assertion is exactly how two copies drift:
+  // if they ever disagreed, status would report an agent alive that resume would
+  // reap, and nothing would reveal which one lied. It now calls the shared pure
+  // classifier that `applyTimeoutPolicy` itself is built on, so "what status
+  // reports" and "what resume would reap" are the same set by construction
+  // rather than by comment. nowMs stays overridable for deterministic tests,
+  // mirroring resume's own opts.nowMs.
   const nowMs = opts.nowMs || Date.now();
-  const isStaleAgent = (a) => isInFlight(a.status) && !!a.started_at &&
-    (nowMs - new Date(a.started_at).getTime()) > timeoutPolicy;
+  const timeoutClassification = currentWave
+    ? classifyTimeouts(db, currentWave.id, timeoutPolicy, nowMs)
+    : { timedOut: [], stillRunning: [], unknown: [] };
+  const staleAgentRunIds = new Set(timeoutClassification.timedOut.map(a => a.agentRunId));
+  const isStaleAgent = (a) => staleAgentRunIds.has(a.id);
   const staleAgentCount = inFlightAgents.filter(isStaleAgent).length;
 
   // Compute advanceability + next action
