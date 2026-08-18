@@ -1033,9 +1033,16 @@ function cmdResume(args) {
   // the operator discovers by reading a wall of prompt paths. Printed only on
   // the real path — a preview mutates nothing and says so itself.
   if (!dryRun && r.action === 'redispatched' && r.redispatch?.length) {
+    // F-resume-wave-status: the wave transition is part of the mutation and is
+    // named in the same breath. An operator recovering a failed wave needs to
+    // see that the wave itself moved — that is the half that makes the
+    // following `swarm collect` possible.
+    const waveMoved = r.waveStatusBefore !== r.waveStatusAfter
+      ? ` The wave moved ${r.waveStatusBefore} → ${r.waveStatusAfter} (audited in wave_state_events).`
+      : '';
     console.log(
       `\n[MUTATED] Redispatched ${r.redispatch.length} agent(s). This was NOT a read-only check — ` +
-      `new agent_runs were created and any --isolate worktrees were recreated from HEAD.\n` +
+      `new agent_runs were created and any --isolate worktrees were recreated from HEAD.${waveMoved}\n` +
       `          To ask "what would this do?" without mutating, use: swarm resume ${runId} --dry-run`
     );
   }

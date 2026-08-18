@@ -606,12 +606,19 @@ export function computeAssessment(wave, agents, openBySeverity, blocked, inFligh
   // F-15fc601e: a wave failed for missing outputs (F-aba6fa9d) leaves its
   // agents in 'failed'/'timed_out' — redispatchable, NOT blocked — so the
   // allComplete check below would render INCOMPLETE and recommend `swarm
-  // resume`. That was a three-verb dead-end: resume redispatches the failed
-  // agents but never flips the wave out of 'failed', so collect then refuses
-  // ('No dispatched wave found') and revalidate refuses too (the agents are
-  // not blocked). The lawful verb that flips BOTH the wave and the agents
-  // back to dispatched is `swarm redrive <wave-id>` — route there BEFORE the
-  // INCOMPLETE branch.
+  // resume`. Route to `swarm redrive <wave-id>` BEFORE the INCOMPLETE branch:
+  // it is the verb purpose-built for this state, flipping BOTH the wave and
+  // the failure tail back to dispatched at the same wave_id, under a required
+  // --reason, with every `complete` agent's receipt preserved byte-identical.
+  //
+  // F-resume-wave-status UPDATES THIS RATIONALE. The original read "resume
+  // redispatches the failed agents but never flips the wave out of 'failed',
+  // so collect then refuses and revalidate refuses too" — a three-verb dead
+  // end. That was true when F-15fc601e was written and is now FALSE: resume
+  // moves the wave with the agents it redispatches. Routing here is therefore
+  // no longer a rescue from a broken path but a choice between two working
+  // ones, and status keeps naming exactly one so the next action stays
+  // unambiguous. Do not "restore" the dead-end wording.
   const failedTail = agents.filter(a => a.status === 'failed' || a.status === 'timed_out');
   if (wave.status === 'failed' && failedTail.length > 0) {
     return {

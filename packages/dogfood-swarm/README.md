@@ -235,6 +235,8 @@ Most recovery verbs — `revalidate`, `rewind`, `redrive`, `clean`, `clean-claim
 
 **`resume` is the exception, and it is the one that catches people.** It mutates by default and has no `--apply` gate, because redispatching is its whole job. Preview it with `swarm resume <run-id> --dry-run` (opt-in, not the default — flipping the default would silently break every script that already calls the bare verb expecting it to act).
 
+The wave moves with the agents. When `resume` redispatches at least one agent on a wave that is not already `dispatched` — a `failed` wave, most often — it returns the wave to `dispatched` in the same transaction, audited in `wave_state_events` with a `resume:` reason. That is what makes its own closing instruction ("run the redispatched agent(s), then `swarm collect`") true, since `collect` requires a `dispatched` wave. A resume that redispatches nothing leaves the wave exactly as it found it.
+
 Every error carries a typed `code` and a `Next:` hint; the full table is in the handbook.
 
 📖 Deeper incident docs: **[Recovery](https://dogfood-lab.github.io/testing-os/handbook/recovery/)** · **[Error codes](https://dogfood-lab.github.io/testing-os/handbook/error-codes/)**

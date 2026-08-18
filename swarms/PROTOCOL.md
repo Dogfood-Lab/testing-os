@@ -561,6 +561,8 @@ swarm resume <run-id>              # MUTATES: redispatch the incomplete agents
 
 `swarm resume` is state-machine-driven: it reads `agent_runs` from the control plane, applies the run's timeout policy to transition stale agents deterministically, and redispatches only what is genuinely incomplete. Agents already `complete` are never re-run.
 
+**The wave moves with the agents.** If resume redispatches at least one agent on a wave that is not already `dispatched` — most often a `failed` wave, the state a missing or rejected output leaves behind — it returns the wave to `dispatched` too, in the same transaction, audited in `wave_state_events` with a `resume:` reason. This is the same contract the Three R's carry, read from the other end: a partial write must not leave agents in flight while the wave stays `failed`. It is what makes resume's own closing line ("run the redispatched agent(s), then `swarm collect`") true, since `swarm collect` requires a `dispatched` wave. Redispatching nothing moves nothing — a wave resume did not put back into flight is not resume's to un-fail.
+
 ### ⚠ `swarm resume` is NOT a liveness probe
 
 "Are these agents still alive?" and "redispatch the dead ones" are different
@@ -600,6 +602,8 @@ Three distinct recovery verbs exist, and picking the wrong one wastes a wave —
 | `swarm revalidate <run-id>` | An agent did the work correctly but its output JSON was rejected by the schema or ownership gate, and the JSON on disk is now correct | Repairs blocked `agent_runs` in place (BLOCKED → `complete`); flips the wave back to `collected` only when every latest agent_run is `complete` |
 | `swarm rewind <save-point-tag>` | The slice itself was a wrong turn and you want the working tree back at the save point | Restores the tree to the tag and lawfully aborts orphaned in-flight rows (status → `aborted_for_rewind`, preserved as forensic evidence) |
 | `swarm redrive <run-id>` | The slice was right but a subset of agents failed mid-flight | Resumes the same `wave_id`; completed receipts survive byte-identical, only eligible failed/unstarted agents become re-dispatchable |
+
+`swarm resume` is not a fourth R — it is the ordinary in-wave verb — but it overlaps `redrive` on one state, so pick deliberately: **redrive re-opens, resume re-issues.** Both return a failed wave and its failure tail to `dispatched`. Redrive takes a `wave_id`, moves the existing `agent_runs` in place, and preserves every `complete` receipt byte-identical. Resume takes a `run_id`, applies the timeout policy first, and creates *fresh* `agent_runs` with rebuilt prompts and re-created `--isolate` worktrees. Want the same agents re-run against the briefs they already had — redrive. Want new briefs and clean worktrees for the ones that never reported — resume.
 
 All three share four contracts: **dry-run by default** (`--apply` required to mutate), **`--reason "<text>"` is mandatory** (recorded verbatim in the audit row, prefixed by verb name so the trail is greppable by intent), **zero raw SQL** (all mutations go through `transitionAgent` / `transitionWave` so no write skips its audit row), and **single transaction** (a partial write cannot leave agents `complete` while the wave stays `failed`).
 
