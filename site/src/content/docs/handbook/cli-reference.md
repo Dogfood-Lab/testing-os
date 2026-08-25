@@ -260,13 +260,17 @@ When a wave has interesting history (override transitions, multiple state change
 Redispatch incomplete agents in the latest wave. Useful when an agent crashed or was cancelled mid-run and its output never arrived. Re-creates the prompt and re-issues the dispatch; the agent_run row's state machine ensures completed agents in the same wave aren't redispatched (their work is preserved).
 
 ```text
-Usage: swarm resume <run-id>
+Usage: swarm resume <run-id> [--dry-run] [--force]
 
 Example:
+  # preview first — what would it redispatch?
+  $ swarm resume r-2026-05-20-001 --dry-run
   $ swarm resume r-2026-05-20-001
 ```
 
-For resuming a **failed** wave (not just incomplete agents), see [`swarm redrive`](../recovery/#swarm-redrive) — same wave_id, completed work preserved.
+**The wave moves with the agents.** When resume redispatches at least one agent on a wave that is not already `dispatched` — most often a `failed` wave, the state a missing or rejected output leaves behind — it also returns the wave to `dispatched`, recorded in `wave_state_events` with a `resume:` reason. Without that, the loop resume itself prints ("run the redispatched agent(s), then `swarm collect`") could not close: `swarm collect` requires a `dispatched` wave. A resume that redispatches nothing leaves the wave exactly as it found it.
+
+`swarm redrive` remains the verb purpose-built for a failed wave — it takes a wave_id and a required `--reason`, moves the whole failure tail at once, and preserves every `complete` agent's receipt byte-identical. Use resume when you want fresh prompts and worktrees for the agents that did not report; see [`swarm redrive`](../recovery/#swarm-redrive) for the alternative.
 
 ## swarm clean
 

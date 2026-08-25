@@ -225,12 +225,19 @@ Then map the symptom to the recovery verb:
 | Symptom | What it means | Recovery |
 |---|---|---|
 | `collect` failed mid-upsert (`COLLECT_UPSERT_FAILED`) | One agent's output failed validation or the merge transaction aborted; the wave is `failed`. | `swarm revalidate <run-id> --reason "..." --domain=name:path --apply` — re-runs the same validators on the re-supplied output, and on pass flips the wave back to `collected` in one transaction. |
-| Wave stuck in `dispatched` — never reached `collected` | Agents didn't all finish, or the run was interrupted before `collect`. | `swarm resume <run-id>` to re-dispatch the incomplete agents; or `swarm redrive <wave-id> --reason "..." --apply` to resume only the failed/unstarted tail while preserving completed receipts byte-identical. |
+| Wave stuck in `dispatched` — never reached `collected` | Agents didn't all finish, or the run was interrupted before `collect`. | First look, don't act: `swarm status <run-id>` marks overdue agents `[STALE]`, and `swarm resume <run-id> --dry-run` reports exactly what a resume would time out and redispatch — both write nothing. Then `swarm resume <run-id>` to re-dispatch the incomplete agents; or `swarm redrive <wave-id> --reason "..." --apply` to resume only the failed/unstarted tail while preserving completed receipts byte-identical. |
+| Agents look stuck and you want to know if they're alive | `swarm resume` is **not** a liveness probe — applying the timeout policy transitions overdue agents to `timed_out`, which redispatches them. Asking the question mutates the answer. | `swarm status <run-id>` (overdue rows render `[STALE — past timeout policy]`) or `swarm resume <run-id> --dry-run`. Both share the same timeout predicate as the mutating pass, so a preview cannot disagree with the outcome. |
 | Agents `BLOCKED` (`invalid_output` / `ownership_violation`) | Schema mismatch, or an agent wrote outside its frozen domain. | `invalid_output` → `swarm revalidate`. `ownership_violation` → extend the domain via `swarm domains --unfreeze … --edit … --freeze`, then `swarm revalidate`. |
 | Wave wedged — tree state needs a full reset | The working tree drifted and the wave must restart from a save-point. | `swarm rewind <save-point-tag> --reason "..." --apply` — `git reset --hard <tag>` plus lawful abort of orphaned in-flight runs, audit chain preserved. |
 | `swarm status` / `swarm receipt` report violations on a wave that already **advanced** clean | Stale `violation=1` file_claims from a superseded pass (a revalidate repair or corrected diff base) stranded on a terminal wave — collect/revalidate/redrive can no longer reach them. | `swarm clean-claims <run-id>` to preview the phantom rows + superseding evidence, then `--apply --reason "..."` to delete them with a restorable `domain_events` audit row. |
 
-All recovery verbs are **dry-run by default** — run them without `--apply` first to preview the transitions, then add `--apply`. Every error carries a typed `code` and a `Next:` hint; the full table is in the handbook.
+Most recovery verbs — `revalidate`, `rewind`, `redrive`, `clean`, `clean-claims` — are **dry-run by default**: run them without `--apply` first to preview the transitions, then add `--apply`.
+
+**`resume` is the exception, and it is the one that catches people.** It mutates by default and has no `--apply` gate, because redispatching is its whole job. Preview it with `swarm resume <run-id> --dry-run` (opt-in, not the default — flipping the default would silently break every script that already calls the bare verb expecting it to act).
+
+The wave moves with the agents. When `resume` redispatches at least one agent on a wave that is not already `dispatched` — a `failed` wave, most often — it returns the wave to `dispatched` in the same transaction, audited in `wave_state_events` with a `resume:` reason. That is what makes its own closing instruction ("run the redispatched agent(s), then `swarm collect`") true, since `collect` requires a `dispatched` wave. A resume that redispatches nothing leaves the wave exactly as it found it.
+
+Every error carries a typed `code` and a `Next:` hint; the full table is in the handbook.
 
 📖 Deeper incident docs: **[Recovery](https://dogfood-lab.github.io/testing-os/handbook/recovery/)** · **[Error codes](https://dogfood-lab.github.io/testing-os/handbook/error-codes/)**
 

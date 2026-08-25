@@ -551,11 +551,43 @@ Read state with `swarm status <run-id>` — it renders the run, the frozen domai
 ## Resuming an Interrupted Swarm
 
 ```bash
-swarm status <run-id>    # what phase/wave, which agents completed vs. missing
-swarm resume <run-id>    # redispatch only the incomplete agents
+swarm status <run-id>              # READ-ONLY: phase/wave, which agents completed
+                                   # vs. missing, and which are [STALE] past the
+                                   # timeout policy. Start here.
+swarm resume <run-id> --dry-run    # READ-ONLY: what a real resume WOULD time out
+                                   # and redispatch. Writes nothing.
+swarm resume <run-id>              # MUTATES: redispatch the incomplete agents
 ```
 
 `swarm resume` is state-machine-driven: it reads `agent_runs` from the control plane, applies the run's timeout policy to transition stale agents deterministically, and redispatches only what is genuinely incomplete. Agents already `complete` are never re-run.
+
+**The wave moves with the agents.** If resume redispatches at least one agent on a wave that is not already `dispatched` — most often a `failed` wave, the state a missing or rejected output leaves behind — it returns the wave to `dispatched` too, in the same transaction, audited in `wave_state_events` with a `resume:` reason. This is the same contract the Three R's carry, read from the other end: a partial write must not leave agents in flight while the wave stays `failed`. It is what makes resume's own closing line ("run the redispatched agent(s), then `swarm collect`") true, since `swarm collect` requires a `dispatched` wave. Redispatching nothing moves nothing — a wave resume did not put back into flight is not resume's to un-fail.
+
+### ⚠ `swarm resume` is NOT a liveness probe
+
+"Are these agents still alive?" and "redispatch the dead ones" are different
+questions, and the bare verb only knows how to answer the second. Applying the
+timeout policy **transitions** overdue agents to `timed_out`, which is the first
+domino of a redispatch — so an operator who runs `swarm resume` in order to
+*look* gets a redispatch as a side effect. This has happened in a live run: a
+liveness check on `swarm-1785831762-2a42` printed
+`Action: redispatched — Redispatched 9 agents` when nothing was meant to re-run.
+
+Use the read-only surfaces instead:
+
+| Question | Verb | Writes? |
+|---|---|---|
+| Which agents are overdue right now? | `swarm status <run-id>` — overdue rows render `[STALE — past timeout policy]`, and the summary carries `stalePastTimeout` | no |
+| What exactly would a resume DO right now? | `swarm resume <run-id> --dry-run` (alias `--preview`) — reports `wouldTimeOut` / `wouldRedispatch` | no |
+| Redispatch the dead agents. | `swarm resume <run-id>` | **yes** — new `agent_runs`, new state events, prompts, and any `--isolate` worktrees **recreated from HEAD** |
+
+Both read-only paths and the mutating pass share **one** timeout predicate
+(`classifyTimeouts` in `lib/state-machine.js`; `applyTimeoutPolicy` is a thin
+mutating wrapper over it), so a preview cannot disagree with the outcome it is
+predicting. That property is pinned by `liveness-probe.test.js`, which asserts
+the predicted set equals the set actually reaped.
+
+Reserve `swarm resume` for when you have already decided to redispatch.
 
 Three distinct recovery verbs exist, and picking the wrong one wastes a wave — see [Recovery verbs](#recovery-verbs) below for when each applies.
 
@@ -570,6 +602,8 @@ Three distinct recovery verbs exist, and picking the wrong one wastes a wave —
 | `swarm revalidate <run-id>` | An agent did the work correctly but its output JSON was rejected by the schema or ownership gate, and the JSON on disk is now correct | Repairs blocked `agent_runs` in place (BLOCKED → `complete`); flips the wave back to `collected` only when every latest agent_run is `complete` |
 | `swarm rewind <save-point-tag>` | The slice itself was a wrong turn and you want the working tree back at the save point | Restores the tree to the tag and lawfully aborts orphaned in-flight rows (status → `aborted_for_rewind`, preserved as forensic evidence) |
 | `swarm redrive <run-id>` | The slice was right but a subset of agents failed mid-flight | Resumes the same `wave_id`; completed receipts survive byte-identical, only eligible failed/unstarted agents become re-dispatchable |
+
+`swarm resume` is not a fourth R — it is the ordinary in-wave verb — but it overlaps `redrive` on one state, so pick deliberately: **redrive re-opens, resume re-issues.** Both return a failed wave and its failure tail to `dispatched`. Redrive takes a `wave_id`, moves the existing `agent_runs` in place, and preserves every `complete` receipt byte-identical. Resume takes a `run_id`, applies the timeout policy first, and creates *fresh* `agent_runs` with rebuilt prompts and re-created `--isolate` worktrees. Want the same agents re-run against the briefs they already had — redrive. Want new briefs and clean worktrees for the ones that never reported — resume.
 
 All three share four contracts: **dry-run by default** (`--apply` required to mutate), **`--reason "<text>"` is mandatory** (recorded verbatim in the audit row, prefixed by verb name so the trail is greppable by intent), **zero raw SQL** (all mutations go through `transitionAgent` / `transitionWave` so no write skips its audit row), and **single transaction** (a partial write cannot leave agents `complete` while the wave stays `failed`).
 

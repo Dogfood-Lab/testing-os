@@ -440,8 +440,13 @@ describe('F-15fc601e — a missing-output failed wave names `swarm redrive` as t
       'pre-fix: nextAction said `swarm resume`, which redispatches but never unfails the wave');
     assert.match(s.assessment.nextAction, new RegExp(String(wave.id)),
       'the concrete wave id must be named so the verb is copy-pasteable');
+    // Rationale updated by F-resume-wave-status: resume no longer dead-ends
+    // here (it moves the wave with the agents it redispatches). The pin stands
+    // on the surviving reason — redrive is the verb purpose-built for a failed
+    // wave (required --reason, same wave_id, `complete` receipts byte-identical)
+    // and status must hand over exactly ONE next action, not a menu.
     assert.ok(!/swarm resume/.test(s.assessment.nextAction),
-      'resume must not be recommended — it leads to the collect/revalidate dead-end');
+      'status must name redrive alone — one unambiguous next verb for a failed wave');
   });
 
   it('GATE RED: the receipt recommendation mirrors the routing (REDRIVE, not RESUME)', () => {

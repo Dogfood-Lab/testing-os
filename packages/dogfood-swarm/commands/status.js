@@ -8,7 +8,7 @@
  */
 
 import { openDb } from '../db/connection.js';
-import { isBlocked, isInFlight, getTimeoutPolicy } from '../lib/state-machine.js';
+import { isBlocked, isInFlight, getTimeoutPolicy, classifyTimeouts } from '../lib/state-machine.js';
 import { getWaveTransitionHistory, BLOCKED_STATUSES } from '../lib/wave-state-machine.js';
 import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js';
 import { FINDING_GATED_PHASES, PHASE_MAP } from '../lib/advance.js';
@@ -187,22 +187,25 @@ export function status(opts) {
   // Timeout policy
   const timeoutPolicy = getTimeoutPolicy(db, opts.runId);
 
-  // COORD-003: read-only staleness detection. `applyTimeoutPolicy` (lib/
-  // state-machine.js) is the ONE non-test caller of the timeout policy —
-  // and it is resume.js's, which MUTATES (transitions a stale agent_run to
-  // `timed_out`). status must stay a pure read (it is the operator's
-  // inspect-only verb), so this recomputes the IDENTICAL predicate
-  // (now - started_at > timeoutMs) without calling transitionAgent — a dead
-  // agent should not have to wait for `swarm resume` to be told it is dead,
-  // and status already holds both inputs (timeoutPolicy above, started_at
-  // on every agent row) without ever doing the subtraction pre-fix.
-  // nowMs is overridable for deterministic tests, mirroring resume's own
-  // opts.nowMs. A NULL started_at is never stale — same defensive posture
-  // as applyTimeoutPolicy's own NULL-started_at skip: we cannot prove
-  // timing we do not have, so we do not guess.
+  // COORD-003: read-only staleness detection — a dead agent should not have to
+  // wait for `swarm resume` to be told it is dead, and status already holds both
+  // inputs (timeoutPolicy above, started_at on every agent row).
+  //
+  // F-liveness-probe: this used to RE-IMPLEMENT the predicate by hand, and its
+  // own comment claimed it "recomputes the IDENTICAL predicate" as
+  // applyTimeoutPolicy. Identical-by-assertion is exactly how two copies drift:
+  // if they ever disagreed, status would report an agent alive that resume would
+  // reap, and nothing would reveal which one lied. It now calls the shared pure
+  // classifier that `applyTimeoutPolicy` itself is built on, so "what status
+  // reports" and "what resume would reap" are the same set by construction
+  // rather than by comment. nowMs stays overridable for deterministic tests,
+  // mirroring resume's own opts.nowMs.
   const nowMs = opts.nowMs || Date.now();
-  const isStaleAgent = (a) => isInFlight(a.status) && !!a.started_at &&
-    (nowMs - new Date(a.started_at).getTime()) > timeoutPolicy;
+  const timeoutClassification = currentWave
+    ? classifyTimeouts(db, currentWave.id, timeoutPolicy, nowMs)
+    : { timedOut: [], stillRunning: [], unknown: [] };
+  const staleAgentRunIds = new Set(timeoutClassification.timedOut.map(a => a.agentRunId));
+  const isStaleAgent = (a) => staleAgentRunIds.has(a.id);
   const staleAgentCount = inFlightAgents.filter(isStaleAgent).length;
 
   // Compute advanceability + next action
@@ -603,12 +606,19 @@ export function computeAssessment(wave, agents, openBySeverity, blocked, inFligh
   // F-15fc601e: a wave failed for missing outputs (F-aba6fa9d) leaves its
   // agents in 'failed'/'timed_out' — redispatchable, NOT blocked — so the
   // allComplete check below would render INCOMPLETE and recommend `swarm
-  // resume`. That was a three-verb dead-end: resume redispatches the failed
-  // agents but never flips the wave out of 'failed', so collect then refuses
-  // ('No dispatched wave found') and revalidate refuses too (the agents are
-  // not blocked). The lawful verb that flips BOTH the wave and the agents
-  // back to dispatched is `swarm redrive <wave-id>` — route there BEFORE the
-  // INCOMPLETE branch.
+  // resume`. Route to `swarm redrive <wave-id>` BEFORE the INCOMPLETE branch:
+  // it is the verb purpose-built for this state, flipping BOTH the wave and
+  // the failure tail back to dispatched at the same wave_id, under a required
+  // --reason, with every `complete` agent's receipt preserved byte-identical.
+  //
+  // F-resume-wave-status UPDATES THIS RATIONALE. The original read "resume
+  // redispatches the failed agents but never flips the wave out of 'failed',
+  // so collect then refuses and revalidate refuses too" — a three-verb dead
+  // end. That was true when F-15fc601e was written and is now FALSE: resume
+  // moves the wave with the agents it redispatches. Routing here is therefore
+  // no longer a rescue from a broken path but a choice between two working
+  // ones, and status keeps naming exactly one so the next action stays
+  // unambiguous. Do not "restore" the dead-end wording.
   const failedTail = agents.filter(a => a.status === 'failed' || a.status === 'timed_out');
   if (wave.status === 'failed' && failedTail.length > 0) {
     return {

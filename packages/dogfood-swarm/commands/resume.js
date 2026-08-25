@@ -15,6 +15,24 @@
  *   invalid_output      → BLOCKED — report, do not redispatch
  *   ownership_violation → BLOCKED — report, do not redispatch
  *
+ * F-resume-wave-status — the WAVE moves with the agents. Redispatching put
+ * work back in flight, so the wave row must say so: any non-`dispatched` wave
+ * is transitioned to `dispatched` whenever this call redispatches at least one
+ * agent, through transitionWave's override path with a `resume:` audit reason
+ * (`failed` is a BLOCKED wave status; the override is how redrive/rewind/
+ * revalidate already move it, and the reason prefix keeps the trail greppable
+ * by intent). Pre-fix, resume left a `failed` wave `failed`, and the recovery
+ * loop it advertises — "run the redispatched agent(s), then swarm collect" —
+ * could not close: collect requires a `dispatched` wave and steered to
+ * revalidate, which refuses agents that are not blocked. Observed live on run
+ * `swarm-1787033129-beab` with schema-valid agent output already on disk.
+ *
+ * Zero redispatches means zero wave movement (a wave this call did not put
+ * back into flight is not resume's to un-fail — see the blocked-agents case in
+ * resume-collect-recovery-loop.test.js), and a wave already `dispatched` is
+ * left alone rather than given a same-status audit row, because that is the
+ * ordinary mid-wave timeout redispatch and the noise would bury the recoveries.
+ *
  * COORD-002 — compensators table (workflow-standards NAMED_COMPENSATORS; no
  * skip allowed for an irreversible action):
  *
@@ -50,10 +68,13 @@ import { createWorktree, worktreeDisposition } from '../lib/worktree.js';
 import { IsolationError } from '../lib/errors.js';
 import { SKIP_VERIFY_DIRECTIVE, WAVE_BRIEF_SIZE_WARN_THRESHOLD_BYTES } from './dispatch.js';
 import {
-  applyTimeoutPolicy, getTimeoutPolicy,
+  applyTimeoutPolicy, getTimeoutPolicy, classifyTimeouts,
   isBlocked, isTerminal, isRedispatchable, isInFlight,
   transitionAgent,
 } from '../lib/state-machine.js';
+import {
+  transitionWave, TRANSITIONS as WAVE_TRANSITIONS,
+} from '../lib/wave-state-machine.js';
 import { mkdirSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { atomicWriteFileSync } from '@dogfood-lab/findings/lib/atomic-write.js';
@@ -62,6 +83,11 @@ import { logStage } from '../lib/log-stage.js';
 import { mintCorrelationId } from '../lib/correlation-id.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
 import { pluralize } from './lib/pluralize.js';
+
+// F-resume-wave-status: the wave status a redispatch implies. Named rather
+// than inlined for the same reason redrive.js names REDRIVE_TARGET_STATUS —
+// the string appears in the guard, the transition, and the operator text.
+const RESUME_WAVE_TARGET_STATUS = 'dispatched';
 
 /**
  * @param {object} opts
@@ -95,9 +121,25 @@ export function resume(opts) {
     return { action: 'none', reason: 'No waves found — run `swarm dispatch` first' };
   }
 
-  // Step 1: Apply timeout policy to in-flight agents (deterministic)
+  // Step 1: Apply timeout policy to in-flight agents (deterministic).
+  //
+  // F-liveness-probe: under `--dry-run` this MUST NOT run — applyTimeoutPolicy
+  // transitions overdue agents to `timed_out`, which is a control-plane write
+  // and the first domino of the redispatch. The preview instead classifies with
+  // the shared PURE predicate and simulates the transition in memory, so the
+  // buckets below are computed from exactly the state a real resume would see
+  // without a single row being written.
   const timeoutMs = getTimeoutPolicy(db, opts.runId);
-  const timedOutAgents = applyTimeoutPolicy(db, wave.id, timeoutMs, opts.nowMs);
+  const dryRun = !!opts.dryRun;
+  let timedOutAgents;
+  let simulatedTimedOutIds = new Set();
+  if (dryRun) {
+    const c = classifyTimeouts(db, wave.id, timeoutMs, opts.nowMs);
+    timedOutAgents = c.timedOut.map(a => ({ agentRunId: a.agentRunId, domain: a.domain }));
+    simulatedTimedOutIds = new Set(c.timedOut.map(a => a.agentRunId));
+  } else {
+    timedOutAgents = applyTimeoutPolicy(db, wave.id, timeoutMs, opts.nowMs);
+  }
 
   // Step 2: Read the LATEST agent_run per domain (after timeout policy applied).
   //
@@ -121,7 +163,14 @@ export function resume(opts) {
     JOIN domains d ON ar.domain_id = d.id
     WHERE ar.wave_id = ?
       ${LATEST_AGENT_RUN_PER_DOMAIN}
-  `).all(wave.id);
+  `).all(wave.id)
+    // F-liveness-probe: on the real path applyTimeoutPolicy has already written
+    // `timed_out` before this read, so the classifier below sees it. Under
+    // --dry-run nothing was written, so overlay the simulated transition here
+    // — same rows, same downstream buckets, zero writes. Reading the DB and
+    // then patching the projection is what keeps the preview faithful to the
+    // action instead of being a second, hand-rolled model of it.
+    .map(ar => (simulatedTimedOutIds.has(ar.id) ? { ...ar, status: 'timed_out' } : ar));
 
   const report = {
     runId: opts.runId,
@@ -129,6 +178,11 @@ export function resume(opts) {
     waveNumber: wave.wave_number,
     phase: wave.phase,
     timeoutPolicy: `${Math.round(timeoutMs / 1000)}s`,
+    // F-resume-wave-status: named explicitly (mirroring collect.js's OPF-3
+    // waveStatusBefore/After) so the operator never has to infer the wave move
+    // from a later verb's error. Equal values mean the wave did not move.
+    waveStatusBefore: wave.status,
+    waveStatusAfter: wave.status,
     complete: [],
     // ds-lib-002: aborted_for_rewind agents are terminal but NOT collectable —
     // kept in a distinct bucket so a rewound wave never masquerades as complete.
@@ -188,6 +242,75 @@ export function resume(opts) {
     if (isRedispatchable(ar.status)) {
       redispatchCandidates.push(ar);
     }
+  }
+
+  // F-resume-wave-status: does this call owe the wave a transition, and is that
+  // transition lawful? Both questions are answered HERE — a pure read, before
+  // the preview returns and before anything mutates — so a doomed redispatch is
+  // refused rather than half-performed. Deciding it after the transaction would
+  // mean throwing with new agent_runs already committed and `--isolate`
+  // worktrees already force-recreated from HEAD, which is precisely the
+  // agents-in-flight-behind-a-stuck-wave state this fix exists to remove.
+  const waveNeedsTransition =
+    redispatchCandidates.length > 0 && wave.status !== RESUME_WAVE_TARGET_STATUS;
+  // An empty/absent outbound list covers BOTH terminal wave statuses
+  // ('advanced', 'aborted_for_rewind') and any non-canonical string a bypass
+  // wrote, in one check. Blocked-ness is NOT a refusal: 'failed' → 'dispatched'
+  // is exactly the edge this fix rides, via the override path below.
+  if (waveNeedsTransition &&
+      !(WAVE_TRANSITIONS[wave.status] || []).includes(RESUME_WAVE_TARGET_STATUS)) {
+    const err = new Error(
+      `resume: wave ${wave.wave_number} is '${wave.status}', which cannot return to ` +
+      `'${RESUME_WAVE_TARGET_STATUS}' — redispatching ${pluralize(redispatchCandidates.length, 'agent')} ` +
+      `into it would strand the work behind a wave \`swarm collect\` can never accept. Nothing was mutated. ` +
+      `Dispatch a fresh wave at this phase instead: \`swarm dispatch ${opts.runId} ${wave.phase}\`.`
+    );
+    err.code = 'RESUME_WAVE_UNMOVABLE';
+    err.waveId = wave.id;
+    err.waveStatus = wave.status;
+    throw err;
+  }
+
+  // F-liveness-probe: the preview returns HERE — before the COORD-002 worktree
+  // probe, before the redispatch transaction, before any prompt is written.
+  // Everything above this line is a read plus in-memory projection, so a
+  // `--dry-run` invocation is provably side-effect-free: an operator asking
+  // "which agents are actually alive?" can no longer answer that question by
+  // accident-redispatching nine agents.
+  //
+  // The report shape deliberately MATCHES the real run's (same buckets, same
+  // key names) so scripts can diff a preview against an outcome. `action` is
+  // 'dry-run' and `wouldRedispatch` names what the real call would do.
+  if (dryRun) {
+    const n = redispatchCandidates.length;
+    return {
+      ...report,
+      action: 'dry-run',
+      // formatResume renders `${action} — ${reason}`; without this it printed
+      // "Action: dry-run — undefined". Say what a real run would do, in the
+      // same breath as saying nothing happened.
+      reason: n === 0
+        ? 'nothing would be redispatched — no agent is eligible'
+        : `${pluralize(n, 'agent')} would be redispatched (nothing was written)`,
+      dryRun: true,
+      wouldRedispatch: redispatchCandidates.map(ar => ({
+        domain: ar.domain_name,
+        agentRunId: ar.id,
+        status: ar.status,
+        isolated: !!(ar.worktree_path || ar.worktree_branch),
+      })),
+      // Named separately from `timed_out` so a reader can tell "already reaped
+      // by a prior resume" from "this call is what would reap it".
+      wouldTimeOut: timedOutAgents,
+      // F-resume-wave-status: the wave move is part of what a real run WOULD
+      // do, so the preview names it too — otherwise the one operator most
+      // likely to check first (a failed wave, mid-recovery) sees a report that
+      // omits the half of the action their dead end depends on. `null` when
+      // the wave would not move.
+      wouldTransitionWave: waveNeedsTransition
+        ? { from: wave.status, to: RESUME_WAVE_TARGET_STATUS }
+        : null,
+    };
   }
 
   // COORD-002: refuse BEFORE any mutation when a redispatch candidate's
@@ -291,8 +414,27 @@ export function resume(opts) {
 
       redispatched.push({ ar, newArId, worktreePath });
     }
+
+    // F-resume-wave-status: inside the SAME transaction as the agent rows, so
+    // the two can never disagree — PROTOCOL.md's recovery contract ("a partial
+    // write cannot leave agents `complete` while the wave stays `failed`") read
+    // from the other end. override=true is inert for non-blocked sources
+    // (transitionWave only takes the override branch when `from` is BLOCKED);
+    // it is what lets the 'failed' → 'dispatched' recovery through, and the
+    // reason it demands is the audit row's whole point. Legality was proven
+    // above, pre-mutation.
+    if (waveNeedsTransition) {
+      transitionWave(
+        db,
+        wave.id,
+        RESUME_WAVE_TARGET_STATUS,
+        `resume: redispatched ${pluralize(redispatchCandidates.length, 'agent')} on a '${wave.status}' wave — back in flight, collect once they report`,
+        /* override */ true,
+      );
+    }
   });
   buildRedispatch();
+  if (waveNeedsTransition) report.waveStatusAfter = RESUME_WAVE_TARGET_STATUS;
 
   // F-ec97601a: the --skip-verify discipline choice is persisted by dispatch
   // on the wave's kv entry; redispatch prompts must carry the same directive
@@ -460,6 +602,12 @@ export function formatResume(r) {
   lines.push(`Resume — Wave ${r.waveNumber} (${r.phase})`);
   lines.push(`Timeout policy: ${r.timeoutPolicy}`);
   lines.push(`Action: ${r.action} — ${r.reason}`);
+  // F-resume-wave-status: only rendered when the wave actually moved, so the
+  // ordinary mid-wave redispatch (wave already `dispatched`) reads exactly as
+  // it did before, and a recovery says out loud that it un-stuck the wave.
+  if (r.waveStatusBefore && r.waveStatusAfter && r.waveStatusBefore !== r.waveStatusAfter) {
+    lines.push(`Wave status: ${r.waveStatusBefore} → ${r.waveStatusAfter} (redispatched work put the wave back in flight)`);
+  }
   lines.push('');
 
   if (r.complete.length > 0) {
@@ -489,6 +637,33 @@ export function formatResume(r) {
     for (const a of r.redispatch) {
       lines.push(`  [>>  ] ${a.domain} (was: ${a.previousStatus}) → ${a.promptPath}`);
     }
+  }
+
+  // F-liveness-probe: the preview's own bucket. Rendered with [WOULD] rather
+  // than the real path's [>>  ] so a pasted transcript can never be mistaken
+  // for evidence that a redispatch happened.
+  if (r.dryRun) {
+    if (r.wouldTimeOut && r.wouldTimeOut.length > 0) {
+      lines.push(`Would time out (${r.wouldTimeOut.length}) — past the ${r.timeoutPolicy} policy, not yet reaped:`);
+      for (const a of r.wouldTimeOut) lines.push(`  [WOULD] ${a.domain}`);
+    }
+    if (r.wouldRedispatch && r.wouldRedispatch.length > 0) {
+      lines.push(`Would redispatch (${r.wouldRedispatch.length}):`);
+      for (const a of r.wouldRedispatch) {
+        lines.push(`  [WOULD] ${a.domain} (currently: ${a.status})${a.isolated ? ' [isolated — worktree would be RECREATED from HEAD, destroying its current contents]' : ''}`);
+      }
+    } else if (!r.wouldTimeOut || r.wouldTimeOut.length === 0) {
+      lines.push('Would redispatch: nothing — no agent is eligible right now.');
+    }
+    if (r.wouldTransitionWave) {
+      lines.push(
+        `  [WOULD] wave status ${r.wouldTransitionWave.from} → ${r.wouldTransitionWave.to} ` +
+        `(audited in wave_state_events with a resume: reason)`
+      );
+    }
+    lines.push('');
+    lines.push('DRY RUN — nothing was written. No agent_runs, no state events, no prompts, no worktrees.');
+    lines.push('Re-run without --dry-run to actually redispatch.');
   }
 
   if (r.manual_fix.length > 0) {
