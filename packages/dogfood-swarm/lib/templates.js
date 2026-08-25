@@ -59,8 +59,9 @@
  * loud — see this domain's wave-24 output for the coordination note.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { join } from 'node:path';
 import { neutralizeInvisibleControls } from '../commands/lib/escape-reason.js';
 
 // Resolve the agent-output schema the SAME way validate-agent-output.js does:
@@ -497,6 +498,147 @@ function renderRoadmapDigestSection(roadmapDigest) {
     : '';
 }
 
+// Bound the package scan: `repoPath` is an UNTRUSTED external repo, and this
+// runs once per agent at dispatch. A directory with tens of thousands of
+// entries must not turn prompt rendering into a filesystem walk.
+const PY_PACKAGE_SCAN_CAP = 8;
+
+// Directory names that carry an `__init__.py` but are never the import surface
+// under test. Only consulted for the flat layout — a `src/` layout is already
+// unambiguous.
+const PY_NON_PACKAGE_DIRS = new Set(['tests', 'test', 'docs', 'doc', 'site', 'scripts', 'examples']);
+
+/**
+ * Probe a repo for a Python import surface: `{ layout, packages }`, or null
+ * when this is not a Python project.
+ *
+ * Deliberately filesystem-only. The import package name is NOT the
+ * distribution name — prompt-craft ships as `prompt-crafter` on PyPI and
+ * imports as `pcraft` — so reading `[project].name` out of pyproject.toml
+ * would name a package the agent cannot import. Directories carrying an
+ * `__init__.py` are the actual import surface, so that is what we report.
+ *
+ * Every fs call is individually guarded: an unreadable or vanished repo
+ * degrades to "no Python detected" and simply omits the section, rather than
+ * throwing out of prompt rendering and failing the whole dispatch.
+ *
+ * @param {string} [repoPath]
+ * @returns {{layout: 'src'|'flat', packages: string[]}|null}
+ */
+function detectPythonImportRoots(repoPath) {
+  if (!repoPath || typeof repoPath !== 'string') return null;
+
+  const isPython = ['pyproject.toml', 'setup.cfg', 'setup.py'].some((m) => {
+    try {
+      return existsSync(join(repoPath, m));
+    } catch {
+      return false;
+    }
+  });
+  if (!isPython) return null;
+
+  const scan = (dir) => {
+    const found = [];
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return found;
+    }
+    for (const e of entries) {
+      if (found.length >= PY_PACKAGE_SCAN_CAP) break;
+      if (!e.isDirectory() || e.name.startsWith('.') || e.name === '__pycache__') continue;
+      try {
+        if (existsSync(join(dir, e.name, '__init__.py'))) found.push(e.name);
+      } catch {
+        // unreadable child — not a package we can name
+      }
+    }
+    return found;
+  };
+
+  let hasSrc = false;
+  try {
+    hasSrc = existsSync(join(repoPath, 'src'));
+  } catch {
+    hasSrc = false;
+  }
+
+  if (hasSrc) {
+    const packages = scan(join(repoPath, 'src'));
+    if (packages.length > 0) return { layout: 'src', packages };
+  }
+
+  const packages = scan(repoPath).filter((p) => !PY_NON_PACKAGE_DIRS.has(p));
+  return { layout: 'flat', packages };
+}
+
+/**
+ * Render the Python half of the containment note. Empty string for a
+ * non-Python repo.
+ *
+ * Measured in run swarm-1787033129-beab wave 2 (prompt-craft): the repo's
+ * single shared `.venv` had the package installed EDITABLE against the main
+ * checkout, so from inside an --isolate worktree `import pcraft` resolved to
+ * `<main>/src/pcraft/__init__.py`. An agent running pytest there collected
+ * ITS tests and imported the MAIN checkout's unmodified source — its own
+ * fixes invisible to its own test run.
+ *
+ * The failure is silent and bidirectional, which is why it needs the same
+ * loud treatment as the npm sibling: a correct regression test reads as a
+ * failed fix, and a green suite proves nothing about the agent's changes.
+ * Two of five agents in that wave caught it independently; three did not and
+ * had to be corrected mid-run.
+ *
+ * Unlike the npm case there is no dispatch-time provisioning step to point
+ * at — `PYTHONPATH` is the cheapest correct repair and is what the agents
+ * who caught it arrived at by hand — so this section prescribes it directly
+ * rather than only warning.
+ *
+ * @param {string} [repoPath]
+ * @returns {string}
+ */
+function renderPythonContainment(repoPath) {
+  const py = detectPythonImportRoots(repoPath);
+  if (!py) return '';
+
+  const pkg = py.packages[0] || '<import-package>';
+  const srcRoot = py.layout === 'src' ? `${repoPath}/src` : repoPath;
+  const alsoKnown = py.packages.length > 1
+    ? `\n(This repo also exposes ${py.packages.slice(1).join(', ')} — check whichever your tests import.)\n`
+    : '';
+
+  return `
+### Python: your interpreter probably does NOT see this worktree
+
+A Python repo usually has ONE shared virtualenv with the package installed
+editable against the MAIN checkout. If so, \`import ${pkg}\` from inside this
+worktree resolves to the main checkout's source — so \`pytest\` here collects
+YOUR tests but imports code you did not edit. Your fixes become invisible to
+your own test run, in BOTH directions: a correct regression test reads as a
+failed fix, and a green suite proves nothing.
+
+Verify before trusting any result:
+
+\`\`\`
+python -c "import ${pkg},inspect,os;p=inspect.getsourcefile(${pkg});print(p);print('IN WORKTREE:',os.path.abspath(p).lower().startswith(os.getcwd().lower()))"
+\`\`\`
+${alsoKnown}
+If that prints \`IN WORKTREE: False\`, re-run everything with your own source
+first on the path, and re-check the line above before believing the result:
+
+\`\`\`
+PYTHONPATH=${srcRoot} python -m pytest -q
+\`\`\`
+
+Then re-verify every red-then-green claim you have already made, and say in
+your output summary which results were measured under the corrected path. Do
+NOT "repair" this with \`pip install\` — reinstalling the editable rewrites
+the shared venv that every sibling agent is also using, which is outside
+every domain's scope.
+`;
+}
+
 /**
  * Render the isolated-worktree setup note. Empty string when the agent runs
  * against the shared tree (non---isolate dispatch).
@@ -510,9 +652,11 @@ function renderRoadmapDigestSection(roadmapDigest) {
  * it the one-liner to verify containment, and names the ONE forbidden repair.
  *
  * @param {boolean} [isolatedWorktree]
+ * @param {string} [repoPath] — the provisioned worktree path, probed for
+ *   language-specific containment hazards (see renderPythonContainment).
  * @returns {string}
  */
-function renderWorktreeSection(isolatedWorktree) {
+function renderWorktreeSection(isolatedWorktree, repoPath) {
   if (!isolatedWorktree) return '';
   return `
 ## Isolated worktree (provisioned)
@@ -533,7 +677,7 @@ OUTSIDE the worktree (into the main checkout), STOP trusting test results and
 report it in your output summary. Do NOT "repair" resolution with
 \`npm install\` / \`npm ci\` — that can rewrite package-lock.json, which is
 outside every domain's scope.
-`;
+${renderPythonContainment(repoPath)}`;
 }
 
 /**
@@ -701,7 +845,7 @@ export function buildAuditPrompt(opts) {
     opts.ownershipClass,
     opts.domainSnapshotId,
   );
-  const worktreeSection = renderWorktreeSection(opts.isolatedWorktree);
+  const worktreeSection = renderWorktreeSection(opts.isolatedWorktree, opts.repoPath);
   const outputContract = renderAuditOutputContract();
 
   return `# Swarm Audit — ${lens.label}
@@ -792,7 +936,7 @@ export function buildAmendPrompt(opts) {
     opts.ownershipClass,
     opts.domainSnapshotId,
   );
-  const worktreeSection = renderWorktreeSection(opts.isolatedWorktree);
+  const worktreeSection = renderWorktreeSection(opts.isolatedWorktree, opts.repoPath);
   const outputContract = renderAmendOutputContract();
 
   return `# Swarm Amend — Fix Approved Findings
@@ -897,7 +1041,7 @@ export function buildFeatureAuditPrompt(opts) {
     opts.ownershipClass,
     opts.domainSnapshotId,
   );
-  const worktreeSection = renderWorktreeSection(opts.isolatedWorktree);
+  const worktreeSection = renderWorktreeSection(opts.isolatedWorktree, opts.repoPath);
   const outputContract = renderFeatureOutputContract();
 
   return `# Swarm Feature Audit
