@@ -10,8 +10,9 @@ This is the Director-facing artifact for dogfood-swarm 3. It is compiled from li
 |---|---|
 | Repo | `E:\AI\testing-os` · origin `dogfood-lab/testing-os` |
 | Shipped | **v1.10.0** (2026-07-17) · six `@dogfood-lab/*` packages on npm at 1.10.0 · `portfolio` workspace-internal |
-| `main` | **`02bf481`** (`#66` Python isolate containment) · local `main` = `origin/main` |
-| Working tree | **swarm-ready after this docs commit** — on `main`. `#64` landed as `04adf3d`; `#66` as `02bf481`. Dirty ingest indexes parked `stash@{1}`; untracked WIP (openrouter-jury.js, extra records, ESCAPE-THE-VALLEY-SWARM-2.md) parked `stash@{0}`. Do not pop those onto the save-point. |
+| `main` | **`a005148`** (ingest on top of docs lock `d4aa81c`) · local `main` = `origin/main` after pull |
+| Working tree | **swarm-ready after fence-tag hygiene** — on `main`. `#64` landed as `04adf3d`; `#66` as `02bf481`; advisor lock `d4aa81c`. Dirty ingest indexes parked `stash@{1}`; untracked WIP parked `stash@{0}`. Do not pop those onto the save-point. |
+| Domain-map foil | Interval file `2026-08-25-interval-01a03b2e.md` still talks about a 9-domain / next-cycle-kickoff map. **Live GitHub #67 and the artifacts on disk win** — inherit the 5127 freeze; build a `coordinator` class in Stage A. |
 | Node | local **v22.22.3** · `engines: >=22` · CI matrix 22+24 · Node 25 is **EOL** |
 | `swarm doctor` | PASS (schema v10, git 2.54, hardlink-capable) |
 | Control plane | `swarms/control-plane.db` ~9.6 MB · schema v10 |
@@ -87,8 +88,8 @@ Trajectory notes still live (not retired this session):
 
 These are the only forward-looking lines in this file. Each is a verb an Executor can run. None is a schedule.
 
-1. **Preflight.** Ritual steps 0–2 on this HEAD. `swarm doctor` already PASS; still run it. Do not pop `stash@{0}` / `stash@{1}` onto the tree before init — `swarm init` refuses any porcelain.
-2. **Init a new run** from this `main` (`02bf481` plus this docs commit): `node packages/dogfood-swarm/cli.js init E:\AI\testing-os --seed-from-roadmap=swarm-1784091637-5127`. Advisor authorization is YES. Do not touch 5127's phase.
+1. **Preflight.** Ritual 0–2. Notes re-affirmed; doctor PASS; drift/pins green after fence tags. Do not pop `stash@{0}` / `stash@{1}` — `swarm init` refuses porcelain.
+2. **Init a new run** from this `main` (`a005148`): `node packages/dogfood-swarm/cli.js init E:\AI\testing-os --seed-from-roadmap=swarm-1784091637-5127`. Director authorization is YES. Do not touch 5127's phase.
 3. **Freeze the 5127 map.** Review domains against the table above. Never reclassify `docs` to `shared`. Stage A product work is a `coordinator` class for #67, not a workaround.
 4. **Stage A focus.** `dispatch … health-audit-a --isolate`. In-scope, not discoveries: #67 `coordinator` class, #65 surface `fixes_skipped` on `status`/`receipt`, prove-red mutants for both.
 5. **Other packages.** Audit backend/docs/ci-tooling; file real CRIT/HIGH; polish notes. Do not start a new evidence-store product layer in this swarm.

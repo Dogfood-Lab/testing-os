@@ -26,7 +26,7 @@ Measured again 2026-08-25 after advisor merge:
 
 CLI:
 
-```
+```bash
 node packages/dogfood-swarm/cli.js
 ```
 
@@ -38,7 +38,7 @@ Housekeeping ritual (`docs/housekeeping-ritual.md`) steps 0–2 before init. `sw
 
 ## 1. Init
 
-```
+```bash
 git fetch origin
 git checkout main
 git pull --rebase origin main
@@ -65,7 +65,7 @@ Do **not** accept auto-detect. Reproduce the 5127 map:
 
 Leave `dogfood/**` and `packages/*/README.md` unowned until a wave needs them.
 
-```
+```bash
 node packages/dogfood-swarm/cli.js domains <run-id> --freeze
 ```
 
@@ -73,7 +73,7 @@ node packages/dogfood-swarm/cli.js domains <run-id> --freeze
 
 ## 2. Wave 1 — `health-audit-a`
 
-```
+```bash
 node packages/dogfood-swarm/cli.js dispatch <run-id> health-audit-a --isolate
 ```
 
