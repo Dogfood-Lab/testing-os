@@ -10,8 +10,9 @@ This is the Director-facing artifact for dogfood-swarm 3. It is compiled from li
 |---|---|
 | Repo | `E:\AI\testing-os` · origin `dogfood-lab/testing-os` |
 | Shipped | **v1.10.0** (2026-07-17) · six `@dogfood-lab/*` packages on npm at 1.10.0 · `portfolio` workspace-internal |
-| `main` | **`a005148`** (ingest on top of docs lock `d4aa81c`) · local `main` = `origin/main` after pull |
-| Working tree | **swarm-ready after fence-tag hygiene** — on `main`. `#64` landed as `04adf3d`; `#66` as `02bf481`; advisor lock `d4aa81c`. Dirty ingest indexes parked `stash@{1}`; untracked WIP parked `stash@{0}`. Do not pop those onto the save-point. |
+| `main` | **`ba5f0cc`** (fence-tag hygiene on top of ingest `a005148` / docs lock `d4aa81c`) · local `main` **ahead 1** of origin |
+| This swarm | **`swarm-1787700871-d537`** · phase `initializing` · domains **FROZEN** (5127 globs, byte-identical) · save point `swarm-save-1787700871` |
+| Working tree | on `main`. `#64` `04adf3d`; `#66` `02bf481`. Stashes still parked (`stash@{0}` WIP, `stash@{1}` ingest indexes). Do not pop them. |
 | Domain-map foil | Interval file `2026-08-25-interval-01a03b2e.md` still talks about a 9-domain / next-cycle-kickoff map. **Live GitHub #67 and the artifacts on disk win** — inherit the 5127 freeze; build a `coordinator` class in Stage A. |
 | Node | local **v22.22.3** · `engines: >=22` · CI matrix 22+24 · Node 25 is **EOL** |
 | `swarm doctor` | PASS (schema v10, git 2.54, hardlink-capable) |
@@ -88,10 +89,10 @@ Trajectory notes still live (not retired this session):
 
 These are the only forward-looking lines in this file. Each is a verb an Executor can run. None is a schedule.
 
-1. **Preflight.** Ritual 0–2. Notes re-affirmed; doctor PASS; drift/pins green after fence tags. Do not pop `stash@{0}` / `stash@{1}` — `swarm init` refuses porcelain.
-2. **Init a new run** from this `main` (`a005148`): `node packages/dogfood-swarm/cli.js init E:\AI\testing-os --seed-from-roadmap=swarm-1784091637-5127`. Director authorization is YES. Do not touch 5127's phase.
-3. **Freeze the 5127 map.** Review domains against the table above. Never reclassify `docs` to `shared`. Stage A product work is a `coordinator` class for #67, not a workaround.
-4. **Stage A focus.** `dispatch … health-audit-a --isolate`. In-scope, not discoveries: #67 `coordinator` class, #65 surface `fixes_skipped` on `status`/`receipt`, prove-red mutants for both.
+1. **Preflight.** Done this session. Notes re-affirmed; doctor PASS; E: ~1.9 TB free; control-plane.db 9.6 MB; 5127 briefs 85.8 MB (known); `swarm clean 5127` dry-run 0 worktrees. Drift 21/21 after fence tags; pin unused-allowlist [].
+2. **Init.** Done: `swarm-1787700871-d537` seeded from 5127 sequence 7. 5127 still `test` / 0 open. Save point `swarm-save-1787700871` @ `ba5f0cc`.
+3. **Freeze.** Done. Auto-detect `tests` removed; swarm-cp-{core,verbs,tests} added. Globs match 5127. Never reclassify `docs` to `shared`.
+4. **Stage A dispatch (next verb).** `node packages/dogfood-swarm/cli.js dispatch swarm-1787700871-d537 health-audit-a --isolate`. In-scope: #67 `coordinator` class, #65 surface `fixes_skipped`, prove-red mutants. Not a 9-domain map.
 5. **Other packages.** Audit backend/docs/ci-tooling; file real CRIT/HIGH; polish notes. Do not start a new evidence-store product layer in this swarm.
 6. **Software (ci-tooling).** Take checkout 7.0.1 + Vitest 4.1.11. HOLD TS 7, Vitest 5, js-yaml 5. better-sqlite3 13 is a post-health bump (N-API). CI stays Node 22+24.
 7. **Leave this artifact.** After each collected wave, recompile `swarm roadmap compile <new-run-id>` so the published trajectory tells the truth. Do not write volatile wave numbers into `HANDOFF.md`.
