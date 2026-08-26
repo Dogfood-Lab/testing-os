@@ -88,26 +88,76 @@ const ROOT = process.env.FINDINGS_REPO_ROOT
   ? resolve(process.env.FINDINGS_REPO_ROOT)
   : resolve(__dirname, '../..');
 
+/**
+ * Parse argv into { command, positional, flags }.
+ *
+ * F-720be224: reject unrecognized `--*` tokens at parse time (ERROR [BAD_ARGS]
+ * → exit 2) instead of silently absorbing typos like `--writ` / `--repso` /
+ * `--acter` into the flags bag. Mirrors report/cli.js valueFlags+booleans and
+ * the sibling F-e0bcbc47 / F-418f507c seal in this domain. Known flags keep
+ * equals-form (`--actor=mike`) and boolean presence (`--write`).
+ */
 function parseArgs(argv) {
   const args = argv.slice(2);
   const command = args[0];
   const positional = [];
   const flags = {};
 
+  // Boolean flags take no value; value flags consume the next token (or accept
+  // `--flag=value`). Union of every flag this CLI documents / reads.
+  const booleans = new Set([
+    'all', 'write', 'dry-run', 'json', 'include-fixtures', 'help',
+  ]);
+  const valueFlags = new Set([
+    'repo', 'status', 'surface', 'issue-kind', 'transfer-scope',
+    'grep', 'text', 'file', 'record', 'actor', 'reason', 'reject-reason',
+    'notes', 'set', 'into', 'policy', 'execution-mode', 'mode',
+  ]);
+
   for (let i = 1; i < args.length; i++) {
     const arg = args[i];
-    if (arg.startsWith('--')) {
-      const eqIdx = arg.indexOf('=');
-      if (eqIdx !== -1) {
-        flags[arg.slice(2, eqIdx)] = arg.slice(eqIdx + 1);
-      } else if (i + 1 < args.length && !args[i + 1].startsWith('--')) {
-        flags[arg.slice(2)] = args[++i];
-      } else {
-        flags[arg.slice(2)] = true;
-      }
-    } else {
+    if (!arg.startsWith('--')) {
       positional.push(arg);
+      continue;
     }
+
+    let name;
+    let inlineValue;
+    const eqIdx = arg.indexOf('=');
+    if (eqIdx !== -1) {
+      name = arg.slice(2, eqIdx);
+      inlineValue = arg.slice(eqIdx + 1);
+    } else {
+      name = arg.slice(2);
+    }
+
+    if (!booleans.has(name) && !valueFlags.has(name)) {
+      // F-720be224 — typo'd flags must fail loud, not dry-run / unfilter /
+      // mis-attribute under a silent absorption.
+      const err = new Error(`unknown flag "--${name}"`);
+      err.code = 'BAD_ARGS';
+      err.hint = 'run `dogfood findings --help` for usage';
+      throw err;
+    }
+
+    if (booleans.has(name)) {
+      flags[name] = true;
+      continue;
+    }
+
+    if (inlineValue !== undefined) {
+      flags[name] = inlineValue;
+      continue;
+    }
+    const next = args[i + 1];
+    if (next === undefined || next.startsWith('--')) {
+      const err = new Error(`flag "--${name}" expects a value`);
+      err.code = 'BAD_ARGS';
+      err.hint = `Pass a value: --${name} <value>. Run \`dogfood findings --help\` for usage.`;
+      throw err;
+    }
+    flags[name] = next;
+    i++;
   }
 
   return { command, positional, flags };
@@ -252,7 +302,8 @@ function handleArtifactReview(type, sub, positional, flags) {
 
   const id = positional[1];
   if (!id) {
-    console.error(`Usage: dogfood findings ${type === 'doctrine' ? 'doctrine' : type + 's'} ${sub} <id> --actor <name> [--reason "..."]`);
+    // F-58316c9f — Usage must match runtime: actor defaults to 'operator'.
+    console.error(`Usage: dogfood findings ${type === 'doctrine' ? 'doctrine' : type + 's'} ${sub} <id> [--actor <name>] (default: operator) [--reason "..."]`);
     process.exit(2);
   }
   const actor = flags.actor || 'operator';
@@ -289,14 +340,14 @@ Commands:
   derive               Derive candidate findings from records
   explain <finding_id> Show derivation provenance for a finding
   rules                List all derivation rules
-  accept <id>          Accept a finding (--actor, --reason)
-  reject <id>          Reject a finding (--actor, --reason, --reject-reason)
-  review <id>          Move finding to reviewed (--actor)
-  edit <id>            Edit finding fields (--actor, --set field=value).
+  accept <id>          Accept a finding ([--actor <name>] default: operator, --reason)
+  reject <id>          Reject a finding ([--actor <name>] default: operator, --reason, --reject-reason)
+  review <id>          Move finding to reviewed ([--actor <name>] default: operator)
+  edit <id>            Edit finding fields ([--actor <name>] default: operator, --set field=value).
                        Editable fields: ${EDITABLE_FIELDS.join(', ')}.
-  merge <ids...>       Merge findings (--into <id>, --actor, --reason)
-  reopen <id>          Reopen a rejected/accepted finding (--actor, --reason)
-  invalidate <id>      Invalidate an accepted finding (--actor, --reason)
+  merge <ids...>       Merge findings (--into <id>, [--actor <name>] default: operator, --reason)
+  reopen <id>          Reopen a rejected/accepted finding ([--actor <name>] default: operator, --reason)
+  invalidate <id>      Invalidate an accepted finding ([--actor <name>] default: operator, --reason)
   history <id>         Show review history for a finding (--json)
   queue                Show review queue (--json)
 
@@ -719,7 +770,8 @@ Structured output:
   if (['accept', 'reject', 'review', 'reopen', 'invalidate'].includes(command)) {
     const findingId = positional[0];
     if (!findingId) {
-      console.error(`Usage: dogfood findings ${command} <finding_id> --actor <name> [--reason "..."]`);
+      // F-58316c9f — Usage must match runtime: actor defaults to 'operator'.
+      console.error(`Usage: dogfood findings ${command} <finding_id> [--actor <name>] (default: operator) [--reason "..."]`);
       process.exit(2);
     }
     const actor = flags.actor || 'operator';
@@ -745,7 +797,8 @@ Structured output:
   if (command === 'edit') {
     const findingId = positional[0];
     if (!findingId) {
-      console.error('Usage: dogfood findings edit <finding_id> --actor <name> --set field=value [--set field=value]');
+      // F-58316c9f — Usage must match runtime: actor defaults to 'operator'.
+      console.error('Usage: dogfood findings edit <finding_id> [--actor <name>] (default: operator) --set field=value [--set field=value]');
       console.error(`Editable fields: ${EDITABLE_FIELDS.join(', ')}`);
       process.exit(2);
     }
@@ -789,7 +842,8 @@ Structured output:
     const actor = flags.actor || 'operator';
     const reason = flags.reason;
     if (sourceIds.length < 2 || !canonicalId) {
-      console.error('Usage: dogfood findings merge <id1> <id2> [<id3>...] --into <canonical_id> --actor <name> --reason "..."');
+      // F-58316c9f — Usage must match runtime: actor defaults to 'operator'.
+      console.error('Usage: dogfood findings merge <id1> <id2> [<id3>...] --into <canonical_id> [--actor <name>] (default: operator) --reason "..."');
       process.exit(2);
     }
     const result = performMerge(ROOT, { sourceIds, canonicalId, actor, reason });
@@ -1331,12 +1385,16 @@ main().catch(err => {
   // dumping the raw Error/stack. The raw stack is a triage aid, not a default —
   // it stays behind DEBUG so a mis-rooted checkout or an un-caught throw gives
   // the operator `ERROR [<CODE>]:` + a next step, not a bare Node stack.
+  // F-720be224: parseArgs attaches err.hint for BAD_ARGS so the Next line can
+  // point straight at `dogfood findings --help` instead of the generic root hint.
   const code = err && err.code ? err.code : 'UNEXPECTED';
   const message = err && err.message ? err.message : String(err);
   console.error(`ERROR [${code}]: ${message}`);
   console.error(
-    '  Next: run from the testing-os repo root, or set FINDINGS_REPO_ROOT to it; ' +
-    'run `dogfood findings --help` for usage. Re-run with DEBUG=1 for the stack.'
+    '  Next: ' + (err && err.hint
+      ? err.hint
+      : 'run from the testing-os repo root, or set FINDINGS_REPO_ROOT to it; ' +
+        'run `dogfood findings --help` for usage. Re-run with DEBUG=1 for the stack.')
   );
   if (process.env.DEBUG && err && err.stack) {
     console.error(err.stack);
