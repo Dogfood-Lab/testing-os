@@ -275,9 +275,9 @@ Return to Phase 1 for a fresh audit against the remediated codebase.
 
 - Each cycle is a clean audit — agents do not carry forward prior findings.
 - **Checkpoint with user every 3 iterations** to confirm direction.
-- **Stage A:** Continue until audit returns 0 CRITICAL + 0 HIGH. Then advance to Stage B.
-- **Stage B:** Run one proactive audit cycle. Review findings. Then advance to Stage C.
-- **Stage C:** Amend the proactive findings through the humanization lens. When complete, proceed to Stage D.
+- **Stage A:** Continue until audit returns 0 CRITICAL + 0 HIGH. Then `swarm advance` to Stage B (`health-audit-b`).
+- **Stage B:** Run one proactive audit cycle. Review findings. **`swarm advance` is not how Stage C starts.** Live advancement law (`lib/advance.js`) only routes `health-audit-b` → `health-amend-b` when open CRITICAL/HIGH remain; otherwise it promotes to `health-audit-c` and **skips** the humanization amend. Stage B findings are usually MED/LOW. That skip is a verb fact, not a waiver of Stage C.
+- **Stage C:** Amend the proactive findings through the humanization lens. After approve, dispatch it: `swarm dispatch <run-id> health-amend-b --isolate --skip-verify`. Do not type `swarm advance` and expect `health-amend-b`. When that amend is complete, proceed to Stage D.
 - **Stage D:** Run one visual-polish audit cycle, then a visual-amend wave. When complete = **clean bill of health**. Proceed to Feature Pass.
 
 ---
@@ -652,7 +652,7 @@ HEALTH PASS — STAGE B (Proactive Health)
 10. [ ] Present proactive findings to user for approval
 
 HEALTH PASS — STAGE C (Humanization)
-11. [ ] Launch 5 amend agents to fix proactive findings with UX emphasis
+11. [ ] After approve, `swarm dispatch <run-id> health-amend-b --isolate --skip-verify` — NOT `swarm advance` (advance skips this amend when only MED/LOW are open)
 12. [ ] Focus: error messages, reconnection feedback, loading states, state persistence, accessibility
 13. [ ] Verify build passes
 14. [ ] Stage C complete — proceed to Stage D
