@@ -9,6 +9,8 @@
  * and let status/receipt/cli read it back after collect's stdout scrolls past.
  */
 
+import { escapeReasonForDisplay } from './escape-reason.js';
+
 export const FIXES_SKIPPED_KV_PREFIX = 'fixes_skipped:wave:';
 
 /** Cap on distinct finding_ids shown in status/receipt sample lines. */
@@ -33,14 +35,15 @@ export function rollupFixesSkipped(entries) {
 
   for (const e of entries) {
     if (!e || !e.finding_id || !e.reason) continue;
-    by_reason[e.reason] = (by_reason[e.reason] || 0) + 1;
+    const reason = escapeReasonForDisplay(e.reason);
+    by_reason[reason] = (by_reason[reason] || 0) + 1;
     if (sample_ids.length < SAMPLE_ID_CAP && !seenIds.has(e.finding_id)) {
       seenIds.add(e.finding_id);
       sample_ids.push(e.finding_id);
     }
     const domain = e.domain || '(unknown)';
     if (!byDomain.has(domain)) byDomain.set(domain, []);
-    const item = { finding_id: e.finding_id, reason: e.reason };
+    const item = { finding_id: e.finding_id, reason };
     if (e.status) item.status = e.status;
     byDomain.get(domain).push(item);
   }

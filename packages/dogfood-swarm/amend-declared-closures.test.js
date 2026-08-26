@@ -143,7 +143,7 @@ describe('amend collect — fixes[] declared closures (swarm-1784601601-bd4a gap
 
   afterEach(() => {
     closeDb(dbPath);
-    rmSync(tmpDir, { recursive: true, force: true });
+    try { rmSync(tmpDir, { recursive: true, force: true }); } catch { /* Windows lock lag */ }
   });
 
   it('transitions fixes[]-named approved findings to fixed with declared-closure bookkeeping', () => {
