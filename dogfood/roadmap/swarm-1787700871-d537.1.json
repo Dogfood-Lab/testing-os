@@ -1,0 +1,1549 @@
+{
+  "run_id": "swarm-1787700871-d537",
+  "repo": "dogfood-lab/testing-os",
+  "compiled_from": {
+    "commit_sha": "ba5f0cc9ef5fc60e76c58952601e0d52e4d82e29"
+  },
+  "open_summary": {
+    "open": 11,
+    "deferred": 4,
+    "approved": 0
+  },
+  "grandfathered_drain": {
+    "frozen_total": 256,
+    "drained": 0,
+    "outstanding": [
+      {
+        "id": "F-002109-003",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-002109-016",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-00c35ce7",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-01458fdb",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-014c22f0",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-017409f3",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-019d40b2",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-058f4d54",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-07ab7f86",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-084568-005",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-091578-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-091578-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-091578-010",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-091578-012",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-091578-034",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-0a888394",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-0e55b5ca",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-0f9e4077",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-112c88a4",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-11f0e453",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-129818-013",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-129818-014",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-130dee59",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-15fc601e",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-16bab049",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-178610-005",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-178611-015",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-18a5579c",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1907b2bc",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-197de6dd",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1997e7c8",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-19f86582",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1a094f15",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1ab3fd1f",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1b9456a0",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1c0188c9",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1c99c064",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1ca7b818",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1d972160",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1de6e6ca",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1f7f9de8",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-1f8fd647",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-20bde286",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-21240958",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-2130e264",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-246817-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-246817-003",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-246817-005",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-246817-006",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-252713-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-252713-016",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-252713-017",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-252714-058",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-252714-061",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-26179cb8",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-2750c4e8",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-29134790",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-2965699b",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-2c6d825d",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-35486d38",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-362d4131",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-375053-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-375053-005",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-375053-006",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3771ff90",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3a098ded",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3be85850",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3bfc2885",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3c489002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3c8a62f1",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3d2e6edf",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3ec5b54f",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3ee5d050",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-3ef6b03e",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-4036ae25",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-41379e68",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-41872706",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-4220149f",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-42e57a77",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-463c7179",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-482629a9",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-48672d32",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-4acd28d8",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-4ba6036b",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-4fa7e644",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-50558cb2",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-508a5675",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-51fa8e13",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-527dc73e",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-54cb35f4",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-54e5fde7",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-57a0c0ad",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-5811d6df",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-59f22202",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-5a251061",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-5c562913",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-5ca6c91a",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-5d126106",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-5dabf101",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-5eafee44",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-5fd3f832",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-60309675",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-6042850f",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-60a257a6",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-60a31e29",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-60f0c4f5",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-62e467be",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-65d4d6dd",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-67908e23",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-67ddcd02",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-6859e492",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-68818085",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-693631-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-693631-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-6a78ffdd",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-6a8a98d6",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-6c5ee5dd",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-6cfe4d01",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-6d0e966c",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-6fff020d",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-70338558",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-703e5eac",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-721047-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-721047-004",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-721047-010",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-742440-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-742440-003",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-7545196d",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-755d0f3f",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-7881db1c",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-7970a30b",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-7b97fbd4",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-7c3e91a4",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-7cc809c4",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-7ce07baa",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-7d2f60e0",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-7e2dbf43",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-80beae0e",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-82429f90",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-827321-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-827321-010",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-827321-030",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-827321-035",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-832f8547",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-833dff6f",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-8451abe4",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-84b11aa9",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-853dbce9",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-87dc7b35",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-87dfc8e6",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-882513-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-88b6ba71",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-88fb37ff",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-89b7dcd5",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-8d355b64",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-8e72d0de",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-8efffdd1",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-916867-005",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-937733ee",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-950fe296",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-99aa42bc",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-9a65b10c",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-9b53dc33",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-9c41a2b7",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-B-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-BACKEND-003",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-CI-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-CI-SELF-DOGFOOD-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-FA-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-FIND-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-FIND-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-PIPELINE-011",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-PORT-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-SWARMCP-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-SWARMCP-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-SWARMCP-004",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-BACK-003",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-BACK-005",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-CI-002",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-CI-005",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-CI-006",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-CI-007",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-CI-008",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-CI-010",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-CI-011",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-W1-CI-032",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-WAVE29-001",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a2e40a09",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a35340ef",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a37d36f5",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a52776d5",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a5f6b585",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a7eb2d09",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a80acc6d",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a853fcaa",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a85b7e84",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a89f89f7",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-a8c0cf04",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-aa32371b",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-aa67ea9a",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-aba6fa9d",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-ad3004f4",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-ad540b83",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-ad98b5ac",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-ae195c1d",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-afe6511b",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-b04473d5",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-b22182da",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-b27d6c0c",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-b4dbdc52",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-b5cd4274",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-b66306c5",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-b68c7e52",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-b721038e",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-b9a8f684",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-bbbe2e1f",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-bc123f41",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-be8db3ee",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-c0348ff6",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-c03b121c",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-c5eb20ef",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-c63da27b",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-ca495e53",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-caeeacc3",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-cca3ed17",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-cf8b7a6c",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-d12da6ea",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-d2025a4d",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-d4bcf5d0",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-d535bde5",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-d6cfc2ad",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-da670b34",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-dac7e08c",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-de02ea22",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-e003b1fb",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-e0fb3761",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-e1d45d27",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-e4a24655",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-e7369293",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-ec9622fd",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-ec97601a",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-efe4f893",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-efe53969",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-f0339e12",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-f05363e2",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-f0c537bf",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-f2dc3caf",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-f33081a2",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-f35352cb",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-f3c729eb",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-f405dbd9",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-f8952a50",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-fa047531",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-fa23cc37",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-fc1bbffa",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      },
+      {
+        "id": "F-feb78e7b",
+        "owner": "coordinator",
+        "revalidate_by": "2026-10-14"
+      }
+    ]
+  },
+  "recurrence_stats": {
+    "top_recurring": [
+      {
+        "fingerprint": "a160dfa65dd55e9698420fa1",
+        "description": "Workflow file count violates org rule. This repo contains 4 workflow files (ci.yml, docs-integrity.yml, release.yml, pages.yml) but org rule specifies max 2 per repo. docs-integrity.yml is intentionally separate to avoid running full 2-node matrix on doc-only changes (cost saving), and pages.yml handles GitHub Pages deployment, but the total still exceeds the stated limit.",
+        "run_count": 2,
+        "severity": "MEDIUM",
+        "first_seen": "2026-07-18T12:07:34Z",
+        "last_seen": "2026-08-04T08:22:42Z"
+      }
+    ],
+    "recurrence_rate": {
+      "total_runs": 26,
+      "distinct_fingerprints": 2238,
+      "recurring_fingerprints": 1,
+      "recurrence_rate": 0.00044682752457551384,
+      "window_days": null
+    }
+  },
+  "attention": {
+    "advisory": true,
+    "items": [
+      {
+        "file": "scripts/check-finding-regression-pins.mjs",
+        "score": 0.0034968056605870824,
+        "components": {
+          "churn": 0.010651808012249882,
+          "recency": 0.3282828282828283,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/lib/bounded-json-read.js",
+        "score": 0.0022846299005576404,
+        "components": {
+          "churn": 0.0034269448508364607,
+          "recency": 0.6666666666666666,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/stageA-domains-ownership-validation.test.js",
+        "score": 0.0016506227561503945,
+        "components": {
+          "churn": 0.0025533070759201416,
+          "recency": 0.6464646464646464,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "site/src/content/docs/handbook/cli-reference.md",
+        "score": 0.00144702198279212,
+        "components": {
+          "churn": 0.001454367272044872,
+          "recency": 0.9949494949494949,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/lib/domains.js",
+        "score": 0.0014233813206553012,
+        "components": {
+          "churn": 0.0021679192422288432,
+          "recency": 0.6565656565656566,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/lib/error-render.js",
+        "score": 0.0014096887075642237,
+        "components": {
+          "churn": 0.0021145330613463356,
+          "recency": 0.6666666666666666,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "swarms/PROTOCOL.md",
+        "score": 0.0012188724318738552,
+        "components": {
+          "churn": 0.0012635431492723735,
+          "recency": 0.9646464646464646,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/cli.js",
+        "score": 0.0008306707399516578,
+        "components": {
+          "churn": 0.0025303508693912038,
+          "recency": 0.3282828282828283,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/report/status.js",
+        "score": 0.0008256303270416658,
+        "components": {
+          "churn": 0.0025948381707023784,
+          "recency": 0.3181818181818182,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/commands/doctor.js",
+        "score": 0.0008162226288031191,
+        "components": {
+          "churn": 0.00252518875785965,
+          "recency": 0.3232323232323232,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/amend-declared-closures.test.js",
+        "score": 0.0008109712829276063,
+        "components": {
+          "churn": 0.0025487668892010483,
+          "recency": 0.3181818181818182,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/findings/lib/safe-yaml-load.js",
+        "score": 0.0008031190145892096,
+        "components": {
+          "churn": 0.0025240883315660874,
+          "recency": 0.3181818181818182,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/commands/status.js",
+        "score": 0.0007728148431666019,
+        "components": {
+          "churn": 0.001177056453438363,
+          "recency": 0.6565656565656566,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/findings/cli.js",
+        "score": 0.0007202586069141067,
+        "components": {
+          "churn": 0.0010970092628384087,
+          "recency": 0.6565656565656566,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/lib/templates.js",
+        "score": 0.0006511831519221409,
+        "components": {
+          "churn": 0.0020145978762591238,
+          "recency": 0.3232323232323232,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/commands/verify.js",
+        "score": 0.000583257965154254,
+        "components": {
+          "churn": 0.0017766934938544968,
+          "recency": 0.3282828282828283,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/verify/validators/policy.js",
+        "score": 0.0005576557546215098,
+        "components": {
+          "churn": 0.0017526323716676024,
+          "recency": 0.3181818181818182,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/persist-results.js",
+        "score": 0.0005161948355639584,
+        "components": {
+          "churn": 0.0015485845066918753,
+          "recency": 0.3333333333333333,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/commands/receipt.js",
+        "score": 0.00042816269025033047,
+        "components": {
+          "churn": 0.0012844880707509915,
+          "recency": 0.3333333333333333,
+          "fragmentation": 1
+        }
+      },
+      {
+        "file": "packages/dogfood-swarm/dispatch-prompt-schema.test.js",
+        "score": 0.0002910722280639197,
+        "components": {
+          "churn": 0.0009147984310580334,
+          "recency": 0.3181818181818182,
+          "fragmentation": 1
+        }
+      }
+    ]
+  },
+  "compiled_at": "2026-08-25T23:34:33.000Z",
+  "operator_notes": [
+    {
+      "kind": "theme",
+      "text": "STANDING ORDER — Releases are waypoints. The audit is designed to always find something, so when the bump is due: stop, publish with a version bump, queue the tail, keep the run open. A spotless audit is never the bar for shipping.",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "theme",
+      "text": "STANDING ORDER — The housekeeping ritual (docs/housekeeping-ritual.md) runs at the start of every swarm session and after every release: revisit these notes first, delete stale exemptions, drain frozen debt on cadence, keep wave briefs on their diet, glance the fleet.",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "invariant",
+      "text": "STANDING ORDER — The grandfathered pin manifest only shrinks: additions are forbidden, and every drain recomputes the content hash in the same commit.",
+      "enforced_by": "scripts/check-finding-regression-pins.mjs",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "theme",
+      "text": "STANDING ORDER — Think in solutions, not problems. Sessions arrive with the fix or the plan; a problem report without a proposed path is half a report.",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "theme",
+      "text": "STANDING ORDER — This repo is being built up to test the other repos. Every feature must serve that eventual fleet use; the surfaces other repos touch (dispatch, badges, onboarding, the dashboard) stay first-class.",
+      "expires": "2027-07-18"
+    },
+    {
+      "kind": "theme",
+      "text": "TRAJECTORY — Build up the dashboard with more visual components that represent the data in useful ways: trend lines over time, drain-meter progress, ledger movement between compiles, fleet freshness. Each swarm cycle should move this visibly. Retire this note when the Director calls the dashboard done.",
+      "expires": "2026-10-16"
+    },
+    {
+      "kind": "open-question",
+      "text": "TRAJECTORY — Fold environment health-checks (the claude-guardian job: disk free, log and control-plane bloat, worktree residue) into swarm doctor's preflight. Direction chosen: extend doctor, do not fork the guardian repo. Retire this note when the doctor extension ships.",
+      "expires": "2026-10-16"
+    }
+  ],
+  "expired_notes": [],
+  "drain_queue": {
+    "entries": [],
+    "overdue_ids": []
+  },
+  "notesPath": "dogfood/roadmap-notes.json",
+  "sequence": 1,
+  "content_hash": "efdf93c91ea745b8c5cfbebee324c18398de4ab9f121fe1c37aaa525565bd544"
+}

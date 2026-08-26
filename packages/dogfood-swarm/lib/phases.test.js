@@ -18,7 +18,7 @@ import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { AUDIT_PHASES, AMEND_PHASES, ALL_PHASES, renderPhaseList, renderPhaseColumns } from './phases.js';
+import { AUDIT_PHASES, AMEND_PHASES, ALL_PHASES, RUN_STATUSES, isDispatchablePhase, renderPhaseList, renderPhaseColumns } from './phases.js';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const COMMANDS_DIR = join(__dirname, '..', 'commands');
@@ -40,6 +40,16 @@ describe('phases.js — the canonical ten-phase enumeration', () => {
 
   it('no phase name is duplicated within or across AUDIT_PHASES/AMEND_PHASES', () => {
     assert.equal(new Set(ALL_PHASES).size, ALL_PHASES.length);
+  });
+
+  it('test/treatment/complete are run statuses, not dispatchable phases', () => {
+    assert.deepEqual(RUN_STATUSES, ['test', 'treatment', 'complete']);
+    for (const s of RUN_STATUSES) {
+      assert.equal(isDispatchablePhase(s), false, `${s} must not be dispatchable`);
+      assert.equal(ALL_PHASES.includes(s), false);
+    }
+    assert.equal(isDispatchablePhase('feature-audit'), true);
+    assert.equal(isDispatchablePhase('feature-execute'), true);
   });
 
   it('renderPhaseList() is the comma-joined flat enumeration', () => {

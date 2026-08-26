@@ -90,6 +90,7 @@ import { queryRecurringFindings, queryFindingRecurrenceRate } from '../queries/c
 import { computeAttentionScores } from './attention.js';
 import { compileAuthoredDrainState, compileGrandfatherManifestDrainState } from './drain.js';
 import { logStage } from '../log-stage.js';
+import { toRfc3339Utc } from '../persist/sqlite-datetime.js';
 
 /**
  * F-00c2b7fd: compileGrandfatherManifestDrainState/compileAuthoredDrainState
@@ -234,10 +235,19 @@ export function compileRoadmap(db, runId, opts = {}) {
     // (dogfood-roadmap.schema.json's own description: "Mirrors
     // queryRecurringFindings()'s actual return shape... rather than
     // redefining it independently") — renamed from this field's
-    // pre-Amendment-3 `recurring_findings` name, same query, same shape.
+    // pre-Amendment-3 `recurring_findings` name, same query, same keys.
+    // first_seen/last_seen are converted at this boundary: the query
+    // returns SQLite `datetime('now')` (`YYYY-MM-DD HH:MM:SS`, unmarked
+    // UTC) because `swarm trends` prints that shape, but the schema
+    // constrains those two fields to format:date-time. Same helper the
+    // persist export path already uses (lib/persist/sqlite-datetime.js).
     // `recurrence_rate` is additive (the section is additionalProperties:
     // true) — kept because `swarm trends` already surfaces both together.
-    top_recurring: queryRecurringFindings(db),
+    top_recurring: queryRecurringFindings(db).map((row) => ({
+      ...row,
+      first_seen: toRfc3339Utc(row.first_seen),
+      last_seen: toRfc3339Utc(row.last_seen),
+    })),
     recurrence_rate: queryFindingRecurrenceRate(db),
   };
 

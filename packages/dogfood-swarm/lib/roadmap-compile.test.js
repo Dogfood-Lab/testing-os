@@ -164,6 +164,22 @@ describe('compileRoadmap — T1 composed artifact (F-874c0683)', () => {
     assert.equal(shared.run_count, 2);
   });
 
+  it('recurrence_stats.top_recurring first_seen/last_seen are RFC 3339 UTC, not SQLite datetime', () => {
+    const db = openMemoryDb();
+    db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, status, created_at) VALUES ('run-iso-a', 'org/repo', '/tmp/r', ?, 'feature-audit', '2026-06-01 00:00:00')`).run('c'.repeat(40));
+    db.prepare(`INSERT INTO runs (id, repo, local_path, commit_sha, status, created_at) VALUES ('run-iso-b', 'org/repo', '/tmp/r', ?, 'feature-audit', '2026-06-05 00:00:00')`).run('d'.repeat(40));
+    const wA = Number(db.prepare(`INSERT INTO waves (run_id, phase, wave_number, status) VALUES ('run-iso-a', 'feature-audit', 1, 'collected')`).run().lastInsertRowid);
+    const wB = Number(db.prepare(`INSERT INTO waves (run_id, phase, wave_number, status) VALUES ('run-iso-b', 'feature-audit', 1, 'collected')`).run().lastInsertRowid);
+    seedFinding(db, 'run-iso-a', { id: 'F-iso', fp: 'fp-iso', status: 'new', wave: wA });
+    seedFinding(db, 'run-iso-b', { id: 'F-iso', fp: 'fp-iso', status: 'new', wave: wB });
+
+    const artifact = compileRoadmap(db, 'run-iso-a', {});
+    const shared = artifact.recurrence_stats.top_recurring.find((r) => r.fingerprint === 'fp-iso');
+    assert.ok(shared, 'shared fingerprint must appear in top_recurring');
+    assert.equal(shared.first_seen, '2026-06-01T00:00:00Z');
+    assert.equal(shared.last_seen, '2026-06-05T00:00:00Z');
+  });
+
   it('is a pure function of its inputs — repeated same-process calls with fixed `now` produce byte-identical JSON (same-process stability; the stronger cross-process proof is F-feeaef78)', () => {
     const db = openMemoryDb();
     const { runId, w1 } = seedBasicRun(db);

@@ -2,16 +2,16 @@
 
 This is the Director-facing artifact for dogfood-swarm 3. It is compiled from live measurement, not authored as a plan. Forward-looking content is the short NEXT list at the bottom — seven typed moves, no horizon prose.
 
-**You might think** this is a resume of the 44-wave self-swarm. **The control plane shows** that run (`swarm-1784091637-5127`) is at phase `test`, 0 CRIT / 0 HIGH / 0 MED / 0 LOW open, 487 fixed / 17 rejected / 3 deferred. v1.10.0 was a waypoint. This session starts a **new** run, seeded from that roadmap.
+**You might think** this swarm is still in health-audit. **The control plane shows** `swarm-1787700871-d537` at run status **`test`** (promotion 78). v1.11.0 is the waypoint. Phase 10 leftovers sit parked. Prior run `swarm-1784091637-5127` is still `test` and must not be completed.
 
-## NOW — measured 2026-08-25
+## NOW — measured 2026-08-26
 
 | Surface | Live value |
 |---|---|
 | Repo | `E:\AI\testing-os` · origin `dogfood-lab/testing-os` |
-| Shipped | **v1.10.0** (2026-07-17) · six `@dogfood-lab/*` packages on npm at 1.10.0 · `portfolio` workspace-internal |
-| `main` | **`ba5f0cc`** (fence-tag hygiene on top of ingest `a005148` / docs lock `d4aa81c`) · local `main` **ahead 1** of origin |
-| This swarm | **`swarm-1787700871-d537`** · phase `initializing` · domains **FROZEN** (5127 globs, byte-identical) · save point `swarm-save-1787700871` |
+| Shipped | **v1.11.0** (this treatment) · six `@dogfood-lab/*` packages lockstep · `portfolio` workspace-internal |
+| This swarm | **`swarm-1787700871-d537`** · run status **`test`** · 15 waves · 33 fixed / 4 deferred / 11 unverified / 0 CRIT / 0 HIGH · save `swarm-save-1787700871` |
+| Freeze | `ad5b4f5a3434e765` · **docs = coordinator** (exclusive, skipped at dispatch) |
 | Working tree | on `main`. `#64` `04adf3d`; `#66` `02bf481`. Stashes still parked (`stash@{0}` WIP, `stash@{1}` ingest indexes). Do not pop them. |
 | Domain-map foil | Interval file `2026-08-25-interval-01a03b2e.md` still talks about a 9-domain / next-cycle-kickoff map. **Live GitHub #67 and the artifacts on disk win** — inherit the 5127 freeze; build a `coordinator` class in Stage A. |
 | Node | local **v22.22.3** · `engines: >=22` · CI matrix 22+24 · Node 25 is **EOL** |
@@ -21,7 +21,7 @@ This is the Director-facing artifact for dogfood-swarm 3. It is compiled from li
 | Roadmap pointer | sequence **7** · `dogfood/roadmap/latest.json` → `swarm-1784091637-5127.7.json` |
 | Grandfathered pins | frozen_total **256**, drained **0** (ritual step 3 still owed) |
 | Deferred (3) | `F-ad2d6318`, `F-c2a22b93` (pre-v10 NULL `closure_kind`/`verified_how` — wait on a reader) · `F-3b70bc65` (cmdFindings/buildDigest seam) |
-| Open GitHub issues | **#67** coordinator-owned domains inexpressible · **#65** unknown `finding_id` in `fixes[]` is dropped silently · **#16** feature-execute prompt/schema mismatch |
+| GitHub issues | **#67** and **#65** ship in this release (coordinator class; unknown `finding_id` reaches `status`/`receipt`). **#16** already closed. |
 | Product PRs | **#64 MERGED** `04adf3d` (read-only liveness; resume moves a failed wave) · **#66 MERGED** `02bf481` (Python `--isolate` containment) |
 | Open Dependabot | TS 6→7 (#55) **HOLD** · js-yaml 4→5 (#50) **HOLD** · checkout 7.0.1 (#62) **take** · setup-node 7 (#56) **audit then take** |
 
@@ -50,12 +50,12 @@ Six agent-bearing domains + one shared. This is the map that survived 44 waves. 
 | **swarm-cp-tests** | **bridge** | yes | `packages/dogfood-swarm/*.test.js` | **Main.** Flat root tests. Bridge so every code domain can still author its own `*.test.js` (test-first). `lib/**/*.test.js` belongs to core. |
 | **backend** | owned | yes | `packages/{verify,findings,ingest,report,portfolio,schemas}/**` | Polish + notes. File CRIT/HIGH. Do not invent a new product layer. |
 | **ci-tooling** | owned | yes | `.github/**`, `scripts/**`, `tsconfig*.json`, `tsconfig.base.json` | Latest-software findings. Pin-gate, doc-drift, CI Node 22+24. |
-| **docs** | owned | audit-only | `*.md`, `docs/**`, `site/**`, `swarms/*.md`, `swarms/templates/**`, `swarms/manifest-schema.json` | **Coordinator authors amends.** Agents audit. This is the law #67 cannot express as a class. |
+| **docs** | **coordinator** | skipped at dispatch | `*.md`, `docs/**`, `site/**`, `swarms/*.md`, `swarms/templates/**`, `swarms/manifest-schema.json` | Exclusive; coordinator authors. `swarm dispatch` does not open a docs agent. Shipped as the #67 class. |
 | **shared** | shared | never | root `package.json`, lockfiles, `*.toml`/`*.json`/`*.yaml`/`*.yml` | Write-valid for every agent. Never make `docs` shared to skip dispatch. |
 
 **Deliberate unowned (do not assign unless a wave needs them):** `dogfood/**`, `packages/*/README.md`.
 
-**Product gap the map cannot currently say:** there is no ownership class that is exclusive AND skipped at dispatch ([dogfood-lab/testing-os#67](https://github.com/dogfood-lab/testing-os/issues/67)). Transiently reclassifying `docs` to `shared` is forbidden — that inverts the public-surface law with no warning.
+**Shipped in v1.11.0:** the `coordinator` ownership class is exclusive AND skipped at dispatch ([dogfood-lab/testing-os#67](https://github.com/dogfood-lab/testing-os/issues/67)). Transiently reclassifying `docs` to `shared` remains forbidden — that inverts the public-surface law with no warning.
 
 ### Contrastive foils
 
@@ -89,13 +89,13 @@ Trajectory notes still live (not retired this session):
 
 These are the only forward-looking lines in this file. Each is a verb an Executor can run. None is a schedule.
 
-1. **Preflight.** Done this session. Notes re-affirmed; doctor PASS; E: ~1.9 TB free; control-plane.db 9.6 MB; 5127 briefs 85.8 MB (known); `swarm clean 5127` dry-run 0 worktrees. Drift 21/21 after fence tags; pin unused-allowlist [].
-2. **Init.** Done: `swarm-1787700871-d537` seeded from 5127 sequence 7. 5127 still `test` / 0 open. Save point `swarm-save-1787700871` @ `ba5f0cc`.
-3. **Freeze.** Done. Auto-detect `tests` removed; swarm-cp-{core,verbs,tests} added. Globs match 5127. Never reclassify `docs` to `shared`.
-4. **Stage A dispatch (next verb).** `node packages/dogfood-swarm/cli.js dispatch swarm-1787700871-d537 health-audit-a --isolate`. In-scope: #67 `coordinator` class, #65 surface `fixes_skipped`, prove-red mutants. Not a 9-domain map.
-5. **Other packages.** Audit backend/docs/ci-tooling; file real CRIT/HIGH; polish notes. Do not start a new evidence-store product layer in this swarm.
-6. **Software (ci-tooling).** Take checkout 7.0.1 + Vitest 4.1.11. HOLD TS 7, Vitest 5, js-yaml 5. better-sqlite3 13 is a post-health bump (N-API). CI stays Node 22+24.
-7. **Leave this artifact.** After each collected wave, recompile `swarm roadmap compile <new-run-id>` so the published trajectory tells the truth. Do not write volatile wave numbers into `HANDOFF.md`.
+1. **Waypoint.** d537 is at `test`. Do not `complete`. Do not `dispatch … test`. 5127 stays `test`.
+2. **v1.11.0.** Lockstep publish of six `@dogfood-lab/*` packages via tag-push `release.yml`.
+3. **`swarm clean --apply`** already removed 88 isolate worktrees this treatment. Do not re-clean unless `swarm doctor` WARNs of stranded trees.
+4. **Reopen to take:** F-71d4ce45 checkout 7.0.1, F-5764a279 setup-node v7. Vitest F-5e021f01 still a note.
+5. **HOLD:** TS 7, js-yaml 5, Vitest 5.
+6. **Allowlist six overdue** — WARN only; How-to-fix present; not drained.
+7. **Do not drain defers / unverified as a silent clean ledger.**
 
 Executor contract: [`docs/dogfood-swarm-3.executor-brief.md`](./dogfood-swarm-3.executor-brief.md).
 Study-swarm: [`docs/dogfood-swarm-3.study-swarm.dispatch.md`](./dogfood-swarm-3.study-swarm.dispatch.md).

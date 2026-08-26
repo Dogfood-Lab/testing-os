@@ -80,7 +80,7 @@ import { findLatestWave, loadDomainOutputs, buildDigestModel } from './lib/findi
 import { renderDigest } from './lib/findings-render.js';
 import { renderTopLevelError } from './lib/error-render.js';
 import { CliInvalidGlobsError } from './lib/errors.js';
-import { renderPhaseList, renderPhaseColumns } from './lib/phases.js';
+import { renderPhaseList, renderPhaseColumns, isDispatchablePhase } from './lib/phases.js';
 import { formatDomainRow } from './lib/domain-row.js';
 import {
   queryRecurringFindings,
@@ -2061,7 +2061,15 @@ function cmdAdvance(args) {
       }
       console.log('');
     }
-    console.log(`Next: swarm dispatch ${runId} ${result.toPhase}`);
+    if (isDispatchablePhase(result.toPhase)) {
+      console.log(`Next: swarm dispatch ${runId} ${result.toPhase}`);
+    } else if (result.toPhase === 'test') {
+      console.log('Next: coordinator Phase 9 — `npm run verify` then `swarm doctor`. Do not dispatch test (not a phase).');
+    } else if (result.toPhase === 'treatment') {
+      console.log('Next: Phase 10 full treatment. Do not complete until treatment is whole.');
+    } else {
+      console.log(`Next: run status is ${result.toPhase}`);
+    }
   } else {
     console.log(`BLOCKED: ${result.verdict}`);
     if (result.reason) console.log(`Reason: ${result.reason}`);

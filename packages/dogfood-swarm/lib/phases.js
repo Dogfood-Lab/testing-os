@@ -44,6 +44,13 @@ export const AMEND_PHASES = [
 
 export const ALL_PHASES = [...AUDIT_PHASES, ...AMEND_PHASES];
 
+/** Run statuses that `swarm advance` can promote into. Not dispatchable. */
+export const RUN_STATUSES = ['test', 'treatment', 'complete'];
+
+export function isDispatchablePhase(phase) {
+  return ALL_PHASES.includes(phase);
+}
+
 /** The comma-joined flat enumeration for single-line surfaces (usage, hint). */
 export function renderPhaseList() {
   return ALL_PHASES.join(', ');

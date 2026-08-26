@@ -41,7 +41,7 @@
   <g class="mono">
     <text x="36" y="76"><tspan class="text-prompt">$</tspan> <tspan class="text-cmd">npm run verify</tspan></text>
 
-    <text x="36" y="100" class="text-dim">&gt; testing-os@1.10.0 verify</text>
+    <text x="36" y="100" class="text-dim">&gt; testing-os@1.11.0 verify</text>
     <text x="36" y="116" class="text-dim">&gt; npm run sync-version:check &amp;&amp; npm run check-doc-drift &amp;&amp; npm run check-regression-pins &amp;&amp;</text>
     <text x="36" y="132" class="text-dim">    npm run build &amp;&amp; npm run test:scripts &amp;&amp; npm run test</text>
 

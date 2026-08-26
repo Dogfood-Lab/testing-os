@@ -1,6 +1,6 @@
 {
   "name": "@dogfood-lab/report",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "type": "module",
   "description": "Submission builder for testing-os — turns swarm/run results into the JSON envelope expected by the verifier.",
   "main": "build-submission.js",

@@ -463,8 +463,9 @@ test('A3.6 (wave 43): the real doc-drift-patterns.json wires roadmap-artifact-fu
       'dogfood/roadmap/swarm-1784091637-5127.1.json',
       'dogfood/roadmap/swarm-1784091637-5127.2.json',
       'dogfood/roadmap/swarm-1784091637-5127.json',
+      'dogfood/roadmap/swarm-1787700871-d537.json',
     ].sort(),
-    'exactly the 3 pre-conformance historical artifacts, by name — T5 immutability (.1/.2) + F-feeaef78 sequence-free mirror (the third), one mirror entry per future run-id being the accepted, bounded cost A3.6 names',
+    '5127 pre-conformance .1/.2 (T5 immutability) + one F-feeaef78 sequence-free mirror per compiled run (5127 and d537) — the accepted, bounded cost A3.6 names',
   );
   assert.equal(entry.negativeFilenamePattern, '^invalid-');
   assert.notEqual(entry.allowEmpty, true, 'a zero-match glob here must fail loud, not silently pass');

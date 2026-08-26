@@ -2,6 +2,27 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.11.0] — 2026-08-26
+
+Self-dogfood of `@dogfood-lab/dogfood-swarm` on run `swarm-1787700871-d537` (15 waves + Phase 9 coordinator pass). Lockstep minor across all seven workspace packages. A waypoint: the run stays at status `test`; Phase 10 parked leftovers (checkout/setup-node takes, Vitest 4.1.11, HOLDs, allowlist drain) are not this release.
+
+### Added
+- **`coordinator` ownership class** — exclusive like `owned`, skipped at dispatch (GitHub #67). This run's `docs` domain uses it; `swarm dispatch` no longer opens a docs agent for coordinator-owned surfaces.
+- **`--isolate` is the CLI default** for `swarm dispatch`. Bare `swarm dispatch <run> <phase>` creates per-agent worktrees. `--no-isolate` is the shared-tree escape and wins if both flags are present.
+- **`swarm doctor` environment checks** — disk-free, control-plane size, stranded `--isolate` worktrees (WARN, never deletes; reclaim with `swarm clean`).
+- Phase 9 is a **run status**, not a dispatchable phase. `swarm dispatch … test` is `DISPATCH_INVALID_PHASE`. After `feature-audit` → `test`, the coordinator runs `npm run verify` and `swarm doctor`.
+
+### Fixed
+- Unknown `finding_id` in `fixes[]` now reaches `status`/`receipt` (`fixes_skipped`); unknown `--*` on the findings CLI is `ERROR [BAD_ARGS]`.
+- `tests_must_pass` is fail-closed when `ci_checks` is omitted. YAML loads use `CORE_SCHEMA`. `rejected` records no longer report `verified: pass`.
+- Typed operator envelopes: `BoundedJsonError` `.code`/`.hint`, full `deriveHintForCode` coverage, `DOMAINS_INVALID_OWNERSHIP_CLASS`, TTY hanging indent, persist-results dialect parity.
+- Amend/audit/feature prompt examples no longer teach `F-001`. Receipt Agents table pipe-escapes `|`.
+- Advance after a 0 CRIT/HIGH audit no longer silently pretends Stage C happened — PROTOCOL and handbook tell the `health-amend-b` dispatch; CLI no longer says `dispatch … test`.
+- Roadmap `recurrence_stats.top_recurring` timestamps are RFC 3339 UTC at the compile boundary (`toRfc3339Utc`), matching `format: date-time` — SQLite `YYYY-MM-DD HH:MM:SS` is no longer written into the sequenced artifact.
+
+### Docs
+- Handbook: seven doctor checks, `coordinator` class, isolate default, `CRITERION_INTENT_OVERFLOW` `Next:`, architecture.svg AA contrast, verify-output pipeline wrap, beginners.md alt 21/21.
+
 ## [1.10.0] — 2026-07-17
 
 The `swarm-1784091637-5127` feature pass — the trajectory layer and the closure verbs, designed against a five-packet study-swarm ([the pass dispatch](docs/trajectory-and-closure.dispatch.md) is the contract, research grounding included) — and the wave-40→44 confirming-audit arc that made the pass's own closure machinery actually close it. A waypoint, not an end state: the run stays open and dogfooding continues.

@@ -416,7 +416,8 @@
       "allowlist": [
         "dogfood/roadmap/swarm-1784091637-5127.1.json",
         "dogfood/roadmap/swarm-1784091637-5127.2.json",
-        "dogfood/roadmap/swarm-1784091637-5127.json"
+        "dogfood/roadmap/swarm-1784091637-5127.json",
+        "dogfood/roadmap/swarm-1787700871-d537.json"
       ],
       "errorClass": "RoadmapDocumentValidationError",
       "negativeFilenamePattern": "^invalid-",
