@@ -26,6 +26,10 @@ import { isOpenFinding } from '../lib/finding-status.js';
 import { logStage } from '../lib/log-stage.js';
 import { escapeReasonForDisplay, escapePathForDisplay } from './lib/escape-reason.js';
 import { pluralize } from './lib/pluralize.js';
+import {
+  readWaveFixesSkipped,
+  formatFixesSkippedSummary,
+} from './lib/fixes-skipped.js';
 
 /**
  * Build a receipt object from DB truth.
@@ -140,6 +144,12 @@ export function buildReceipt(opts) {
     'SELECT * FROM verification_receipts WHERE wave_id = ? ORDER BY created_at DESC, id DESC LIMIT 1'
   ).get(wave.id);
 
+  // F-64e6da30: durable fixes_skipped rollup (kv) written at collect/revalidate.
+  const fixesSkipped = readWaveFixesSkipped(db, wave.id);
+  const fixesSkippedByDomain = new Map(
+    (fixesSkipped?.agents || []).map(a => [a.domain, a.skipped]),
+  );
+
   // Compute advance recommendation from OPEN findings (not historical aggregate).
   // The wave-scoped verification receipt is threaded in so the serial-verify
   // obligation is visible to the recommendation (V2-CONTRACT-002).
@@ -148,7 +158,7 @@ export function buildReceipt(opts) {
     waveNewCrit,
     waveNewHigh,
     totalFixed,
-  }, verification);
+  }, verification, fixesSkipped);
 
   return {
     receipt_version: '1.0.0',
@@ -195,6 +205,8 @@ export function buildReceipt(opts) {
       error: ar.error_message,
       // TRUTH-003: per-agent verify-skipped truth for forensic readers.
       verification_skipped: !!ar.verification_skipped,
+      // F-64e6da30: per-agent skipped fixes[] sample from the wave rollup.
+      fixes_skipped: fixesSkippedByDomain.get(ar.domain_name) || undefined,
     })),
     state_transitions: stateEvents.map(e => ({
       domain: e.domain_name,
@@ -220,6 +232,9 @@ export function buildReceipt(opts) {
       by_status: findingsByStatus,
       this_wave: { new: waveNew, recurring: waveRecurring, fixed: waveFixed },
     },
+    // F-64e6da30 / GitHub #65: wave-level fixes_skipped rollup (counts by
+    // reason + capped id sample + per-agent breakdown). null when none.
+    fixes_skipped: fixesSkipped || null,
     verification: verification ? {
       passed: !!verification.passed,
       repo_type: verification.repo_type,
@@ -347,6 +362,12 @@ export function formatReceiptMarkdown(r) {
       r.wave.ownership_probe_degraded ? 'DEGRADED — re-dispatch with --isolate for full attribution' : 'full'
     }`,
   );
+  // F-64e6da30: wave-level evaporated-declarations signal (GitHub #65).
+  if (r.fixes_skipped && r.fixes_skipped.total > 0) {
+    lines.push(`**Fixes skipped:** ${formatFixesSkippedSummary(r.fixes_skipped)}`);
+  } else {
+    lines.push('**Fixes skipped:** none');
+  }
   lines.push(`**Generated:** ${r.generated_at}`);
   lines.push('');
 
@@ -355,8 +376,8 @@ export function formatReceiptMarkdown(r) {
   // the wave aggregate.
   lines.push('## Agents');
   lines.push('');
-  lines.push('| Domain | Ownership | Status | Verify skipped | Error |');
-  lines.push('|--------|-----------|--------|----------------|-------|');
+  lines.push('| Domain | Ownership | Status | Verify skipped | Fixes skipped | Error |');
+  lines.push('|--------|-----------|--------|----------------|---------------|-------|');
   for (const a of r.agents) {
     // D-STRUCT-002: render the cell as an OBLIGATION marker, not a neutral
     // boolean. `REQUIRED` (uppercase) reads pre-attentively as an open
@@ -368,6 +389,9 @@ export function formatReceiptMarkdown(r) {
     // parse the boolean); only the human-readable cell shifts to surface
     // the obligation.
     const skipped = a.verification_skipped ? 'REQUIRED' : '—';
+    const fixesSkipCell = Array.isArray(a.fixes_skipped) && a.fixes_skipped.length > 0
+      ? a.fixes_skipped.map(s => `${s.finding_id}(${s.reason})`).join(', ')
+      : '—';
     // F-f1dae277 (wave 22): a.error is agent_runs.error_message, which for an
     // 'ownership_violation' status agent is collect.js's `violMsg` —
     // 'Out-of-domain edits: <path1>, <path2>' built by joining
@@ -379,7 +403,7 @@ export function formatReceiptMarkdown(r) {
     // reaches this column it is a composite message (template prose + one
     // or more joined paths), not a bare path.
     const errorCell = a.error ? escapeReasonForDisplay(a.error) : '—';
-    lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${skipped} | ${errorCell} |`);
+    lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${skipped} | ${fixesSkipCell} | ${errorCell} |`);
   }
   lines.push('');
 
@@ -460,10 +484,11 @@ export function formatReceiptMarkdown(r) {
   return lines.join('\n');
 }
 
-export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta, verification) {
+export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta, verification, fixesSkipped = null) {
   const allComplete = agentRuns.every(a => a.status === 'complete');
   const hasBlocked = agentRuns.some(a => ['invalid_output', 'ownership_violation'].includes(a.status));
   const hasInFlight = agentRuns.some(a => ['dispatched', 'running'].includes(a.status));
+  const unknownIdCount = fixesSkipped?.by_reason?.unknown_id || 0;
 
   if (hasInFlight) {
     return { action: 'WAIT', reason: 'Agents still in-flight' };
@@ -523,6 +548,16 @@ export function computeRecommendation(wave, agentRuns, openBySeverity, waveDelta
     return {
       action: 'AMEND',
       reason: `${wavePart} | ${runPart} — approve and amend`,
+    };
+  }
+
+  // F-64e6da30: evaporated unknown_id declarations must not recommend ADVANCE.
+  if (unknownIdCount > 0) {
+    return {
+      action: 'RECONCILE',
+      reason:
+        `${unknownIdCount} fixes[] declaration(s) named unknown finding_id ` +
+        `(${formatFixesSkippedSummary(fixesSkipped)}) — reconcile canonical ids before advancing`,
     };
   }
 

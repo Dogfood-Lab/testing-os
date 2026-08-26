@@ -764,6 +764,22 @@ function cmdCollect(args) {
   console.log(result.summary);
   console.log('');
 
+  // F-64e6da30 / GitHub #65: fail-soft warn when fixes[] declarations were
+  // refused (unknown_id / unowned / …). Detection already existed on the
+  // collect report; this banner is the operator-visible half so a wave that
+  // evaporated declarations cannot look clean on stdout alone.
+  if (result.fixes_skipped && result.fixes_skipped.total > 0) {
+    const by = result.fixes_skipped.by_reason || {};
+    const parts = Object.keys(by).filter(k => by[k] > 0).map(k => `${k}=${by[k]}`);
+    const sample = (result.fixes_skipped.sample_ids || []).join(', ');
+    console.log('===== [!] FIXES SKIPPED [!] =====');
+    console.log(`  ${result.fixes_skipped.total} fixes[] declaration(s) were refused (${parts.join(' ')}).`);
+    if (sample) console.log(`  Sample ids: ${sample}`);
+    console.log('  These did not close findings. swarm status / swarm receipt surface the same rollup.');
+    console.log('  Reconcile canonical finding_ids before treating the wave as clean.');
+    console.log('');
+  }
+
   if (result.violations.length > 0) {
     console.log('OWNERSHIP VIOLATIONS:');
     for (const v of result.violations) {

@@ -35,6 +35,12 @@ import { getActualTouchedFiles, diffReportedVsActual, resolveWorktreeBaseRef } f
 import { mintCorrelationId } from '../lib/correlation-id.js';
 import { normalizeFilePathForGlobMatch } from '../lib/normalize-path.js';
 import { pluralize } from './lib/pluralize.js';
+import { isAgentBearingDomain } from './lib/agent-bearing.js';
+import {
+  rollupFixesSkipped,
+  persistWaveFixesSkipped,
+  formatFixesSkippedSummary,
+} from './lib/fixes-skipped.js';
 // F-ab4fbab0 (the class lib/phases.js's own header names as F-274e7ac5,
 // "DISCLOSED EXCEPTION": this file's private copy, specifically): importing
 // the single ordered source of truth instead of a hand-typed literal that
@@ -579,8 +585,16 @@ export function collect(opts) {
     // git probe unavailable). The CLI surfaces a multi-domain wave here as a
     // banner recommending `--isolate`. Observability only — never a gate.
     ownership_probe_degraded: null,
+    // F-64e6da30 / GitHub #65: wave-level rollup of fixes[] refusals. null
+    // until an amend agent skips at least one declaration; then counts by
+    // reason + capped id sample, persisted to kv so status/receipt see it
+    // after collect stdout scrolls past.
+    fixes_skipped: null,
     summary: null,
   };
+
+  // Accumulator for the wave-level fixes_skipped rollup (amend only).
+  const fixesSkippedEntries = [];
 
   // DS-PROAC-03: bracket the multi-agent collection with a lifecycle NDJSON
   // pair matching verify_start/verify_complete (verify.js) and wave_dispatched
@@ -1068,7 +1082,12 @@ export function collect(opts) {
         fixes: Array.isArray(output.fixes) ? output.fixes : [],
       });
       agentReport.fixes_closed = declared.closed.length;
-      if (declared.skipped.length > 0) agentReport.fixes_skipped = declared.skipped;
+      if (declared.skipped.length > 0) {
+        agentReport.fixes_skipped = declared.skipped;
+        for (const s of declared.skipped) {
+          fixesSkippedEntries.push({ ...s, domain: domain.name });
+        }
+      }
       report.findings.fixed += declared.closed.length;
     }
 
@@ -1152,7 +1171,7 @@ export function collect(opts) {
     const completedDomains = new Set(
       report.agents.filter(a => a.status === 'complete').map(a => a.domain)
     );
-    const agentBearing = domains.filter(d => d.ownership_class !== 'shared');
+    const agentBearing = domains.filter(isAgentBearingDomain);
     const fullCoverage = agentBearing.length > 0
       && agentBearing.every(d => completedDomains.has(d.name));
     // The union of every COMPLETE agent's `confirmed` declaration, NARROWED to
@@ -1257,6 +1276,13 @@ export function collect(opts) {
     db.prepare('UPDATE waves SET ownership_probe_degraded = 1 WHERE id = ?').run(wave.id);
   }
 
+  // F-64e6da30: persist the fixes_skipped rollup so status/receipt see
+  // evaporated declarations after collect's stdout hint scrolls past.
+  if (fixesSkippedEntries.length > 0) {
+    report.fixes_skipped = rollupFixesSkipped(fixesSkippedEntries);
+    persistWaveFixesSkipped(db, wave.id, report.fixes_skipped);
+  }
+
   // Generate summary
   report.summary = buildSummary(db, opts.runId, wave, report);
 
@@ -1324,11 +1350,16 @@ export function buildSummary(db, runId, wave, report) {
     : '';
 
   const statusRollup = statusLine ? `\n  Status: ${statusLine}` : '';
+  // F-64e6da30: name evaporated declarations in the summary so collect
+  // stdout is not the only place that saw them before kv persistence.
+  const fixesSkippedLine = report.fixes_skipped && report.fixes_skipped.total > 0
+    ? `\n  [!] fixes_skipped: ${formatFixesSkippedSummary(report.fixes_skipped)}`
+    : '';
 
   return `Wave ${wave.wave_number} (${wave.phase}):${transitionLine}
   CRITICAL: ${bySeverity.CRITICAL}  HIGH: ${bySeverity.HIGH}  MEDIUM: ${bySeverity.MEDIUM}  LOW: ${bySeverity.LOW}
   New: ${report.findings.new}  Recurring: ${report.findings.recurring}  Fixed: ${report.findings.fixed}${statusRollup}
-  Violations: ${report.violations.length}${revalidateHint}
+  Violations: ${report.violations.length}${fixesSkippedLine}${revalidateHint}
 
 Agents:
 ${agentSummary}`;
