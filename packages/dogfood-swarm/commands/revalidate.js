@@ -63,6 +63,12 @@ import { getActualTouchedFiles, resolveWorktreeBaseRef } from '../lib/git-touche
 // doc comment there for the full rationale.
 import { reconcileFileClaims, scopeConfirmedToOwningDomain } from './collect.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { isAgentBearingDomain } from './lib/agent-bearing.js';
+import {
+  rollupFixesSkipped,
+  persistWaveFixesSkipped,
+  readWaveFixesSkipped,
+} from './lib/fixes-skipped.js';
 // F-ab4fbab0 (the class lib/phases.js's own header names, F-274e7ac5): this
 // file carried a private, hand-typed COPY of the phase lists rather than
 // importing the single ordered source of truth — dispatch.js already
@@ -138,8 +144,14 @@ export function revalidate(opts) {
     repairs: [],
     refusals: [],
     skipped: [],
+    // F-64e6da30: wave-level fixes_skipped rollup after amend repairs land.
+    fixes_skipped: null,
     summary: null,
   };
+
+  // Domain → skipped declarations from THIS revalidate apply pass. Merged
+  // with any prior collect/revalidate rollup for sibling domains below.
+  const repairedFixesSkippedByDomain = new Map();
 
   // ── Validation pass — no mutation yet ──
   for (const [domainName, rawPath] of Object.entries(outputs)) {
@@ -472,7 +484,12 @@ export function revalidate(opts) {
             fixes: Array.isArray(r.output.fixes) ? r.output.fixes : [],
           });
           r.fixes_closed = declared.closed.length;
-          if (declared.skipped.length > 0) r.fixes_skipped = declared.skipped;
+          if (declared.skipped.length > 0) {
+            r.fixes_skipped = declared.skipped;
+            repairedFixesSkippedByDomain.set(r.domain, declared.skipped);
+          } else {
+            repairedFixesSkippedByDomain.set(r.domain, []);
+          }
         }
 
         // F-8efffdd1: stage the corrected audit output's findings for the
@@ -636,7 +653,7 @@ export function revalidate(opts) {
                 AND ar.status = 'complete'
             `).all(wave.id).map(r => r.name)
           );
-          const agentBearing = domains.filter(d => d.ownership_class !== 'shared');
+          const agentBearing = domains.filter(isAgentBearingDomain);
           const fullCoverage = agentBearing.length > 0
             && agentBearing.every(d => completedDomains.has(d.name));
 
@@ -721,6 +738,27 @@ export function revalidate(opts) {
         repairsAttempted: report.repairs.length,
       });
       throw new Error(`revalidate transaction failed (correlation_id=${correlationId}): ${e.message}`);
+    }
+  }
+
+  // F-64e6da30: merge this repair's fixes_skipped with any prior wave rollup
+  // (sibling domains collected earlier keep their skips; repaired domains
+  // replace). Persist so status/receipt see the repaired truth.
+  if (apply && repairedFixesSkippedByDomain.size > 0) {
+    const entries = [];
+    const prior = readWaveFixesSkipped(db, wave.id);
+    if (prior && Array.isArray(prior.agents)) {
+      for (const a of prior.agents) {
+        if (repairedFixesSkippedByDomain.has(a.domain)) continue;
+        for (const s of a.skipped || []) entries.push({ ...s, domain: a.domain });
+      }
+    }
+    for (const [domain, skipped] of repairedFixesSkippedByDomain) {
+      for (const s of skipped) entries.push({ ...s, domain });
+    }
+    if (entries.length > 0) {
+      report.fixes_skipped = rollupFixesSkipped(entries);
+      persistWaveFixesSkipped(db, wave.id, report.fixes_skipped);
     }
   }
 

@@ -16,6 +16,10 @@ import { isOpenFinding } from '../lib/finding-status.js';
 import { formatDomainRow } from '../lib/domain-row.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
 import { pluralize } from './lib/pluralize.js';
+import {
+  readWaveFixesSkipped,
+  formatFixesSkippedSummary,
+} from './lib/fixes-skipped.js';
 
 /**
  * @param {object} opts
@@ -208,6 +212,11 @@ export function status(opts) {
   const isStaleAgent = (a) => staleAgentRunIds.has(a.id);
   const staleAgentCount = inFlightAgents.filter(isStaleAgent).length;
 
+  // F-64e6da30: durable fixes_skipped rollup from collect/revalidate (kv).
+  const fixesSkipped = currentWave
+    ? readWaveFixesSkipped(db, currentWave.id)
+    : null;
+
   // Compute advanceability + next action
   const assessment = computeAssessment(
     currentWave, currentAgents, openBySeverity, blockedAgents, inFlightAgents,
@@ -218,6 +227,7 @@ export function status(opts) {
       currentWaveArtifactCount,
       currentWaveFindingCount,
       staleAgentCount,
+      fixesSkipped,
     }
   );
 
@@ -280,6 +290,9 @@ export function status(opts) {
       byStatus: findingsByStatus,
       open: openBySeverity,
       thisWave: waveFindingCounts,
+      // F-64e6da30 / GitHub #65: evaporated fixes[] declarations (unknown_id
+      // etc). null when the current wave never skipped a declaration.
+      fixesSkipped: fixesSkipped || null,
     },
     violations: violations?.cnt || 0,
     lastVerification: lastReceipt ? {
@@ -393,6 +406,11 @@ export function formatStatus(s) {
   lines.push(`  Wave:  ${f.thisWave.new} new  ${f.thisWave.recurring} recurring  ${f.thisWave.fixed} fixed`);
   if (Object.keys(f.byStatus).length > 0) {
     lines.push(`  All:   ${Object.entries(f.byStatus).map(([k, v]) => `${k}: ${v}`).join('  ')}`);
+  }
+  // F-64e6da30: surface evaporated declarations next to the findings block
+  // the coordinator actually reads before the next wave.
+  if (f.fixesSkipped && f.fixesSkipped.total > 0) {
+    lines.push(`  [!] fixes_skipped: ${formatFixesSkippedSummary(f.fixesSkipped)}`);
   }
   lines.push('');
 
@@ -570,6 +588,15 @@ export function computeAssessment(wave, agents, openBySeverity, blocked, inFligh
     }
   }
 
+  // F-64e6da30: unknown_id skips are a coordinator-visible blocker — the
+  // check already ran at collect; this is the surface that was missing.
+  const unknownIdCount = ctx.fixesSkipped?.by_reason?.unknown_id || 0;
+  if (unknownIdCount > 0) {
+    blockers.push(
+      `fixes_skipped: ${formatFixesSkippedSummary(ctx.fixesSkipped)}`,
+    );
+  }
+
   // In-flight agents
   if (inFlight.length > 0) {
     // COORD-002(c) + COORD-003: this hint previously told the operator to
@@ -701,6 +728,17 @@ export function computeAssessment(wave, agents, openBySeverity, blocked, inFligh
         state: 'AMEND NEEDED',
         blockers,
         nextAction: `${openBySeverity.CRITICAL} CRITICAL + ${openBySeverity.HIGH} HIGH open. Run \`swarm approve\` then \`swarm dispatch <run-id> ${amendPhase}\`.`,
+      };
+    }
+    // F-64e6da30: do not claim READY TO ADVANCE when declarations evaporated
+    // — the wave collected, but bookkeeping is dishonest without reconcile.
+    if (unknownIdCount > 0) {
+      return {
+        state: 'DECLARATIONS DROPPED',
+        blockers,
+        nextAction:
+          `${unknownIdCount} fixes[] declaration(s) named unknown finding_id. ` +
+          'Reconcile canonical ids (re-collect corrected output, or resolve real open findings by their routed ids) before advancing — see fixes_skipped on status/receipt.',
       };
     }
     return {

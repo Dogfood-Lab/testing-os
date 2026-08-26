@@ -32,6 +32,7 @@ import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js
 import { AUDIT_PHASES, AMEND_PHASES, renderPhaseList } from '../lib/phases.js';
 import { escapePathForDisplay } from './lib/escape-reason.js';
 import { readRoadmapSeedLineage } from './lib/roadmap-seed.js';
+import { isAgentBearingDomain } from './lib/agent-bearing.js';
 
 /**
  * D3B-003 (Wave A2 Stage C): emit a structured NDJSON event for a
@@ -550,16 +551,19 @@ export function dispatch(opts) {
   // diagnostics, so the message names the real condition instead of
   // collapsing back into the same "doesn't name the actual cause" failure
   // one layer up.
-  const agentBearingDomains = domains.filter(d => d.ownership_class !== 'shared');
+  // F-2710aadf / GitHub #67 (verbs half): skip shared AND coordinator —
+  // coordinator is exclusive-and-not-dispatched (core owns the class enum).
+  const agentBearingDomains = domains.filter(isAgentBearingDomain);
   if (agentBearingDomains.length === 0) {
     emitPreconditionFailed({
       runId: opts.runId,
       phase: opts.phase,
       code: 'DISPATCH_NO_AGENT_DOMAINS',
-      message: `Every domain in the frozen map (${domains.length}) is class 'shared'; shared is a zone, not an agent`,
+      message: `Every domain in the frozen map (${domains.length}) is class 'shared' or 'coordinator'; neither receives an agent`,
     });
     throw new DispatchPreconditionError(
-      `Every domain in the frozen map (${domains.length}) is class 'shared' — shared is a zone, not an agent. ` +
+      `Every domain in the frozen map (${domains.length}) is class 'shared' or 'coordinator' — ` +
+      `shared is a zone and coordinator is exclusive-and-not-dispatched. ` +
       `Dispatching would create zero agent_runs, commit a wave reporting success, and permanently block future ` +
       `dispatch on DISPATCH_WAVE_IN_FLIGHT (the zero-agent wave can never collect).`,
       {
@@ -762,7 +766,7 @@ export function dispatch(opts) {
     ).all(opts.runId);
     const routedIds = new Set();
     for (const domain of domains) {
-      if (domain.ownership_class === 'shared') continue;
+      if (!isAgentBearingDomain(domain)) continue;
       for (const f of findingsForDomain(db, opts.runId, domain)) routedIds.add(f.finding_id);
     }
     unroutedApprovedFindings = approved
@@ -794,7 +798,7 @@ export function dispatch(opts) {
   if (opts.dryRun) {
     const previewAgents = [];
     for (const domain of domains) {
-      if (domain.ownership_class === 'shared') continue;
+      if (!isAgentBearingDomain(domain)) continue;
       const agent = {
         domain: domain.name,
         domainId: domain.id,
@@ -900,8 +904,9 @@ export function dispatch(opts) {
     }
 
     for (const domain of domains) {
-      // Only dispatch owned + bridge domains as agents (shared is a zone, not an agent)
-      if (domain.ownership_class === 'shared') continue;
+      // Only dispatch owned + bridge domains as agents (shared is a zone;
+      // coordinator is exclusive-and-not-dispatched — F-2710aadf / #67).
+      if (!isAgentBearingDomain(domain)) continue;
 
       // Create worktree if isolation is enabled.
       //
