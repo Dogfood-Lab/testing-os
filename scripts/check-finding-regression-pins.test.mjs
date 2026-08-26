@@ -959,6 +959,7 @@ test('formatHuman: a clean result WITH outstanding grandfather debt reports coun
   assert.match(text, /F-2/);
 });
 
+/** @pins F-6bb40914 */
 test('formatHuman: grandfatherDueForRevalidation entries produce a distinct WARN block from allowlist dueForRevalidation', () => {
   const result = {
     ok: true,
@@ -981,6 +982,40 @@ test('formatHuman: grandfatherDueForRevalidation entries produce a distinct WARN
   const text = formatHuman(result, '/repo');
   assert.match(text, /WARN — grandfathered entries past their revalidate_by date/);
   assert.match(text, /F-9 — was due 2000-01-01 \(owner: coordinator\)/);
+  assert.match(text, /How to fix: re-read the entry; refresh revalidate_by with a reason if the exemption still holds/);
+  assert.match(text, /OR delete the entry if the mention is gone or unused/);
+  assert.match(text, /OR land \/\*\* @pins F-id \*\/ and drop the allowlist row/);
+  assert.match(text, /OK —/, 'overdue grandfather WARN must stay warn-not-block');
+});
+
+/** @pins F-6bb40914 */
+test('formatHuman: dueForRevalidation allowlist overdue WARN includes How-to-fix remediation (warn-not-block)', () => {
+  const result = {
+    ok: true,
+    json: { source_pins: {}, files_scanned: 0, summary: { source_ids: 0, test_ids: 0 } },
+    orphans: [],
+    declaredIds: [],
+    grandfatheredIds: [],
+    grandfatherFrozenTotal: 0,
+    grandfatherDrainedCount: 0,
+    grandfatherDueForRevalidation: [],
+    allowlistApplied: ['F-8'],
+    unusedAllowEntries: [],
+    unusedAllowEntryReasons: {},
+    dueForRevalidation: [{ id: 'F-8', revalidate_by: '2000-01-01', owner: 'ci-tooling' }],
+    parseErrors: [],
+    tagIssues: [],
+    disclosedGaps: [],
+    indexWritten: null,
+  };
+  const text = formatHuman(result, '/repo');
+  assert.match(text, /WARN — allowlist entries past their revalidate_by date \(still applied; not a block\)/);
+  assert.match(text, /F-8 — was due 2000-01-01 \(owner: ci-tooling\)/);
+  assert.match(text, /How to fix: re-read the entry; refresh revalidate_by with a reason if the exemption still holds/);
+  assert.match(text, /OR delete the entry if the mention is gone or unused/);
+  assert.match(text, /OR land \/\*\* @pins F-id \*\/ and drop the allowlist row/);
+  assert.match(text, /OK — every source-pinned F-id is declared or allowlisted/);
+  assert.doesNotMatch(text, /FAIL —/, 'overdue allowlist WARN must not hard-fail');
 });
 
 test('formatHuman: FAIL section lists parseErrors and tagIssues distinctly from orphans', () => {
