@@ -205,6 +205,14 @@ Example:
 
 Check the phase-advancement gates and (if they pass) promote the run to the next phase. Use `--check-only` to see gate results without mutating, `--history` to read the promotion log, or `--override --reason "..."` to force-promote past a soft block. Hard blocks (e.g. blocked agent_runs) cannot be overridden — fix the underlying state first.
 
+Amend routing is **CRITICAL/HIGH only.** After `health-audit-b`, `swarm advance` promotes to `health-amend-b` only when open CRITICAL or HIGH remain; otherwise it promotes to `health-audit-c` and skips Stage C (humanization) entirely. Stage B findings are usually MED/LOW, so a blind advance after Stage B review **will skip** `health-amend-b`. PROTOCOL still requires that amend. Dispatch it yourself after approve:
+
+```bash
+swarm dispatch <run-id> health-amend-b --isolate --skip-verify
+```
+
+The same CRIT/HIGH-only gate applies at `health-audit-a`, `health-audit-c`, and `stage-d-audit`. `swarm advance` is not a substitute for `swarm dispatch <phase>` when you need an amend the severity gate did not force.
+
 ```text
 Usage: swarm advance <run-id>
                      [--check-only]
