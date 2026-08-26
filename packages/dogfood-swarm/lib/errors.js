@@ -170,6 +170,36 @@ export class CliInvalidGlobsError extends Error {
 }
 
 /**
+ * Thrown when `swarm domains --add/--edit --ownership <value>` names a class
+ * outside STATUS.ownership_class.
+ *
+ * Pre-fix history (F-969074b9): editDomain/addDomain threw bare
+ * `new Error('Invalid ownership class: …')` that named the bad value but
+ * never listed the live enum (owned|shared|bridge|coordinator), and had no
+ * `.code`/`.hint`, so renderTopLevelError flattened them to untyped
+ * `ERROR: …` with no Next: line. Sibling DISPATCH_INVALID_PHASE already
+ * enumerates valid phases in both throw-site hint and deriveHintForCode.
+ */
+export class DomainsInvalidOwnershipError extends Error {
+  /**
+   * @param {string} message
+   * @param {object} opts
+   * @param {string} opts.received — the rejected ownership_class value
+   * @param {string[]} opts.valid — live STATUS.ownership_class snapshot
+   * @param {string} [opts.hint]
+   */
+  constructor(message, opts) {
+    super(message);
+    this.name = 'DomainsInvalidOwnershipError';
+    this.code = 'DOMAINS_INVALID_OWNERSHIP_CLASS';
+    this.received = opts.received;
+    this.valid = opts.valid;
+    this.hint = opts.hint
+      || `pass one of ${opts.valid.join('|')} — e.g. \`--ownership owned\``;
+  }
+}
+
+/**
  * Thrown by openDb when the on-disk control-plane.db was written by a NEWER
  * @dogfood-lab/dogfood-swarm build than the one running.
  *

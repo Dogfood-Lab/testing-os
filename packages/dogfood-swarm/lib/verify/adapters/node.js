@@ -49,7 +49,8 @@ function probe(repoPath) {
       // misclassification instead of the actual broken manifest. Record a
       // non-silent evidence flag + the error kind so `reason` can name it.
       evidence.manifestUnreadable = true;
-      evidence.manifestUnreadableKind = e.code || e.name || 'ParseError';
+      // F-e0eebfec: prefer cause.code (fs/parse) over BoundedJsonError's stable BOUNDED_JSON_* code.
+      evidence.manifestUnreadableKind = e.cause?.code || e.code || e.name || 'ParseError';
     }
   }
 

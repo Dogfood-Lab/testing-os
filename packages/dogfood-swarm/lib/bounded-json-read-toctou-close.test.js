@@ -161,15 +161,13 @@ describe('readBoundedBuffer / readBoundedText — new shared primitives (F-a89f8
     assert.deepEqual(JSON.parse(text), parsed);
   });
 
-  it('BoundedJsonError surfaces the underlying fs error code on `.code` (not just `.name`) — an EISDIR read failure names itself', () => {
+  it('BoundedJsonError uses a stable BOUNDED_JSON_* `.code` and keeps the fs signal on `.cause.code` (F-e0eebfec)', () => {
     // A directory at the manifest path makes statSync succeed but the
     // subsequent read throw EISDIR — the same present-but-unreadable shape
     // stageC-adapter-manifest-unreadable-signal.test.js (package root, out
-    // of domain) already exercises through the adapters. This pins the
-    // underlying `.code` passthrough on BoundedJsonError itself, which is
-    // what lets python.js/rust.js keep reporting a real fs error code
-    // (EISDIR/ENOENT/...) instead of regressing to the generic wrapper name
-    // now that they route through this shared module.
+    // of domain) already exercises through the adapters. F-e0eebfec moved
+    // the stable swarm code onto `.code` (for renderTopLevelError) and left
+    // the underlying fs code on `.cause.code` (what adapters read).
     const dirPath = join(TEST_ROOT, 'a-directory.json');
     mkdirSync(dirPath);
 
@@ -179,8 +177,10 @@ describe('readBoundedBuffer / readBoundedText — new shared primitives (F-a89f8
     } catch (e) { err = e; }
     assert.ok(err instanceof BoundedJsonError);
     assert.equal(err.kind, 'READ_FAILED');
-    assert.ok(err.code, 'the wrapper must surface a real fs error code, not just .name');
-    assert.notEqual(err.code, 'BoundedJsonError');
+    assert.equal(err.code, 'BOUNDED_JSON_READ_FAILED');
+    assert.ok(err.hint, 'BoundedJsonError must carry a default Next:-ready hint');
+    assert.ok(err.cause?.code, 'underlying fs error code must survive on .cause.code');
+    assert.notEqual(err.cause.code, 'BoundedJsonError');
   });
 });
 

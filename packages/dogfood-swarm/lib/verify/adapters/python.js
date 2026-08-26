@@ -28,8 +28,8 @@ import { readBoundedText, BoundedJsonError } from '../../bounded-json-read.js';
 // with .includes() string scans, not JSON.parse, so a skip is simply unset
 // evidence, never buffered); any other error (missing file, EISDIR, ...)
 // propagates to the caller's manifestUnreadable signal below, same as before
-// — BoundedJsonError surfaces the underlying fs `.code` so that signal stays
-// just as specific as the raw readFileSync error it replaces.
+// — F-e0eebfec: BoundedJsonError's stable `.code` is BOUNDED_JSON_*; the
+// underlying fs signal lives on `.cause.code`.
 function readBoundedManifest(filePath) {
   try {
     return readBoundedText(filePath);
@@ -62,7 +62,7 @@ function probe(repoPath) {
       // named reason), not the same `reason` a healthy project gets. The
       // swallow stays non-fatal; it just stops being silent.
       evidence.manifestUnreadable = true;
-      evidence.manifestUnreadableKind = e.code || e.name || 'ReadError';
+      evidence.manifestUnreadableKind = e.cause?.code || e.code || e.name || 'ReadError';
     }
   }
 
