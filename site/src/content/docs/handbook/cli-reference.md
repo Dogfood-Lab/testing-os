@@ -34,7 +34,7 @@ The output lists the draft domain map. Review it, then run `swarm domains <run-i
 
 ## swarm domains
 
-Inspect, edit, freeze, or unfreeze the per-run domain map. The domain map is what determines per-agent file ownership; freezing it locks the surface so dispatch can produce verifiable per-agent prompts. Subcommands (all via flags) cover the full lifecycle: `--freeze`, `--unfreeze --reason "..."`, `--edit <name>`, `--add <name> --globs '[...]'`, `--remove <name>`, `--history`.
+Inspect, edit, freeze, or unfreeze the per-run domain map. The domain map is what determines per-agent file ownership; freezing it locks the surface so dispatch can produce verifiable per-agent prompts. Ownership classes: `owned` (exclusive, dispatched), `shared` (multi-writer, never dispatched), `bridge` (non-exclusive, dispatched), `coordinator` (exclusive like owned, **skipped at dispatch** — F-ef270b6e / GitHub #67). Subcommands (all via flags) cover the full lifecycle: `--freeze`, `--unfreeze --reason "..."`, `--edit <name>`, `--add <name> --globs '[...]'`, `--remove <name>`, `--history`.
 
 ```text
 Usage:
@@ -54,7 +54,7 @@ Create a new wave for a phase and write per-agent prompts to `swarms/<run-id>/wa
 ```text
 Usage: swarm dispatch <run-id> <phase>
                       [--auto-freeze]
-                      [--isolate]
+                      [--isolate | --no-isolate]
                       [--skip-verify]
                       [--seed-roadmap]
                       [--roadmap-digest=<run-id>]
@@ -65,6 +65,7 @@ Example:
   $ swarm dispatch <run-id> health-audit-a
   $ swarm dispatch <run-id> health-amend-b --skip-verify
   $ swarm dispatch <run-id> feature-execute --dry-run
+  $ swarm dispatch <run-id> health-amend-a --no-isolate
 ```
 
 For a run initialized with `--seed-from-roadmap`, the first audit-phase dispatch automatically injects the seeded roadmap's bounded digest (top-K attention list + unexpired notes + drain summary) at the **top** of every generated brief — the T4 positioning rule. `--no-roadmap-digest` suppresses the injection for one dispatch; `--roadmap-digest=<run-id>` injects a specific run's roadmap explicitly (refusing with `DISPATCH_ROADMAP_DIGEST_NOT_FOUND` if that run has no compiled artifact — the check runs *before* the wave-build transaction, so a bad reference can never strand a half-built wave). `--seed-roadmap` opts an unseeded run's dispatch into the same injection.
@@ -73,7 +74,7 @@ For a run initialized with `--seed-from-roadmap`, the first audit-phase dispatch
 
 Phases: `health-audit-a/b/c`, `health-amend-a/b/c`, `stage-d-audit`, `stage-d-amend`, `feature-audit`, `feature-execute`.
 
-`--isolate` gives each dispatched agent its own git worktree instead of the shared run checkout. It is **required for sound cross-domain ownership enforcement on a multi-domain amend wave**: only with per-agent worktrees can `swarm collect` independently attribute an edit to the agent that made it. Without it, an agent that silently edits a file outside its domain *and* omits it from `files_changed` is not independently caught — the check falls back to the agent's self-report for cross-domain edits (see [swarm collect](#swarm-collect) and the Protocol's "Ownership attribution in non-isolated parallel amend waves" section). Audit waves write no files, so `--isolate` is for amend/execute waves where the ownership guarantee must hold against an unreported edit.
+**`--isolate` is the default** (F-80afe435). Omitted, each dispatched agent gets its own git worktree. `--isolate` is accepted and still isolates. `--no-isolate` is the explicit shared-worktree escape (if both flags are present, `--no-isolate` wins). Per-agent worktrees are **required for sound cross-domain ownership enforcement on a multi-domain amend wave**: only then can `swarm collect` independently attribute an edit to the agent that made it. Under `--no-isolate`, an agent that silently edits a file outside its domain *and* omits it from `files_changed` is not independently caught — the check falls back to the agent's self-report for cross-domain edits (see [swarm collect](#swarm-collect) and the Protocol's "Ownership attribution in non-isolated parallel amend waves" section). Bare `swarm dispatch <run> <phase>` now isolates; that is a breaking change for anyone who relied on a shared worktree.
 
 ## swarm collect
 
