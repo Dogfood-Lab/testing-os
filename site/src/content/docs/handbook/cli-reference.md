@@ -102,17 +102,22 @@ Ownership is enforced against the **union** of each agent's self-reported `files
 
 Run cheap, **read-only** preflight checks before a real dispatch wastes your time on a misconfigured environment. Prints a structured pass/warn/fail report and exits non-zero **only** on a hard FAIL (warnings exit `0`). No `<run-id>` required — doctor probes the environment and the control-plane DB path.
 
-The three checks, each grounded in a real dependency of the running control plane (no fictional probes):
+Seven checks, each grounded in a real dependency of the running control plane (no fictional probes). The first three **fail** the process; git-available and the three environment-health checks are **WARN** (exit still `0`). Repair for stranded worktrees stays `swarm clean` — doctor never deletes.
 
 - **node-version** — Node ≥ 22, the package `engines.node` floor.
 - **control-plane-writable** — the directory that will hold `control-plane.db` is writable **and** hardlink-capable. The cross-process file lock claims the lock via `link(2)`; exFAT/FAT32 do not support hardlinks (the documented FS trap), so a dispatch there fails opaquely. Doctor surfaces it up front.
 - **schema-version** — the on-disk `control-plane.db` is not a **newer** schema than this build understands. A too-new DB means "upgrade the tool," not "delete the DB" — doctor reads the version read-only and reports it as a hard FAIL.
+- **git-available** — `git --version` on PATH. WARN, not a hard fail: the SQLite control plane runs without git, but the ownership probe and `--isolate` worktrees degrade.
+- **disk-free** — free space on the volume that holds `SWARM_DB` / `.swarm` worktrees. WARN below the documented floor.
+- **control-plane-size** — combined size of `control-plane.db` + `.db-wal` + `.db-shm`. WARN at/above the documented ceiling. Doctor does not vacuum.
+- **stranded-worktrees** — leftover `--isolate` trees under `<repo>/.swarm/worktrees` (git-listed and fs-only orphans). WARN if any remain. Hint: `swarm clean <run-id>` (dry-run by default).
 
 ```text
-Usage: swarm doctor
+Usage: swarm doctor [--format=text|json]
 
 Example:
   $ swarm doctor
+  $ swarm doctor --format=json
 ```
 
 ## swarm verify
