@@ -30,7 +30,32 @@ import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { minimatch } from 'minimatch';
 import { STATUS } from '../db/schema.js';
+import { DomainsInvalidOwnershipError } from './errors.js';
 import { isSafeDomainName } from './worktree.js';
+
+/** Live ownership_class vocabulary for reject messages (F-969074b9). */
+function ownershipClassVocab() {
+  return STATUS.ownership_class.join('|');
+}
+
+/**
+ * @param {string} received
+ * @returns {never}
+ */
+function rejectInvalidOwnershipClass(received) {
+  const valid = [...STATUS.ownership_class];
+  // F-969074b9: typed envelope + enum in both message and hint (sibling of
+  // DISPATCH_INVALID_PHASE). Keep the "Invalid ownership class" phrase so
+  // existing package-root asserts still match.
+  throw new DomainsInvalidOwnershipError(
+    `Invalid ownership class: ${JSON.stringify(received)} — valid: ${ownershipClassVocab()}`,
+    {
+      received,
+      valid,
+      hint: `pass one of ${ownershipClassVocab()} — e.g. \`--ownership owned\``,
+    },
+  );
+}
 
 /**
  * Exclusive owners under resolveExclusiveOwner / findOwnedGlobOverlaps.
@@ -237,7 +262,7 @@ export function editDomain(db, runId, domainName, changes) {
   }
   if (changes.ownership_class) {
     if (!STATUS.ownership_class.includes(changes.ownership_class)) {
-      throw new Error(`Invalid ownership class: "${changes.ownership_class}"`);
+      rejectInvalidOwnershipClass(changes.ownership_class);
     }
     oldValues.ownership_class = domain.ownership_class;
     updates.push('ownership_class = ?');
@@ -281,9 +306,10 @@ export function addDomain(db, runId, domain) {
   // surfaced as a downstream ownership-accounting surprise. Reject at the same
   // boundary editDomain uses. (Mirrors editDomain's inline guard above.)
   // F-2710aadf: enum now includes coordinator (exclusive + non-agent-bearing).
+  // F-969074b9: typed DomainsInvalidOwnershipError + live enum in message/hint.
   if (domain.ownership_class != null
       && !STATUS.ownership_class.includes(domain.ownership_class)) {
-    throw new Error(`Invalid ownership class: ${JSON.stringify(domain.ownership_class)}`);
+    rejectInvalidOwnershipClass(domain.ownership_class);
   }
 
   const frozen = aredomainsFrozen(db, runId);

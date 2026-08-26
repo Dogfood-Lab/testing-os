@@ -68,35 +68,47 @@ export const MAX_AGENT_OUTPUT_BYTES = 50 * 1024 * 1024;
 const READ_CHUNK_BYTES = 1024 * 1024; // 1 MB
 
 /**
+ * Stable `.code` values for {@link BoundedJsonError}, keyed by `.kind`.
+ * F-e0eebfec: renderTopLevelError branches on `.code`; pre-fix this class
+ * only set `.code` from an fs cause (READ_FAILED) and never set `.hint`, so
+ * SIZE_LIMIT / PARSE_FAILED rendered as untyped `ERROR: …` with no Next:.
+ */
+const BOUNDED_JSON_CODES = Object.freeze({
+  SIZE_LIMIT: 'BOUNDED_JSON_SIZE_LIMIT',
+  READ_FAILED: 'BOUNDED_JSON_READ_FAILED',
+  PARSE_FAILED: 'BOUNDED_JSON_PARSE_FAILED',
+});
+
+const BOUNDED_JSON_HINTS = Object.freeze({
+  SIZE_LIMIT: 'inspect the file (logging loop / raw stdout / wrong path), lower the producer output, or raise maxBytes only after confirming the content is legitimate',
+  READ_FAILED: 'inspect the path (existence, permissions, not a directory) and retry',
+  PARSE_FAILED: 'fix the JSON at the path (truncated write, trailing commas, or non-JSON content) and retry',
+});
+
+/**
  * Error subclass surfaced when the path either (a) exceeds the byte limit
  * or (b) can't be parsed. Callers can `instanceof BoundedJsonError` to
  * differentiate from a pure `fs` error.
  *
- * The shape matches the structured-error convention this package uses
- * elsewhere (kind + path + hint) so it slots into the CLI's renderer
- * without a per-site translation.
+ * Shape (F-e0eebfec): stable `.code` + `.kind` + `.path` + default `.hint`
+ * so renderTopLevelError emits `ERROR [<CODE>]:` and a Next: line without
+ * a per-site translation. Underlying fs codes (ENOENT / EISDIR / …) stay
+ * on `.cause.code` — adapters that want the fs signal read the cause.
  */
 export class BoundedJsonError extends Error {
-  constructor(message, { kind, path: filePath, size, maxBytes, cause } = {}) {
+  constructor(message, { kind, path: filePath, size, maxBytes, cause, hint } = {}) {
     super(message);
     this.name = 'BoundedJsonError';
     this.kind = kind || 'BOUNDED_JSON';
+    // F-e0eebfec: always a stable swarm code for the CLI envelope — never
+    // the underlying fs code (that lives on cause.code when present).
+    this.code = BOUNDED_JSON_CODES[this.kind] || 'BOUNDED_JSON';
     this.path = filePath;
     if (size !== undefined) this.size = size;
     if (maxBytes !== undefined) this.maxBytes = maxBytes;
-    if (cause) {
-      this.cause = cause;
-      // F-a89f89f7: surface the underlying fs error code (ENOENT / EISDIR /
-      // EACCES / ...) on the wrapper itself. Callers that pattern-match on
-      // `.code` — the convention every Node fs error follows, and what
-      // lib/verify/adapters/python.js + rust.js's manifestUnreadableKind
-      // reporting relies on — would otherwise see `undefined` and fall back
-      // to the much less actionable `.name` ('BoundedJsonError') once those
-      // adapters route through this module instead of a raw fs call.
-      // Undefined when the cause has no `.code` (e.g. a JSON.parse
-      // SyntaxError) or there is no cause (SIZE_LIMIT).
-      if (cause.code) this.code = cause.code;
-    }
+    this.hint = hint || BOUNDED_JSON_HINTS[this.kind]
+      || 'inspect the path named in the message and retry with a smaller or well-formed input';
+    if (cause) this.cause = cause;
   }
 }
 

@@ -66,6 +66,10 @@ function deriveHintForCode(e) {
     // without one.
     case 'CONTROL_PLANE_SCHEMA_TOO_NEW':
       return `the on-disk control-plane.db is schema v${e.onDiskVersion ?? '?'} but this build understands v${e.buildVersion ?? '?'} — pull the latest @dogfood-lab/dogfood-swarm so your build SCHEMA_VERSION >= the on-disk version, then re-run. Do NOT hand-edit or delete the DB; its state is the newer build's correctly migrated state, not corruption.`;
+    // F-b69e26b3: dual-coverage fallback for ControlPlaneSchemaCorruptError —
+    // ctor sets `.hint`, but a hand-shaped/JSON-round-tripped `{code}` does not.
+    case 'CONTROL_PLANE_SCHEMA_CORRUPT':
+      return 'kv.schema_version is not a finite number — the control-plane.db is corrupted or was hand-edited, not merely older/newer. Restore control-plane.db from a known-good backup, or remove it to bootstrap a fresh one (only if this run\'s history is not needed) — do not hand-write schema_version without reading db/migrate.js\'s ledger first.';
     // F-4b72faf9: CriterionIntentOverflowError now sets its own `.hint` by
     // default (lib/errors.js) — this derived fallback mirrors
     // CONTROL_PLANE_SCHEMA_TOO_NEW's dual-coverage pattern immediately above,
@@ -93,6 +97,24 @@ function deriveHintForCode(e) {
     // covers any DISPATCH_INVALID_PHASE error that surfaces without a `.hint`.
     case 'DISPATCH_INVALID_PHASE':
       return `\`${e.phase ?? '<phase>'}\` is not a known phase — valid phases: ${renderPhaseList()}`;
+    // F-b69e26b3: the three newer DispatchPreconditionError codes (documented
+    // in errors.js JSDoc + opts.code union) were missing from this switch —
+    // live dispatch.js sets `.hint` at throw sites, but a hint-less shaped
+    // object got no Next:. Fallbacks mirror the live throw-site hints.
+    case 'DISPATCH_NO_AGENT_DOMAINS':
+      return `run \`swarm domains ${e.runId ?? '<run-id>'} --edit <name> --ownership owned\` (or --add a new owned/bridge domain) so at least one domain can carry an agent`;
+    case 'DISPATCH_WAVE_IN_FLIGHT':
+      return `finish the in-flight wave first: \`swarm collect ${e.runId ?? '<run-id>'}\` (or \`swarm resume ${e.runId ?? '<run-id>'}\` / \`swarm redrive <wave-id>\` / \`swarm rewind\` if it is unrecoverable)`;
+    case 'DISPATCH_ROADMAP_DIGEST_NOT_FOUND':
+      return `run \`swarm roadmap compile ${e.runId ?? '<run-id>'}\` first, or check \`swarm roadmap show ${e.runId ?? '<run-id>'}\``;
+    // F-e0eebfec: BoundedJsonError dual-coverage (ctor sets `.hint`; shaped
+    // `{code}` objects without one still need a Next: line).
+    case 'BOUNDED_JSON_SIZE_LIMIT':
+      return 'inspect the file (logging loop / raw stdout / wrong path), lower the producer output, or raise maxBytes only after confirming the content is legitimate';
+    case 'BOUNDED_JSON_READ_FAILED':
+      return 'inspect the path (existence, permissions, not a directory) and retry';
+    case 'BOUNDED_JSON_PARSE_FAILED':
+      return 'fix the JSON at the path (truncated write, trailing commas, or non-JSON content) and retry';
     // D3B-004 (Wave A2 Stage C): CLI globs JSON parse / shape failure.
     case 'CLI_INVALID_GLOBS_JSON':
       return 'pass --globs \'["packages/foo/**"]\' — wrap the JSON in single quotes so the shell preserves it, and use double quotes for each glob string';
@@ -105,6 +127,9 @@ function deriveHintForCode(e) {
     // following flag). Fallback hint for a `.hint`-less CLI_INVALID_FORMAT.
     case 'CLI_INVALID_FORMAT':
       return 'pass one of: text, markdown, json — e.g. `--format json` or `--format=markdown`';
+    // F-969074b9: DomainsInvalidOwnershipError dual-coverage fallback.
+    case 'DOMAINS_INVALID_OWNERSHIP_CLASS':
+      return `pass one of ${(e.valid && e.valid.length) ? e.valid.join('|') : 'owned|shared|bridge|coordinator'} — e.g. \`--ownership owned\``;
     default:
       return null;
   }

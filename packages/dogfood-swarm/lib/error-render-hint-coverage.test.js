@@ -167,6 +167,7 @@ import {
   CollectUpsertError,
   DispatchPreconditionError,
   CliInvalidGlobsError,
+  DomainsInvalidOwnershipError,
   ControlPlaneSchemaTooNewError,
   ControlPlaneSchemaCorruptError,
   CriterionIntentOverflowError,
@@ -244,8 +245,8 @@ function runNamedErrorTest(className, run) {
  *
  * `title` defaults to `className` (the common case, matching every existing
  * it() title below) but can be overridden for a test that documents more
- * than the bare class name (e.g. "all four documented codes") without
- * decoupling the DISPLAYED title from the name actually recorded for
+ * than the bare class name (e.g. "all documented DispatchPreconditionError codes")
+ * without decoupling the DISPLAYED title from the name actually recorded for
  * coverage purposes.
  *
  * @param {string} className
@@ -297,7 +298,7 @@ function nextLineFor(err) {
   return next;
 }
 
-/** @pins F-4b72faf9 */
+/** @pins F-4b72faf9 F-b69e26b3 F-969074b9 */
 describe('errors.js — every typed error renders a "Next:" hint (F-4b72faf9 class-level gate)', () => {
   it('GATE (negative control): a hint-less error whose code has no deriveHintForCode case renders NO "Next:" line', () => {
     // Proves nextLineFor() actually discriminates. Without this control, a
@@ -319,21 +320,41 @@ describe('errors.js — every typed error renders a "Next:" hint (F-4b72faf9 cla
     assert.ok(nextLineFor(e), 'CollectUpsertError must render a Next: hint');
   });
 
+  // F-b69e26b3: pin ALL seven documented DispatchPreconditionError codes
+  // (errors.js JSDoc + opts.code union), not the original four — without a
+  // constructor `.hint` so deriveHintForCode is the only Next: source.
   namedErrorTest('DispatchPreconditionError', () => {
     for (const code of [
       'DISPATCH_RUN_NOT_FOUND',
       'DISPATCH_DOMAINS_NOT_FROZEN',
       'DISPATCH_NO_DOMAINS',
       'DISPATCH_INVALID_PHASE',
+      'DISPATCH_NO_AGENT_DOMAINS',
+      'DISPATCH_WAVE_IN_FLIGHT',
+      'DISPATCH_ROADMAP_DIGEST_NOT_FOUND',
     ]) {
       const e = new DispatchPreconditionError('precondition failed', { code });
       assert.ok(nextLineFor(e), `DispatchPreconditionError[${code}] must render a Next: hint`);
     }
-  }, 'DispatchPreconditionError (all four documented codes)');
+  }, 'DispatchPreconditionError (all documented codes)');
 
   namedErrorTest('CliInvalidGlobsError', () => {
     const e = new CliInvalidGlobsError('bad globs JSON');
     assert.ok(nextLineFor(e), 'CliInvalidGlobsError must render a Next: hint');
+  });
+
+  namedErrorTest('DomainsInvalidOwnershipError', () => {
+    const e = new DomainsInvalidOwnershipError('Invalid ownership class: "exclusive"', {
+      received: 'exclusive',
+      valid: ['owned', 'shared', 'bridge', 'coordinator'],
+    });
+    assert.ok(nextLineFor(e), 'DomainsInvalidOwnershipError must render a Next: hint');
+    // Dual-coverage: shaped object without constructor-set .hint.
+    const shaped = Object.assign(new Error('bad ownership'), {
+      code: 'DOMAINS_INVALID_OWNERSHIP_CLASS',
+      valid: ['owned', 'shared', 'bridge', 'coordinator'],
+    });
+    assert.ok(nextLineFor(shaped), 'a .hint-less DOMAINS_INVALID_OWNERSHIP_CLASS must still get a fallback Next: hint');
   });
 
   namedErrorTest('ControlPlaneSchemaTooNewError', () => {
@@ -347,6 +368,12 @@ describe('errors.js — every typed error renders a "Next:" hint (F-4b72faf9 cla
     // requirement (F-7d4ac5ce/F-8f735719), applied to the newest errors.js class.
     const e = new ControlPlaneSchemaCorruptError('schema corrupt', { rawValue: 'not-a-number' });
     assert.ok(nextLineFor(e), 'ControlPlaneSchemaCorruptError must render a Next: hint');
+    // F-b69e26b3: dual-coverage for CONTROL_PLANE_SCHEMA_CORRUPT without ctor .hint.
+    const shaped = Object.assign(new Error('schema corrupt'), {
+      code: 'CONTROL_PLANE_SCHEMA_CORRUPT',
+      rawValue: 'not-a-number',
+    });
+    assert.ok(nextLineFor(shaped), 'a .hint-less CONTROL_PLANE_SCHEMA_CORRUPT must still get a fallback Next: hint');
   });
 
   namedErrorTest('CriterionIntentOverflowError', () => {
@@ -434,7 +461,7 @@ describe('errors.js coverage gate is DYNAMIC, not a hardcoded list (F-7d4ac5ce c
     assert.deepEqual(staleEntries, [], `EXERCISED_CLASSES names a class errors.js no longer exports: ${staleEntries.join(', ')}`);
   });
 
-  it('F-8f735719 GATE (mutation control): EXERCISED_CLASSES pins the exact 8 classes actually run above — no more, no fewer', () => {
+  it('F-8f735719 GATE (mutation control): EXERCISED_CLASSES pins the exact 9 classes actually run above — no more, no fewer', () => {
     // Content-addresses the coverage set itself (PROTOCOL.md sub-law 5: "a
     // count is not integrity") rather than only its cardinality — a future
     // author deleting one namedErrorTest call while adding an unrelated one
@@ -442,6 +469,7 @@ describe('errors.js coverage gate is DYNAMIC, not a hardcoded list (F-7d4ac5ce c
     // membership directly.
     //
     // F-9587adda (wave 31): ControlPlaneSchemaCorruptError added — 7 -> 8.
+    // F-969074b9 (wave 8 amend): DomainsInvalidOwnershipError added — 8 -> 9.
     assert.deepEqual(
       [...EXERCISED_CLASSES].sort(),
       [
@@ -451,6 +479,7 @@ describe('errors.js coverage gate is DYNAMIC, not a hardcoded list (F-7d4ac5ce c
         'ControlPlaneSchemaTooNewError',
         'CriterionIntentOverflowError',
         'DispatchPreconditionError',
+        'DomainsInvalidOwnershipError',
         'IsolationError',
         'StateMachineRejectionError',
       ],
