@@ -848,6 +848,7 @@ export function buildAuditPrompt(opts) {
   const worktreeSection = renderWorktreeSection(opts.isolatedWorktree, opts.repoPath);
   const outputContract = renderAuditOutputContract();
 
+  // F-35fdf791 / F-31d6f967: worked examples never teach F-001/F-002/F-003.
   return `# Swarm Audit — ${lens.label}
 
 **Repo:** ${opts.repo}

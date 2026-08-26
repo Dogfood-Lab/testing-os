@@ -585,7 +585,7 @@ export function collect(opts) {
     // git probe unavailable). The CLI surfaces a multi-domain wave here as a
     // banner recommending `--isolate`. Observability only — never a gate.
     ownership_probe_degraded: null,
-    // F-64e6da30 / GitHub #65: wave-level rollup of fixes[] refusals. null
+    // F-64e6da30 / F-a1e35a0d / GitHub #65: wave-level rollup of fixes[] refusals. null
     // until an amend agent skips at least one declaration; then counts by
     // reason + capped id sample, persisted to kv so status/receipt see it
     // after collect stdout scrolls past.

@@ -642,7 +642,8 @@ export const STATUS = {
   finding: ['new', 'recurring', 'approved', 'fixed', 'unverified', 'deferred', 'rejected'],
   finding_event: EVENT_TYPES,
   // coordinator: exclusive like owned, but non-agent-bearing (skipped at
-  // dispatch) — GitHub #67 / F-2710aadf. shared stays the only multi-writer.
+  // dispatch) — GitHub #67 / F-2710aadf / F-0ec571d2 / F-c63998c9.
+  // shared stays the only multi-writer.
   ownership_class: ['owned', 'shared', 'bridge', 'coordinator'],
   claim_type: ['edit', 'create', 'delete'],
   severity: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],
