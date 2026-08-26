@@ -627,3 +627,21 @@ export function neutralizeInvisibleControls(text) {
 export function escapePathForDisplay(path) {
   return escapeReasonForDisplay(path);
 }
+
+/**
+ * Escape a cell value for a GitHub-flavored Markdown pipe table.
+ *
+ * F-03526468: escapeReasonForDisplay neutralizes controls/bidi/zalgo but
+ * leaves literal `|` untouched. In formatReceiptMarkdown's Agents table a
+ * raw `|` in Error or Fixes skipped splits one cell into forged columns
+ * (header has 7 `|` delimiters; `boom | forged | cell` yields 9). Cell-
+ * boundary only — do not fold this into escapeReasonForDisplay, or plain-
+ * text status/history lines grow backslash noise for a grammar they never
+ * use.
+ *
+ * @param {string} cell
+ * @returns {string}
+ */
+export function escapeMarkdownTableCell(cell) {
+  return String(cell).replace(/\|/g, '\\|');
+}

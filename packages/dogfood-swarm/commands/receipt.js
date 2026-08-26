@@ -24,7 +24,11 @@ import { LATEST_AGENT_RUN_PER_DOMAIN } from '../lib/queries/latest-agent-runs.js
 import { FINDING_GATED_PHASES } from '../lib/advance.js';
 import { isOpenFinding } from '../lib/finding-status.js';
 import { logStage } from '../lib/log-stage.js';
-import { escapeReasonForDisplay, escapePathForDisplay } from './lib/escape-reason.js';
+import {
+  escapeReasonForDisplay,
+  escapePathForDisplay,
+  escapeMarkdownTableCell,
+} from './lib/escape-reason.js';
 import { pluralize } from './lib/pluralize.js';
 import {
   readWaveFixesSkipped,
@@ -390,8 +394,14 @@ export function formatReceiptMarkdown(r) {
     // parse the boolean); only the human-readable cell shifts to surface
     // the obligation.
     const skipped = a.verification_skipped ? 'REQUIRED' : '—';
+    // F-03526468: Fixes skipped / Error are the two untrusted Agents-table
+    // cells. Pipe-escape at the cell boundary (escapeMarkdownTableCell) so a
+    // literal `|` cannot forge columns; keep escapeReasonForDisplay on Error
+    // for controls/bidi/zalgo without widening that helper for MD tables.
     const fixesSkipCell = Array.isArray(a.fixes_skipped) && a.fixes_skipped.length > 0
-      ? a.fixes_skipped.map(s => `${s.finding_id}(${s.reason})`).join(', ')
+      ? escapeMarkdownTableCell(
+          a.fixes_skipped.map(s => `${s.finding_id}(${s.reason})`).join(', '),
+        )
       : '—';
     // F-f1dae277 (wave 22): a.error is agent_runs.error_message, which for an
     // 'ownership_violation' status agent is collect.js's `violMsg` —
@@ -403,7 +413,9 @@ export function formatReceiptMarkdown(r) {
     // escapeReasonForDisplay, not escapePathForDisplay: by the time it
     // reaches this column it is a composite message (template prose + one
     // or more joined paths), not a bare path.
-    const errorCell = a.error ? escapeReasonForDisplay(a.error) : '—';
+    const errorCell = a.error
+      ? escapeMarkdownTableCell(escapeReasonForDisplay(a.error))
+      : '—';
     lines.push(`| ${a.domain} | ${a.ownership_class} | ${a.status} | ${skipped} | ${fixesSkipCell} | ${errorCell} |`);
   }
   lines.push('');
