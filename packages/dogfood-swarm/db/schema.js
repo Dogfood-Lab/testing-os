@@ -641,7 +641,9 @@ export const STATUS = {
               'timed_out', 'invalid_output', 'ownership_violation', 'aborted_for_rewind'],
   finding: ['new', 'recurring', 'approved', 'fixed', 'unverified', 'deferred', 'rejected'],
   finding_event: EVENT_TYPES,
-  ownership_class: ['owned', 'shared', 'bridge'],
+  // coordinator: exclusive like owned, but non-agent-bearing (skipped at
+  // dispatch) — GitHub #67 / F-2710aadf. shared stays the only multi-writer.
+  ownership_class: ['owned', 'shared', 'bridge', 'coordinator'],
   claim_type: ['edit', 'create', 'delete'],
   severity: ['CRITICAL', 'HIGH', 'MEDIUM', 'LOW'],
   // v10 (C3): documentation/call-site parity constants — deliberately NOT SQL

@@ -2,7 +2,11 @@
  * domains.js — Auto-detect repo domains, draft/freeze, ownership enforcement.
  *
  * Domain mapping is draft-first: auto-detect proposes, coordinator edits, then freeze.
- * Three ownership classes: owned (exclusive), shared (multi-domain), bridge (coordinator-approved).
+ * Four ownership classes:
+ *   owned        — exclusive, agent-bearing
+ *   shared       — multi-writer, skipped at dispatch
+ *   bridge       — coordinator-approved multi-match, agent-bearing
+ *   coordinator  — exclusive like owned, skipped at dispatch (GitHub #67)
  *
  * Every domain change is persisted as a domain_event.
  *
@@ -25,7 +29,25 @@ import { readdirSync, existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
 import { minimatch } from 'minimatch';
+import { STATUS } from '../db/schema.js';
 import { isSafeDomainName } from './worktree.js';
+
+/**
+ * Exclusive owners under resolveExclusiveOwner / findOwnedGlobOverlaps.
+ * `coordinator` is exclusive like `owned` but not agent-bearing (F-2710aadf).
+ */
+export function isExclusiveOwnershipClass(cls) {
+  return cls === 'owned' || cls === 'coordinator';
+}
+
+/**
+ * Classes that receive agent seats at dispatch/collect/revalidate.
+ * Verbs filter should use this instead of `!== 'shared'` so coordinator
+ * domains are skipped without becoming world-writable shared surfaces.
+ */
+export function isAgentBearingOwnershipClass(cls) {
+  return cls === 'owned' || cls === 'bridge';
+}
 
 /**
  * Server-side source extensions for backend's ROOT-LEVEL entry-point
@@ -214,7 +236,7 @@ export function editDomain(db, runId, domainName, changes) {
     values.push(JSON.stringify(changes.globs));
   }
   if (changes.ownership_class) {
-    if (!['owned', 'shared', 'bridge'].includes(changes.ownership_class)) {
+    if (!STATUS.ownership_class.includes(changes.ownership_class)) {
       throw new Error(`Invalid ownership class: "${changes.ownership_class}"`);
     }
     oldValues.ownership_class = domain.ownership_class;
@@ -253,13 +275,14 @@ export function addDomain(db, runId, domain) {
     );
   }
 
-  // d5-swarm-cli-004 (Stage A): editDomain validates ownership_class against the
-  // {owned,shared,bridge} enum but addDomain did not — a literal bad value (e.g.
+  // d5-swarm-cli-004 (Stage A): editDomain validates ownership_class against
+  // STATUS.ownership_class but addDomain did not — a literal bad value (e.g.
   // `swarm domains --add x --ownership garbage`) persisted unvalidated and only
   // surfaced as a downstream ownership-accounting surprise. Reject at the same
   // boundary editDomain uses. (Mirrors editDomain's inline guard above.)
+  // F-2710aadf: enum now includes coordinator (exclusive + non-agent-bearing).
   if (domain.ownership_class != null
-      && !['owned', 'shared', 'bridge'].includes(domain.ownership_class)) {
+      && !STATUS.ownership_class.includes(domain.ownership_class)) {
     throw new Error(`Invalid ownership class: ${JSON.stringify(domain.ownership_class)}`);
   }
 
@@ -520,7 +543,10 @@ function globsCanIntersect(globA, globB) {
  * @returns {Array<{ a: string, b: string, globA: string, globB: string, witness: string|null }>}
  */
 function findOwnedGlobOverlaps(domains, files = null) {
-  const owned = domains.filter(d => d.ownership_class === 'owned');
+  // F-2710aadf: coordinator is exclusive like owned — overlaps between any
+  // exclusive classes (owned↔owned, owned↔coordinator, coordinator↔coordinator)
+  // must be rejected at freeze the same way.
+  const owned = domains.filter(d => isExclusiveOwnershipClass(d.ownership_class));
   const conflicts = [];
   const seen = new Set();
 
@@ -555,16 +581,18 @@ function findOwnedGlobOverlaps(domains, files = null) {
 }
 
 /**
- * Resolve the single exclusive owner of a file by specificity: the owned domain
- * whose best-matching glob is the most specific wins, ties broken
- * deterministically by domain name. This is ORDER-INDEPENDENT — it does not
- * depend on getDomains' ORDER BY name nor on DEFAULT_BUCKETS order — yet it
- * matches detectDomains' first-match-wins intent (the earlier, narrower bucket
- * claims the file), so `src/ui/App.tsx` resolves to frontend (`src/ui/**`,
- * `src/**` *.tsx) over backend (`src/**`). sm-r-001: the prior version iterated
- * getDomains' alphabetical order, which DISAGREED with detection order and
- * misattributed ownership once the freeze guard was relaxed. Returns the owning
- * domain name, or null if no owned domain matches.
+ * Resolve the single exclusive owner of a file by specificity: the exclusive
+ * domain (owned or coordinator) whose best-matching glob is the most specific
+ * wins, ties broken deterministically by domain name. This is ORDER-INDEPENDENT
+ * — it does not depend on getDomains' ORDER BY name nor on DEFAULT_BUCKETS
+ * order — yet it matches detectDomains' first-match-wins intent (the earlier,
+ * narrower bucket claims the file), so `src/ui/App.tsx` resolves to frontend
+ * (`src/ui/**`, `src/**` *.tsx) over backend (`src/**`). sm-r-001: the prior
+ * version iterated getDomains' alphabetical order, which DISAGREED with
+ * detection order and misattributed ownership once the freeze guard was
+ * relaxed. Returns the owning domain name, or null if no exclusive domain
+ * matches. F-2710aadf: coordinator is exclusive here so checkOwnership names
+ * that domain as actual_owner instead of "unassigned".
  *
  * Exported (wave2-live-001): the non-isolated ownership-probe narrowing in
  * collect/revalidate must use THIS arbitration, not bare glob membership —
@@ -574,7 +602,7 @@ function findOwnedGlobOverlaps(domains, files = null) {
 export function resolveExclusiveOwner(domains, file) {
   let winner = null;
   for (const d of domains) {
-    if (d.ownership_class !== 'owned') continue;
+    if (!isExclusiveOwnershipClass(d.ownership_class)) continue;
     const match = bestMatchingGlob(d.globs, file);
     if (!match) continue;
     if (winner === null) {
@@ -797,10 +825,11 @@ export function checkOwnership(db, runId, domainName, changedFiles) {
   for (const file of changedFiles) {
     // sm-002: resolve the file's SINGLE exclusive owner via first-match-wins
     // (same arbitration detectDomains uses) rather than testing the agent's
-    // globs in isolation. With overlapping owned globs (which freezeDomains now
-    // rejects, but this is the defense-in-depth runtime half) a bare
+    // globs in isolation. With overlapping exclusive globs (which freezeDomains
+    // now rejects, but this is the defense-in-depth runtime half) a bare
     // `globs.some(...)` would let a non-owner pass; here a file owned by some
-    // OTHER owned domain falls through to the violation path below.
+    // OTHER exclusive domain (owned or coordinator) falls through to the
+    // violation path below.
     const exclusiveOwner = resolveExclusiveOwner(domains, file);
 
     if (exclusiveOwner === agentDomain.name) {
@@ -809,13 +838,14 @@ export function checkOwnership(db, runId, domainName, changedFiles) {
     }
 
     // DS-MUT-003: the shared/bridge fallback is ONLY for files with no
-    // exclusive owner. A file exclusively owned by a DIFFERENT owned domain is
-    // a VIOLATION even when a broad shared/bridge glob ALSO matches it — the
-    // classic case is a root `tsconfig.json` claimed by an owned `ci-tooling`
-    // domain (`tsconfig*.json`) AND the shared `*.json` glob. Letting the
-    // shared match win here would override the exclusive owner and rule agent
-    // A's edit of domain B's file "shared-valid", silently bypassing exclusive
-    // ownership. Only fall through when the file is genuinely unowned.
+    // exclusive owner. A file exclusively owned by a DIFFERENT exclusive domain
+    // is a VIOLATION even when a broad shared/bridge glob ALSO matches it —
+    // the classic case is a root `tsconfig.json` claimed by an owned
+    // `ci-tooling` domain (`tsconfig*.json`) AND the shared `*.json` glob.
+    // Letting the shared match win here would override the exclusive owner and
+    // rule agent A's edit of domain B's file "shared-valid", silently bypassing
+    // exclusive ownership. Only fall through when the file is genuinely
+    // unowned. F-2710aadf: coordinator domains count as exclusive owners.
     if (exclusiveOwner === null) {
       const sharedDomain = domains.find(d =>
         d.ownership_class === 'shared' &&

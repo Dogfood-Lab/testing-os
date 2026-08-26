@@ -967,14 +967,15 @@ ${outputContract}
 ## Output Format
 
 After making fixes, respond with ONLY a JSON object. The worked example below
-illustrates shape; the canonical contract above is load-bearing:
+illustrates shape; the canonical contract above is load-bearing.
+\`finding_id\` MUST be one of the ids under Findings to Fix (never F-001/F-002/F-003):
 
 \`\`\`json
 {
   "domain": "${opts.domainName}",
   "fixes": [
     {
-      "finding_id": "F-001",
+      "finding_id": "F-xxxxxxxx",
       "file": "path/to/file",
       "description": "What was changed"
     }
@@ -982,7 +983,7 @@ illustrates shape; the canonical contract above is load-bearing:
   "files_changed": ["path/to/file1", "path/to/file2"],
   "skipped": [
     {
-      "finding_id": "F-003",
+      "finding_id": "F-xxxxxxxx",
       "reason": "Requires cross-domain edit in frontend/app.js"
     }
   ],
