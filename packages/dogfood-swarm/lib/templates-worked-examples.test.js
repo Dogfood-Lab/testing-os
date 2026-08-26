@@ -114,3 +114,69 @@ describe('templates worked examples — schema field-pattern conformance', () =>
     });
   }
 });
+
+/** Non-copyable placeholder shape: F-xxxxxxxx, F-<8hex>, or DOMAIN-B-NNN. */
+const CANONICAL_EXAMPLE_ID = /^(F-xxxxxxxx|F-[a-f0-9]{8}|[A-Z]+-B-\d{3})$/;
+const FORBIDDEN_LOCAL_IDS = new Set(['F-001', 'F-002', 'F-003']);
+
+describe('audit/feature worked-example id discipline (F-35fdf791)', () => {
+  /** @pins F-35fdf791 */
+  it('buildAuditPrompt findings[].id is F-xxxxxxxx/DOMAIN-B-001, never F-001; prose forbids F-001/F-002/F-003', () => {
+    const [block] = extractJsonBlocks(auditPrompt);
+    assert.ok(Array.isArray(block.findings) && block.findings.length > 0,
+      'audit worked example must include findings[]');
+
+    for (const finding of block.findings) {
+      assert.equal(typeof finding.id, 'string');
+      assert.ok(!FORBIDDEN_LOCAL_IDS.has(finding.id),
+        `audit findings[].id must not teach local placeholder ${finding.id}`);
+      assert.match(
+        finding.id,
+        CANONICAL_EXAMPLE_ID,
+        `audit findings[].id ${JSON.stringify(finding.id)} must be F-xxxxxxxx, F-<8hex>, or DOMAIN-B-NNN`,
+      );
+    }
+
+    assert.match(
+      auditPrompt,
+      /never F-001\/F-002\/F-003/,
+      'audit Output Format prose must forbid F-001/F-002/F-003 the way amend already does',
+    );
+  });
+
+  /** @pins F-35fdf791 */
+  it('buildFeatureAuditPrompt features[].id and confirmed[] never teach F-001/F-002; prose forbids them', () => {
+    const [block] = extractJsonBlocks(featurePrompt);
+    assert.ok(Array.isArray(block.features) && block.features.length > 0,
+      'feature-audit worked example must include features[]');
+
+    for (const feature of block.features) {
+      assert.equal(typeof feature.id, 'string');
+      assert.ok(!FORBIDDEN_LOCAL_IDS.has(feature.id),
+        `feature-audit features[].id must not teach local placeholder ${feature.id}`);
+      assert.match(
+        feature.id,
+        CANONICAL_EXAMPLE_ID,
+        `feature-audit features[].id ${JSON.stringify(feature.id)} must be F-xxxxxxxx or F-<8hex>`,
+      );
+    }
+
+    assert.ok(Array.isArray(block.confirmed), 'feature-audit worked example must include confirmed[]');
+    for (const id of block.confirmed) {
+      assert.equal(typeof id, 'string');
+      assert.ok(!FORBIDDEN_LOCAL_IDS.has(id),
+        `feature-audit confirmed[] must not teach local placeholder ${id}`);
+      assert.match(
+        id,
+        CANONICAL_EXAMPLE_ID,
+        `feature-audit confirmed[] entry ${JSON.stringify(id)} must be F-xxxxxxxx or F-<8hex>`,
+      );
+    }
+
+    assert.match(
+      featurePrompt,
+      /never F-001\/F-002\/F-003/,
+      'feature-audit Output Format prose must forbid F-001/F-002/F-003 the way amend already does',
+    );
+  });
+});

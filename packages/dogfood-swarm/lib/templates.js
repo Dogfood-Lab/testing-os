@@ -876,7 +876,9 @@ ${outputContract}
 ## Output Format
 
 Respond with ONLY a JSON object (no markdown fences, no commentary). The worked
-example below illustrates shape; the canonical contract above is load-bearing:
+example below illustrates shape; the canonical contract above is load-bearing.
+\`findings[].id\` MUST be a fresh canonical id — F-xxxxxxxx or DOMAIN-B-001 —
+never F-001/F-002/F-003:
 
 \`\`\`json
 {
@@ -884,7 +886,7 @@ example below illustrates shape; the canonical contract above is load-bearing:
   "stage": "${PHASE_TO_STAGE[opts.phase] || opts.phase.toUpperCase()}",
   "findings": [
     {
-      "id": "F-001",
+      "id": "F-xxxxxxxx",
       "severity": "CRITICAL|HIGH|MEDIUM|LOW",
       "category": "<category>",
       "file": "path/to/file",
@@ -1073,14 +1075,17 @@ ${outputContract}
 ## Output Format
 
 Respond with ONLY a JSON object. The worked example below illustrates shape;
-the canonical contract above is load-bearing:
+the canonical contract above is load-bearing.
+\`features[].id\` MUST be a fresh canonical id (F-xxxxxxxx), never
+F-001/F-002/F-003; \`confirmed\` entries MUST be ids from the CONFIRM queue
+(never F-001/F-002/F-003):
 
 \`\`\`json
 {
   "domain": "${opts.domainName}",
   "features": [
     {
-      "id": "F-001",
+      "id": "F-xxxxxxxx",
       "priority": "CRITICAL|HIGH|MEDIUM|LOW",
       "category": "missing-feature|ux|performance|integration|production-readiness",
       "description": "What is needed",
@@ -1089,7 +1094,7 @@ the canonical contract above is load-bearing:
       "recommendation": "How to implement"
     }
   ],
-  "confirmed": ["F-002"],
+  "confirmed": ["F-xxxxxxxx"],
   "summary": "Domain feature assessment"
 }
 \`\`\``;
