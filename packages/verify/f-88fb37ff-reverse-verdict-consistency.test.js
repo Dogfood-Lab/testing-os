@@ -87,15 +87,9 @@ describe('F-88fb37ff: real verify() pipeline rejects a self-contradictory blocke
       ),
       `expected a steps[...] reverse-consistency reason, got: ${JSON.stringify(record.verification.rejection_reasons)}`
     );
-    // Note: overall_verdict.verified is NOT asserted here. It is computed by
-    // computeVerdict() purely from {schemaValid, provenanceConfirmed,
-    // policyValid, scenario_results[].verdict} and is independent of
-    // rejection_reasons/status — a PRE-EXISTING, unrelated design property
-    // (e.g. a schema-valid `repo:mismatch` rejection also leaves
-    // overall_verdict.verified:'pass', downgraded:false, confirmed against
-    // the real pipeline). Decoupling overall_verdict from rejection_reasons
-    // is out of scope for F-88fb37ff — that finding is about
-    // validateStepResults/validateRequiredSteps, not computeVerdict's gating.
+    // overall_verdict.verified is sealed by F-a0a4d806 (non-empty rejection
+    // reasons force a fail floor). This finding stays scoped to
+    // validateStepResults/validateRequiredSteps reverse-consistency.
   });
 
   it('REJECTS verdict="fail" when every step reports "pass" (same gap, other verdict value)', async () => {

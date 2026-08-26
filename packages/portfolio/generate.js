@@ -108,7 +108,10 @@ const DEFAULT_WARN_AGE = 14;
 export function parsePolicy(rawText) {
   let doc;
   try {
-    doc = yaml.load(rawText);
+    // F-998fb547: CORE_SCHEMA — same merge-key DoS seal as findings'
+    // safe-yaml-load and ingest's parseUntrustedScenarioYaml (COORD-001).
+    // Policy YAML never needs YAML-1.1 merge/`<<` resolution.
+    doc = yaml.load(rawText, { schema: yaml.CORE_SCHEMA });
   } catch (err) {
     // Malformed YAML — return empty policy so the caller can decide whether
     // to skip the file or surface the error. Mirrors the original
@@ -231,7 +234,9 @@ function loadPoliciesFromOrgDir(orgDir) {
     }
     let doc;
     try {
-      doc = yaml.load(text);
+      // F-998fb547: CORE_SCHEMA at the loadPoliciesFromOrgDir parse site too —
+      // this path reads `repo:` before parsePolicy re-parses the same text.
+      doc = yaml.load(text, { schema: yaml.CORE_SCHEMA });
     } catch {
       continue;
     }

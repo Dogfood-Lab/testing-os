@@ -84,7 +84,13 @@ export function loadYamlFile(filePath) {
     return { data: null, error: `Read error: ${err.message}` };
   }
   try {
-    const data = yaml.load(raw);
+    // F-998fb547: CORE_SCHEMA omits YAML-1.1 merge keys (`<<`). DEFAULT_SCHEMA
+    // resolves them via mergeMappings()'s O(depth) copy — a hostile merge-chain
+    // in findings/patterns/doctrine trees can stall derive/review/synthesis
+    // despite MAX_YAML_BYTES, because the cost is in merge resolution, not size.
+    // Mirrors packages/ingest/load-context.js parseUntrustedScenarioYaml
+    // (COORD-001); js-yaml stays on v4 (v5 held — Dependabot #50).
+    const data = yaml.load(raw, { schema: yaml.CORE_SCHEMA });
     return { data, error: null };
   } catch (err) {
     return { data: null, error: `YAML parse error: ${err.message}` };
