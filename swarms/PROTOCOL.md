@@ -346,25 +346,23 @@ Return to Phase 5 for a fresh feature audit.
 
 ### Phase 9: TEST
 
-Final comprehensive test pass validating everything works together.
+`test` is a **run status**, not a dispatchable phase. It is not in `AUDIT_PHASES` / `AMEND_PHASES`. `swarm dispatch <run-id> test` is `DISPATCH_INVALID_PHASE`. `swarm advance` after a verified confirming `feature-audit` is the only lawful promotion (`PHASE_MAP`: `feature-audit` → `test`).
 
-1. Run the full test suite:
-   ```bash
-   # Node/TypeScript
-   npm run lint && tsc --noEmit && npm test
+The CLI's "Next: swarm dispatch … test" after that promotion is a **lie**. Ignore it. File it later; do not obey it.
 
-   # Rust
-   cargo check && cargo test
+Coordinator Phase 9 (no agent wave):
 
-   # Python
-   ruff check . && pytest
-   ```
+```bash
+swarm advance <run-id>
+npm run verify
+swarm doctor
+```
 
-2. Run integration/E2E tests if they exist.
-3. Verify no regressions from any wave.
-4. Record the final test count and pass rate in the control plane: `swarm verify <run-id>` writes the verification receipt.
-5. If any failures, dispatch targeted fix agents and re-run.
-6. Proceed to Phase 10 (Full Treatment).
+On this repo, `npm run verify` is the comprehensive pass (sync-version, doc-drift, Class #14 pins, build, script tests, workspace tests). Unpiped. Keep the log. `swarm doctor` is part of the pass (stranded-worktrees WARN is not a delete; reclaim with `swarm clean`).
+
+Do **not** advance again. Next promotion is `treatment` → `complete`. Leave the run sitting on `test` until Phase 10 is called. Do not `complete`. `--check-only` showing BLOCK (wave status: advanced) is the waypoint, not a next dispatch.
+
+If verify fails, file and fix as coordinator or a targeted amend — do not invent a `test` wave.
 
 ---
 
