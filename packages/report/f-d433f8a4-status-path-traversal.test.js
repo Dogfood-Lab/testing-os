@@ -51,6 +51,7 @@ function trackingFetch(files) {
   return { fetchImpl, calls };
 }
 
+/** @pins F-d433f8a4 */
 describe('F-d433f8a4: assertSafeRecordPath refuses off-base entry.path', () => {
   const base = DEFAULT_INDEX_BASE;
 
@@ -96,6 +97,7 @@ describe('F-d433f8a4: assertSafeRecordPath refuses off-base entry.path', () => {
   });
 });
 
+/** @pins F-d433f8a4 */
 describe('F-d433f8a4: runStatus does not fetch off-base entry.path', () => {
   it('throws INDEX_MALFORMED and never fetches an absolute evil URL', async () => {
     const evil = 'https://evil.example/x.json';

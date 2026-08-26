@@ -36,6 +36,7 @@ const SIMPLE_MERGE_PROBE = [
   ''
 ].join('\n');
 
+/** @pins F-998fb547 */
 describe('F-998fb547: portfolio policy CORE_SCHEMA merge-key seal', () => {
   before(() => {
     if (existsSync(TEST_ROOT)) rmSync(TEST_ROOT, { recursive: true });

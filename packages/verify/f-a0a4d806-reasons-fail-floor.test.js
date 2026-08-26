@@ -36,6 +36,7 @@ before(() => {
   );
 });
 
+/** @pins F-a0a4d806 */
 describe('F-a0a4d806: non-empty reasons force verified fail', () => {
   it('unit: computeVerdict floors to fail when reasons is non-empty even if scenarios pass', () => {
     const result = computeVerdict('pass', {

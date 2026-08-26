@@ -74,6 +74,7 @@ function amendOutput(domain, fixes) {
   });
 }
 
+/** @pins F-64e6da30 */
 describe('F-64e6da30 — fixes_skipped reaches status/receipt (GitHub #65)', () => {
   let tmpDir, dbPath, repoPath;
 

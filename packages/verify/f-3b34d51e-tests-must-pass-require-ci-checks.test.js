@@ -25,6 +25,7 @@ before(() => {
   pilot0 = JSON.parse(readFileSync(resolve(FIXTURES, 'pilot-0-submission.json'), 'utf-8'));
 });
 
+/** @pins F-3b34d51e */
 describe('F-3b34d51e: tests_must_pass requires kind:test CI evidence', () => {
   const globalPolicy = {
     defaults: {
