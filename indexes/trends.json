@@ -2,9 +2,9 @@
   "dogfood-lab/testing-os": {
     "cli": {
       "current": {
-        "finished_at": "2026-08-25T23:31:35.218Z",
-        "run_id": "00mt9au4ky-1aihDk7yro9Y7Q",
-        "verified": "fail"
+        "finished_at": "2026-08-26T05:36:11.017Z",
+        "run_id": "00mt9nv021-tIG1-uHkglr1EQ",
+        "verified": "pass"
       },
       "history": [
         {
@@ -101,19 +101,24 @@
           "finished_at": "2026-08-25T23:31:35.218Z",
           "run_id": "00mt9au4ky-1aihDk7yro9Y7Q",
           "verified": "fail"
+        },
+        {
+          "finished_at": "2026-08-26T05:36:11.017Z",
+          "run_id": "00mt9nv021-tIG1-uHkglr1EQ",
+          "verified": "pass"
         }
       ],
-      "latest_path": "records/dogfood-lab/testing-os/2026/08/25/run-00mt9au4ky-1aihDk7yro9Y7Q.json",
-      "pass_rate": 0,
-      "pass_rate_sample": 1,
+      "latest_path": "records/dogfood-lab/testing-os/2026/08/26/run-00mt9nv021-tIG1-uHkglr1EQ.json",
+      "pass_rate": 0.5,
+      "pass_rate_sample": 2,
       "pass_rate_window_days": 30,
       "previous": {
-        "finished_at": "2026-07-22T13:05:06.398Z",
-        "run_id": "00mrw3hi72-DncDQ_pycEuifw",
-        "verified": "pass"
+        "finished_at": "2026-08-25T23:31:35.218Z",
+        "run_id": "00mt9au4ky-1aihDk7yro9Y7Q",
+        "verified": "fail"
       },
-      "recovered": false,
-      "regressed": true
+      "recovered": true,
+      "regressed": false
     }
   },
   "mcp-tool-shop-org/a11y-demo-site": {
