@@ -47,6 +47,7 @@ import {
 // can desync from it. See commands/revalidate.js's identical fix (this same
 // wave) for the sibling copy in this domain.
 import { AUDIT_PHASES, AMEND_PHASES } from '../lib/phases.js';
+import { runNotFoundError } from './lib/run-lookup-error.js';
 
 /**
  * The deterministic per-domain output filename the dispatch layout promises an
@@ -90,7 +91,7 @@ export function resolveAllDomainOutputs(opts) {
   const db = openDb(opts.dbPath);
 
   const run = db.prepare('SELECT id FROM runs WHERE id = ?').get(opts.runId);
-  if (!run) throw new Error(`Run not found: ${opts.runId}`);
+  if (!run) throw runNotFoundError(opts.runId);
 
   const wave = db.prepare(`
     SELECT * FROM waves WHERE run_id = ? AND status = 'dispatched'
@@ -457,7 +458,7 @@ export function collect(opts) {
   const db = openDb(opts.dbPath);
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(opts.runId);
-  if (!run) throw new Error(`Run not found: ${opts.runId}`);
+  if (!run) throw runNotFoundError(opts.runId);
 
   // Find current wave (most recent dispatched)
   const wave = db.prepare(`

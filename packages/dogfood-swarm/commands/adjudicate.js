@@ -58,6 +58,7 @@ import { adjudicate, buildJurySpec } from '../lib/case-file/adjudicate.js';
 import { toJuryRequest } from '../lib/case-file/handoff.js';
 import { persistAdjudication, deleteAdjudication, getLatestAdjudication } from '../lib/adjudication-store.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { runNotFoundError, noWavesError } from './lib/run-lookup-error.js';
 
 /** Default receipt writer — atomic (helper-adoption discipline), parent-dir safe. */
 function defaultWriteReceipt(path, content) {
@@ -83,11 +84,11 @@ export async function runAdjudicate(db, opts) {
   const { runId, caseFile, runJury, seats, swarmDir, writeReceipt = defaultWriteReceipt } = opts;
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
-  if (!run) throw new Error(`Run not found: ${runId}`);
+  if (!run) throw runNotFoundError(runId);
   const wave = db.prepare(
     'SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1',
   ).get(runId);
-  if (!wave) throw new Error(`No waves found for run ${runId}`);
+  if (!wave) throw noWavesError(runId);
 
   // Fail-closed on a biasing case-file: adjudicate() runs the neutrality gate
   // (toJuryRequest) before the jury is ever called; a CaseFileNeutralityError
@@ -142,11 +143,11 @@ export function previewAdjudicate(db, opts) {
   const { runId, caseFile, seats, tier, cloud } = opts;
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
-  if (!run) throw new Error(`Run not found: ${runId}`);
+  if (!run) throw runNotFoundError(runId);
   const wave = db.prepare(
     'SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1',
   ).get(runId);
-  if (!wave) throw new Error(`No waves found for run ${runId}`);
+  if (!wave) throw noWavesError(runId);
 
   const juryRequest = toJuryRequest(caseFile); // fail-closed on a biasing case-file
   const spec = buildJurySpec(juryRequest, { seats });

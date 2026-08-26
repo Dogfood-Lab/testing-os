@@ -30,6 +30,7 @@ import {
   readWaveFixesSkipped,
   formatFixesSkippedSummary,
 } from './lib/fixes-skipped.js';
+import { runNotFoundError, noWavesError } from './lib/run-lookup-error.js';
 
 /**
  * Build a receipt object from DB truth.
@@ -44,7 +45,7 @@ export function buildReceipt(opts) {
   const db = openDb(opts.dbPath);
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(opts.runId);
-  if (!run) throw new Error(`Run not found: ${opts.runId}`);
+  if (!run) throw runNotFoundError(opts.runId);
 
   // Find wave
   let wave;
@@ -55,7 +56,7 @@ export function buildReceipt(opts) {
     wave = db.prepare('SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1')
       .get(opts.runId);
   }
-  if (!wave) throw new Error('No waves found');
+  if (!wave) throw noWavesError(opts.runId);
 
   // Agent runs — F-H6 (Wave A1 D3): wave-9 latest-per-(wave, domain) filter
   // via the shared helper. Without the filter the receipt surfaced stale

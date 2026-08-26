@@ -20,6 +20,7 @@ import {
   readWaveFixesSkipped,
   formatFixesSkippedSummary,
 } from './lib/fixes-skipped.js';
+import { runNotFoundError } from './lib/run-lookup-error.js';
 
 /**
  * @param {object} opts
@@ -31,7 +32,7 @@ export function status(opts) {
   const db = openDb(opts.dbPath);
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(opts.runId);
-  if (!run) throw new Error(`Run not found: ${opts.runId}`);
+  if (!run) throw runNotFoundError(opts.runId);
 
   // Domains
   const domains = db.prepare('SELECT * FROM domains WHERE run_id = ?').all(opts.runId);

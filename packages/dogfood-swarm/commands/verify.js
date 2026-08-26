@@ -13,6 +13,30 @@ import { runVerification, probeAll, selectAdapter, listAdapters } from '../lib/v
 import { transitionWave } from '../lib/wave-state-machine.js';
 import { logStage } from '../lib/log-stage.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
+import { runNotFoundError, noWavesError } from './lib/run-lookup-error.js';
+
+/**
+ * CLI-authored TTY liveness for the serial-verify gate (F-6be3a42b).
+ * Child npm/test output stays piped into the receipt — never inherited onto
+ * the operator channel — so the gate's exit code is not buried under noise.
+ * Progress is stderr-only; stdout stays reserved for formatVerify / --format=json.
+ */
+function emitVerifyProgress(msg, stream = process.stderr) {
+  if (stream && stream.isTTY) console.error(`  · ${msg}`);
+}
+
+function plannedStepNames(adapter, probe, commandOverrides) {
+  if (!adapter || typeof adapter.commands !== 'function') return [];
+  try {
+    const evidence = probe?.evidence || {};
+    // nodeAdapter.commands(overrides, evidence); python/rust ignore the 2nd arg.
+    const steps = adapter.commands(commandOverrides || {}, evidence);
+    if (!Array.isArray(steps)) return [];
+    return steps.filter(Boolean).map((s) => s.name).filter(Boolean);
+  } catch {
+    return [];
+  }
+}
 
 /**
  * Mint a synthetic correlation_id for the verify wave-gate. Mirrors the
@@ -56,14 +80,14 @@ export function verify(opts) {
   const db = openDb(opts.dbPath);
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(opts.runId);
-  if (!run) throw new Error(`Run not found: ${opts.runId}`);
+  if (!run) throw runNotFoundError(opts.runId);
 
   // Find current wave
   const wave = db.prepare(`
     SELECT * FROM waves WHERE run_id = ?
     ORDER BY wave_number DESC LIMIT 1
   `).get(opts.runId);
-  if (!wave) throw new Error('No waves found');
+  if (!wave) throw noWavesError(opts.runId);
 
   const correlationId = mintCorrelationId();
   logStage('verify_start', {
@@ -74,11 +98,46 @@ export function verify(opts) {
     adapter: opts.override || 'auto',
   });
 
+  // F-6be3a42b: announce the gate on a TTY before the blocking runVerification
+  // call. Per-step mid-flight hooks need runSteps onStepStart (swarm-cp-core);
+  // here we preview planned steps, keep child stdio captured, then report
+  // step-done lines from the returned receipt so the operator sees progress
+  // without losing the gate exit code under raw npm noise.
+  let selection = null;
+  try {
+    selection = selectAdapter(run.local_path, opts.override);
+  } catch {
+    selection = null;
+  }
+  const planned = plannedStepNames(
+    selection?.adapter,
+    selection?.probe,
+    opts.commandOverrides,
+  );
+  const adapterLabel = selection?.name || opts.override || 'auto';
+  emitVerifyProgress(
+    `verify starting — adapter=${adapterLabel}` +
+      (planned.length ? ` steps: ${planned.join(', ')}` : '') +
+      ' (child output captured for receipt, not streamed)',
+  );
+
   // Run verification
   const result = runVerification(run.local_path, {
     override: opts.override,
     commandOverrides: opts.commandOverrides,
   });
+
+  for (const step of result.steps || []) {
+    const status = step.passed ? 'pass' : 'FAIL';
+    const ms = step.duration_ms != null ? `${step.duration_ms}ms` : '?ms';
+    emitVerifyProgress(
+      `${step.name}: ${status} (exit ${step.exit_code}, ${ms})`,
+    );
+  }
+  emitVerifyProgress(
+    `verify done — verdict=${result.verdict}` +
+      (result.reason ? ` — ${result.reason}` : ''),
+  );
 
   // ve-p-003: the runtime verdict vocabulary (whatever lib/verify/runner.js's
   // runSteps() can assign — named here rather than enumerated so this
@@ -209,7 +268,7 @@ export function verify(opts) {
 export function probeRepo(opts) {
   const db = openDb(opts.dbPath);
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(opts.runId);
-  if (!run) throw new Error(`Run not found: ${opts.runId}`);
+  if (!run) throw runNotFoundError(opts.runId);
 
   return probeAll(run.local_path);
 }

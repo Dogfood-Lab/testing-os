@@ -69,6 +69,7 @@ import { buildV2Delta } from '../lib/verify-classifier-v2.js';
 import { renderVerifyFixedDelta } from '../lib/findings-render.js';
 import { logStage } from '../lib/log-stage.js';
 import { readBoundedJson } from '../lib/bounded-json-read.js';
+import { runNotFoundError } from './lib/run-lookup-error.js';
 
 const V2_SCHEMA = 'verify-fixed-delta/v2';
 const V2_VERB = 'verify-fixed';
@@ -93,7 +94,7 @@ export function verifyFixed(opts) {
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(opts.runId);
   if (!run) {
-    throw new Error(`Run not found: ${opts.runId}`);
+    throw runNotFoundError(opts.runId);
   }
 
   // Pin the wave number to the latest wave for filename + reporting. We
