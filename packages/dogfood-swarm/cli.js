@@ -665,8 +665,8 @@ function cmdDispatch(args) {
       console.log(`  ${f.finding_id} [${f.severity}] ${f.file_path ? escapePathForDisplay(f.file_path) : '(no file_path — cannot match any domain glob)'}`);
     }
     console.log('  These findings stay OPEN and block the severity gate, but no amend agent will receive them.');
-    console.log('  Close them via the coordinator_resolved path: land the fix yourself, then `swarm resolve <run-id> --ids F-c63c7498,F-a1b2c3d4 --evidence "<one line>"` — it persists coordinator_resolved + verified_via_evidence so `swarm verify-fixed <run-id>` classifies the closure as allowlist instead of unverifiable (no raw SQL).');
-    console.log('  Or dispose without a fix: `swarm defer <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>"` (accepted/postponed) / `swarm reject <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>"` (not-a-defect) — both close the finding for the gate.');
+    console.log('  Close them via the coordinator_resolved path: land the fix yourself, then `swarm resolve <run-id> --ids F-c63c7498,F-xxxxxxxx --evidence "<one line>"` — it persists coordinator_resolved + verified_via_evidence so `swarm verify-fixed <run-id>` classifies the closure as allowlist instead of unverifiable (no raw SQL).');
+    console.log('  Or dispose without a fix: `swarm defer <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>"` (accepted/postponed) / `swarm reject <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>"` (not-a-defect) — both close the finding for the gate.');
   }
 
   if (result.dryRun) {
@@ -2092,14 +2092,14 @@ function cmdAdvance(args) {
 function cmdApprove(args) {
   const runId = args[0];
   if (!runId) {
-    console.error('Usage: swarm approve <run-id> [--all | --ids F-c63c7498,F-a1b2c3d4]');
+    console.error('Usage: swarm approve <run-id> [--all | --ids F-c63c7498,F-xxxxxxxx]');
     process.exit(1);
   }
 
   const db = openDb(getDbPath());
   const approveAll = args.includes('--all');
   // d5-swarm-cli-004 (Stage A): route `--ids` through the shared value-flag
-  // parser so `--ids=F-c63c7498,F-a1b2c3d4` (equals-form) works like every sibling flag,
+  // parser so `--ids=F-c63c7498,F-xxxxxxxx` (equals-form) works like every sibling flag,
   // and a swallowed `--ids --reason` is treated as missing (→ the "Specify
   // --all or --ids" guard fires) rather than capturing the following flag as a
   // finding id.
@@ -2107,7 +2107,7 @@ function cmdApprove(args) {
   const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
 
   if (!approveAll && ids.length === 0) {
-    console.error('Specify --all or --ids F-c63c7498,F-a1b2c3d4');
+    console.error('Specify --all or --ids F-c63c7498,F-xxxxxxxx');
     process.exit(1);
   }
 
@@ -2308,7 +2308,7 @@ function refuseIfNoIdsExist(db, runId, ids, idsUpper) {
 function disposeFindings(verb, status, label, args) {
   const runId = args[0];
   if (!runId) {
-    console.error(`Usage: swarm ${verb} <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>"`);
+    console.error(`Usage: swarm ${verb} <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>"`);
     process.exit(1);
   }
 
@@ -2318,7 +2318,7 @@ function disposeFindings(verb, status, label, args) {
   const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
 
   if (ids.length === 0) {
-    console.error('Specify --ids F-c63c7498,F-a1b2c3d4 (defer/reject are targeted — there is no --all)');
+    console.error('Specify --ids F-c63c7498,F-xxxxxxxx (defer/reject are targeted — there is no --all)');
     process.exit(1);
   }
 
@@ -2632,7 +2632,7 @@ export function formatTransitionReport(report) {
 }
 
 /**
- * `swarm reopen <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>" --evidence "<text>" [--apply] [--format=text|json]`
+ * `swarm reopen <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>" --evidence "<text>" [--apply] [--format=text|json]`
  *
  * C1 (F-8595faf8, CRITICAL): moves fixed|deferred|rejected -> recurring — the
  * verb HANDOFF.md itself names as "the obvious gap" (wave-28: 9 findings
@@ -2642,14 +2642,14 @@ export function formatTransitionReport(report) {
 function cmdReopen(args) {
   const runId = args[0];
   if (!runId || runId.startsWith('--')) {
-    console.error('Usage: swarm reopen <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>" --evidence "<text>" [--apply] [--format=text|json]');
+    console.error('Usage: swarm reopen <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>" --evidence "<text>" [--apply] [--format=text|json]');
     process.exit(1);
   }
 
   const idsArg = parseValueFlag(args, '--ids');
   const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
   if (ids.length === 0) {
-    console.error('Specify --ids F-c63c7498,F-a1b2c3d4 (reopen is targeted — there is no --all)');
+    console.error('Specify --ids F-c63c7498,F-xxxxxxxx (reopen is targeted — there is no --all)');
     process.exit(1);
   }
 
@@ -2735,7 +2735,7 @@ function cmdReopen(args) {
 }
 
 /**
- * `swarm close <run-id> --ids F-c63c7498,F-a1b2c3d4 [--as fixed] --reason "<text>" --evidence "<text>" --verified-how independent|self_attested|operator_evidence [--apply] [--format=text|json]`
+ * `swarm close <run-id> --ids F-c63c7498,F-xxxxxxxx [--as fixed] --reason "<text>" --evidence "<text>" --verified-how independent|self_attested|operator_evidence [--apply] [--format=text|json]`
  *
  * C2 (F-5164d456, HIGH), NARROWED per this domain's own wave-38 dispute:
  * `--as` supports ONLY 'fixed' — 'rejected'/'deferred' stay the standalone
@@ -2748,14 +2748,14 @@ function cmdReopen(args) {
 function cmdClose(args) {
   const runId = args[0];
   if (!runId || runId.startsWith('--')) {
-    console.error('Usage: swarm close <run-id> --ids F-c63c7498,F-a1b2c3d4 [--as fixed] --reason "<text>" --evidence "<text>" --verified-how independent|self_attested|operator_evidence [--apply] [--format=text|json]');
+    console.error('Usage: swarm close <run-id> --ids F-c63c7498,F-xxxxxxxx [--as fixed] --reason "<text>" --evidence "<text>" --verified-how independent|self_attested|operator_evidence [--apply] [--format=text|json]');
     process.exit(1);
   }
 
   const idsArg = parseValueFlag(args, '--ids');
   const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
   if (ids.length === 0) {
-    console.error('Specify --ids F-c63c7498,F-a1b2c3d4 (close is targeted — there is no --all)');
+    console.error('Specify --ids F-c63c7498,F-xxxxxxxx (close is targeted — there is no --all)');
     process.exit(1);
   }
 
@@ -2859,7 +2859,7 @@ function cmdClose(args) {
 }
 
 /**
- * `swarm resolve <run-id> --ids F-c63c7498,F-a1b2c3d4 --evidence "<text>" [--reason "<text>"] [--apply] [--format=text|json]`
+ * `swarm resolve <run-id> --ids F-c63c7498,F-xxxxxxxx --evidence "<text>" [--reason "<text>"] [--apply] [--format=text|json]`
  *
  * The coordinator_resolved closure, given a verb (observed in run
  * swarm-1784601601-bd4a). The dispatch banner (dispatch.js's
@@ -2886,14 +2886,14 @@ function cmdClose(args) {
 function cmdResolve(args) {
   const runId = args[0];
   if (!runId || runId.startsWith('--')) {
-    console.error('Usage: swarm resolve <run-id> --ids F-c63c7498,F-a1b2c3d4 --evidence "<text>" [--reason "<text>"] [--apply] [--format=text|json]');
+    console.error('Usage: swarm resolve <run-id> --ids F-c63c7498,F-xxxxxxxx --evidence "<text>" [--reason "<text>"] [--apply] [--format=text|json]');
     process.exit(1);
   }
 
   const idsArg = parseValueFlag(args, '--ids');
   const ids = idsArg ? idsArg.split(',').map(s => s.trim()).filter(Boolean) : [];
   if (ids.length === 0) {
-    console.error('Specify --ids F-c63c7498,F-a1b2c3d4 (resolve is targeted — there is no --all)');
+    console.error('Specify --ids F-c63c7498,F-xxxxxxxx (resolve is targeted — there is no --all)');
     process.exit(1);
   }
 
@@ -3907,11 +3907,11 @@ export const USAGE = {
     'deferred/rejected, or resets it to recurring otherwise — resolved from',
     'the finding\'s own running history, not guessed.',
   ].join('\n'),
-  approve: 'Usage: swarm approve <run-id> [--all | --ids F-c63c7498,F-a1b2c3d4]',
-  defer: 'Usage: swarm defer <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>"',
-  reject: 'Usage: swarm reject <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>"',
+  approve: 'Usage: swarm approve <run-id> [--all | --ids F-c63c7498,F-xxxxxxxx]',
+  defer: 'Usage: swarm defer <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>"',
+  reject: 'Usage: swarm reject <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>"',
   reopen: [
-    'Usage: swarm reopen <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>" --evidence "<text>" [--apply] [--format=text|json]',
+    'Usage: swarm reopen <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>" --evidence "<text>" [--apply] [--format=text|json]',
     '',
     'C1: moves fixed|deferred|rejected -> recurring (open, amendable). The',
     'lawful undo for a wrongly-closed finding — no lawful verb before this one',
@@ -3921,7 +3921,7 @@ export const USAGE = {
     'history, mirroring the recovery-verb family\'s --apply gate instead).',
     '',
     'Required:',
-    '  --ids F-c63c7498,F-a1b2c3d4       Targeted finding ids (case-insensitive)',
+    '  --ids F-c63c7498,F-xxxxxxxx       Targeted finding ids (case-insensitive)',
     '  --reason "<text>"       Non-empty audit reason',
     '  --evidence "<text>"     Non-empty supporting evidence (mandatory —',
     '                          a reason without evidence is not enough)',
@@ -3936,7 +3936,7 @@ export const USAGE = {
     '(event_type=\'reopened\').',
   ].join('\n'),
   close: [
-    'Usage: swarm close <run-id> --ids F-c63c7498,F-a1b2c3d4 [--as fixed] --reason "<text>" --evidence "<text>" --verified-how independent|self_attested|operator_evidence [--apply] [--format=text|json]',
+    'Usage: swarm close <run-id> --ids F-c63c7498,F-xxxxxxxx [--as fixed] --reason "<text>" --evidence "<text>" --verified-how independent|self_attested|operator_evidence [--apply] [--format=text|json]',
     '',
     'C2: operator closure for OPEN rows (new/recurring/approved/unverified)',
     'structurally unclosable by declaration (e.g. unowned files) or where the',
@@ -3946,7 +3946,7 @@ export const USAGE = {
     'to mutate.',
     '',
     'Required:',
-    '  --ids F-c63c7498,F-a1b2c3d4       Targeted finding ids (case-insensitive)',
+    '  --ids F-c63c7498,F-xxxxxxxx       Targeted finding ids (case-insensitive)',
     '  --reason "<text>"       Non-empty audit reason',
     '  --evidence "<text>"     Non-empty supporting evidence (mandatory)',
     '  --verified-how <v>      One of: independent | self_attested | operator_evidence',
@@ -3963,7 +3963,7 @@ export const USAGE = {
     'is a legal db/schema.js EVENT_TYPES value but this verb never writes it).',
   ].join('\n'),
   resolve: [
-    'Usage: swarm resolve <run-id> --ids F-c63c7498,F-a1b2c3d4 --evidence "<text>" [--reason "<text>"] [--apply] [--format=text|json]',
+    'Usage: swarm resolve <run-id> --ids F-c63c7498,F-xxxxxxxx --evidence "<text>" [--reason "<text>"] [--apply] [--format=text|json]',
     '',
     'The coordinator_resolved closure the dispatch banner instructs — as a',
     'verb instead of raw SQL. Closes OPEN rows (new/recurring/approved/',
@@ -3976,7 +3976,7 @@ export const USAGE = {
     'mutate.',
     '',
     'Required:',
-    '  --ids F-c63c7498,F-a1b2c3d4       Targeted finding ids (case-insensitive)',
+    '  --ids F-c63c7498,F-xxxxxxxx       Targeted finding ids (case-insensitive)',
     '  --evidence "<text>"     Non-empty evidence line, persisted on the row',
     '                          (findings.verified_via_evidence)',
     '',
@@ -4386,21 +4386,21 @@ Commands:
   approve <run-id> [opts]    Approve findings for amend (--all | --ids). To
                              DISPOSE of a finding without a fix, use the
                              standalone \`swarm defer\` / \`swarm reject\` verbs.
-  defer <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>"
+  defer <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>"
                              Mark targeted findings 'deferred' (consciously
                              accepted/postponed — closed for the gate). --ids
                              and --reason both required; no --all. Idempotent.
-  reject <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>"
+  reject <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>"
                              Mark targeted findings 'rejected' (triaged away as
                              not-a-defect — closed for the gate). Same contract
                              as defer.
-  reopen <run-id> --ids F-c63c7498,F-a1b2c3d4 --reason "<text>" --evidence "<text>" [opts]
+  reopen <run-id> --ids F-c63c7498,F-xxxxxxxx --reason "<text>" --evidence "<text>" [opts]
                              C1: move fixed|deferred|rejected -> recurring (open,
                              amendable) — the lawful undo for a wrongly-closed
                              finding. Targeted only (no --all). --reason AND
                              --evidence both required. Dry-run by default;
                              --apply required to mutate. --format=text|json.
-  close <run-id> --ids F-c63c7498,F-a1b2c3d4 [--as fixed] --reason "<text>" --evidence "<text>" --verified-how <v> [opts]
+  close <run-id> --ids F-c63c7498,F-xxxxxxxx [--as fixed] --reason "<text>" --evidence "<text>" --verified-how <v> [opts]
                              C2: operator closure for OPEN rows structurally
                              unclosable by declaration (e.g. unowned files).
                              --as supports ONLY 'fixed' (defer/reject stay
@@ -4409,7 +4409,7 @@ Commands:
                              optional. Targeted only (no --all). Dry-run by
                              default; --apply required to mutate.
                              --format=text|json.
-  resolve <run-id> --ids F-c63c7498,F-a1b2c3d4 --evidence "<text>" [opts]
+  resolve <run-id> --ids F-c63c7498,F-xxxxxxxx --evidence "<text>" [opts]
                              The coordinator_resolved closure the dispatch
                              banner instructs, as a verb: closes open rows as
                              'fixed' AND persists coordinator_resolved=1 +
