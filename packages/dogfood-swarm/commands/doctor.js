@@ -107,7 +107,9 @@ export const CONTROL_PLANE_SIZE_WARN_BYTES = 50 * 1024 * 1024;
 function inferRepoPath(dbPath) {
   const cpDir = dirname(dbPath);
   if (basename(cpDir) === 'swarms') return dirname(cpDir);
-  return process.cwd();
+  // Isolated/temp DBs are not under swarms/: residue is next to the DB,
+  // never process.cwd() (that would scan the live clone's isolate trees).
+  return cpDir;
 }
 
 /**
@@ -455,6 +457,14 @@ function checkStrandedWorktrees(repoPath, opts = {}) {
       hint: 'reclaim residue with `swarm clean <run-id>` (dry-run by default; --apply to remove)',
     };
   }
+
+  // Only --isolate residue under THIS repo's .swarm/worktrees. git worktree
+  // list from a nested cwd still returns the whole clone's worktrees.
+  const rootNorm = wtRoot.replace(/\\/g, '/').toLowerCase();
+  tracked = tracked.filter((w) => {
+    const p = (w.path || '').replace(/\\/g, '/').toLowerCase();
+    return p === rootNorm || p.startsWith(`${rootNorm}/`);
+  });
 
   let atRisk = 0;
   const runShorts = new Set();
