@@ -70,6 +70,7 @@ describe('addDomain validates ownership_class (d5-swarm-cli-004)', () => {
   });
 });
 
+/** @pins F-0ec571d2 F-2710aadf F-c63998c9 */
 describe('ownership_class exclusive × skipped-at-dispatch matrix (F-0ec571d2 / #67)', () => {
   // Prove-red for the missing conjunction: a class that is exclusive under
   // resolveExclusiveOwner AND skipped at dispatch. Bridge stays bridge —

@@ -286,6 +286,7 @@ describe('amend collect — fixes[] declared closures (swarm-1784601601-bd4a gap
     db.close();
   });
 
+  /** @pins F-a1e35a0d F-64e6da30 */
   it('surfaces unknown_id skips on swarm status and swarm receipt JSON (F-a1e35a0d reader half)', () => {
     const HALLUCINATED = 'F-NOPE-99';
     const outA = join(tmpDir, 'a.json');
