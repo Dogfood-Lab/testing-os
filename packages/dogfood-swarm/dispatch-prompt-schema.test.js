@@ -340,6 +340,7 @@ describe('dispatch — domain-map alignment (Stage B Item 4)', () => {
   });
 });
 
+/** @pins F-31d6f967 */
 describe('amend worked-example finding_id discipline (F-31d6f967)', () => {
   // Product edit of templates.js is swarm-cp-core; this root pin goes red if
   // the teach-defect (F-001 / F-002 local placeholders) returns.
