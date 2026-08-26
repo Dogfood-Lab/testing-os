@@ -595,13 +595,17 @@ function cmdDispatch(args) {
   const runId = args[0];
   const phase = args[1];
   if (!runId || !phase) {
-    console.error('Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview] [--seed-roadmap] [--no-roadmap-digest] [--roadmap-digest=<run-id>]');
+    console.error('Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--no-isolate] [--skip-verify] [--dry-run|--preview] [--seed-roadmap] [--no-roadmap-digest] [--roadmap-digest=<run-id>]');
     console.error(`Phases: ${renderPhaseList()}`);
     process.exit(1);
   }
 
   const autoFreeze = args.includes('--auto-freeze');
-  const isolate = args.includes('--isolate');
+  // F-80afe435: isolate ON by default (including --dry-run/--preview). Bare
+  // `swarm dispatch <run> <phase>` gets per-agent worktrees. `--isolate` stays
+  // accepted (idempotent). `--no-isolate` is the explicit shared-tree escape;
+  // if both flags are present, `--no-isolate` wins.
+  const isolate = !args.includes('--no-isolate');
   // Item 5: parallel-wave verification discipline. When set, agent prompts
   // include the directive to skip per-agent `npm test`/`npm run verify` and
   // emit `verification_skipped: true` in their output JSON. Coordinator runs
@@ -609,10 +613,10 @@ function cmdDispatch(args) {
   const skipVerify = args.includes('--skip-verify');
   // --dry-run / --preview: compute the wave shape (which domains become agents,
   // the prompt paths that WOULD be written, per-domain approved-finding routing
-  // counts for amend phases, the worktrees that WOULD be created under
-  // --isolate) with ZERO control-plane write, file write, or worktree creation.
-  // The operator's "what will this dispatch do?" preview before committing the
-  // wave. --preview is an alias so the verb reads naturally either way.
+  // counts for amend phases, and the per-agent worktrees that WOULD be created
+  // unless --no-isolate) with ZERO control-plane write, file write, or worktree
+  // creation. The operator's "what will this dispatch do?" preview before
+  // committing the wave. --preview is an alias so the verb reads naturally either way.
   const dryRun = args.includes('--dry-run') || args.includes('--preview');
   // T4 (F-8a97a700 original flag, wired to the real binary for the first
   // time this wave — F-d110f547 proved it was permanently dormant before
@@ -3765,7 +3769,8 @@ export const commands = {
 export const USAGE = {
   init: 'Usage: swarm init <repo-path> [--repo org/name] [--seed-from-roadmap[=<run-id>|latest]]',
   domains: 'Usage: swarm domains <run-id> [--freeze | --unfreeze --reason "..." [--force] | --edit <name> [opts] | --add <name> [opts] | --remove <name> | --history]',
-  dispatch: 'Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--skip-verify] [--dry-run|--preview] [--seed-roadmap] [--no-roadmap-digest] [--roadmap-digest=<run-id>]',
+  // F-80afe435: [--isolate] remains listed (idempotent default-ON); [--no-isolate] is the escape.
+  dispatch: 'Usage: swarm dispatch <run-id> <phase> [--auto-freeze] [--isolate] [--no-isolate] [--skip-verify] [--dry-run|--preview] [--seed-roadmap] [--no-roadmap-digest] [--roadmap-digest=<run-id>]',
   collect: 'Usage: swarm collect <run-id> (--all | --domain=name:path [--domain=name:path ...])',
   doctor: 'Usage: swarm doctor [--format=text|json]',
   revalidate: 'Usage: swarm revalidate <run-id> --reason "<text>" --domain=name:path [--domain=name:path ...] [--apply]',
@@ -4177,24 +4182,28 @@ Commands:
   init <repo-path>           Create run, detect domains
   domains <run-id> [opts]    Show, edit, freeze, unfreeze domain map
   dispatch <run-id> <phase>  Create wave + agent prompts
-                             Flags: --auto-freeze, --isolate, --skip-verify,
-                             --dry-run (alias --preview)
-                             --isolate: give each agent its own git worktree so
-                             its edits are independently attributable (collect
-                             diffs the agent's branch, not just self-reported
-                             files_changed). This is the remediation for the
-                             OWNERSHIP PROBE DEGRADED banner: a non-isolated
-                             multi-domain amend wave cannot independently catch a
-                             cross-domain write, so re-dispatch with --isolate to
-                             restore full cross-domain ownership attribution.
-                             Requires git (see swarm doctor's git-available
-                             check).
+                             Flags: --auto-freeze, --isolate, --no-isolate,
+                             --skip-verify, --dry-run (alias --preview)
+                             Isolate is ON by default (F-80afe435): each agent
+                             gets its own git worktree so edits are independently
+                             attributable (collect diffs the agent's branch, not
+                             just self-reported files_changed). Bare
+                             \`swarm dispatch <run> <phase>\` isolates; --isolate
+                             remains accepted and is idempotent. --no-isolate
+                             shares one worktree (single-domain / intentional
+                             shared-tree escape). If both --isolate and
+                             --no-isolate are present, --no-isolate wins.
+                             Non-isolated multi-domain amend waves cannot
+                             independently catch a cross-domain write (OWNERSHIP
+                             PROBE DEGRADED); omit --no-isolate (or re-dispatch
+                             without it) to restore full attribution. Requires
+                             git (see swarm doctor's git-available check).
                              --dry-run: preview the wave shape (which domains
                              become agents, the prompt paths that WOULD be
                              written, amend-phase approved-finding routing
-                             counts, and under --isolate the worktrees that
-                             WOULD be created) with NO control-plane write, file
-                             write, or worktree creation.
+                             counts, and the per-agent worktrees that WOULD be
+                             created unless --no-isolate) with NO control-plane
+                             write, file write, or worktree creation.
                              --skip-verify (amend phases): append the parallel-
                              wave directive to amend prompts so agents skip
                              per-agent npm test. Coordinator runs one serial

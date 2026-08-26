@@ -343,15 +343,18 @@ function buildRoadmapDigest(repoLocalPath, opts = {}) {
  * @param {string} opts.dbPath
  * @param {string} opts.outputDir — where to write prompt files
  * @param {boolean} [opts.autoFreeze] — freeze domains if still draft
- * @param {boolean} [opts.isolate] — create per-agent worktrees
+ * @param {boolean} [opts.isolate] — create per-agent worktrees. F-80afe435:
+ *   CLI defaults this to true (bare dispatch isolates); pass false for the
+ *   `--no-isolate` shared-tree escape. Callers that omit the key still get
+ *   non-isolated behavior via `!!opts.isolate` — only the CLI flipped default.
  * @param {boolean} [opts.skipVerify] — append the parallel-wave serial-final-
  *   verify directive to amend prompts (Item 5; tells agents not to run
  *   per-agent npm test, coordinator runs one verify at end)
  * @param {boolean} [opts.dryRun] — preview the wave shape (which domains become
  *   agents, the prompt paths that WOULD be written, per-domain approved-finding
- *   routing counts for amend phases, and the worktrees that WOULD be created
- *   under --isolate) WITHOUT any control-plane write, file write, or worktree
- *   creation. Returns a report with `dryRun: true` and `waveId: null`.
+ *   routing counts for amend phases, and the per-agent worktrees that WOULD be
+ *   created when isolate is on) WITHOUT any control-plane write, file write, or
+ *   worktree creation. Returns a report with `dryRun: true` and `waveId: null`.
  * @param {boolean} [opts.seedRoadmap] — T4 (F-8a97a700): explicit opt-in to
  *   seed a bounded roadmap-digest section into every audit prompt this wave,
  *   read from `<run.local_path>/dogfood/roadmap/latest.json` if present.
