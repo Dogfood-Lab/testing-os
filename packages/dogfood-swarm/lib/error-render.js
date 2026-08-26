@@ -36,7 +36,12 @@ import { displayWidth, sliceToDisplayWidth } from './display-width.js';
  * @param {string} body
  * @param {number} [budget] — defaults to process.stderr.columns || 80
  */
-export function foldErrorLine(prefix, body, budget = process.stderr?.columns || 80) {
+export function foldErrorLine(prefix, body, budget) {
+  if (budget == null || !Number.isFinite(budget) || budget <= 0) {
+    // TTY: hang at the live column budget. Non-TTY (tests, piped logs): one
+    // line so matchers and log-grep still see the full ERROR [CODE]: line.
+    budget = (process.stderr?.isTTY && process.stderr.columns) || Number.POSITIVE_INFINITY;
+  }
   const hangWidth = displayWidth(prefix);
   const hang = ' '.repeat(Math.max(hangWidth, 2));
   // Embedded newlines would otherwise leave only the first line carrying the
@@ -83,32 +88,33 @@ export function foldErrorLine(prefix, body, budget = process.stderr?.columns || 
  * Render a thrown error to stderr at the CLI top-level seam.
  * @param {*} e — anything thrown
  */
-export function renderTopLevelError(e) {
+export function renderTopLevelError(e, opts = {}) {
   if (!e || !e.code) {
     console.error(`ERROR: ${e?.message || String(e)}`);
     return;
   }
 
+  const budget = opts.budget;
   // F-14ee286b: hang continuations under the column after `]: `.
-  foldErrorLine(`ERROR [${e.code}]: `, e.message ?? '');
+  foldErrorLine(`ERROR [${e.code}]: `, e.message ?? '', budget);
 
   // F-76fc969b: path identity is a structured detail line, not header prose.
   if (e.path != null && e.path !== '') {
-    foldErrorLine('  Path: ', String(e.path));
+    foldErrorLine('  Path: ', String(e.path), budget);
   }
 
   const hint = e.hint || deriveHintForCode(e);
-  if (hint) foldErrorLine('  Next: ', hint);
+  if (hint) foldErrorLine('  Next: ', hint, budget);
 
   if (e.cause && e.cause.message) {
-    foldErrorLine('  Caused by: ', e.cause.message);
+    foldErrorLine('  Caused by: ', e.cause.message, budget);
   }
 
-  if (e.runId != null) foldErrorLine('  Run: ', String(e.runId));
-  if (e.waveId != null) foldErrorLine('  Wave: ', String(e.waveId));
-  if (e.agentRunId != null) foldErrorLine('  Agent run: ', String(e.agentRunId));
+  if (e.runId != null) foldErrorLine('  Run: ', String(e.runId), budget);
+  if (e.waveId != null) foldErrorLine('  Wave: ', String(e.waveId), budget);
+  if (e.agentRunId != null) foldErrorLine('  Agent run: ', String(e.agentRunId), budget);
   if (e.findingsAttempted != null) {
-    foldErrorLine('  Findings attempted: ', String(e.findingsAttempted));
+    foldErrorLine('  Findings attempted: ', String(e.findingsAttempted), budget);
   }
 }
 

@@ -54,7 +54,7 @@ describe('F-14ee286b — renderTopLevelError hanging-indent fold', () => {
       waveId: '11',
       domain: 'swarm-cp-core',
       // Force the long derived hint path (no .hint).
-    }));
+    }, { budget: 80 }));
 
     const nextIdx = lines.findIndex((l) => l.includes('Next:'));
     assert.ok(nextIdx >= 0, `expected a Next: line — got ${JSON.stringify(lines)}`);
