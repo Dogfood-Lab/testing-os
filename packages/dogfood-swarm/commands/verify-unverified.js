@@ -41,6 +41,7 @@ import { openDb } from '../db/connection.js';
 import { buildV2Delta } from '../lib/verify-classifier-v2.js';
 import { renderVerifyFixedDelta } from '../lib/findings-render.js';
 import { logStage } from '../lib/log-stage.js';
+import { runNotFoundError } from './lib/run-lookup-error.js';
 
 const SCHEMA = 'verify-unverified-delta/v1';
 const VERB = 'verify-unverified';
@@ -77,7 +78,7 @@ export function verifyUnverified(opts) {
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(opts.runId);
   if (!run) {
-    throw new Error(`Run not found: ${opts.runId}`);
+    throw runNotFoundError(opts.runId);
   }
 
   const latestWave = db.prepare(

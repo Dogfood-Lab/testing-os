@@ -79,6 +79,7 @@ import {
 // future edit to either. Importing removes the desync surface entirely
 // instead of re-verifying byte-equality by hand.
 import { AUDIT_PHASES, AMEND_PHASES } from '../lib/phases.js';
+import { runNotFoundError, noWavesError } from './lib/run-lookup-error.js';
 
 function mintCorrelationId() {
   const ts = Date.now().toString(36);
@@ -109,7 +110,7 @@ export function revalidate(opts) {
   const db = openDb(dbPath);
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
-  if (!run) throw new Error(`Run not found: ${runId}`);
+  if (!run) throw runNotFoundError(runId);
 
   // Find the latest wave regardless of status. collect.js intentionally filters
   // WHERE status='dispatched'; revalidate widens that to recover from 'failed'.
@@ -117,7 +118,7 @@ export function revalidate(opts) {
     SELECT * FROM waves WHERE run_id = ?
     ORDER BY wave_number DESC LIMIT 1
   `).get(runId);
-  if (!wave) throw new Error('No wave found for this run');
+  if (!wave) throw noWavesError(runId, `No wave found for run ${runId}`);
 
   const isAudit = AUDIT_PHASES.includes(wave.phase);
   const isAmend = AMEND_PHASES.includes(wave.phase);
