@@ -1,8 +1,8 @@
 # testing-os — state and trajectory (2026-08-25)
 
-This is the Director-facing artifact for dogfood-swarm 3. It is compiled from live measurement, not authored as a plan. Forward-looking content is the short NEXT list at the bottom — seven typed moves, no horizon prose.
+This is the Director-facing artifact for dogfood-swarm 3. It is compiled from live measurement, not authored as a plan. Forward-looking content is the short NEXT list at the bottom — typed moves, no horizon prose.
 
-**You might think** this swarm is still in health-audit. **The control plane shows** `swarm-1787700871-d537` at run status **`test`** (promotion 78). v1.11.0 is the waypoint. Phase 10 leftovers sit parked. Prior run `swarm-1784091637-5127` is still `test` and must not be completed.
+**You might think** Phase 10 is still open. **The control plane and npm show** v1.11.0 shipped (`e697247`). `swarm-1787700871-d537` stays at run status **`test`** (promotion 78). Phase 10 leftovers sit parked for housekeeping. Prior run `swarm-1784091637-5127` is still `test` and must not be completed.
 
 ## NOW — measured 2026-08-26
 
@@ -12,16 +12,16 @@ This is the Director-facing artifact for dogfood-swarm 3. It is compiled from li
 | Shipped | **v1.11.0** (this treatment) · six `@dogfood-lab/*` packages lockstep · `portfolio` workspace-internal |
 | This swarm | **`swarm-1787700871-d537`** · run status **`test`** · 15 waves · 33 fixed / 4 deferred / 11 unverified / 0 CRIT / 0 HIGH · save `swarm-save-1787700871` |
 | Freeze | `ad5b4f5a3434e765` · **docs = coordinator** (exclusive, skipped at dispatch) |
-| Working tree | on `main`. `#64` `04adf3d`; `#66` `02bf481`. Stashes still parked (`stash@{0}` WIP, `stash@{1}` ingest indexes). Do not pop them. |
+| Working tree | `main` @ **`e697247`** (v1.11.0), origin in sync. Stashes still parked (`stash@{0}` WIP, `stash@{1}` ingest indexes). Do not pop them. |
 | Domain-map foil | Interval file `2026-08-25-interval-01a03b2e.md` still talks about a 9-domain / next-cycle-kickoff map. **Live GitHub #67 and the artifacts on disk win** — inherit the 5127 freeze; build a `coordinator` class in Stage A. |
 | Node | local **v22.22.3** · `engines: >=22` · CI matrix 22+24 · Node 25 is **EOL** |
-| `swarm doctor` | PASS (schema v10, git 2.54, hardlink-capable) |
+| `swarm doctor` | **7/7 PASS** (node, writable, schema v10, git, disk-free, control-plane-size, stranded-worktrees). Brief bloat is still ritual step 4. |
 | Control plane | `swarms/control-plane.db` ~9.6 MB · schema v10 |
 | Prior self-swarm | `swarm-1784091637-5127` · 44 waves · 507 findings ever · verify PASS (4246 tests at last receipt) · **do not advance to `complete`** |
-| Roadmap pointer | sequence **7** · `dogfood/roadmap/latest.json` → `swarm-1784091637-5127.7.json` |
+| Roadmap pointer | sequence **1** · `dogfood/roadmap/latest.json` → `swarm-1787700871-d537.1.json` (5127 sequence 7 remains in the archive) |
 | Grandfathered pins | frozen_total **256**, drained **0** (ritual step 3 still owed) |
-| Deferred (3) | `F-ad2d6318`, `F-c2a22b93` (pre-v10 NULL `closure_kind`/`verified_how` — wait on a reader) · `F-3b70bc65` (cmdFindings/buildDigest seam) |
-| GitHub issues | **#67** and **#65** ship in this release (coordinator class; unknown `finding_id` reaches `status`/`receipt`). **#16** already closed. |
+| Deferred (d537, 4 HIGH) | `F-71d4ce45` checkout 7.0.1 take · `F-5764a279` setup-node v7 audit-then-take · `F-44eb48f2` / `F-ca8f3e37` leftover docs HIGHs (not silent closes) |
+| GitHub issues | **#67** and **#65** **CLOSED** by `e697247`. **#16** already closed. |
 | Product PRs | **#64 MERGED** `04adf3d` (read-only liveness; resume moves a failed wave) · **#66 MERGED** `02bf481` (Python `--isolate` containment) |
 | Open Dependabot | TS 6→7 (#55) **HOLD** · js-yaml 4→5 (#50) **HOLD** · checkout 7.0.1 (#62) **take** · setup-node 7 (#56) **audit then take** |
 
@@ -67,8 +67,8 @@ Six agent-bearing domains + one shared. This is the map that survived 44 waves. 
 | TypeScript 7 is a free bump | 7.0 has **no programmatic API**; this repo's handbook is Astro — HOLD #55 |
 | Local Node 25 is current | Node 25 is **EOL**; 24 and 22 are LTS; 26 is Current |
 | `shared` is how you skip a domain | `shared` makes the files world-writable. That is the opposite of coordinator-owned |
-| A green `swarm collect` means every `fixes[]` id landed | #65: unknown ids are dropped and never reach `status`/`receipt` |
-| Grok memory's 9-domain / `next-cycle-kickoff` map | That interval file is stale. Live map is the 5127 freeze (six agents + shared). Issue #67 is the missing `coordinator` class, not a v1.11.0 tracking ticket |
+| A green `swarm collect` means every `fixes[]` id landed | Pre-v1.11.0 that was #65. Unknown ids now reach `status`/`receipt` (`fixes_skipped`). |
+| Grok memory's 9-domain / `next-cycle-kickoff` map | That interval file is stale. Live map is the freeze (six agents + shared; docs = coordinator). |
 
 ## MEANING — standing orders still in force
 
@@ -80,22 +80,22 @@ From `dogfood/roadmap-notes.json` (Director voice, sequence 7). Standing orders 
 4. Solutions, not problem reports without a path.
 5. This repo is built to test the fleet. Surfaces other repos touch stay first-class.
 
-Trajectory notes still live (not retired this session):
+Trajectory notes:
 
-- Dashboard visual build-up (v1.2 needs Director words before a Claude Design prompt).
-- Fold guardian health-checks into `swarm doctor` (extend doctor, do not fork guardian).
+- Dashboard visual build-up (v1.2 needs Director words before a Claude Design prompt) — still live.
+- Fold guardian health-checks into `swarm doctor` — **env trio shipped in v1.11.0**. Brief bloat is still ritual step 4. Offer retirement of the env half; do not silently drop the note.
 
-## NEXT — seven typed moves (not a plan)
+## NEXT — typed moves (not a plan)
 
-These are the only forward-looking lines in this file. Each is a verb an Executor can run. None is a schedule.
+These are the only forward-looking lines in this file. Each is a verb a Coordinator can run. None is a schedule.
 
 1. **Waypoint.** d537 is at `test`. Do not `complete`. Do not `dispatch … test`. 5127 stays `test`.
-2. **v1.11.0.** Lockstep publish of six `@dogfood-lab/*` packages via tag-push `release.yml`.
-3. **`swarm clean --apply`** already removed 88 isolate worktrees this treatment. Do not re-clean unless `swarm doctor` WARNs of stranded trees.
-4. **Reopen to take:** F-71d4ce45 checkout 7.0.1, F-5764a279 setup-node v7. Vitest F-5e021f01 still a note.
-5. **HOLD:** TS 7, js-yaml 5, Vitest 5.
-6. **Allowlist six overdue** — WARN only; How-to-fix present; not drained.
-7. **Do not drain defers / unverified as a silent clean ledger.**
+2. **Housekeeping ritual** after the release — [`swarms/NEXT-CYCLE-KICKOFF.md`](../swarms/NEXT-CYCLE-KICKOFF.md). Steps 0–3 bind (notes, doctor + brief-bloat, staleness sweep, drain ≥5 grandfathered).
+3. **Reopen to take:** F-71d4ce45 checkout 7.0.1, F-5764a279 setup-node v7. Vitest F-5e021f01 still a note (4.1.11 patch).
+4. **HOLD:** TS 7, js-yaml 5, Vitest 5.
+5. **Allowlist six overdue** — WARN only; delete or refresh, do not ignore.
+6. **Do not drain** the 4 deferred / 11 unverified as a silent clean ledger.
+7. **Offer the Director** retirement of the guardian-into-doctor trajectory note (env half shipped; brief bloat remains).
 
-Executor contract: [`docs/dogfood-swarm-3.executor-brief.md`](./dogfood-swarm-3.executor-brief.md).
+Grok Executor brief (this swarm, historical): [`docs/dogfood-swarm-3.executor-brief.md`](./dogfood-swarm-3.executor-brief.md).
 Study-swarm: [`docs/dogfood-swarm-3.study-swarm.dispatch.md`](./dogfood-swarm-3.study-swarm.dispatch.md).

@@ -1,5 +1,13 @@
 # HANDOFF.md — testing-os migration completion
 
+> ## DOGFOOD-SWARM 3 + v1.11.0 — waypoint shipped; run stays OPEN at `test` (2026-08-26) — release `e697247`, tag `v1.11.0`; all 6 packages live on npm at 1.11.0, GitHub Release published
+>
+> **Run `swarm-1787700871-d537` is at status `test` (promotion 78), not `complete`.** 15 waves + Phase 9 coordinator pass + Phase 10 full treatment. Ledger at the waypoint: 33 fixed / 4 deferred / 11 unverified / 0 CRIT / 0 HIGH open. Prior run `swarm-1784091637-5127` is still `test` and was not completed. Save `swarm-save-1787700871`. Freeze snapshot `ad5b4f5a3434e765`. **docs = coordinator** (exclusive, skipped at dispatch).
+>
+> **What v1.11.0 shipped (durable):** the `coordinator` ownership class (GitHub #67 CLOSED); `--isolate` is the CLI default (`--no-isolate` wins if both flags present); `swarm doctor` is seven checks including disk-free, control-plane-size, and stranded `--isolate` worktrees; Phase 9 is a **run status**, not a dispatchable phase (`dispatch … test` is `DISPATCH_INVALID_PHASE`); unknown `finding_id` in `fixes[]` reaches `status`/`receipt` (GitHub #65 CLOSED); roadmap `top_recurring` timestamps are RFC 3339 UTC at the compile boundary. Translations regenerated on TranslateGemma before the tag. OIDC trusted-publish of the 6 packages + GitHub Release via `release.yml`. Pages deployed. Self-dogfood/ingest loop fired.
+>
+> **Do not complete. Do not archive.** Next Coordinator session: [`swarms/NEXT-CYCLE-KICKOFF.md`](swarms/NEXT-CYCLE-KICKOFF.md). Parked leftovers are named there (checkout 7.0.1 / setup-node v7 takes, HOLDs, allowlist overdue, grandfathered drain still 0/256). Stashes still parked (`stash@{0}` WIP, `stash@{1}` ingest indexes) — do not pop them.
+
 > ## Stage A health pass — the pin-matcher rewrite landed and held; work continues (2026-07-16)
 >
 > Run `swarm-1784091637-5127`, branch **`swarm/health-amend-a-1784091637`** (not merged to `main`). **For live wave / phase / branch-HEAD / commits-ahead, run `swarm status swarm-1784091637-5127`** (or `git log --oneline main..HEAD`). This block records durable facts + completed history, never a volatile "current wave is N, HEAD is X" snapshot — that shape went stale *five* times this run (F-c467def9, F-d39dd777, F-f164bb17, F-efd1c5f5, and once more at the commit table itself). Resist re-adding volatile counters here.

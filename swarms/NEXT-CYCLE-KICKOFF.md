@@ -1,127 +1,143 @@
-# Next-cycle kickoff — dogfood swarm `swarm-1784091637-5127` (housekeeping cycle 1 + trajectory)
+# Next-cycle kickoff — dogfood swarm `swarm-1787700871-d537` (post-v1.11.0 housekeeping)
 
-Paste the block below into a fresh Coordinator session at `E:/AI/testing-os`. This file is the rolling live entry point, overwritten each cycle (the executed 2026-07-17 deferred-tail kickoff lives in git history at `bfe9c55`). Written 2026-07-18, right after the burndown sessions closed the tail (487 fixed / 17 rejected / 3 deferred / 0 open), the Director's operator notes landed at roadmap sequence 7, and the housekeeping ritual became law.
+Paste the block below into a fresh Coordinator session at `E:/AI/testing-os`. This file is the rolling live entry point, overwritten each cycle (the executed 2026-07-18 5127 housekeeping kickoff lives in git history). Written 2026-08-26 by the Grok Executor after Phase 10 cut **v1.11.0**.
 
 ---
 
 ```
-Continue the dogfood swarm on E:/AI/testing-os as Coordinator. Run
-swarm-1784091637-5127 is OPEN at the `test` phase — the deferred tail is burned
-down (ledger 487 fixed / 17 rejected / 3 deferred / 0 open), dashboard v1.1 is
-live, and the Director's operator notes now ride in the roadmap artifact
-(sequence 7). This session is the FIRST full housekeeping cycle plus the two
-trajectory notes. Do NOT advance the run to `complete` and do NOT archive —
-dogfooding continues after.
+Continue the dogfood swarm on E:/AI/testing-os as Coordinator. You are
+NOT starting a new run. You are NOT resuming swarm-1784091637-5127
+except to leave it at `test`.
 
-READ FIRST, in order (then verify everything below against live sources — this
-prompt is orientation, not truth):
-1. dogfood/roadmap-notes.json — THE DIRECTOR'S VOICE: five STANDING ORDERs +
-   two TRAJECTORY notes. Ritual step 0 is reading these back. Render them:
-   node packages/dogfood-swarm/cli.js roadmap show swarm-1784091637-5127
-2. docs/housekeeping-ritual.md — the protocol this session executes, steps 0-6,
-   compensators included.
-3. swarms/CLAUDE.md — the ethos ("if nothing surprised you, the wave failed").
-4. swarms/PROTOCOL.md → "Fixing a class, not an instance" — law, five sub-laws.
-5. docs/case-file-contract.md — model tiering is law: Sonnet executes, the
-   non-Claude jury verifies, the coordinator never jurors; pass model= on every
-   Agent() call.
-6. HANDOFF.md — the top two entries (BURNDOWN SESSION TWO, then DEFERRED-TAIL
-   BURNDOWN) are the state of the world, including every disclosed seam.
-7. C:/Users/mikey/.claude/projects/E--AI-testing-os/memory/ — especially
-   director-conversations-plain-english-first.md (LAW for any Director-facing
-   ask) and swarm-blind-spots-need-the-coordinator.md (CI is the only platform
-   oracle, version-conditional legs included).
+Live run: swarm-1787700871-d537
+Status:   test  (promotion 78, wave 15 feature-audit advanced)
+Shipped:  v1.11.0  (e697247, tag v1.11.0, six @dogfood-lab/* on npm)
+Do NOT complete either run. Do NOT dispatch … test. test is a run
+status, not a phase.
+
+This session is the housekeeping ritual AFTER the release (standing
+order #2). Typed leftovers from Phase 10 are the material, not a new
+health pass unless the Director says so.
+
+READ FIRST, in order (then verify everything below against live
+sources — this prompt is orientation, not truth):
+1. dogfood/roadmap-notes.json — THE DIRECTOR'S VOICE. Ritual step 0.
+   Render: node packages/dogfood-swarm/cli.js roadmap show swarm-1787700871-d537
+2. docs/housekeeping-ritual.md — steps 0-6, compensators included.
+3. docs/dogfood-swarm-3.state-and-trajectory.md — Director-facing NOW/NEXT.
+4. swarms/PROTOCOL.md → Phase 9 is a run status; coordinator class;
+   isolate default; F-d8699ef5 skip-amend trap.
+5. swarms/CLAUDE.md — ethos ("if nothing surprised you, the wave failed").
+6. docs/case-file-contract.md — if you dispatch: Sonnet/Grok executes,
+   non-Claude jury verifies, coordinator never jurors; pass model= on
+   every seat. This swarm's convention: grok-4.5 on domain agents,
+   jury excludes xAI.
+7. C:/Users/mikey/.grok/memory/topics/testing-os.md — pointer only.
+   Repo artifacts win on conflict.
 
 VERIFY STATE (don't trust the numbers here):
+  node packages/dogfood-swarm/cli.js status swarm-1787700871-d537
+    # expect: Status test · docs coordinator · 0 CRIT/0 HIGH open
+    #         fixed 33 / deferred 4 / unverified 11
   node packages/dogfood-swarm/cli.js status swarm-1784091637-5127
-  node packages/dogfood-swarm/cli.js findings swarm-1784091637-5127 --status=deferred
-    # expect 3: the pre-v10 NULL-columns pair (waits on a real reader) + the
-    # cmdFindings/buildDigest cross-domain seam. The verb exists now — use it.
-  git log --oneline -5 ; git fetch origin main   # the ingest loop moves main on
-    every push — pull --rebase before pushing; it settles cleanly
+    # expect: Status test. Do not complete. Do not dispatch.
+  node packages/dogfood-swarm/cli.js findings swarm-1787700871-d537 --status=deferred
+    # expect 4 HIGH, all from wave-1 Set-1:
+    #   F-71d4ce45  checkout still v6.0.3 — reopen to TAKE 7.0.1
+    #   F-5764a279  setup-node still v6.4.0 — audit then TAKE v7
+    #   F-44eb48f2  handbook CLI verb count (docs leftover)
+    #   F-ca8f3e37  PROTOCOL redrive table vs following paragraph
+  node packages/dogfood-swarm/cli.js findings swarm-1787700871-d537 --status=unverified
+    # expect 11 MED/LOW. Do not close them as a clean-ledger move.
+    # F-5e021f01 = Vitest 4.1.9→4.1.11 note (patch, not Vitest 5).
+    # F-b7468c6a = six allowlist entries past revalidate_by (WARN).
+  node packages/dogfood-swarm/cli.js doctor
+    # 7 checks. Env trio (disk-free, control-plane-size, stranded
+    # worktrees) shipped in v1.11.0. Brief bloat is still ritual
+    # step 4, not a doctor check.
+  git log --oneline -5 ; git fetch origin main
+    # ingest/self-dogfood move main after a release. pull --rebase
+    # before any push; it settles.
   gh run list --branch main --limit 3
+  npm view @dogfood-lab/dogfood-swarm version
+    # expect 1.11.0
+
+YOU MIGHT THINK / LIVE TRUTH:
+  Resume 5127                  → 0-open, status test, T4 already seeded d537
+  dispatch … test              → DISPATCH_INVALID_PHASE
+  swarm advance off test       → treatment, then complete. Do not.
+  docs is owned / shared       → docs is coordinator (exclusive, skipped)
+  isolate is opt-in            → isolate is the CLI default; --no-isolate wins
+  doctor still misses env      → 7/7 PASS; remaining gap is brief bloat
+  #67 / #65 still open         → closed by e697247
+  latest.json is 5127.7        → dogfood/roadmap/latest.json → d537.1
+  Pop the stashes              → stash@{0} WIP, stash@{1} ingest indexes. Leave them.
+  C:\WINDOWS\system32 is cwd   → cd E:/AI/testing-os first
 
 THE SESSION, in order:
 
-(0) RITUAL STEP 0 — notes readback. Re-affirm the standing orders; the two
-    TRAJECTORY notes are (c) and (d) below. A session that leaves every
-    trajectory note untouched must say why.
+(0) RITUAL STEP 0 — notes readback. Re-affirm the five STANDING ORDERs.
+    TRAJECTORY notes:
+      (a) dashboard v1.2 — still needs Director words before a Claude
+          Design prompt. Do not jump to a prompt. Leave unless he is in
+          the room.
+      (b) guardian-into-doctor — PARTIALLY SHIPPED in v1.11.0 (disk-free,
+          control-plane-size, stranded-worktrees). Brief bloat is still
+          ritual step 4. Offer retirement of the env half in plain
+          English; do not silently drop the note.
 
-(a) RITUAL STEPS 1-2 — environment preflight (swarm doctor + the manual checks
-    the doctor does not yet cover: disk free, control-plane.db + WAL size,
-    swarms/<run>/ brief bloat, stranded worktrees via swarm clean dry-run);
-    staleness sweep (drift gate + pins gate bare — delete anything reported
-    stale under standing authority; both gates must exit 0 with zero warns).
+(a) RITUAL STEPS 1-2 — doctor (already 7 checks); still measure wave-brief
+    size under swarms/swarm-1787700871-d537/ (doctor does not). Staleness
+    sweep: drift gate + pins gate BARE. Six allowlist entries are past
+    revalidate_by (F-b7468c6a / gate WARN). Standing authority is delete
+    if they exempt nothing; refresh revalidate_by with a reason if they
+    still hold. Both gates must exit 0. WARNs are not a silent skip.
 
-(b) RITUAL STEP 3 — THE FIRST AUTHORED DRAIN TRANCHE: drain >=5 of the 256
-    grandfathered ids. Baseline 2026-07-18: ZERO are drainable for free — each
-    drain means authoring the genuine red-able @pins test for that id (or
-    establishing it as a removable orphan), then removing the manifest entry
-    AND recomputing EXPECTED_GRANDFATHER_MANIFEST_HASH in the SAME commit (the
-    recompute command lives in that constant's own doc comment; the gate
-    hard-fails otherwise). Pick the tranche from the manifest ids whose
-    findings have the clearest still-live fix sites — a Sonnet lane per 2-3
-    ids works. Progress is public: the drain meter on the dashboard moves.
+(b) RITUAL STEP 3 — drain >=5 of the 256 grandfathered ids. Baseline
+    still 0 drained. Each drain is an authored @pins test (or a proven
+    orphan) + hash recompute in THE SAME commit. Do not skip this because
+    a release just shipped — after-release is when the ritual runs.
 
-(c) TRAJECTORY — guardian-into-doctor: extend swarm doctor's preflight with
-    the environment-health checks from (a) so they stop being manual. Direction
-    locked by the Director: extend doctor, do NOT fork the guardian repo.
-    Check where doctor's checks live before assigning the lane (commands/ vs
-    lib/ decides verbs vs core ownership). When it ships, RETIRE the
-    open-question note: remove it from dogfood/roadmap-notes.json, recompile,
-    and tell the Director in plain English what replaced the manual steps.
+(c) REOPEN TO TAKE (only these two, and only with --apply after a dry-run):
+      swarm reopen swarm-1787700871-d537 --ids F-71d4ce45,F-5764a279 \
+        --reason "take Dependabot checkout 7.0.1 and setup-node v7" \
+        --evidence "<live SHA / PR #62 #56>"
+    Then a right-sized ci-tooling amend. HOLD TS 7 (#55), js-yaml 5 (#50),
+    Vitest 5. Vitest 4.1.11 (F-5e021f01) is a patch note, not a new id.
 
-(d) TRAJECTORY — dashboard v1.2. DO NOT jump to a prompt. The
-    plain-english-first law applies: look at the data WITH the Director first —
-    what would trend lines over time, drain-meter progress, ledger movement
-    between compiles, and fleet freshness actually show him today — agree on
-    the panel set in his words, THEN write the Claude Design prompt (the v1.1
-    prompt in HANDOFF/chat history is the template; check-dashboard gate,
-    90 KB budget, and the preservation list still bind). Known v1.2 nits
-    ledger: the v1.0 aggregate-pill degradation gap, attention scores
-    flattening to 0.00 under toFixed(2).
+(d) RITUAL STEPS 4-6 as room allows: brief diet (never raise the
+    threshold); ledger hygiene (the 4 deferred still validly waiting —
+    two are the takes in (c), two are leftover docs HIGHs, not silent
+    closes); fleet glance. Record the trend. Do not action fleet
+    reactivation.
 
-(e) RITUAL STEPS 4-6 + small seams, as the session has room: brief diet check
-    (never raise the threshold — Director decision); ledger hygiene (the 3
-    deferred still validly waiting?); fleet glance (baseline 12/26 stale,
-    record the trend, do not action — fleet reactivation is Director-sequenced).
-    Disclosed seams available for pickup: align readOperatorNotes to require
-    `expires` (the schema does; the CLI validator does not — they disagreed
-    live on 2026-07-18); validate-scenarios.test.mjs's narrower reimplemented
-    walk; the cargo measurement pair (dead cargo branch shadowed by the pytest
-    regex; multi-crate workspaces measure only the last crate's summary);
-    attention.js's churn_available collapse (same class as the fixed drain
-    `available` drop).
+(e) If the ledger moved: swarm roadmap compile swarm-1787700871-d537
+    Sequence 1 is committed and schema-valid. Sequence-free mirror
+    d537.json is allowlisted (F-feeaef78 cost). Do not rewrite .1.json
+    (T5). top_recurring timestamps are RFC 3339 at the compile boundary
+    as of v1.11.0 — do not regress to SQLite 'YYYY-MM-DD HH:MM:SS'.
 
-DISCIPLINE (earned, expensive — every line cost a real defect):
-  - Ids from the DB, scope from the frozen domain map (docs now owns
-    swarms/*.md; swarm-cp-core owns packages/dogfood-swarm/package.json),
-    coverage from the gate's own output. Never memory.
-  - Run gates BARE and read the redirected file's own exit line — never trust
-    a task-notification's "exit code" for a wrapped command, and never pipe
-    the authoritative run (the pipe trap bit twice more on 2026-07-18).
-  - ONE serial `npm run verify` on the merged tree before every push; never
-    mutate git state while a background verify runs; `git commit -F -` with a
-    single-quoted heredoc for any message with backticks.
-  - Any test that spawns the CLI pins SWARM_DB INSIDE the spawn call's own
-    parens (the WAL meta-sweep enforces; an options object built outside the
-    parens gets flagged).
-  - Keep live-child canary tests reporter-unpinned — format drift SHOULD red
-    them; that canary caught the Node-24 spec-reporter engine gap.
-  - Closures: reopen first for deferred items, then
-    `swarm close --as fixed --verified-how operator_evidence` with the commit
-    + a real execution proof; `swarm defer/reject --reason` otherwise.
-  - EVERY Director-facing ask: plain-English conversation first, you do ALL
-    the synthesis, read the result back in his words before saving anything.
-    Never hand him a jargon artifact to edit. (Memory file above; violated
-    once, corrected loudly — do not repay it.)
-  - Solutions, not problems: arrive with the fix or the plan (standing order).
+DISCIPLINE (earned this swarm + prior):
+  - test is a run status. dispatch … test is DISPATCH_INVALID_PHASE.
+    CLI used to print "Next: dispatch … test" — fixed in e697247.
+  - Advance after 0 CRIT/HIGH skips the matching amend (F-d8699ef5).
+    Needed amend = dispatch health-amend-b / stage-d-amend, not advance.
+  - docs = coordinator. Never reclassify to shared to skip a seat.
+  - --isolate is default. --no-isolate shares and wins if both present.
+  - Ids from the DB. Coverage from the gate. Never memory.
+  - Gates BARE. Read the redirected file's own exit line.
+  - ONE serial npm run verify on the merged tree before every push.
+  - git commit -F - for any message with backticks.
+  - Do not pop stash@{0} / stash@{1}.
+  - Dependabot HOLDs stay HOLD until the Director lifts them.
+  - Closures: reopen first, then swarm close --as fixed --verified-how
+    operator_evidence with commit + execution proof.
+  - Director-facing asks: plain English first, read back in his words.
+  - Solutions, not problems (standing order).
 
-ASK THE DIRECTOR BEFORE: raising the brief-size threshold; any fleet-side push
-or reactivation; changing the CONTENT of dogfood/roadmap-notes.json beyond
-retiring a completed trajectory note with evidence (his voice — readback + his
-yes required for anything new); deleting the legacy mcp-tool-shop-org/
-dogfood-labs repo; any raw DB write. The v1.11.0 exit ramp is available if the
-session lands the doctor extension + a drain tranche: offer the waypoint, the
-Director decides — a spotless audit is never the bar (standing order #1).
+ASK THE DIRECTOR BEFORE: a new swarm init; completing d537 or 5127;
+raising the brief-size threshold; any fleet-side push; changing
+roadmap-notes.json beyond retiring a completed trajectory note with
+evidence; taking TS 7 / js-yaml 5 / Vitest 5; deleting the legacy
+dogfood-labs repo; any raw DB write; popping the parked stashes.
 ```
