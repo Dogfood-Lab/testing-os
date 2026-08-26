@@ -640,9 +640,15 @@ export function formatHuman(result, repoRoot) {
       `(${grandfatherDrainedCount} drained — declared, allowlisted, or removed since the freeze): ${grandfatheredIds.join(', ')}`,
     );
   }
+  // F-6bb40914: overdue WARN blocks name debt then stop — append How-to-fix
+  // (re-date / delete / @pins) so operators get an action cue; still warn-not-block.
   if (grandfatherDueForRevalidation.length > 0) {
     lines.push('  WARN — grandfathered entries past their revalidate_by date (still exempt; not a block):');
     for (const e of grandfatherDueForRevalidation) lines.push(`    ${e.id} — was due ${e.revalidate_by} (owner: ${e.owner})`);
+    lines.push('');
+    lines.push('  How to fix: re-read the entry; refresh revalidate_by with a reason if the exemption still holds,');
+    lines.push('  OR delete the entry if the mention is gone or unused,');
+    lines.push('  OR land /** @pins F-id */ and drop the allowlist row.');
   }
   if (allowlistApplied.length > 0) {
     lines.push(`  allowlist applied: ${allowlistApplied.length} (${allowlistApplied.join(', ')})`);
@@ -654,6 +660,10 @@ export function formatHuman(result, repoRoot) {
   if (dueForRevalidation.length > 0) {
     lines.push('  WARN — allowlist entries past their revalidate_by date (still applied; not a block):');
     for (const e of dueForRevalidation) lines.push(`    ${e.id} — was due ${e.revalidate_by} (owner: ${e.owner})`);
+    lines.push('');
+    lines.push('  How to fix: re-read the entry; refresh revalidate_by with a reason if the exemption still holds,');
+    lines.push('  OR delete the entry if the mention is gone or unused,');
+    lines.push('  OR land /** @pins F-id */ and drop the allowlist row.');
   }
   if (parseErrors.length > 0) {
     lines.push(`  FAIL — ${parseErrors.length} test file(s) could not be parsed (C7 fail-closed, never silently skipped):`);
