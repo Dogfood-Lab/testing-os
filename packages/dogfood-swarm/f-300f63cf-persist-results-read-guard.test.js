@@ -72,7 +72,7 @@ describe('F-300f63cf — malformed manifest-dir JSON fails through this file\'s 
 
     assert.equal(result.status, 2,
       `pre-fix: an uncaught BoundedJsonError left Node's default exit code (1), not this file's own exit-2 convention — got status ${result.status}`);
-    assert.match(result.stderr, /ERROR \[PARSE_FAILED\]/,
+    assert.match(result.stderr, /ERROR \[BOUNDED_JSON_PARSE_FAILED\]/,
       `expected a structured ERROR line naming the PARSE_FAILED kind — got stderr: ${result.stderr}`);
     assert.match(result.stderr, /manifest\.json/i);
     assert.doesNotMatch(result.stderr, STACK_FRAME_RE,
@@ -89,7 +89,7 @@ describe('F-300f63cf — malformed manifest-dir JSON fails through this file\'s 
 
     assert.equal(result.status, 2,
       `pre-fix: an uncaught BoundedJsonError left Node's default exit code (1), not this file's own exit-2 convention — got status ${result.status}`);
-    assert.match(result.stderr, /ERROR \[PARSE_FAILED\]/,
+    assert.match(result.stderr, /ERROR \[BOUNDED_JSON_PARSE_FAILED\]/,
       `expected a structured ERROR line naming the PARSE_FAILED kind — got stderr: ${result.stderr}`);
     assert.match(result.stderr, /backend\.json/,
       `expected the offending file name in the error — got stderr: ${result.stderr}`);

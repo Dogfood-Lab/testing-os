@@ -146,6 +146,20 @@ test('verify-output.svg "N check(s) passed" matches scripts/doc-drift-patterns.j
   );
 });
 
+test('beginners.md healthy-verify alt "N of N checks passed" matches configured count', () => {
+  const configPath = join(repoRoot, 'scripts/doc-drift-patterns.json');
+  const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+  const configuredCount = config.checks.length;
+  const md = readFileSync(join(handbookDir, 'beginners.md'), 'utf-8');
+  const m = md.match(/check-doc-drift \((\d+) of (\d+) checks passed\)/);
+  assert.ok(m, 'beginners.md alt missing "check-doc-drift (N of N checks passed)".');
+  assert.equal(
+    Number(m[2]),
+    configuredCount,
+    `beginners.md alt says ${m[1]} of ${m[2]} checks but config declares ${configuredCount} (F-43dc62c3).`,
+  );
+});
+
 test('architecture.md references the architecture diagram with a non-trivial alt attribute', () => {
   const md = readFileSync(join(handbookDir, 'architecture.md'), 'utf-8');
   assert.match(md, /\/diagrams\/architecture\.svg/, 'architecture.md does not reference /diagrams/architecture.svg.');
