@@ -192,11 +192,10 @@ export function readBoundedBuffer(filePath, opts = {}) {
   if (stats.size > maxBytes) {
     const sizeMb = (stats.size / 1024 / 1024).toFixed(1);
     const limitMb = (maxBytes / 1024 / 1024).toFixed(1);
+    // F-76fc969b: one-line fact only — Path: is a renderTopLevelError detail
+    // line; remediation lives on `.hint` / Next:, not packed into the header.
     throw new BoundedJsonError(
-      `bounded-json: file exceeds size limit: ${sizeMb} MB (limit: ${limitMb} MB). ` +
-      `Path: ${filePath}. The producer likely entered a logging loop, wrote ` +
-      `raw stdout instead of structured JSON, or supplied an unintended path. ` +
-      `Inspect the file before raising the limit.`,
+      `bounded-json: file exceeds size limit: ${sizeMb} MB (limit: ${limitMb} MB)`,
       { kind: 'SIZE_LIMIT', path: filePath, size: stats.size, maxBytes }
     );
   }
@@ -230,11 +229,9 @@ export function readBoundedBuffer(filePath, opts = {}) {
   if (buf.length > maxBytes) {
     const sizeMb = (buf.length / 1024 / 1024).toFixed(1);
     const limitMb = (maxBytes / 1024 / 1024).toFixed(1);
+    // F-76fc969b: on-read sibling — same one-line fact; Path:/Next: elsewhere.
     throw new BoundedJsonError(
-      `bounded-json: file exceeds size limit on read: ${sizeMb} MB (limit: ${limitMb} MB). ` +
-      `Path: ${filePath}. The file grew past the limit between stat and read ` +
-      `(the producer is likely still writing — a logging loop or raw-stdout dump). ` +
-      `Inspect the file before raising the limit.`,
+      `bounded-json: file exceeds size limit on read: ${sizeMb} MB (limit: ${limitMb} MB)`,
       { kind: 'SIZE_LIMIT', path: filePath, size: buf.length, maxBytes }
     );
   }

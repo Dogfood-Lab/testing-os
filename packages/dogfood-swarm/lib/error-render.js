@@ -25,6 +25,59 @@
  */
 
 import { renderPhaseList } from './phases.js';
+import { displayWidth, sliceToDisplayWidth } from './display-width.js';
+
+/**
+ * F-14ee286b: fold a prefix+body pair to a TTY column budget with hanging
+ * indent so soft-wrap continuations stay children of the ERROR header /
+ * detail label instead of restarting at column 0 mid-path.
+ *
+ * @param {string} prefix — e.g. `ERROR [CODE]: ` or `  Next: `
+ * @param {string} body
+ * @param {number} [budget] — defaults to process.stderr.columns || 80
+ */
+export function foldErrorLine(prefix, body, budget = process.stderr?.columns || 80) {
+  const hangWidth = displayWidth(prefix);
+  const hang = ' '.repeat(Math.max(hangWidth, 2));
+  // Embedded newlines would otherwise leave only the first line carrying the
+  // ERROR [CODE]: / detail label — flatten into one visual block under the hang.
+  const flat = String(body ?? '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join(' ');
+
+  if (!flat) {
+    console.error(prefix.replace(/\s+$/, '') || prefix);
+    return;
+  }
+
+  let remaining = flat;
+  let first = true;
+  while (remaining.length > 0) {
+    const lead = first ? prefix : hang;
+    const avail = Math.max(1, budget - displayWidth(lead));
+    if (displayWidth(remaining) <= avail) {
+      console.error(lead + remaining);
+      return;
+    }
+
+    let chunk = sliceToDisplayWidth(remaining, avail);
+    const sp = chunk.lastIndexOf(' ');
+    // Prefer a word break when the chunk is not tiny (avoids orphaning a
+    // single character onto its own hang line).
+    if (sp > 0 && displayWidth(chunk.slice(0, sp)) >= Math.min(8, avail)) {
+      chunk = chunk.slice(0, sp);
+    }
+    if (!chunk) {
+      chunk = [...remaining][0] || '';
+    }
+    console.error(lead + chunk);
+    remaining = remaining.slice(chunk.length).replace(/^\s+/, '');
+    first = false;
+  }
+}
 
 /**
  * Render a thrown error to stderr at the CLI top-level seam.
@@ -36,20 +89,26 @@ export function renderTopLevelError(e) {
     return;
   }
 
-  console.error(`ERROR [${e.code}]: ${e.message}`);
+  // F-14ee286b: hang continuations under the column after `]: `.
+  foldErrorLine(`ERROR [${e.code}]: `, e.message ?? '');
 
-  const hint = e.hint || deriveHintForCode(e);
-  if (hint) console.error(`  Next: ${hint}`);
-
-  if (e.cause && e.cause.message) {
-    console.error(`  Caused by: ${e.cause.message}`);
+  // F-76fc969b: path identity is a structured detail line, not header prose.
+  if (e.path != null && e.path !== '') {
+    foldErrorLine('  Path: ', String(e.path));
   }
 
-  if (e.runId != null) console.error(`  Run: ${e.runId}`);
-  if (e.waveId != null) console.error(`  Wave: ${e.waveId}`);
-  if (e.agentRunId != null) console.error(`  Agent run: ${e.agentRunId}`);
+  const hint = e.hint || deriveHintForCode(e);
+  if (hint) foldErrorLine('  Next: ', hint);
+
+  if (e.cause && e.cause.message) {
+    foldErrorLine('  Caused by: ', e.cause.message);
+  }
+
+  if (e.runId != null) foldErrorLine('  Run: ', String(e.runId));
+  if (e.waveId != null) foldErrorLine('  Wave: ', String(e.waveId));
+  if (e.agentRunId != null) foldErrorLine('  Agent run: ', String(e.agentRunId));
   if (e.findingsAttempted != null) {
-    console.error(`  Findings attempted: ${e.findingsAttempted}`);
+    foldErrorLine('  Findings attempted: ', String(e.findingsAttempted));
   }
 }
 
