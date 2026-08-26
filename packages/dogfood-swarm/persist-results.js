@@ -55,13 +55,16 @@ function readJsonDir(dirPath) {
 // mirroring the multi-line "header + indented detail" shape the
 // dogfood-ingest failure handler below already uses.
 function dieOnReadError(e, label) {
+  // F-9178b2f3: same dialect as renderTopLevelError — BOUNDED_JSON_* codes,
+  // Caused by: (not the legacy Cause label), and Next: from BoundedJsonError.hint.
   if (e instanceof BoundedJsonError) {
-    console.error(`ERROR [${e.kind}]: ${label} could not be read`);
-    console.error(`  Path:  ${e.path}`);
-    console.error(`  Cause: ${e.cause && e.cause.message ? e.cause.message : e.message}`);
+    console.error(`ERROR [${e.code || e.kind}]: ${label} could not be read`);
+    console.error(`  Path: ${e.path}`);
+    console.error(`  Caused by: ${e.cause && e.cause.message ? e.cause.message : e.message}`);
+    if (e.hint) console.error(`  Next: ${e.hint}`);
   } else {
     console.error(`ERROR: ${label} could not be read`);
-    console.error(`  Cause: ${e && e.message ? e.message : String(e)}`);
+    console.error(`  Caused by: ${e && e.message ? e.message : String(e)}`);
   }
   process.exit(2);
 }
