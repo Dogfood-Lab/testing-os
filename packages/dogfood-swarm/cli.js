@@ -869,12 +869,24 @@ function cmdCollect(args) {
 
 /**
  * F5-09: `swarm doctor` preflight. Runs the read-only environment checks in
- * commands/doctor.js (Node floor, control-plane dir writable + hardlink-capable,
- * on-disk schema not newer than this build) and prints a structured pass/warn/
- * fail report. Exits non-zero ONLY on a hard FAIL — a WARN does not gate (the
- * environment is usable, just sub-ideal), so warns exit 0. No run-id required:
- * doctor probes the environment + the control-plane DB path (getDbPath()),
- * which exist independent of any specific run.
+ * commands/doctor.js and prints a structured pass/warn/fail report. Check
+ * inventory (keep in lockstep with the doctor.js header):
+ *   (1) node-version           — Node >= 22 engines floor (hard FAIL)
+ *   (2) control-plane-writable — dir writable + hardlink-capable (hard FAIL)
+ *   (3) schema-version         — on-disk schema not newer than this build
+ *   (4) git-available          — git on PATH (WARN; ownership probe / --isolate)
+ *   (5) disk-free              — F-2fa28353: free space on the SWARM_DB volume
+ *                                (WARN below documented floor)
+ *   (6) control-plane-size     — F-2fa28353: db + .db-wal + .db-shm size
+ *                                (WARN at/above documented ceiling)
+ *   (7) stranded-worktrees     — F-2fa28353: --isolate residue under
+ *                                .swarm/worktrees via listWorktrees /
+ *                                worktreeDisposition; hint `swarm clean`
+ *                                (WARN; doctor never removes)
+ * Exits non-zero ONLY on a hard FAIL — a WARN does not gate (the environment
+ * is usable, just sub-ideal), so warns exit 0. No run-id required: doctor
+ * probes the environment + the control-plane DB path (getDbPath()), which
+ * exist independent of any specific run.
  *
  * F-c1a49594 (Stage C): every sibling gate-shaped verb (status/runs/history/
  * verify-*) routes `--format` through the shared parseFormatFlag helper,
@@ -4203,12 +4215,17 @@ Commands:
                              Preflight environment checks (read-only). Verifies
                              Node >= 22, the control-plane dir is writable +
                              hardlink-capable (the file-lock CAS needs link(2);
-                             exFAT/FAT32 fail), and the on-disk control-plane.db
-                             schema is not newer than this build. Structured
-                             pass/warn/fail report; exits non-zero only on a
-                             hard FAIL (warns exit 0). No run-id required.
-                             --format=json emits the {checks,overallStatus,
-                             exitCode} object verbatim; default is text.
+                             exFAT/FAT32 fail), the on-disk control-plane.db
+                             schema is not newer than this build, git is on
+                             PATH (WARN), free space on the SWARM_DB volume
+                             (WARN), control-plane.db + WAL/SHM size (WARN),
+                             and stranded --isolate worktrees under
+                             .swarm/worktrees (WARN; reclaim via swarm clean).
+                             Structured pass/warn/fail report; exits non-zero
+                             only on a hard FAIL (warns exit 0). No run-id
+                             required. --format=json emits the
+                             {checks,overallStatus,exitCode} object verbatim;
+                             default is text.
   revalidate <run-id> [opts] Lawful recovery for blocked agent_runs
                              (invalid_output / ownership_violation).
                              Usage: swarm revalidate <run-id> [flags]

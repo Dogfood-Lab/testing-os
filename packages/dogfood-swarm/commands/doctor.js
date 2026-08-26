@@ -34,6 +34,28 @@
  *                                 worktree.js → git worktree) fail opaquely at
  *                                 dispatch. doctor surfaces the dependency up
  *                                 front (DS-PROAC-01).
+ *   (5) disk-free               — F-2fa28353: free space on the volume that
+ *                                 holds SWARM_DB / the control-plane dir (and
+ *                                 therefore the .swarm worktrees that land on
+ *                                 the same volume under the default layout).
+ *                                 WARN below DISK_FREE_WARN_BYTES. Isolate
+ *                                 dispatch copies whole worktrees; a nearly-
+ *                                 full volume fails mid-wave rather than at
+ *                                 preflight. Read-only (fs.statfsSync).
+ *   (6) control-plane-size      — F-2fa28353: combined size of control-plane.db
+ *                                 + sibling .db-wal / .db-shm. WARN at/above
+ *                                 CONTROL_PLANE_SIZE_WARN_BYTES. Does not
+ *                                 vacuum or truncate — doctor discloses;
+ *                                 operators investigate / relocate. Folded in
+ *                                 from the claude-guardian job without forking
+ *                                 that repo.
+ *   (7) stranded-worktrees      — F-2fa28353: --isolate residue under
+ *                                 <repo>/.swarm/worktrees via listWorktrees +
+ *                                 worktreeDisposition (lib/worktree.js), plus
+ *                                 fs-only orphan dirs git no longer lists
+ *                                 (Windows junction strand). WARN when any
+ *                                 remain. Repair stays `swarm clean <run-id>`
+ *                                 (dry-run by default); doctor never removes.
  *
  * Deliberately ABSENT (verified against source, not invented):
  *   - No DOGFOOD_TOKEN check — that env var does not exist anywhere in the
@@ -51,14 +73,74 @@
 import Database from 'better-sqlite3';
 import {
   existsSync, mkdtempSync, openSync, closeSync, linkSync, rmSync,
+  statSync, readdirSync, statfsSync,
 } from 'node:fs';
 import { execFileSync } from 'node:child_process';
-import { dirname, join } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { randomBytes } from 'node:crypto';
 import { SCHEMA_VERSION } from '../db/schema.js';
+import { listWorktrees, worktreeDisposition } from '../lib/worktree.js';
 
 /** The package `engines.node` floor — keep in lockstep with package.json. */
 const MIN_NODE_MAJOR = 22;
+
+/**
+ * F-2fa28353 documented WARN floors. Soft — never gate exit. Tunable via
+ * runDoctor opts so tests can force WARN/PASS without PATH or volume surgery.
+ *
+ * Disk: isolate worktrees need headroom; 1 GiB is the soft floor measured
+ * against the trajectory preflight (healthy boxes report TB-scale free).
+ * Control-plane payload: live healthy was ~10 MB; 50 MiB for db+wal+shm is
+ * the soft ceiling before the operator should investigate bloat.
+ */
+export const DISK_FREE_WARN_BYTES = 1 * 1024 * 1024 * 1024;
+export const CONTROL_PLANE_SIZE_WARN_BYTES = 50 * 1024 * 1024;
+
+/**
+ * Infer the repo root that hosts `.swarm/worktrees` from the control-plane
+ * DB path. Default layout is `<repo>/swarms/control-plane.db`; a relocated
+ * SWARM_DB falls back to cwd (operator typically runs doctor from the repo).
+ *
+ * @param {string} dbPath
+ * @returns {string}
+ */
+function inferRepoPath(dbPath) {
+  const cpDir = dirname(dbPath);
+  if (basename(cpDir) === 'swarms') return dirname(cpDir);
+  return process.cwd();
+}
+
+/**
+ * @param {number} bytes
+ * @returns {string}
+ */
+function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return String(bytes);
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB'];
+  let n = bytes;
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) {
+    n /= 1024;
+    i++;
+  }
+  const digits = i === 0 ? 0 : (n >= 10 ? 1 : 2);
+  return `${n.toFixed(digits)} ${units[i]}`;
+}
+
+/**
+ * Best-effort size of a path; missing files contribute 0 (sidecars often
+ * absent when the DB has never been opened in WAL mode).
+ * @param {string} path
+ * @returns {number}
+ */
+function fileSizeOrZero(path) {
+  try {
+    if (!existsSync(path)) return 0;
+    return statSync(path).size;
+  } catch {
+    return 0;
+  }
+}
 
 /**
  * Check (1): the running Node major satisfies the `engines.node` floor.
@@ -249,19 +331,229 @@ function checkGitAvailable() {
 }
 
 /**
+ * Check (5): free space on the SWARM_DB / control-plane volume. WARN-class.
+ * F-2fa28353 — folded from the claude-guardian job into doctor (do not fork).
+ *
+ * @param {string} cpDir
+ * @param {object} opts
+ * @param {number} opts.warnBytes
+ * @param {typeof statfsSync} [opts.statfsSync]
+ * @returns {{ id, status, message, hint? }}
+ */
+function checkDiskFree(cpDir, opts) {
+  const warnBytes = opts.warnBytes;
+  let probeDir = cpDir;
+  while (probeDir && !existsSync(probeDir)) {
+    const parent = dirname(probeDir);
+    if (parent === probeDir) break;
+    probeDir = parent;
+  }
+
+  const statfs = opts.statfsSync || statfsSync;
+  let fsStat;
+  try {
+    fsStat = statfs(probeDir);
+  } catch (e) {
+    return {
+      id: 'disk-free',
+      status: 'warn',
+      message: `could not probe free space on ${probeDir} (${e.code || e.message})`,
+      hint: 'confirm the SWARM_DB volume is mounted and readable; isolate dispatch needs free headroom for worktree copies',
+    };
+  }
+
+  const bavail = Number(fsStat.bavail);
+  const bsize = Number(fsStat.bsize);
+  if (!Number.isFinite(bavail) || !Number.isFinite(bsize) || bsize <= 0) {
+    return {
+      id: 'disk-free',
+      status: 'warn',
+      message: `statfs returned non-numeric geometry for ${probeDir} (bavail=${fsStat.bavail}, bsize=${fsStat.bsize})`,
+      hint: 'confirm the SWARM_DB volume reports usable free space before an isolate dispatch',
+    };
+  }
+
+  const freeBytes = bavail * bsize;
+  if (freeBytes < warnBytes) {
+    return {
+      id: 'disk-free',
+      status: 'warn',
+      message: `only ${formatBytes(freeBytes)} free on ${probeDir} (warn floor ${formatBytes(warnBytes)})`,
+      hint: 'free space on the SWARM_DB / .swarm worktrees volume before an isolate dispatch — worktree copies need headroom',
+    };
+  }
+  return {
+    id: 'disk-free',
+    status: 'pass',
+    message: `${formatBytes(freeBytes)} free on ${probeDir} (floor ${formatBytes(warnBytes)})`,
+  };
+}
+
+/**
+ * Check (6): control-plane.db + .db-wal + .db-shm combined size. WARN-class.
+ * F-2fa28353 — disclose bloat; never vacuum/truncate from doctor.
+ *
+ * @param {string} dbPath
+ * @param {object} opts
+ * @param {number} opts.warnBytes
+ * @returns {{ id, status, message, hint? }}
+ */
+function checkControlPlaneSize(dbPath, opts) {
+  const warnBytes = opts.warnBytes;
+  const dbSize = fileSizeOrZero(dbPath);
+  const walSize = fileSizeOrZero(`${dbPath}-wal`);
+  const shmSize = fileSizeOrZero(`${dbPath}-shm`);
+  const total = dbSize + walSize + shmSize;
+
+  if (!existsSync(dbPath) && total === 0) {
+    return {
+      id: 'control-plane-size',
+      status: 'pass',
+      message: `no control-plane.db yet at ${dbPath} — nothing to size`,
+    };
+  }
+
+  const detail = `db ${formatBytes(dbSize)} + wal ${formatBytes(walSize)} + shm ${formatBytes(shmSize)} = ${formatBytes(total)}`;
+  if (total >= warnBytes) {
+    return {
+      id: 'control-plane-size',
+      status: 'warn',
+      message: `control-plane payload is ${detail} (warn ceiling ${formatBytes(warnBytes)})`,
+      hint: 'investigate control-plane.db / WAL growth; doctor does not vacuum — relocate or compact out-of-band if the size is unexpected',
+    };
+  }
+  return {
+    id: 'control-plane-size',
+    status: 'pass',
+    message: `control-plane payload is ${detail} (ceiling ${formatBytes(warnBytes)})`,
+  };
+}
+
+/**
+ * Check (7): stranded --isolate worktree residue. WARN-class. F-2fa28353.
+ * Reuses listWorktrees + worktreeDisposition; repair stays `swarm clean`.
+ *
+ * @param {string} repoPath
+ * @param {object} opts
+ * @param {typeof listWorktrees} [opts.listWorktrees]
+ * @param {typeof worktreeDisposition} [opts.worktreeDisposition]
+ * @returns {{ id, status, message, hint? }}
+ */
+function checkStrandedWorktrees(repoPath, opts = {}) {
+  const listFn = opts.listWorktrees || listWorktrees;
+  const dispositionFn = opts.worktreeDisposition || worktreeDisposition;
+  const wtRoot = join(repoPath, '.swarm', 'worktrees');
+
+  let tracked = [];
+  try {
+    tracked = listFn(repoPath) || [];
+  } catch (e) {
+    return {
+      id: 'stranded-worktrees',
+      status: 'warn',
+      message: `could not list swarm worktrees under ${repoPath} (${e.code || e.message})`,
+      hint: 'reclaim residue with `swarm clean <run-id>` (dry-run by default; --apply to remove)',
+    };
+  }
+
+  let atRisk = 0;
+  const runShorts = new Set();
+  for (const wt of tracked) {
+    const branch = (wt.branch || '').replace(/^refs\/heads\//, '');
+    const m = branch.match(/^swarm\/([^/]+)\//);
+    if (m) runShorts.add(m[1]);
+    let disposition = { dirty: false, unmerged: false };
+    try {
+      disposition = dispositionFn(repoPath, wt.path, branch);
+    } catch { /* disposition probe is advisory */ }
+    if (disposition.dirty || disposition.unmerged) atRisk++;
+  }
+
+  // Windows --isolate strand: git worktree list is already clean but the
+  // directory remains under .swarm/worktrees. Count dirs that are not among
+  // the porcelain paths (normalize for separator / case differences).
+  const trackedPaths = new Set(
+    tracked.map((w) => (w.path || '').replace(/\\/g, '/').toLowerCase()),
+  );
+  let orphanDirs = 0;
+  if (existsSync(wtRoot)) {
+    let entries = [];
+    try {
+      entries = readdirSync(wtRoot, { withFileTypes: true });
+    } catch { /* advisory */ }
+    for (const ent of entries) {
+      if (!ent.isDirectory()) continue;
+      const full = join(wtRoot, ent.name).replace(/\\/g, '/').toLowerCase();
+      if (!trackedPaths.has(full)) orphanDirs++;
+    }
+  }
+
+  const trackedCount = tracked.length;
+  if (trackedCount === 0 && orphanDirs === 0) {
+    return {
+      id: 'stranded-worktrees',
+      status: 'pass',
+      message: `no --isolate worktree residue under ${wtRoot}`,
+    };
+  }
+
+  const parts = [];
+  if (trackedCount > 0) {
+    parts.push(
+      `${trackedCount} git-tracked swarm worktree${trackedCount === 1 ? '' : 's'}` +
+      (atRisk > 0 ? ` (${atRisk} dirty/unmerged)` : ''),
+    );
+  }
+  if (orphanDirs > 0) {
+    parts.push(
+      `${orphanDirs} fs-only orphan dir${orphanDirs === 1 ? '' : 's'} (not in git worktree list)`,
+    );
+  }
+
+  const shortHint = runShorts.size > 0
+    ? ` (seen run-short${runShorts.size === 1 ? '' : 's'}: ${[...runShorts].sort().join(', ')})`
+    : '';
+
+  return {
+    id: 'stranded-worktrees',
+    status: 'warn',
+    message: `${parts.join('; ')} under ${wtRoot}${shortHint}`,
+    hint: 'reclaim with `swarm clean <run-id>` (dry-run by default; --apply to remove; add --force for dirty/unmerged). Doctor never deletes worktrees.',
+  };
+}
+
+/**
  * Run every preflight check and roll up an overall verdict + exit code.
  *
  * @param {object} opts
  * @param {string} opts.dbPath — the control-plane DB path (CLI passes getDbPath()).
+ * @param {string} [opts.repoPath] — repo hosting `.swarm/worktrees` (default: infer from dbPath / cwd).
+ * @param {number} [opts.diskFreeWarnBytes] — override DISK_FREE_WARN_BYTES (tests).
+ * @param {number} [opts.controlPlaneSizeWarnBytes] — override CONTROL_PLANE_SIZE_WARN_BYTES (tests).
+ * @param {typeof statfsSync} [opts.statfsSync] — inject fs.statfsSync (tests).
+ * @param {typeof listWorktrees} [opts.listWorktrees] — inject listWorktrees (tests).
+ * @param {typeof worktreeDisposition} [opts.worktreeDisposition] — inject disposition (tests).
  * @returns {{ checks: Array<{id,status,message,hint?}>, overallStatus: 'pass'|'warn'|'fail', exitCode: 0|1 }}
  */
 export function runDoctor(opts) {
   const cpDir = dirname(opts.dbPath);
+  const repoPath = opts.repoPath || inferRepoPath(opts.dbPath);
   const checks = [
     checkNodeVersion(),
     checkControlPlaneWritable(cpDir),
     checkSchemaVersion(opts.dbPath),
     checkGitAvailable(),
+    checkDiskFree(cpDir, {
+      warnBytes: opts.diskFreeWarnBytes ?? DISK_FREE_WARN_BYTES,
+      statfsSync: opts.statfsSync,
+    }),
+    checkControlPlaneSize(opts.dbPath, {
+      warnBytes: opts.controlPlaneSizeWarnBytes ?? CONTROL_PLANE_SIZE_WARN_BYTES,
+    }),
+    checkStrandedWorktrees(repoPath, {
+      listWorktrees: opts.listWorktrees,
+      worktreeDisposition: opts.worktreeDisposition,
+    }),
   ];
 
   const anyFail = checks.some(c => c.status === 'fail');
