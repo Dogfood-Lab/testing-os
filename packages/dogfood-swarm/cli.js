@@ -4194,9 +4194,10 @@ Commands:
                              shared-tree escape). If both --isolate and
                              --no-isolate are present, --no-isolate wins.
                              Non-isolated multi-domain amend waves cannot
-                             independently catch a cross-domain write (OWNERSHIP
-                             PROBE DEGRADED); omit --no-isolate (or re-dispatch
-                             without it) to restore full attribution. Requires
+                             independently catch a cross-domain write
+                             (OWNERSHIP PROBE DEGRADED); omit --no-isolate
+                             (or re-dispatch without it) to restore full
+                             attribution. Requires
                              git (see swarm doctor's git-available check).
                              --dry-run: preview the wave shape (which domains
                              become agents, the prompt paths that WOULD be
