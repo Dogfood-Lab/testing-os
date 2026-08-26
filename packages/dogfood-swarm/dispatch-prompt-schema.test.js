@@ -42,8 +42,22 @@ import { createRequire } from 'node:module';
 import { openDb, closeDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains, takeDomainSnapshot } from './lib/domains.js';
 import { dispatch } from './commands/dispatch.js';
+import { buildAmendPrompt } from './lib/templates.js';
 
 const RUN_ID = 'test-dispatch-prompt-schema';
+
+/** Extract and JSON.parse every ```json fenced block from a rendered prompt. */
+function extractJsonBlocks(promptText) {
+  const blocks = [];
+  const re = /```json\n([\s\S]*?)\n```/g;
+  let m;
+  while ((m = re.exec(promptText))) {
+    blocks.push(JSON.parse(m[1]));
+  }
+  return blocks;
+}
+
+const CANONICAL_FINDING_ID = /^(F-xxxxxxxx|F-[a-f0-9]{8})$/;
 
 const require = createRequire(import.meta.url);
 const SCHEMA_PATH = require.resolve('@dogfood-lab/schemas/json/agent-output.schema.json');
@@ -323,5 +337,63 @@ describe('dispatch — domain-map alignment (Stage B Item 4)', () => {
         `${agent.domain}: feature prompt must include domain contract header`,
       );
     }
+  });
+});
+
+describe('amend worked-example finding_id discipline (F-31d6f967)', () => {
+  // Product edit of templates.js is swarm-cp-core; this root pin goes red if
+  // the teach-defect (F-001 / F-002 local placeholders) returns.
+  it('amend JSON example finding_ids are F-xxxxxxxx or F-[8 hex], never F-001/F-002; prose ties them to Findings to Fix', () => {
+    const routedId = 'F-1b6ef1b6';
+    const prompt = buildAmendPrompt({
+      repoPath: '/tmp/repo',
+      repo: 'org/repo',
+      domainName: 'backend',
+      globs: ['packages/**'],
+      ownershipClass: 'owned',
+      domainSnapshotId: 'deadbeefdeadbeef',
+      waveNumber: 2,
+      findings: [{
+        finding_id: routedId,
+        severity: 'HIGH',
+        description: 'routed finding',
+        file_path: 'packages/a/src/foo.js',
+        line_number: 10,
+        recommendation: 'fix it',
+      }],
+    });
+
+    assert.ok(
+      prompt.includes(`## Findings to Fix`) && prompt.includes(routedId),
+      'Findings to Fix must list the routed canonical id',
+    );
+
+    const blocks = extractJsonBlocks(prompt);
+    assert.equal(blocks.length, 1, 'amend prompt must emit exactly one fenced JSON worked example');
+    const example = blocks[0];
+    assert.ok(Array.isArray(example.fixes) && example.fixes.length > 0,
+      'worked example must include fixes[]');
+
+    const allIds = [
+      ...example.fixes.map(f => f.finding_id),
+      ...((example.skipped || []).map(s => s.finding_id)),
+    ];
+    for (const id of allIds) {
+      assert.equal(typeof id, 'string', 'finding_id must be a string');
+      assert.notEqual(id, 'F-001', 'worked example must not teach local id F-001');
+      assert.notEqual(id, 'F-002', 'worked example must not teach local id F-002');
+      assert.notEqual(id, 'F-003', 'worked example must not teach local id F-003');
+      assert.match(
+        id,
+        CANONICAL_FINDING_ID,
+        `worked-example finding_id ${JSON.stringify(id)} must be F-xxxxxxxx or ^F-[a-f0-9]{8}$`,
+      );
+    }
+
+    assert.match(
+      prompt,
+      /finding_id[^\n]{0,120}Findings to Fix|Findings to Fix[^\n]{0,200}finding_id/i,
+      'amend prose must state that finding_id is one of the ids under Findings to Fix',
+    );
   });
 });

@@ -29,14 +29,19 @@
  *      double-close or double-event an already-fixed finding.
  *   5. FILE-LESS: a file-less finding is closable by precisely its filing
  *      domain (filed_by_domain), fail-closed when no filer is recorded.
+ *   6. READER HALF (F-a1e35a0d / #65): after collect records unknown_id on
+ *      the agent report, `swarm status --format=json` and `swarm receipt
+ *      --format=json` must also surface that skip (count + reason). Collect-
+ *      report presence alone is not "surfaced".
  */
 
 import { describe, it, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFileSync, spawnSync } from 'node:child_process';
 
 import { openDb, closeDb } from './db/connection.js';
 import { saveDomainDraft, freezeDomains } from './lib/domains.js';
@@ -45,6 +50,40 @@ import { collect } from './commands/collect.js';
 import { applyDeclaredFixes } from './lib/declared-closures.js';
 
 const RUN_ID = 'test-amend-declared';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const CLI_PATH = join(__dirname, 'cli.js');
+
+function runCli(args, dbPath) {
+  return spawnSync(process.execPath, [CLI_PATH, ...args], {
+    encoding: 'utf-8',
+    cwd: __dirname,
+    env: { ...process.env, SWARM_DB: dbPath },
+  });
+}
+
+/** Deep-walk status/receipt JSON for unknown_id skip signals (flexible shape). */
+function collectUnknownIdSignals(node, acc = []) {
+  if (node == null || typeof node !== 'object') return acc;
+  if (Array.isArray(node)) {
+    for (const item of node) collectUnknownIdSignals(item, acc);
+    return acc;
+  }
+  if (node.reason === 'unknown_id') {
+    acc.push({ finding_id: node.finding_id ?? null, reason: 'unknown_id' });
+  }
+  if (typeof node.unknown_id === 'number' && node.unknown_id > 0) {
+    acc.push({ count: node.unknown_id, via: 'unknown_id_count' });
+  }
+  if (node.by_reason && typeof node.by_reason === 'object'
+      && typeof node.by_reason.unknown_id === 'number'
+      && node.by_reason.unknown_id > 0) {
+    acc.push({ count: node.by_reason.unknown_id, via: 'by_reason.unknown_id' });
+  }
+  for (const value of Object.values(node)) {
+    collectUnknownIdSignals(value, acc);
+  }
+  return acc;
+}
 
 function initGitRepo(repoPath) {
   mkdirSync(repoPath, { recursive: true });
@@ -245,5 +284,62 @@ describe('amend collect — fixes[] declared closures (swarm-1784601601-bd4a gap
       db.prepare('SELECT status FROM findings WHERE run_id = ? AND finding_id = ?').get(RUN_ID, 'F-D-001').status,
       'approved', 'no recorded filer -> nobody can close it by declaration (honest answer, not a guess)');
     db.close();
+  });
+
+  it('surfaces unknown_id skips on swarm status and swarm receipt JSON (F-a1e35a0d reader half)', () => {
+    const HALLUCINATED = 'F-NOPE-99';
+    const outA = join(tmpDir, 'a.json');
+    const outB = join(tmpDir, 'b.json');
+    writeFileSync(outA, amendOutput('domain-a', [
+      { finding_id: HALLUCINATED, description: 'hallucinated id — must not vanish off coordinator surfaces' },
+    ]));
+    writeFileSync(outB, amendOutput('domain-b', []));
+
+    const report = collect({
+      runId: RUN_ID,
+      dbPath,
+      outputs: { 'domain-a': outA, 'domain-b': outB },
+    });
+
+    // Writer half — keep the existing collect-report contract.
+    const agentA = report.agents.find(a => a.domain === 'domain-a');
+    assert.ok(Array.isArray(agentA.fixes_skipped), 'collect report still carries fixes_skipped');
+    assert.equal(agentA.fixes_skipped[0].finding_id, HALLUCINATED);
+    assert.equal(agentA.fixes_skipped[0].reason, 'unknown_id');
+
+    // Reader half — status / receipt must make the same skip coordinator-visible.
+    const statusResult = runCli(['status', RUN_ID, '--format=json'], dbPath);
+    assert.equal(statusResult.status, 0,
+      `swarm status --format=json must exit 0; stderr:\n${statusResult.stderr}`);
+    let statusJson;
+    assert.doesNotThrow(() => { statusJson = JSON.parse(statusResult.stdout); },
+      `swarm status --format=json must be parseable; got:\n${statusResult.stdout}`);
+
+    const receiptResult = runCli(['receipt', RUN_ID, '--format=json'], dbPath);
+    assert.equal(receiptResult.status, 0,
+      `swarm receipt --format=json must exit 0; stderr:\n${receiptResult.stderr}`);
+    let receiptJson;
+    assert.doesNotThrow(() => { receiptJson = JSON.parse(receiptResult.stdout); },
+      `swarm receipt --format=json must be parseable; got:\n${receiptResult.stdout}`);
+
+    for (const [label, parsed] of [['status', statusJson], ['receipt', receiptJson]]) {
+      const blob = JSON.stringify(parsed);
+      assert.ok(
+        blob.includes('fixes_skipped') || blob.includes('unknown_id'),
+        `${label} JSON must mention fixes_skipped or unknown_id — collect-report-only is not "surfaced"`,
+      );
+      const signals = collectUnknownIdSignals(parsed);
+      assert.ok(
+        signals.length > 0,
+        `${label} JSON must expose an unknown_id skip signal (count and/or reason); got none in ${blob.slice(0, 500)}`,
+      );
+      const mentionsId = blob.includes(HALLUCINATED)
+        || signals.some(s => s.finding_id === HALLUCINATED);
+      const hasCount = signals.some(s => typeof s.count === 'number' && s.count > 0);
+      assert.ok(
+        mentionsId || hasCount,
+        `${label} JSON must show the hallucinated id and/or a positive unknown_id count`,
+      );
+    }
   });
 });
