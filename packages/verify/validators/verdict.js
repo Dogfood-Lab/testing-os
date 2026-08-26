@@ -68,6 +68,16 @@ export function computeVerdict(proposed, context) {
     downgrade_reasons.push('policy validation failed');
   }
 
+  // F-a0a4d806: non-empty rejection reasons are a fail floor. verify() sets
+  // status from reasons.length > 0, but overall_verdict.verified previously
+  // ignored the already-plumbed `reasons` argument — a steps[...] or
+  // repo:mismatch rejection could leave verified:'pass' next to
+  // status:'rejected'. Treat reasons as evidence, not a dual signal.
+  if (Array.isArray(reasons) && reasons.length > 0) {
+    floorVerdict = 'fail';
+    downgrade_reasons.push('non-empty rejection reasons force fail');
+  }
+
   // The verified verdict is the worse of proposed and floor
   // (we never upgrade, so if proposed is worse than floor, keep proposed)
   if (proposed && VERDICT_RANK[proposed] == null) {

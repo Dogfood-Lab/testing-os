@@ -314,13 +314,24 @@ export function validatePolicy(submission, { globalPolicy, repoPolicy }) {
     const ciReqs = surfacePolicy.ci_requirements;
     if (!ciReqs) continue;
 
-    if (ciReqs.tests_must_pass && submission.ci_checks) {
-      const failingTests = submission.ci_checks.filter(
-        c => c.kind === 'test' && c.status === 'fail'
-      );
-      if (failingTests.length > 0) {
-        const ids = failingTests.map(c => c.id).join(', ');
-        errors.push(`surface[${surface}]: CI tests must pass but [${ids}] failed`);
+    // F-3b34d51e: mirror coverage_min's missing-data contract. Pre-fix the
+    // gate was `if (tests_must_pass && submission.ci_checks)` — omitting the
+    // optional ci_checks field (or sending [] / no kind:'test' entries)
+    // skipped the branch entirely and policy-validated clean under a
+    // tests_must_pass:true surface. Require at least one kind:'test' check
+    // whose status is not 'fail'; reject absent/empty/no-test-kind evidence.
+    if (ciReqs.tests_must_pass) {
+      const testChecks = (submission.ci_checks || []).filter(c => c.kind === 'test');
+      if (testChecks.length === 0) {
+        errors.push(
+          `surface[${surface}]: tests_must_pass is true but no kind:test CI check provided`
+        );
+      } else {
+        const failingTests = testChecks.filter(c => c.status === 'fail');
+        if (failingTests.length > 0) {
+          const ids = failingTests.map(c => c.id).join(', ');
+          errors.push(`surface[${surface}]: CI tests must pass but [${ids}] failed`);
+        }
       }
     }
 

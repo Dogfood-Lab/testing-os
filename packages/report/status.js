@@ -105,6 +105,56 @@ export const DEFAULT_INDEX_BASE = `https://raw.githubusercontent.com/${RECEIVER_
 export const DEFAULT_STALE_DAYS = 30;
 
 /**
+ * F-d433f8a4: refuse an index entry.path that would leave the receiver's
+ * records/ tree. WHATWG `new URL(relPath, base)` turns absolute URLs and
+ * protocol-relative paths into a different origin, and a leading `/` or `..`
+ * segment can escape the repo prefix. Index paths are normally repo-relative
+ * forward-slash paths under `records/`; a poisoned latest-by-repo.json must
+ * not make consumer CI fetch attacker-controlled JSON when surfacing
+ * rejection_reasons.
+ *
+ * @param {string} relPath
+ * @param {string} base
+ */
+export function assertSafeRecordPath(relPath, base) {
+  if (typeof relPath !== 'string' || relPath.length === 0) {
+    const e = new Error('index entry path is missing or not a string');
+    e.code = 'INDEX_MALFORMED';
+    e.hint = 'latest-by-repo.json entries must carry a relative records/ path.';
+    throw e;
+  }
+  if (
+    /^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(relPath) ||
+    relPath.startsWith('//') ||
+    relPath.startsWith('/') ||
+    relPath.includes('..')
+  ) {
+    const e = new Error(`index entry path is not a safe relative records/ path: ${relPath}`);
+    e.code = 'INDEX_MALFORMED';
+    e.hint = 'Refuse absolute, protocol-relative, rooted, or .. paths; rebuild-indexes emits repo-relative records/ paths only.';
+    throw e;
+  }
+
+  const baseUrl = new URL(base.endsWith('/') ? base : `${base}/`);
+  const resolved = new URL(relPath, baseUrl);
+  if (resolved.protocol !== baseUrl.protocol) {
+    const e = new Error(`index entry path resolves off the index base protocol: ${relPath}`);
+    e.code = 'INDEX_MALFORMED';
+    e.hint = 'entry.path must resolve under the same scheme as --index-base.';
+    throw e;
+  }
+  // file: URLs report origin as the string "null"; compare href prefixes instead
+  // of origin so both https:// and file:// bases stay covered.
+  const recordsRoot = new URL('records/', baseUrl);
+  if (!resolved.href.startsWith(recordsRoot.href)) {
+    const e = new Error(`index entry path does not stay under records/ after resolve: ${relPath}`);
+    e.code = 'INDEX_MALFORMED';
+    e.hint = 'entry.path must resolve under the records/ prefix of --index-base.';
+    throw e;
+  }
+}
+
+/**
  * Fetch and parse one served JSON artifact, relative to the index base.
  * Returns null on a 404 (a normal "not present" answer, not an error) and throws
  * a structured {code} error only on a transport/parse failure the caller should
@@ -269,10 +319,15 @@ export async function runStatus(opts) {
     // surface the concrete rejection_reasons so the consumer learns WHY.
     let reasons = [];
     if (entry.path) {
+      // F-d433f8a4: path guard BEFORE fetch — INDEX_MALFORMED must not be
+      // swallowed by the transport catch below (that catch is for lost detail
+      // on an otherwise-decided non-pass verdict, not for off-base fetches).
+      assertSafeRecordPath(entry.path, indexBase);
       try {
         const record = await fetchJsonOrNull(fetchImpl, indexBase, entry.path, fetchTimeoutMs);
         reasons = record?.verification?.rejection_reasons ?? [];
-      } catch {
+      } catch (err) {
+        if (err && err.code === 'INDEX_MALFORMED') throw err;
         // A record we cannot fetch does not flip the verdict — the index entry's
         // non-pass `verified` already decides the exit code; we just lose detail.
         reasons = [];
