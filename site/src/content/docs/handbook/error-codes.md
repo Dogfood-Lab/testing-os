@@ -236,6 +236,21 @@ The operator-supplied `--globs <JSON>` could not be parsed or has the wrong shap
   1. Re-invoke with shell-safe quoting: `--globs '["packages/foo/**", "packages/bar/**"]'`.
   2. On Windows PowerShell, escape inner double quotes or use the single-quote outer form per shell rules.
 
+### `DOMAINS_INVALID_OWNERSHIP_CLASS`
+
+:::note[Severity: LOW]
+The operator named an ownership class that is not in the live enum. No domain row is written; `swarm domains --add/--edit --ownership` refuses before mutating.
+:::
+
+- **Class:** `DomainsInvalidOwnershipError` (`packages/dogfood-swarm/lib/errors.js`).
+- **Trigger:** `swarm domains --add` / `--edit --ownership <value>` with a value outside `STATUS.ownership_class` (live: `owned|shared|bridge|coordinator`).
+- **Message shape:** `Invalid ownership class: <received> (valid: owned|shared|bridge|coordinator)`
+- **Hint:** `pass one of owned|shared|bridge|coordinator — e.g. \`--ownership owned\``
+- **Carries:** `received`, `valid`.
+- **Operator action:**
+  1. Re-invoke with one of the four live classes. `coordinator` is exclusive and skipped at dispatch (GitHub #67).
+  2. Do not reclassify `docs` to `shared` to skip dispatch — that makes public surfaces world-writable.
+
 ### `CLI_INVALID_THRESHOLD`
 
 :::note[Severity: MEDIUM]
