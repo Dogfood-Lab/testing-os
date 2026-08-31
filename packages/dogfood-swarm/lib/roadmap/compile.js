@@ -229,9 +229,14 @@ export function compileRoadmap(db, runId, opts = {}) {
   `).get(runId).n;
 
   const recurrenceStats = {
-    // Cross-run, unfiltered by repo — matches the existing `swarm trends`
-    // verb's own call shape (cli.js) exactly. No new SQL, per F-874c0683's
-    // own instruction. `top_recurring` is the schema's chosen name
+    // Cross-run, SCOPED TO THIS RUN'S REPO (run.repo). An earlier revision
+    // called these unscoped "matching `swarm trends`" — and a per-repo
+    // roadmap artifact then carried another product's finding text in
+    // top_recurring (reproduced 2026-08-31: claude-rpg's committed artifact
+    // led with a fingerprint that exists only in two runs of a different
+    // repo). "Recurring" for a repo's roadmap means same-repo-across-runs;
+    // portfolio-wide recurrence remains `swarm trends`' shape (its cli.js
+    // call sites still pass no repo). `top_recurring` is the schema's chosen name
     // (dogfood-roadmap.schema.json's own description: "Mirrors
     // queryRecurringFindings()'s actual return shape... rather than
     // redefining it independently") — renamed from this field's
@@ -243,12 +248,12 @@ export function compileRoadmap(db, runId, opts = {}) {
     // persist export path already uses (lib/persist/sqlite-datetime.js).
     // `recurrence_rate` is additive (the section is additionalProperties:
     // true) — kept because `swarm trends` already surfaces both together.
-    top_recurring: queryRecurringFindings(db).map((row) => ({
+    top_recurring: queryRecurringFindings(db, run.repo).map((row) => ({
       ...row,
       first_seen: toRfc3339Utc(row.first_seen),
       last_seen: toRfc3339Utc(row.last_seen),
     })),
-    recurrence_rate: queryFindingRecurrenceRate(db),
+    recurrence_rate: queryFindingRecurrenceRate(db, undefined, run.repo),
   };
 
   // attention.js's own return is intentionally richer than the schema's

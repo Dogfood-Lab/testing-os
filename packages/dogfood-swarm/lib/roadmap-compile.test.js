@@ -202,3 +202,54 @@ describe('compileRoadmap — T1 composed artifact (F-874c0683)', () => {
     assert.equal(Object.hasOwn(artifact, 'generated_at'), false, 'the old, dishonestly-named key must not linger alongside the new one');
   });
 });
+
+/**
+ * F-roadmap-leak (2026-08-31): recurrence_stats leaked OTHER repos' findings
+ * into a per-repo roadmap artifact. Reproduced in the field: claude-rpg's
+ * committed artifact led with a fingerprint that exists only in two runs of a
+ * different repo (its description named a doc claude-rpg does not have).
+ * compileRoadmap now scopes both recurrence queries to the compiled run's
+ * repo; portfolio-wide recurrence remains `swarm trends`' surface.
+ */
+describe('compileRoadmap — recurrence_stats is scoped to the run\'s repo (F-roadmap-leak)', () => {
+  function seedRun(db, id, repo, createdAt) {
+    db.prepare(
+      `INSERT INTO runs (id, repo, local_path, commit_sha, status, created_at)
+       VALUES (?, ?, '/tmp/r', ?, 'feature-audit', ?)`
+    ).run(id, repo, 'a'.repeat(40), createdAt);
+    return Number(db.prepare(
+      `INSERT INTO waves (run_id, phase, wave_number, status) VALUES (?, 'feature-audit', 1, 'collected')`
+    ).run(id).lastInsertRowid);
+  }
+
+  it('excludes a fingerprint recurring only across FOREIGN-repo runs, keeps same-repo recurrence', () => {
+    const db = openMemoryDb();
+    // Target repo: two runs sharing fp-target-recurring (the positive control).
+    const wT1 = seedRun(db, 'run-target-1', 'org/repo-target', '2026-06-01 00:00:00');
+    const wT2 = seedRun(db, 'run-target-2', 'org/repo-target', '2026-06-05 00:00:00');
+    // Foreign repo: two runs sharing fp-foreign (the incident shape).
+    const wF1 = seedRun(db, 'run-foreign-1', 'org/other-repo', '2026-06-02 00:00:00');
+    const wF2 = seedRun(db, 'run-foreign-2', 'org/other-repo', '2026-06-06 00:00:00');
+    for (const [run, wave, fp] of [
+      ['run-target-1', wT1, 'fp-target-recurring'],
+      ['run-target-2', wT2, 'fp-target-recurring'],
+      ['run-foreign-1', wF1, 'fp-foreign'],
+      ['run-foreign-2', wF2, 'fp-foreign'],
+    ]) {
+      db.prepare(
+        `INSERT INTO findings (run_id, finding_id, fingerprint, severity, category, description, status, first_seen_wave, last_seen_wave)
+         VALUES (?, ?, ?, 'HIGH', 'bug', 'd', 'new', ?, ?)`
+      ).run(run, `F-${fp}-${run}`, fp, wave, wave);
+    }
+
+    const artifact = compileRoadmap(db, 'run-target-2', {});
+    const fps = artifact.recurrence_stats.top_recurring.map((r) => r.fingerprint);
+    assert.ok(fps.includes('fp-target-recurring'),
+      'same-repo cross-run recurrence must appear');
+    assert.ok(!fps.includes('fp-foreign'),
+      `a fingerprint recurring only in ANOTHER repo's runs must not appear; got ${JSON.stringify(fps)}`);
+    // recurrence_rate's run population is repo-scoped too.
+    assert.equal(artifact.recurrence_stats.recurrence_rate.total_runs, 2,
+      'only the target repo\'s runs count toward the rate');
+  });
+});

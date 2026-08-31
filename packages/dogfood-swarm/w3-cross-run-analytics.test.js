@@ -247,3 +247,122 @@ describe('queryFindingRecurrenceRate — recurrence stats over the run populatio
       'a narrower window must not count MORE runs than a wider one');
   });
 });
+
+// ═══════════════════════════════════════════
+// repo scoping (F-roadmap-leak, 2026-08-31)
+// ═══════════════════════════════════════════
+//
+// The roadmap compiler passes the compiled run's repo so a per-repo artifact
+// never carries another product's finding text (reproduced: claude-rpg's
+// committed artifact led with a fingerprint that exists only in two runs of
+// a different repo). "Recurring" for a roadmap = same-repo-across-runs;
+// omitted repo keeps `swarm trends`' portfolio-wide shape.
+
+describe('queryRecurringFindings — optional repo scope', () => {
+  let db;
+  beforeEach(() => { db = openMemoryDb(); });
+  afterEach(() => { db.close(); });
+
+  /** A third run on repo-a sharing a fingerprint with runA — the SAME-repo
+   * recurrence the scope must keep, alongside the cross-repo fp-shared the
+   * scope must exclude. */
+  function seedSameRepoRecurrence(db) {
+    seedTwoRunsSharingFingerprint(db);
+    db.prepare(
+      `INSERT INTO runs (id, repo, local_path, commit_sha, status, created_at)
+       VALUES ('runA2', 'org/repo-a', '/tmp/a2', ?, 'health-audit-a', '2026-06-09 00:00:00')`
+    ).run('e'.repeat(40));
+    const w = Number(db.prepare(
+      `INSERT INTO waves (run_id, phase, wave_number, status) VALUES ('runA2','health-audit-a',1,'collected')`
+    ).run().lastInsertRowid);
+    for (const [rid, wid] of [['runA', null], ['runA2', w]]) {
+      // runA already has waves; reuse its first wave id for the insert.
+      const waveId = wid ?? Number(db.prepare(
+        `SELECT id FROM waves WHERE run_id = 'runA' ORDER BY wave_number LIMIT 1`
+      ).get().id);
+      db.prepare(
+        `INSERT INTO findings (run_id, finding_id, fingerprint, severity, category, description, status, first_seen_wave, last_seen_wave)
+         VALUES (?, 'F-a-recur', 'fp-a-recurring', 'MEDIUM', 'bug', 'repo-a regression', 'new', ?, ?)`
+      ).run(rid, waveId, waveId);
+    }
+  }
+
+  it('a fingerprint spanning two REPOS does not recur within either repo scope', () => {
+    seedTwoRunsSharingFingerprint(db);
+    // Unscoped (portfolio) still sees it — trends' shape is unchanged.
+    assert.equal(queryRecurringFindings(db).length, 1);
+    // Scoped to either repo: fp-shared appears in only ONE run of that repo.
+    assert.deepEqual(queryRecurringFindings(db, 'org/repo-a'), []);
+    assert.deepEqual(queryRecurringFindings(db, 'org/repo-b'), []);
+  });
+
+  it('keeps same-repo recurrence while excluding the cross-repo fingerprint', () => {
+    seedSameRepoRecurrence(db);
+    const scoped = queryRecurringFindings(db, 'org/repo-a');
+    assert.equal(scoped.length, 1,
+      `only fp-a-recurring recurs WITHIN repo-a; got ${JSON.stringify(scoped)}`);
+    assert.equal(scoped[0].fingerprint, 'fp-a-recurring');
+    assert.equal(scoped[0].run_count, 2);
+    // Unscoped sees both the cross-repo and the same-repo recurrence.
+    const unscoped = queryRecurringFindings(db);
+    assert.deepEqual(
+      unscoped.map((r) => r.fingerprint).sort(),
+      ['fp-a-recurring', 'fp-shared'],
+    );
+  });
+
+  it('throws on a defined-but-malformed repo instead of silently matching zero rows', () => {
+    seedTwoRunsSharingFingerprint(db);
+    for (const bad of ['', '   ', 42, {}]) {
+      assert.throws(() => queryRecurringFindings(db, bad), /repo must be a non-empty string/);
+    }
+    // null/undefined stay valid "all runs" spellings.
+    assert.equal(queryRecurringFindings(db, null).length, 1);
+    assert.equal(queryRecurringFindings(db, undefined).length, 1);
+  });
+});
+
+describe('queryFindingRecurrenceRate — optional repo scope', () => {
+  let db;
+  beforeEach(() => { db = openMemoryDb(); });
+  afterEach(() => { db.close(); });
+
+  it('counts only the scoped repo\'s runs and findings', () => {
+    seedTwoRunsSharingFingerprint(db);
+    const scoped = queryFindingRecurrenceRate(db, null, 'org/repo-a');
+    assert.equal(scoped.total_runs, 1, 'repo-a has exactly one run');
+    assert.equal(scoped.distinct_fingerprints, 2, 'fp-shared + fp-a-only');
+    assert.equal(scoped.recurring_fingerprints, 0,
+      'fp-shared spans repos, so within repo-a nothing recurs');
+    assert.equal(scoped.recurrence_rate, 0);
+  });
+
+  it('anchors the trailing window at the scoped repo\'s OWN newest run, not the portfolio\'s', () => {
+    // repo-a runs at 06-01 and 06-03; a busier foreign repo's run at 06-30.
+    for (const [id, repo, at] of [
+      ['ra1', 'org/repo-a', '2026-06-01 00:00:00'],
+      ['ra2', 'org/repo-a', '2026-06-03 00:00:00'],
+      ['rb1', 'org/repo-b', '2026-06-30 00:00:00'],
+    ]) {
+      db.prepare(
+        `INSERT INTO runs (id, repo, local_path, commit_sha, status, created_at)
+         VALUES (?, ?, '/tmp', ?, 'health-audit-a', ?)`
+      ).run(id, repo, 'f'.repeat(40), at);
+    }
+    // A 5-day window scoped to repo-a must anchor at 06-03 and include both
+    // repo-a runs. An unscoped anchor (06-30) would have excluded them all —
+    // the exact trap the scoped anchor exists to avoid.
+    const scoped = queryFindingRecurrenceRate(db, 5, 'org/repo-a');
+    assert.equal(scoped.total_runs, 2,
+      `both repo-a runs must be in repo-a's own 5-day window; got ${scoped.total_runs}`);
+    // The foreign run never joins a repo-a-scoped population.
+    const wide = queryFindingRecurrenceRate(db, 3650, 'org/repo-a');
+    assert.equal(wide.total_runs, 2);
+  });
+
+  it('throws on a defined-but-malformed repo (same discipline as windowDays)', () => {
+    for (const bad of ['', '  ', 7]) {
+      assert.throws(() => queryFindingRecurrenceRate(db, null, bad), /repo must be a non-empty string/);
+    }
+  });
+});

@@ -58,7 +58,20 @@
  * ALPHABETICAL pick — a fingerprint recorded CRITICAL in one run and MEDIUM
  * in another reported 'MEDIUM' ('M' > 'C').
  *
+ * Optional `repo` scopes the recurrence signal to runs of ONE repo
+ * (`runs.repo` exact match) — the roadmap compiler's shape (F-roadmap-leak,
+ * 2026-08-31: unscoped, a per-repo roadmap artifact carried another
+ * product's finding text in top_recurring; "recurring" for a repo's roadmap
+ * means same-repo-across-runs). Omitted/null keeps the portfolio-wide
+ * behavior `swarm trends` has always had. A defined-but-malformed repo
+ * (empty/whitespace string, non-string) THROWS rather than silently
+ * matching zero rows — `WHERE repo = ''` would return the same clean empty
+ * shape a genuinely quiet portfolio produces, the exact "plausible result
+ * masking malformed input" hazard F-36327af8/F-b5fd9887/F-93cd78d3
+ * documented on this module's other optional parameter.
+ *
  * @param {import('better-sqlite3').Database} db
+ * @param {string} [repo] — exact `runs.repo` to scope to; omitted/null = all runs
  * @returns {Array<{
  *   fingerprint: string,
  *   description: string,
@@ -69,8 +82,17 @@
  * }>} — ordered by run_count DESC, then last_seen DESC (most-recurring,
  *       most-recent first).
  */
-export function queryRecurringFindings(db) {
-  return db.prepare(`
+export function queryRecurringFindings(db, repo) {
+  if (
+    repo !== undefined && repo !== null
+    && (typeof repo !== 'string' || repo.trim() === '')
+  ) {
+    throw new Error(
+      `queryRecurringFindings: repo must be a non-empty string, or omitted/null for all runs — got ${JSON.stringify(repo)}`,
+    );
+  }
+  const scoped = repo !== undefined && repo !== null;
+  const stmt = db.prepare(`
     SELECT
       f.fingerprint                 AS fingerprint,
       MAX(f.description)            AS description,
@@ -90,10 +112,12 @@ export function queryRecurringFindings(db) {
       MAX(r.created_at)             AS last_seen
     FROM findings f
     JOIN runs r ON f.run_id = r.id
+    ${scoped ? 'WHERE r.repo = ?' : ''}
     GROUP BY f.fingerprint
     HAVING COUNT(DISTINCT f.run_id) > 1
     ORDER BY run_count DESC, last_seen DESC
-  `).all();
+  `);
+  return scoped ? stmt.all(repo) : stmt.all();
 }
 
 /**
@@ -145,8 +169,18 @@ export function queryPerRepoRunHistory(db, repoPattern) {
  *   recurrence_rate         — recurring / distinct  (0 when distinct is 0,
  *                             never NaN)
  *
+ * Optional `repo` (third parameter) restricts the run population to runs of
+ * ONE repo (`runs.repo` exact match) BEFORE the window is applied — and the
+ * window's anchor is then the newest run OF THAT REPO, not of the whole
+ * portfolio (an unscoped anchor from a busier foreign repo could push the
+ * entire target repo out of its own trailing window). Same
+ * malformed-input-throws discipline as queryRecurringFindings' repo
+ * parameter, same rationale. Omitted/null = all runs (`swarm trends`'
+ * long-standing shape).
+ *
  * @param {import('better-sqlite3').Database} db
- * @param {number} [windowDays] — trailing window anchored at the newest run
+ * @param {number} [windowDays] — trailing window anchored at the newest in-scope run
+ * @param {string} [repo] — exact `runs.repo` to scope to; omitted/null = all runs
  * @returns {{
  *   total_runs: number,
  *   distinct_fingerprints: number,
@@ -155,7 +189,7 @@ export function queryPerRepoRunHistory(db, repoPattern) {
  *   window_days: number | null,
  * }}
  */
-export function queryFindingRecurrenceRate(db, windowDays) {
+export function queryFindingRecurrenceRate(db, windowDays, repo) {
   // F-36327af8: validate BEFORE windowDays reaches the SQL date-modifier
   // string below. Number(windowDays) on a malformed value (the realistic
   // operator typo '30days', or 'abc') is NaN, and SQLite's datetime() returns
@@ -210,15 +244,33 @@ export function queryFindingRecurrenceRate(db, windowDays) {
     );
   }
 
-  // Resolve the in-window run id set. Without a window, all runs are in scope.
+  // Same guard shape for the optional repo scope: a defined-but-malformed
+  // repo (empty/whitespace string, non-string) would render `WHERE repo = ''`
+  // and silently match zero rows — the identical plausible-clean-result
+  // hazard the three windowDays guards above document. Throw instead.
+  if (
+    repo !== undefined && repo !== null
+    && (typeof repo !== 'string' || repo.trim() === '')
+  ) {
+    throw new Error(
+      `queryFindingRecurrenceRate: repo must be a non-empty string, or omitted/null for all runs — got ${JSON.stringify(repo)}`,
+    );
+  }
+  const scoped = repo !== undefined && repo !== null;
+  const repoWhere = scoped ? `WHERE repo = ?` : ``;
+  const repoArgs = scoped ? [repo] : [];
+
+  // Resolve the in-window run id set. Without a window, all in-scope runs.
   let runIds;
   if (windowDays === undefined || windowDays === null) {
-    runIds = db.prepare(`SELECT id FROM runs`).all().map(r => r.id);
+    runIds = db.prepare(`SELECT id FROM runs ${repoWhere}`).all(...repoArgs).map(r => r.id);
   } else {
-    // Anchor: the newest run's created_at. The window is [anchor - N days,
-    // anchor]. datetime() arithmetic stays inside SQLite so it honors the
-    // stored 'YYYY-MM-DD HH:MM:SS' format consistently.
-    const anchorRow = db.prepare(`SELECT MAX(created_at) AS anchor FROM runs`).get();
+    // Anchor: the newest IN-SCOPE run's created_at (repo-scoped when `repo`
+    // is given — a busier foreign repo's newer run must never anchor this
+    // repo's trailing window). The window is [anchor - N days, anchor].
+    // datetime() arithmetic stays inside SQLite so it honors the stored
+    // 'YYYY-MM-DD HH:MM:SS' format consistently.
+    const anchorRow = db.prepare(`SELECT MAX(created_at) AS anchor FROM runs ${repoWhere}`).get(...repoArgs);
     const anchor = anchorRow ? anchorRow.anchor : null;
     if (!anchor) {
       runIds = [];
@@ -226,7 +278,8 @@ export function queryFindingRecurrenceRate(db, windowDays) {
       runIds = db.prepare(`
         SELECT id FROM runs
         WHERE created_at >= datetime(?, ?)
-      `).all(anchor, `-${Number(windowDays)} days`).map(r => r.id);
+        ${scoped ? 'AND repo = ?' : ''}
+      `).all(anchor, `-${Number(windowDays)} days`, ...repoArgs).map(r => r.id);
     }
   }
 
