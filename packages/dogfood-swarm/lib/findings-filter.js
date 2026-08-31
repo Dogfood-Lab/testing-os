@@ -25,13 +25,28 @@ import { minimatch } from 'minimatch';
 
 /**
  * Match `file_path` against any of `globs`.
+ *
+ * `nocase` is load-bearing, not a convenience (run swarm-1788165870-6880 wave 2,
+ * 2026-08-31): callers mix case-folded and raw inputs — declared-closures.js folds
+ * the PATH through normalizeFilePathForGlobMatch (lowercase) while domain globs
+ * arrive RAW, so a domain owning `README*` / `SHIP_GATE.md` could NEVER close a
+ * finding on those files ('readme.pypi.md' vs 'README*' under case-sensitive
+ * minimatch); only all-lowercase filenames closed. Same trap class F-00d67cb6
+ * fixed from the path side in fingerprint.js, and the open F-f347d858 names at
+ * collect.js. normalizePath already treats case-variant spellings as the SAME
+ * file for identity, so ownership matching folds case too — in the one shared
+ * matcher, so every caller (closure, routing, id-reuse vouching) inherits it
+ * rather than each re-fixing one side. lib/domains.js's checkOwnership calls
+ * minimatch directly (raw-vs-raw, self-consistent) and is deliberately not
+ * changed in this slice.
+ *
  * @param {string} filePath
  * @param {string[]} globs
  * @returns {boolean}
  */
 export function matchesAnyGlob(filePath, globs) {
   if (!filePath) return false;
-  return globs.some(g => minimatch(filePath, g, { dot: true }));
+  return globs.some(g => minimatch(filePath, g, { dot: true, nocase: true }));
 }
 
 /**

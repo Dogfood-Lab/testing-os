@@ -239,6 +239,53 @@ describe('amend collect — fixes[] declared closures (swarm-1784601601-bd4a gap
     assert.equal(agentA.fixes_closed, 0);
   });
 
+  it('closes findings on uppercase-named files under uppercase globs (F-case-fold, run swarm-1788165870-6880 wave 2)', () => {
+    // Observed live 2026-08-31: a public-surfaces domain owning README* / SHIP_GATE.md
+    // could NEVER close findings on those files — normalizeFilePathForGlobMatch folds
+    // the PATH to lowercase while matchesAnyGlob handed minimatch the RAW globs
+    // case-sensitively, so 'readme.pypi.md' vs 'README*' skipped as unowned. Only the
+    // all-lowercase 'grok.md' closed. Same trap class as F-00d67cb6 (path side) and
+    // the open F-f347d858; the fix belongs in the one shared matcher.
+    const db = openDb(dbPath);
+    const wave = db.prepare('SELECT id FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1').get(RUN_ID);
+    const ar = db.prepare('SELECT id FROM agent_runs WHERE wave_id = ? LIMIT 1').get(wave.id);
+    const insert = db.prepare(`INSERT INTO findings
+      (run_id, finding_id, fingerprint, severity, category, file_path, line_number,
+       description, recommendation, status, filed_by_domain)
+      VALUES (?, ?, ?, ?, 'docs', ?, ?, ?, ?, 'approved', 'public-surfaces')`);
+    insert.run(RUN_ID, 'F-UC-001', 'fp-uc-1', 'HIGH', 'README.pypi.md', 98, 'stale claim', 'fix it');
+    insert.run(RUN_ID, 'F-UC-002', 'fp-uc-2', 'LOW', 'SHIP_GATE.md', 47, 'stale receipt', 'refresh');
+    insert.run(RUN_ID, 'F-UC-003', 'fp-uc-3', 'MEDIUM', 'npm/README.md', 65, 'stale line', 'fix it');
+
+    const result = applyDeclaredFixes(db, {
+      runId: RUN_ID, waveId: wave.id, agentRunId: ar.id,
+      domainName: 'public-surfaces',
+      domainGlobs: ['README*', 'SHIP_GATE.md', 'npm/README.md'],
+      fixes: [
+        { finding_id: 'F-UC-001', description: 'front door fixed' },
+        { finding_id: 'F-UC-002', description: 'receipt refreshed' },
+        { finding_id: 'F-UC-003', description: 'registry body fixed' },
+      ],
+    });
+    assert.deepEqual(
+      result.closed.map(c => c.finding_id).sort(),
+      ['F-UC-001', 'F-UC-002', 'F-UC-003'],
+      `uppercase-named files must close under their owner's uppercase globs; skipped: ${JSON.stringify(result.skipped)}`
+    );
+
+    // Case-insensitivity must WIDEN legitimate ownership, never weaken the refusal:
+    // a different domain still cannot close them by naming ids.
+    insert.run(RUN_ID, 'F-UC-004', 'fp-uc-4', 'LOW', 'ADVISOR.md', 1, 'stale fence', 'fix it');
+    const foreign = applyDeclaredFixes(db, {
+      runId: RUN_ID, waveId: wave.id, agentRunId: ar.id,
+      domainName: 'domain-b', domainGlobs: ['packages/b/**'],
+      fixes: [{ finding_id: 'F-UC-004', description: 'not mine to close' }],
+    });
+    assert.equal(foreign.closed.length, 0);
+    assert.equal(foreign.skipped[0].reason, 'unowned', 'cross-domain refusal survives the case-fold fix');
+    db.close();
+  });
+
   it('is idempotent: re-applying the same declaration neither re-flips nor double-events (redrive re-collect shape)', () => {
     const db = openDb(dbPath);
     const wave = db.prepare('SELECT id FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1').get(RUN_ID);
