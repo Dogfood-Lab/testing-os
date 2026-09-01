@@ -56,10 +56,10 @@ describe('DEFAULT_JURY_SEATS — parity with LOCAL_JURY_SEATS plus the two cloud
     }
   });
 
-  it('specifically: the hermes seat is present (the finding\'s named omission)', () => {
-    const hermes = DEFAULT_JURY_SEATS.find(s => s.family === 'hermes');
-    assert.ok(hermes, 'DEFAULT_JURY_SEATS must carry the hermes seat LOCAL_JURY_SEATS carries');
-    assert.equal(hermes.model, 'hermes3:8b');
+  it('specifically: the fifth llama-family seat is present (the finding\'s named omission; re-pinned 2026-09-01 from hermes3:8b to llama3.1:8b after hermes left the rig)', () => {
+    const llama = DEFAULT_JURY_SEATS.find(s => s.family === 'llama');
+    assert.ok(llama, 'DEFAULT_JURY_SEATS must carry the llama seat LOCAL_JURY_SEATS carries');
+    assert.equal(llama.model, 'llama3.1:8b');
   });
 
   it('specifically: qwen is re-pinned to qwen2.5:7b, not qwen3.6 (the finding\'s named re-pin)', () => {

@@ -192,7 +192,7 @@ describe('the guard refuses an oversized brief BEFORE any jury call (fail-closed
     const fitting = err.seat_fit.filter(s => s.fits).map(s => s.model).sort();
     const overflowing = err.seat_fit.filter(s => !s.fits).map(s => s.model).sort();
     assert.deepEqual(fitting, ['gemma4:31b', 'granite4.1:30b'], 'the map shows exactly who could read it');
-    assert.deepEqual(overflowing, ['hermes3:8b', 'mistral-small:24b', 'qwen2.5:7b']);
+    assert.deepEqual(overflowing, ['llama3.1:8b', 'mistral-small:24b', 'qwen2.5:7b']);
     assert.equal(calls.length, 0, 'the fitting seats are refused too — whole panel or nothing');
   });
 });

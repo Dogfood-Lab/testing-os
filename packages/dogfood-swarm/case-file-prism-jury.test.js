@@ -263,7 +263,7 @@ describe('makePrismJury — the seat-major panel loop', () => {
       assert.deepEqual(Object.keys(v.criteria).sort(), ['AC-1', 'AC-2']);
       assert.deepEqual(v.criteria, { 'AC-1': 'pass', 'AC-2': 'pass' });
     }
-    assert.deepEqual(verdicts.map(v => v.seat), ['mistral', 'qwen', 'hermes']);
+    assert.deepEqual(verdicts.map(v => v.seat), ['mistral', 'qwen', 'llama']);
   });
 
   it('issues exactly one call per (seat × criterion), seat-major', async () => {
@@ -280,7 +280,7 @@ describe('makePrismJury — the seat-major panel loop', () => {
     assert.deepEqual(order, [
       'mistral-small:24b:AC-1', 'mistral-small:24b:AC-2',
       'qwen2.5:7b:AC-1', 'qwen2.5:7b:AC-2',
-      'hermes3:8b:AC-1', 'hermes3:8b:AC-2',
+      'llama3.1:8b:AC-1', 'llama3.1:8b:AC-2',
     ], 'all criteria for one seat before the next — one weight-load per seat');
   });
 

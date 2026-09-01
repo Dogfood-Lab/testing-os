@@ -242,6 +242,33 @@ blind spots the jury's. And jury abstention becomes a **briefing-quality signal*
 a panel that keeps returning `insufficient_context` on a criterion is evidence the
 case-file (or the spec) has a gap to fill.
 
+#### The gap that cannot be filled (earned 2026-08-31, run `swarm-1788211425-6420`)
+
+That signal has one failure mode where the gap is not in the evidence but in the
+criterion itself. An acceptance criterion of the form *"for each file:line claim in
+the context pack, the cited source text matches the claim"* — an anchor-verification
+/ extraction-faithfulness check — is **structurally unverifiable by this jury**:
+seats have no filesystem access, so the claim and any quoted source text arrive in
+the same document and the comparison is vacuous. Observed twice in a row (claude-rpg
+wave 1, adjudications #127 and #128, receipt
+`swarms/swarm-1788211425-6420/adjudications/wave-1-9ae0047c.json`): 3 of 5 seats
+correctly returned `insufficient_context` on that one criterion — zero fail votes
+anywhere — the overall verdict became `insufficient_context` despite 6/7 criteria
+passing, and adding verbatim source quotes to the evidence pack did **not** resolve
+it: the honest seats still cannot verify a quote against the file. The panel
+abstaining here is the rubric working as designed; the defect is the criterion's
+placement.
+
+[The honest-boundary table](#the-honest-boundary-the-verify-f2-over-claim-lesson)
+already assigns extraction faithfulness of `ref` pointers to "the `ref` pointer + a
+human/jury spot-check" — clerks must **not** restate it as a jury acceptance
+criterion. Anchor verification belongs to the coordinator (filesystem spot-checks
+recorded in the run log) and/or the deterministic floor; a jury criterion must be
+decidable from the brief's own content plus the artifact. When one slips through,
+the disposition is `swarm advance --override --reason` carrying the coordinator's
+contrastive filesystem evidence — **not** repeated evidence-fill round-trips, which
+cannot converge.
+
 ## Where this sits (the funnel)
 
 | Layer | Seat | Authority |
@@ -250,7 +277,7 @@ case-file (or the spec) has a gap to fill.
 | Planner + **clerk** | **Fable** | assembles the case-file; **renders no verdict** — advisory |
 | Executor | Sonnet | generates the artifact |
 | Scout / screen | Haiku | recon, dedup, cheap refutation |
-| **Jury** | `--jury=local` (**5 seats**): mistral-small:24b · granite4.1:30b · qwen2.5:7b · gemma4:31b · hermes3:8b · `--jury=prism` (**3 seats**): mistral-small:24b · qwen2.5:7b · hermes3:8b, each adjudicated by prism per criterion (`--cloud`: the local tier switches to DEFAULT_JURY_SEATS — the same five local seats plus gpt-oss:120b-cloud and glm-4.6:cloud, seven in all, comment-pinned in lockstep with LOCAL_JURY_SEATS and guarded by a parity test — while the prism tier appends gpt-oss:120b-cloud only) | family-different, reasoning-stripped; multi-lens + submodularity on the prism tier — **strong evidence** |
+| **Jury** | `--jury=local` (**5 seats**): mistral-small:24b · granite4.1:30b · qwen2.5:7b · gemma4:31b · llama3.1:8b (the fifth seat was re-pinned 2026-09-01 from hermes3:8b, which left the rig; every local seat call sends `keep_alive: 0`, so no juror stays seated on VRAM after its answer) · `--jury=prism` (**3 seats**): mistral-small:24b · qwen2.5:7b · llama3.1:8b, each adjudicated by prism per criterion (`--cloud`: the local tier switches to DEFAULT_JURY_SEATS — the same five local seats plus gpt-oss:120b-cloud and glm-4.6:cloud, seven in all, comment-pinned in lockstep with LOCAL_JURY_SEATS and guarded by a parity test — while the prism tier appends gpt-oss:120b-cloud only) | family-different, reasoning-stripped; multi-lens + submodularity on the prism tier — **strong evidence** |
 | **Floor** | `swarm verify` (tests) + prism retrieval/numeric floors | deterministic — **law** |
 
 **The two jury rosters are NOT the same set, and the difference is load-bearing.** `--jury=prism`

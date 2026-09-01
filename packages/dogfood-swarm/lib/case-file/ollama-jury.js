@@ -60,7 +60,9 @@ export const LOCAL_JURY_SEATS = [
   { family: 'granite', model: 'granite4.1:30b' },
   { family: 'qwen', model: 'qwen2.5:7b' },
   { family: 'gemma', model: 'gemma4:31b' },
-  { family: 'hermes', model: 'hermes3:8b' },
+  // 2026-09-01: hermes3:8b (a llama-family finetune) was removed from the rig;
+  // the fifth seat is re-pinned to llama3.1:8b so the panel keeps five families.
+  { family: 'llama', model: 'llama3.1:8b' },
 ];
 
 const DEFAULT_BASE_URL = 'http://localhost:11434';
@@ -104,7 +106,7 @@ export const FALLBACK_SEAT_CONTEXTS = {
   'granite4.1:30b': 131072,
   'qwen2.5:7b': 32768,
   'gemma4:31b': 262144,
-  'hermes3:8b': 131072,
+  'llama3.1:8b': 131072,
   'gpt-oss:120b-cloud': 131072,
 };
 
@@ -495,6 +497,11 @@ export function makeOllamaJury(opts = {}) {
           body: JSON.stringify({
             model: seat.model,
             stream: false,
+            // Director rule (2026-09-01): no jury model stays seated on VRAM after
+            // its answer. Ollama honours keep_alive per request; 0 unloads the
+            // weights as soon as the response is produced. The panel is
+            // seat-major, so this costs one load per seat, which it already paid.
+            keep_alive: 0,
             format: 'json',
             options: { temperature: 0, num_predict: numPredict },
             messages: [

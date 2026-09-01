@@ -62,7 +62,7 @@ import { CriterionIntentOverflowError } from '../errors.js';
 export const PRISM_JURY_SEATS = [
   { family: 'mistral', model: 'mistral-small:24b', prism_family: 'local' },
   { family: 'qwen', model: 'qwen2.5:7b', prism_family: 'local' },
-  { family: 'hermes', model: 'hermes3:8b', prism_family: 'local' },
+  { family: 'llama', model: 'llama3.1:8b', prism_family: 'local' },
 ];
 
 /**

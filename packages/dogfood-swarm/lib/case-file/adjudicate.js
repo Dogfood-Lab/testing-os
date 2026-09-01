@@ -69,7 +69,7 @@ export const DEFAULT_JURY_SEATS = [
   { family: 'granite', model: 'granite4.1:30b' },
   { family: 'qwen', model: 'qwen2.5:7b' },
   { family: 'gemma', model: 'gemma4:31b' },
-  { family: 'hermes', model: 'hermes3:8b' },
+  { family: 'llama', model: 'llama3.1:8b' },
 ];
 
 /**
