@@ -1759,7 +1759,7 @@ async function cmdAdjudicate(args) {
 
   const caseFilePath = parseValueFlag(args, '--case-file');
   if (!runId || !caseFilePath) {
-    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--allow-oversize] [--format=json] [--dry-run]');
+    console.error('Usage: swarm adjudicate <run-id> --case-file <path> [--wave <n>] [--jury=local|prism] [--cloud] [--allow-oversize] [--format=json] [--dry-run]');
     console.error('   or: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]');
     process.exit(1);
   }
@@ -1775,6 +1775,19 @@ async function cmdAdjudicate(args) {
   const tier = parseJuryFlag(args);
   const format = parseFormatFlag(args);
   const dryRun = args.includes('--dry-run');
+  // --wave <n>: bind the verdict to an explicit wave instead of the run's latest.
+  // Validated here, before any work, like every other flag above: a typo must
+  // not burn a (possibly billed) jury run. The wave's existence is checked by
+  // resolveAdjudicationWave (a typed CLI_WAVE_NOT_FOUND refusal, nothing persisted).
+  const waveRaw = parseValueFlag(args, '--wave');
+  let waveNumber;
+  if (waveRaw !== undefined) {
+    waveNumber = Number(waveRaw);
+    if (!Number.isInteger(waveNumber) || waveNumber <= 0) {
+      console.error(`adjudicate --wave: <n> must be a positive integer wave number (got ${JSON.stringify(waveRaw)})`);
+      process.exit(1);
+    }
+  }
   // Escape hatch for the local tier's brief-size guard: converts the
   // JURY_BRIEF_OVERFLOW refusal into a logged, receipt-recorded warning
   // (brief_size.all_fit: false). The operator is choosing truncated reads,
@@ -1800,7 +1813,7 @@ async function cmdAdjudicate(args) {
   if (dryRun) {
     let preview;
     try {
-      preview = previewAdjudicate(db, { runId, caseFile, seats, tier, cloud });
+      preview = previewAdjudicate(db, { runId, caseFile, seats, tier, cloud, waveNumber });
     } catch (e) {
       if (e instanceof CaseFileNeutralityError) {
         console.error(`ADJUDICATION REFUSED: ${e.message}`);
@@ -1829,11 +1842,11 @@ async function cmdAdjudicate(args) {
   // of every repo sharing one directory), un-navigable and unreachable by
   // run-scoped tooling like `swarm clean`.
   const swarmDir = getOutputDir(runId);
-  console.error(`Jury tier: ${tier}${cloud ? ' (--cloud: paid seats)' : ' (free seats)'}`);
+  console.error(`Jury tier: ${tier}${cloud ? ' (--cloud: paid seats)' : ' (free seats)'} · wave: ${waveNumber === undefined ? 'latest' : `${waveNumber} (--wave, explicit)`}`);
 
   let out;
   try {
-    out = await runAdjudicate(db, { runId, caseFile, runJury, seats, swarmDir });
+    out = await runAdjudicate(db, { runId, caseFile, runJury, seats, swarmDir, waveNumber });
   } catch (e) {
     // A biasing case-file is refused before the jury runs — render it cleanly
     // (the neutrality error is handled here rather than graduated to the central
@@ -3886,7 +3899,7 @@ export const USAGE = {
   'verify-approved': 'Usage: swarm verify-approved <run-id> [--threshold=N] [--format=text|markdown|json]',
   receipt: 'Usage: swarm receipt <run-id> [wave-number] [--format=json]',
   advance: 'Usage: swarm advance <run-id> [--override --reason "..."] [--check-only] [--history] [--format=json]',
-  adjudicate: 'Usage: swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud] [--format=json] [--dry-run]\n   or: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]',
+  adjudicate: 'Usage: swarm adjudicate <run-id> --case-file <path> [--wave <n>] [--jury=local|prism] [--cloud] [--format=json] [--dry-run]\n   or: swarm adjudicate <run-id> --undo <adjudication-id> [--apply]',
   status: 'Usage: swarm status <run-id> [--format=text|json]',
   resume: 'Usage: swarm resume <run-id> [--dry-run] [--force]',
   history: [

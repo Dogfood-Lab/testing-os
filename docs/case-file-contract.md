@@ -325,9 +325,18 @@ gate → build spec → run the injected jury → normalize. A biasing case-file
 
 ## The wave-gated CLI verb (shipped)
 
-`swarm adjudicate <run-id> --case-file <path> [--cloud] [--format=json]`
+`swarm adjudicate <run-id> --case-file <path> [--wave <n>] [--cloud] [--format=json]`
 (`commands/adjudicate.js` + `cmdAdjudicate` in `cli.js`) dispatches a case-file to
-the jury and records the advisory verdict on the run's current wave. The
+the jury and records the advisory verdict on the run's current wave — or, with
+`--wave <n>`, on that wave explicitly (a wave the run does not have is a typed
+`CLI_WAVE_NOT_FOUND` refusal; nothing is dispatched or persisted; the `--dry-run`
+header names the wave it resolved and whether it was explicit). **Use `--wave` whenever
+the wave being judged is not the newest one.** Earned 2026-09-04 (run
+`swarm-1788481819-3690`): the amend wave (6) was dispatched before the audit wave's (5)
+jury ran, so latest-wave binding would have persisted the audit verdict on wave 6, where
+`checkAdjudication` reads the latest row — an audit-quality verdict clearing the amend
+wave's gate. The coordinator caught it in the dry-run header and ran a script that
+selected the wave by number; this flag is that script, productized. The
 `checkAdjudication` gate (schema v9, `lib/advance.js`) then gates advance:
 **corroborate** clears; a non-corroborate verdict is an overridable BLOCK requiring
 Director disposition (`swarm advance --override --reason`). The deterministic floor

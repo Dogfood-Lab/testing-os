@@ -13,6 +13,7 @@
 
 export const CLI_RUN_NOT_FOUND = 'CLI_RUN_NOT_FOUND';
 export const CLI_NO_WAVES = 'CLI_NO_WAVES';
+export const CLI_WAVE_NOT_FOUND = 'CLI_WAVE_NOT_FOUND';
 
 const RUN_NOT_FOUND_HINT =
   'check `swarm runs` for the correct run id, or `swarm init <repo>` to create a fresh run';
@@ -41,5 +42,23 @@ export function noWavesError(runId, message) {
   e.runId = runId;
   e.hint =
     `run \`swarm dispatch ${runId} <phase>\` to create the first wave, or check \`swarm runs\` / \`swarm status ${runId}\``;
+  return e;
+}
+
+/**
+ * An explicitly-named wave (`--wave <n>`) that does not exist for the run.
+ * Distinct from noWavesError: the run may have waves, just not this one.
+ *
+ * @param {string} runId
+ * @param {number} waveNumber
+ * @param {string} [message]
+ * @returns {Error}
+ */
+export function waveNotFoundError(runId, waveNumber, message) {
+  const e = new Error(message ?? `Wave ${waveNumber} not found for run ${runId}`);
+  e.code = CLI_WAVE_NOT_FOUND;
+  e.runId = runId;
+  e.waveNumber = waveNumber;
+  e.hint = `check \`swarm history ${runId}\` for the wave numbers this run has, or omit --wave to bind to the latest wave`;
   return e;
 }

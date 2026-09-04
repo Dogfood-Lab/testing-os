@@ -58,7 +58,7 @@ import { adjudicate, buildJurySpec } from '../lib/case-file/adjudicate.js';
 import { toJuryRequest } from '../lib/case-file/handoff.js';
 import { persistAdjudication, deleteAdjudication, getLatestAdjudication } from '../lib/adjudication-store.js';
 import { escapeReasonForDisplay } from './lib/escape-reason.js';
-import { runNotFoundError, noWavesError } from './lib/run-lookup-error.js';
+import { runNotFoundError, noWavesError, waveNotFoundError } from './lib/run-lookup-error.js';
 
 /** Default receipt writer — atomic (helper-adoption discipline), parent-dir safe. */
 function defaultWriteReceipt(path, content) {
@@ -67,12 +67,48 @@ function defaultWriteReceipt(path, content) {
 }
 
 /**
- * Adjudicate a case-file against a run's current wave and persist the verdict.
+ * Resolve the wave an adjudication binds to.
+ *
+ * Default (no `waveNumber`): the run's LATEST wave — the original behaviour.
+ * Explicit `waveNumber`: that wave, or a typed CLI_WAVE_NOT_FOUND refusal.
+ *
+ * Why the explicit form exists (run swarm-1788481819-3690, 2026-09-04): the
+ * coordinator dispatched the amend wave (6) before the audit wave's (5) jury
+ * ran. With latest-wave binding the audit verdict would have been persisted
+ * on wave 6 — where checkAdjudication (lib/advance.js) reads the LATEST row
+ * for the wave — so an audit-quality verdict could have cleared the amend
+ * wave's advance gate. The dry-run header ("wave 6") exposed it; the
+ * workaround was a script mirroring this function with the wave selected by
+ * number. `--wave` is that script, productized.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} runId
+ * @param {number} [waveNumber]
+ * @returns {object} the waves row
+ */
+export function resolveAdjudicationWave(db, runId, waveNumber) {
+  if (waveNumber === undefined || waveNumber === null) {
+    const wave = db.prepare(
+      'SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1',
+    ).get(runId);
+    if (!wave) throw noWavesError(runId);
+    return wave;
+  }
+  const wave = db.prepare(
+    'SELECT * FROM waves WHERE run_id = ? AND wave_number = ?',
+  ).get(runId, waveNumber);
+  if (!wave) throw waveNotFoundError(runId, waveNumber);
+  return wave;
+}
+
+/**
+ * Adjudicate a case-file against a run's current wave (or, with `waveNumber`, an explicit wave) and persist the verdict.
  *
  * @param {import('better-sqlite3').Database} db
  * @param {object} opts
  * @param {string} opts.runId
  * @param {object} opts.caseFile — parsed case-file JSON
+ * @param {number} [opts.waveNumber] — bind to this wave instead of the latest (see resolveAdjudicationWave)
  * @param {(spec: object) => Promise<Array<object>>} opts.runJury — the injected jury boundary
  * @param {Array<{family: string, model: string}>} [opts.seats] — passed through to buildJurySpec
  * @param {string} [opts.swarmDir] — where the receipt artifact is written (its dirname/adjudications/)
@@ -81,14 +117,11 @@ function defaultWriteReceipt(path, content) {
  * @throws {import('../lib/case-file/handoff.js').CaseFileNeutralityError} if the case-file fails the neutrality gate (nothing is persisted)
  */
 export async function runAdjudicate(db, opts) {
-  const { runId, caseFile, runJury, seats, swarmDir, writeReceipt = defaultWriteReceipt } = opts;
+  const { runId, caseFile, runJury, seats, swarmDir, waveNumber, writeReceipt = defaultWriteReceipt } = opts;
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
   if (!run) throw runNotFoundError(runId);
-  const wave = db.prepare(
-    'SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1',
-  ).get(runId);
-  if (!wave) throw noWavesError(runId);
+  const wave = resolveAdjudicationWave(db, runId, waveNumber);
 
   // Fail-closed on a biasing case-file: adjudicate() runs the neutrality gate
   // (toJuryRequest) before the jury is ever called; a CaseFileNeutralityError
@@ -134,20 +167,18 @@ export async function runAdjudicate(db, opts) {
  * @param {string} opts.runId
  * @param {object} opts.caseFile — parsed case-file JSON
  * @param {Array<{family: string, model: string}>} [opts.seats]
+ * @param {number} [opts.waveNumber] — bind to this wave instead of the latest (see resolveAdjudicationWave)
  * @param {string} [opts.tier] — 'local' | 'prism', for the report only (not re-derived here)
  * @param {boolean} [opts.cloud] — for the report only
- * @returns {{ dryRun: true, runId: string, waveId: number, waveNumber: number, tier: string, cloud: boolean, billed: boolean, seats: Array<{family:string,model:string}>, criteriaCount: number }}
+ * @returns {{ dryRun: true, runId: string, waveId: number, waveNumber: number, waveSelection: 'explicit'|'latest', tier: string, cloud: boolean, billed: boolean, seats: Array<{family:string,model:string}>, criteriaCount: number }}
  * @throws {import('../lib/case-file/handoff.js').CaseFileNeutralityError} if the case-file fails the neutrality gate
  */
 export function previewAdjudicate(db, opts) {
-  const { runId, caseFile, seats, tier, cloud } = opts;
+  const { runId, caseFile, seats, tier, cloud, waveNumber } = opts;
 
   const run = db.prepare('SELECT * FROM runs WHERE id = ?').get(runId);
   if (!run) throw runNotFoundError(runId);
-  const wave = db.prepare(
-    'SELECT * FROM waves WHERE run_id = ? ORDER BY wave_number DESC LIMIT 1',
-  ).get(runId);
-  if (!wave) throw noWavesError(runId);
+  const wave = resolveAdjudicationWave(db, runId, waveNumber);
 
   const juryRequest = toJuryRequest(caseFile); // fail-closed on a biasing case-file
   const spec = buildJurySpec(juryRequest, { seats });
@@ -157,6 +188,7 @@ export function previewAdjudicate(db, opts) {
     runId,
     waveId: wave.id,
     waveNumber: wave.wave_number,
+    waveSelection: waveNumber === undefined || waveNumber === null ? 'latest' : 'explicit',
     tier: tier || 'local',
     cloud: !!cloud,
     billed: !!cloud,
@@ -244,7 +276,7 @@ export function undoAdjudication(db, opts) {
  */
 export function formatAdjudicationPreview(preview) {
   const lines = [];
-  lines.push(`Adjudicate (DRY-RUN) — run ${preview.runId}, wave ${preview.waveNumber}`);
+  lines.push(`Adjudicate (DRY-RUN) — run ${preview.runId}, wave ${preview.waveNumber}${preview.waveSelection === 'explicit' ? ' (--wave, explicit)' : ' (latest)'}`);
   lines.push(`  Jury tier: ${preview.tier}${preview.cloud ? ' (--cloud: PAID seats — this run would be billed)' : ' (free seats)'}`);
   lines.push(`  Panel (${preview.seats.length}): ${preview.seats.map(s => `${s.family}:${s.model}`).join(', ') || '(none)'}`);
   lines.push(`  Criteria to judge: ${preview.criteriaCount}`);
