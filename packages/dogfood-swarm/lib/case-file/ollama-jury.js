@@ -503,7 +503,20 @@ export function makeOllamaJury(opts = {}) {
             // seat-major, so this costs one load per seat, which it already paid.
             keep_alive: 0,
             format: 'json',
-            options: { temperature: 0, num_predict: numPredict },
+            // The window the guard measured against is the window the server is TOLD to
+            // apply. Measured 2026-09-04 on Ollama 0.33.3 with OLLAMA_CONTEXT_LENGTH unset:
+            // the server's default num_ctx is 16,384 — a 41K-token canary came back
+            // prompt_eval_count 16,386 on a 128K-trained seat, truncated from the front —
+            // while this runner ASSUMED 32,768 and stamped receipts with it. Without this
+            // field a brief the guard passed as "fits" was silently cut in half by the
+            // server; with it, resolveSeatContexts' number (min(trained, assumed), or a
+            // pinned/loaded value) is what the seat reads. Ollama honours options.num_ctx
+            // per request, the same way it honours keep_alive.
+            options: {
+              temperature: 0,
+              num_predict: numPredict,
+              num_ctx: contexts[seat.model]?.context_tokens ?? assumedNumCtx,
+            },
             messages: [
               { role: 'system', content: system },
               { role: 'user', content: user },
