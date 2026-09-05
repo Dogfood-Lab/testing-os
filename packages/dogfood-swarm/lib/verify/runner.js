@@ -165,6 +165,34 @@ function readEnvMaxBufferBytes(seen = warnedMalformedMaxBufferValues) {
   return null;
 }
 
+const warnedMalformedStepTimeoutValues = new Set();
+
+/**
+ * Process-wide override for the per-step timeout: `SWARM_VERIFY_STEP_TIMEOUT_MS=<ms>`.
+ * Same contract as readEnvMaxBufferBytes — read fresh on every call; a missing,
+ * non-numeric or non-positive value is "no override" (the caller's `?? STEP_TIMEOUT_MS`
+ * fallback takes over), warned once per distinct malformed value.
+ *
+ * @param {Set<string>} [seen] — dedup scope for the malformed-value warning.
+ * @returns {number|null}
+ */
+function readEnvStepTimeoutMs(seen = warnedMalformedStepTimeoutValues) {
+  const raw = process.env.SWARM_VERIFY_STEP_TIMEOUT_MS;
+  if (!raw) return null;
+  const n = Number(raw);
+  if (Number.isFinite(n) && n > 0) return n;
+  if (!seen.has(raw)) {
+    seen.add(raw);
+    logStage('verify_step_timeout_env_malformed', {
+      component: 'dogfood-swarm',
+      env_var: 'SWARM_VERIFY_STEP_TIMEOUT_MS',
+      raw_value: raw,
+      reason: 'not a finite positive number — falling back to the module default',
+    });
+  }
+  return null;
+}
+
 /**
  * Recognizes the shell's "executable not found" message across platforms.
  * With `shell: true` a missing `step.cmd` does NOT surface as an ENOENT error
@@ -224,7 +252,12 @@ const TOOL_NOT_FOUND_STDERR = /is not recognized as an internal or external comm
  */
 export function runStep(repoPath, step, opts = {}) {
   const cmdArgs = step.args || [];
-  const timeoutMs = step.timeoutMs ?? STEP_TIMEOUT_MS;
+  // Most-specific-wins, the same shape as maxBufferBytes below: per-step property >
+  // process-wide env override (SWARM_VERIFY_STEP_TIMEOUT_MS) > module default.
+  // Earned 2026-09-05 (armature run swarm-1788481819-3690, wave 20): the suite grew past
+  // 5,600 tests and its full run took 384 s, so the 300 s default recorded receipt #291 as
+  // FAIL for a suite that passes — a categorical misdiagnosis with no CLI remedy.
+  const timeoutMs = step.timeoutMs ?? readEnvStepTimeoutMs(opts.warnedStepTimeoutValues) ?? STEP_TIMEOUT_MS;
   // Most-specific-wins, mirroring step.timeoutMs's own override shape:
   // per-step property > process-wide env override (F-014c22f0,
   // readEnvMaxBufferBytes) > module default.
