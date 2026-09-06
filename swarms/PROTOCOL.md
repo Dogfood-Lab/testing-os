@@ -441,10 +441,7 @@ dispatch directive carries them into every parallel amend prompt (`SKIP_VERIFY_D
    sites, criteria and out-of-scope list are mechanical; the run keeps a build script and the coordinator
    runs it. A Fable clerk is dispatched only when a jury has read INSUFFICIENT_CONTEXT or CONTESTED on the
    scripted case-file.
-6. **The budget is measured, not felt.** Before every dispatch the coordinator reads the account's usage
-   panel and writes the planned agent count and the expected token ceiling into the run log; after every
-   wave it writes the subagent totals from the completion reports beside them. A wave that would cross
-   the week's remaining budget is not dispatched.
+6. **The shape is the bound.** Under 1–5 a wave costs a fraction of the old one by construction; nothing is written or read before a dispatch beyond the brief.
 
 ## Ownership attribution in non-isolated parallel amend waves
 
