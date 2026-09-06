@@ -2,6 +2,30 @@
 
 All notable changes to `testing-os` are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.12.0] — 2026-09-06
+
+The harness fixes earned on the armature run (`swarm-1788481819-3690`: 28 waves on a 7,500-test Python repo, the largest suite the swarm has verified) and the cost bounds that run paid for. Lockstep minor across all seven workspace packages.
+
+### Added
+- **`swarm adjudicate --wave <n>`** — a verdict binds to the wave it judged, not to the run's latest wave. An audit wave's corroboration can no longer land on the amend wave dispatched after it; a wave the run does not have is refused with `CLI_WAVE_NOT_FOUND` before the jury is called. The default stays latest-wave; the dry-run header and the live "Jury tier" line name the wave resolved.
+- **`SWARM_VERIFY_STEP_TIMEOUT_MS`** — the per-step wall-clock timeout of `swarm verify` is an environment override, the same shape as `SWARM_VERIFY_MAX_BUFFER_BYTES`. A 384 s suite had been recorded FAIL by a fixed 300 s constant with no reachable remedy.
+- **Cost bounds in every parallel amend prompt.** The `--skip-verify` directive rendered into each agent brief now carries bounds that override any coordinator brief: no full-suite runs by an agent (the touched test modules, once; the coordinator's serial verify is the run), no per-agent pin re-derivation, relay posts under 300 words of facts, probes as scripts by path never stdin, one reverted-red proof per finding, stop at the list. `swarms/PROTOCOL.md` § "Cost bounds for parallel amend waves" records the measured costs behind them.
+- Roadmap queries accept an exact-match repo scope (`queryRecurringFindings`, `queryFindingRecurrenceRate`); malformed scope throws, omitted keeps the portfolio-wide shape.
+
+### Changed
+- **The executor seat.** The seat table reads: Opus executes by default; Sonnet where a task's shape suits it (narrow, mechanical, well-specified); Fable for complex work and for the clerk brief. The jury stays non-Claude — it is the verification layer, and it is unchanged. Wave width is the operator's call, one agent per domain with work (a three-agent cap written into the protocol on 2026-09-06 was withdrawn the same day).
+- The fifth local jury seat is `llama3.1:8b` (`hermes3:8b` left the rig); every local seat call sends `keep_alive: 0`, so no juror stays on VRAM after its answer.
+
+### Fixed
+- **Jury runner context.** `ollama-jury` resolved a per-seat context, measured the brief against it, stamped the receipt with it — and sent the seat call with no `options.num_ctx`, so the server's 16,384-token default silently truncated long briefs from the front while the receipt said the seat read them whole. The resolved context is now sent with the call.
+- **Closures under uppercase globs.** `matchesAnyGlob` matches nocase, so a domain owning `README*` or `SHIP_GATE.md` can close a finding on those files; six coordinator declarations had skipped as unowned.
+- **Roadmap `recurrence_stats` cross-repo leak.** `compileRoadmap` scopes recurrence to the compiled run's repo and anchors the trailing window at that repo's own newest run; artifacts compiled before this carry foreign text until recompiled.
+
+### Docs
+- `SECURITY.md` reports through GitHub Security Advisories only. Four files carried an operator home path or mailbox; they are scrubbed at this tag (history before it is not rewritten).
+- Handbook: `adjudicate --wave`, the two verify environment overrides, the dispatch cost bounds; coverage re-measured from `indexes/` (14 governed repos, 8 surfaces, 13 of 14 past the freshness window).
+- dogfood-swarm README: the `SWARM_VERIFY_STEP_TIMEOUT_MS` row in the environment table.
+
 ## [1.11.0] — 2026-08-26
 
 Self-dogfood of `@dogfood-lab/dogfood-swarm` on run `swarm-1787700871-d537` (15 waves + Phase 9 coordinator pass). Lockstep minor across all seven workspace packages. A waypoint: the run stays at status `test`; Phase 10 parked leftovers (checkout/setup-node takes, Vitest 4.1.11, HOLDs, allowlist drain) are not this release.

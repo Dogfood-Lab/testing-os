@@ -155,7 +155,7 @@ Amend outputs use `fixes` + `files_changed` (not `fixes_applied` / `files_edited
 }
 ```
 
-Run `python C:/Users/mikey/.claude/skills/cross-family-rerate/check_brief_template.py` on any brief you hand a lane, `--kind audit|amend|feature`.
+Run `python ~/.claude/skills/cross-family-rerate/check_brief_template.py` on any brief you hand a lane, `--kind audit|amend|feature`.
 
 ---
 

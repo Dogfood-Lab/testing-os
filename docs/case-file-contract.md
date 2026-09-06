@@ -9,7 +9,8 @@
 
 ## Why this exists
 
-The swarm's verification layer is a funnel: a **Sonnet** executor generates, a
+The swarm's verification layer is a funnel: an **Opus** executor generates (Sonnet
+where a task's shape suits it; Fable for complex work — ruled 2026-09-06), a
 family-diverse **jury** (prism-verify over Ollama-Cloud non-Claude seats) renders
 the authoritative non-deterministic evidence, and the **deterministic floor**
 (`swarm verify` — the real test suite) is the only thing that is *law*. Every
@@ -275,7 +276,7 @@ cannot converge.
 |-------|------|-----------|
 | Director | Opus | final disposition (the jury advises; the caller enforces) |
 | Planner + **clerk** | **Fable** | assembles the case-file; **renders no verdict** — advisory |
-| Executor | Sonnet | generates the artifact |
+| Executor | Opus by default; Sonnet where the task suits it; Fable for complex work | generates the artifact |
 | Scout / screen | Haiku | recon, dedup, cheap refutation |
 | **Jury** | `--jury=local` (**5 seats**): mistral-small:24b · granite4.1:30b · qwen2.5:7b · gemma4:31b · llama3.1:8b (the fifth seat was re-pinned 2026-09-01 from hermes3:8b, which left the rig; every local seat call sends `keep_alive: 0`, so no juror stays seated on VRAM after its answer) · `--jury=prism` (**3 seats**): mistral-small:24b · qwen2.5:7b · llama3.1:8b, each adjudicated by prism per criterion (`--cloud`: the local tier switches to DEFAULT_JURY_SEATS — the same five local seats plus gpt-oss:120b-cloud and glm-4.6:cloud, seven in all, comment-pinned in lockstep with LOCAL_JURY_SEATS and guarded by a parity test — while the prism tier appends gpt-oss:120b-cloud only) | family-different, reasoning-stripped; multi-lens + submodularity on the prism tier — **strong evidence** |
 | **Floor** | `swarm verify` (tests) + prism retrieval/numeric floors | deterministic — **law** |

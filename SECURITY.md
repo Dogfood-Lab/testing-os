@@ -4,7 +4,6 @@
 
 If you discover a security vulnerability in `testing-os` or any of its packages, **do not open a public issue.** Instead, report it privately:
 
-- **Email:** mikeyfrilot@gmail.com (subject: "testing-os security")
 - **GitHub Security Advisories:** [Open a draft advisory](https://github.com/dogfood-lab/testing-os/security/advisories/new)
 
 We aim to triage within 5 business days and ship a fix within 14 days for HIGH/CRITICAL issues.

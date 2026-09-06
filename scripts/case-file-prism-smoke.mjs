@@ -6,7 +6,7 @@
  * NOT a CI test (CI has neither prism nor Ollama). Run by hand on a rig with Ollama
  * serving the PRISM_JURY_SEATS models and prism-verify importable by `python`:
  *
- *   PRISM_SIGNING_KEY=C:/Users/mikey/.prism/signing-key.pem \
+ *   PRISM_SIGNING_KEY=~/.prism/signing-key.pem \
  *     node scripts/case-file-prism-smoke.mjs
  *
  * It adjudicates two case-files through the real panel and prints each advisory

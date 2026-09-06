@@ -1,5 +1,7 @@
 # HANDOFF.md — testing-os migration completion
 
+> ## v1.12.0 — 2026-09-06: the armature run's harness fixes shipped (`adjudicate --wave`, `SWARM_VERIFY_STEP_TIMEOUT_MS`, cost bounds in every parallel amend prompt, jury `num_ctx`, nocase closures, roadmap recurrence scope); executor seat re-ruled Opus-default / Sonnet where suited / Fable for complex work and clerk briefs; SECURITY contact → GitHub advisories; identity scrub at the tag. Run d537 below is unchanged.
+>
 > ## DOGFOOD-SWARM 3 + v1.11.0 — waypoint shipped; run stays OPEN at `test` (2026-08-26) — release `e697247`, tag `v1.11.0`; all 6 packages live on npm at 1.11.0, GitHub Release published
 >
 > **Run `swarm-1787700871-d537` is at status `test` (promotion 78), not `complete`.** 15 waves + Phase 9 coordinator pass + Phase 10 full treatment. Ledger at the waypoint: 33 fixed / 4 deferred / 11 unverified / 0 CRIT / 0 HIGH open. Prior run `swarm-1784091637-5127` is still `test` and was not completed. Save `swarm-save-1787700871`. Freeze snapshot `ad5b4f5a3434e765`. **docs = coordinator** (exclusive, skipped at dispatch).

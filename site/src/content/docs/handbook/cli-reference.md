@@ -49,7 +49,7 @@ Every mutation lands in `domain_events` with the operator-supplied reason — sa
 
 ## swarm dispatch
 
-Create a new wave for a phase and write per-agent prompts to `swarms/<run-id>/wave-<N>/`. The phase names the work shape — `health-audit-a`, `health-amend-b`, `stage-d-amend`, `feature-execute`, and friends. Pass `--skip-verify` on amend phases to enable the parallel-wave verification discipline (agents skip per-agent `npm test`; coordinator runs one serial verify after `swarm collect`).
+Create a new wave for a phase and write per-agent prompts to `swarms/<run-id>/wave-<N>/`. The phase names the work shape — `health-audit-a`, `health-amend-b`, `stage-d-amend`, `feature-execute`, and friends. Pass `--skip-verify` on amend phases to enable the parallel-wave verification discipline (agents skip per-agent `npm test`; coordinator runs one serial verify after `swarm collect`). Under `--skip-verify` every agent brief also carries the cost bounds (Protocol § "Cost bounds for parallel amend waves"): no full-suite runs by an agent, no per-agent pin re-derivation, relay posts under 300 words of facts, probes as scripts by path, one reverted-red proof per finding, stop at the list — bounds that override any coordinator brief that says otherwise.
 
 ```text
 Usage: swarm dispatch <run-id> <phase>
@@ -135,6 +135,8 @@ Example:
   $ swarm verify <run-id> --adapter python   # force python
   $ swarm verify <run-id> --probe-only       # dry probe
 ```
+
+Two environment overrides shape a step: `SWARM_VERIFY_MAX_BUFFER_BYTES` (the stdout+stderr capture ceiling, default 64 MB) and `SWARM_VERIFY_STEP_TIMEOUT_MS` (the per-step wall-clock timeout; a suite that legitimately runs longer than the adapter default — a 7,500-test suite on a shared rig needed `900000` — sets it rather than splitting the suite). A step that exceeds either limit is a FAIL receipt that names the limit, never a hung verify.
 
 ## swarm verify-fixed
 
@@ -237,9 +239,12 @@ Example:
 
 Dispatch a neutral case-file to the cross-family jury and record the advisory verdict on the run's current wave — the wave gate `swarm advance` reads (`corroborate` clears; anything else needs Director disposition). Two tiers: `--jury=local` (default, free local seats, whole-brief reads) and `--jury=prism` (per-criterion, multi-lens, signed receipts, 4,000-char brief cap); `--cloud` opts into the paid seats and **spends Ollama-Cloud credits**. Exits 0 only on corroborate. The full contract — case-file shape, neutrality lint, tier trade-offs, compensators — lives in [`docs/case-file-contract.md`](https://github.com/dogfood-lab/testing-os/blob/main/docs/case-file-contract.md); read it before your first adjudication.
 
+`--wave <n>` binds the verdict to a specific wave instead of the run's latest — the case when an amend wave was dispatched before the audit wave's jury ran. A wave the run does not have refuses with `CLI_WAVE_NOT_FOUND` before the jury is called, and the dry-run header names the wave resolved.
+
 ```text
 Usage: swarm adjudicate <run-id>
            --case-file <path>
+           [--wave <n>]
            [--jury=local|prism] [--cloud]
            [--dry-run] [--format=text|json]
        swarm adjudicate <run-id>

@@ -32,7 +32,7 @@ sources — this prompt is orientation, not truth):
    non-Claude jury verifies, coordinator never jurors; pass model= on
    every seat. This swarm's convention: grok-4.5 on domain agents,
    jury excludes xAI.
-7. C:/Users/mikey/.grok/memory/topics/testing-os.md — pointer only.
+7. ~/.grok/memory/topics/testing-os.md — pointer only.
    Repo artifacts win on conflict.
 
 VERIFY STATE (don't trust the numbers here):

@@ -4,7 +4,7 @@
 
 The Dogfood Swarm Protocol orchestrates a **model-tiered** fleet of Claude Code agents through a 10-phase play (Stage A Bug + Stage B Proactive + Stage C Humanization + Stage D Visual Polish, then Feature Pass phases 5-8, Final test phase 9, and Full Treatment phase 10) that first establishes a clean bill of health, then builds features to production readiness, and finally polishes for ship. A coordinator reads this document and executes it step by step.
 
-**The phases below describe the *play*. They do not describe the *verification*, and the two are not separable.** Sonnet executes, Fable clerks, a family-different non-Claude jury renders the authoritative non-deterministic evidence, and `swarm verify` is the only thing that is law. Read **[The verification funnel](#the-verification-funnel-read-this-before-dispatching-anything)** immediately below before dispatching a single agent — a run that follows the phases while skipping the funnel produces a correlated single-model fleet whose wave advances on nobody's verdict.
+**The phases below describe the *play*. They do not describe the *verification*, and the two are not separable.** Opus executes by default (Sonnet where a task's shape suits it), Fable clerks and takes complex work, a family-different non-Claude jury renders the authoritative non-deterministic evidence, and `swarm verify` is the only thing that is law. Read **[The verification funnel](#the-verification-funnel-read-this-before-dispatching-anything)** immediately below before dispatching a single agent — a run that follows the phases while skipping the funnel produces a correlated single-model fleet whose wave advances on nobody's verdict.
 
 All artifacts live under `swarms/<run-id>/` (relative to repo root), where `<run-id>` is minted by `swarm init` as `swarm-<unix-timestamp>-<4-hex>`. Each wave writes agent prompts to `swarms/<run-id>/wave-N/<domain>.md`, and each agent drops its result at `swarms/<run-id>/wave-N/<domain>/output.json` — the layout `swarm collect --all` auto-discovers. The control plane itself is `swarms/control-plane.db`, and it — not any file on disk — is the source of truth for run state.
 
@@ -17,15 +17,15 @@ The swarm's verification layer is a **funnel**, and the seats are not interchang
 | Seat | Model | Role | Authority |
 |------|-------|------|-----------|
 | **Coordinator / Director** | Opus | Orchestrates, authors every public surface, disposes. **Never a juror.** | final disposition |
-| **Executor** | **Sonnet** | Audit + amend domain agents — the generators | proposes |
-| **Scout / mechanical** | **Haiku** | Cheap recon, path sweeps, enum sync, count checks | proposes |
+| **Executor** | **Opus** by default; **Sonnet** where the task's shape suits it (narrow, mechanical, well-specified); **Fable** for complex work | Audit + amend domain agents — the generators | proposes |
+| **Scout / mechanical** | **Sonnet** or **Haiku** | Cheap recon, path sweeps, enum sync, count checks | proposes |
 | **Clerk** | **Fable** | Assembles the neutral case-file. **Renders NO verdict.** | advisory, verdict-free by construction |
 | **Jury** | **non-Claude**, and the two tiers seat **different rosters**: `--jury=local` (5) — `mistral-small:24b` · `granite4.1:30b` · `qwen2.5:7b` · `gemma4:31b` · `hermes3:8b`; `--jury=prism` (3) — `mistral-small:24b` · `qwen2.5:7b` · `hermes3:8b`, the 30B pair excluded because prism's hard 30s ceiling makes them abstain (`--cloud`: the local tier switches to `DEFAULT_JURY_SEATS` — the same five local seats plus `gpt-oss:120b-cloud` and `glm-4.6:cloud`, seven in all, held in comment-pinned lockstep with `LOCAL_JURY_SEATS` and guarded by a parity test — while the prism tier appends `gpt-oss:120b-cloud` only) | The only family-different verification | **strong evidence** |
 | **Floor** | `swarm verify` (the real test suite) | Deterministic | **LAW — the only thing that is** |
 
 **Why the jury cannot be a Claude model.** Every Claude model — Opus, Fable, Sonnet, Haiku — is one family, so no Claude model can independently verify another Claude model's work (Panickssery et al. NeurIPS 2024, arXiv:2404.13076: self-preference correlates linearly with self-recognition). `buildJurySpec` enforces this as **Lock 1** and throws if any seat is the producer family. A same-family "review" is a second opinion, not verification.
 
-**Why a single-model agent fleet is a defect, not a convenience.** Knight & Leveson 1986 (DOI 10.1109/TSE.1986.6312924) and its coding-agent replication (Ron/Baudry/Monperrus 2026, arXiv:2606.20158 — **429 coincident failures vs 115 predicted, z=29.20**) both measure the same thing: independently-developed versions fail together far more than independence predicts. Six auditors on one model share a blind spot **by construction**. Tier the seats.
+**Why a single-model agent fleet is a defect, not a convenience.** Knight & Leveson 1986 (DOI 10.1109/TSE.1986.6312924) and its coding-agent replication (Ron/Baudry/Monperrus 2026, arXiv:2606.20158 — **429 coincident failures vs 115 predicted, z=29.20**) both measure the same thing: independently-developed versions fail together far more than independence predicts. Six auditors on one model share a blind spot **by construction**. The seat that answers this is the **jury** — non-Claude, outside the family — not the tier of the generators. Ruled 2026-09-06: the executor seat defaults to Opus, Sonnet is used where a task's shape suits it, and Fable takes complex work and the clerk brief; the earlier Sonnet-executor default is withdrawn. Wave width is the operator's call, one agent per domain with work.
 
 **The wave gate.** `swarm adjudicate <run-id> --case-file <path> [--jury=local|prism] [--cloud]` dispatches the case-file to the family-different jury and records an **advisory** verdict on the current wave. `checkAdjudication` (schema v9, `lib/advance.js`) then gates advance: **corroborate** clears; anything else is an overridable BLOCK requiring Director disposition (`swarm advance --override --reason`). **An ungated advance is a protocol violation.** Even a unanimous corroborate does not advance a wave alone — `normalizeAdjudication` sets `advances_wave_alone: false`, because the deterministic floor must pass too and outranks the jury in gate precedence.
 
@@ -434,10 +434,9 @@ dispatch directive carries them into every parallel amend prompt (`SKIP_VERIFY_D
    update only a literal inside a module they own and say so.
 3. **Relay posts are bounded** — one before the first edit only when a shared surface is at stake, one at
    commit, each under 300 words, facts only.
-4. **The clerk is a script, not a seat, unless the wave is contested.** The case-file's fix entries, raise
-   sites, criteria and out-of-scope list are mechanical; the run keeps a build script and the coordinator
-   runs it. A Fable clerk is dispatched only when a jury has read INSUFFICIENT_CONTEXT or CONTESTED on the
-   scripted case-file.
+4. **The clerk brief is Fable's seat** (ruled 2026-09-06), fed by the run's build script: the case-file's fix
+   entries, raise sites, criteria and out-of-scope list are mechanical, so the script assembles them and the
+   clerk seat reads facts instead of re-deriving the tree.
 5. **The shape is the bound.** Under 1–4 a wave costs a fraction of the old one by construction; nothing is written or read before a dispatch beyond the brief.
 
 *Withdrawn the same day it was written (2026-09-06): a rule capping a wave at three agents. Wave width is the

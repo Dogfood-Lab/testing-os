@@ -44,11 +44,11 @@
 ## D. Shipping Hygiene
 
 - [x] `[all]` `verify` script exists (test + build + smoke in one command) — `npm run verify` (2026-04-25)
-- [x] `[all]` Version in manifest matches git tag — root + 7 packages all at `1.11.0`, tag `v1.11.0` (2026-08-26)
+- [x] `[all]` Version in manifest matches git tag — root + 7 packages all at `1.12.0`, tag `v1.12.0` (2026-09-06)
 - [ ] `[all]` SKIP: dependency scanning not wired into `ci.yml` as an `npm audit` gate — but Dependabot security ALERTS are active and monitored (0 open as of 2026-07-03) and the root tree reports 0 high (the `fast-uri` override in `package.json` closes GHSA-q3j6-qgpj-74h6 / GHSA-v39h-62p7-jpjc). The residual gap is only the in-CI audit step; alerts + update PRs cover the monitoring half.
 - [x] `[all]` Automated dependency updates — Dependabot is live on both ecosystems (npm root + `/site`, grouped non-majors; github-actions): the 2026-07-03 sweep merged 5 PRs (#44 checkout v7, #51 @types/node 26, #52 site non-major group, #49 Astro 7, #48 site-theme 2.1 — the two site majors validated by the deployed accent + pa11y gates), with 1 held open (#50 js-yaml 4→5: two script gates fail under v5 — a real migration, tracked in HANDOFF.md). (2026-07-03)
-- [x] `[npm]` Six of seven `@dogfood-lab/*` packages are published on npm since v1.2.0 (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); headline install is `npm install -g @dogfood-lab/dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains intentionally workspace-internal. Per-package READMEs carry the canonical logo since v1.2.1. (2026-05-14, last re-affirmed 2026-08-26 at v1.11.0)
-- [x] `[npm]` `engines.node` set — root `package.json` has `"engines": {"node": ">=22"}` (tightened from `>=20` to `>=22` in v1.2.2 to match the CI Node 22 + 24 matrix; last re-affirmed 2026-08-26 at v1.11.0)
+- [x] `[npm]` Six of seven `@dogfood-lab/*` packages are published on npm since v1.2.0 (`schemas`, `verify`, `report`, `ingest`, `findings`, `dogfood-swarm`); headline install is `npm install -g @dogfood-lab/dogfood-swarm`. The seventh (`@dogfood-lab/portfolio`) remains intentionally workspace-internal. Per-package READMEs carry the canonical logo since v1.2.1. (2026-05-14, last re-affirmed 2026-09-06 at v1.12.0)
+- [x] `[npm]` `engines.node` set — root `package.json` has `"engines": {"node": ">=22"}` (tightened from `>=20` to `>=22` in v1.2.2 to match the CI Node 22 + 24 matrix; last re-affirmed 2026-09-06 at v1.12.0)
 - [x] `[npm]` Lockfile committed (2026-04-25)
 - [ ] `[vsix]` SKIP: not a VS Code extension.
 - [ ] `[desktop]` SKIP: not a desktop app.

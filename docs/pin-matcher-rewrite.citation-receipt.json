@@ -2,7 +2,7 @@
   "schema": "roleos-citation-receipt/v1",
   "kind": "citation-verification",
   "tool": "roleos verify-citations",
-  "input": "C:/Users/mikey/AppData/Local/Temp/claude/E--AI-testing-os/fb26a51a-f46f-4830-9381-31c057b110b3/scratchpad/pin-matcher-rewrite.dispatch.md",
+  "input": "<scratchpad>/E--AI-testing-os/fb26a51a-f46f-4830-9381-31c057b110b3/scratchpad/pin-matcher-rewrite.dispatch.md",
   "verdict": "escalate",
   "blocking": false,
   "advisory": true,

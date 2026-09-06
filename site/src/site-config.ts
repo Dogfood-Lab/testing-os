@@ -29,7 +29,7 @@ export const config: SiteConfig = {
     badge: 'Testing OS — on npm',
     headline: 'testing-os',
     headlineAccent: 'proves it ships.',
-    description: 'Centralized dogfood evidence system. 13 active repos (14 governed — the 14th, `dogfood-labs`, is the archived legacy repo retained for historical evidence), 8 surfaces, all currently-tracked active repos: last verdict = pass, all enforcement required. Single canonical schema validator across every consumer (one Ajv instance per schema per process; workspace-hoist split is a hard gate). Structured top-level errors with stable codes and a `Next:` hint on every failure path. See the [CHANGELOG](https://github.com/dogfood-lab/testing-os/blob/main/CHANGELOG.md) for the current release entry.',
+    description: 'Centralized dogfood evidence system. 14 governed repos, 8 surfaces, every latest accepted record verified pass — 13 of the 14 past the freshness window (indexes/stale.json names them; measured 2026-09-06). Single canonical schema validator across every consumer (one Ajv instance per schema per process; workspace-hoist split is a hard gate). Structured top-level errors with stable codes and a `Next:` hint on every failure path. See the [CHANGELOG](https://github.com/dogfood-lab/testing-os/blob/main/CHANGELOG.md) for the current release entry.',
     primaryCta: { href: '#architecture', label: 'How it works' },
     secondaryCta: { href: 'handbook/', label: 'Read the Handbook' },
     previews: [
@@ -48,7 +48,7 @@ export const config: SiteConfig = {
       features: [
         { title: 'Evidence-Based', desc: 'Every dogfood run produces a structured record with schema validation, provenance checks, and policy compliance.' },
         { title: 'Policy-Driven', desc: 'Per-repo enforcement tiers (required, warn-only, exempt) with promotion paths and review dates.' },
-        { title: 'Full Coverage', desc: '13 active repos across 8 product surfaces: CLI, desktop, web, API, MCP server, npm package, plugin, library. (The 14th governed entry, `dogfood-labs`, is the archived legacy repo retained for historical evidence.)' },
+        { title: 'Full Coverage', desc: '14 governed repos across 8 product surfaces: CLI, desktop, web, API, MCP server, npm package, plugin, library — every latest record verified pass, 13 of 14 flagged stale by the freshness window (measured 2026-09-06).' },
       ],
     },
     {
