@@ -1,11 +1,11 @@
 {
   "dogfood-lab/testing-os": {
     "cli": {
-      "run_id": "00mtpgwcxb-4QcJoX9QoLY3mQ",
+      "run_id": "00mtqdk9qt-U0Iu1Tq_PlVQzg",
       "verified": "pass",
       "verification_status": "accepted",
-      "finished_at": "2026-09-06T07:05:35.855Z",
-      "path": "records/dogfood-lab/testing-os/2026/09/06/run-00mtpgwcxb-4QcJoX9QoLY3mQ.json"
+      "finished_at": "2026-09-06T22:19:59.189Z",
+      "path": "records/dogfood-lab/testing-os/2026/09/06/run-00mtqdk9qt-U0Iu1Tq_PlVQzg.json"
     }
   },
   "mcp-tool-shop-org/a11y-demo-site": {
