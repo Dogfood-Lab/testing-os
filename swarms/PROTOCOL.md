@@ -434,14 +434,15 @@ dispatch directive carries them into every parallel amend prompt (`SKIP_VERIFY_D
    update only a literal inside a module they own and say so.
 3. **Relay posts are bounded** — one before the first edit only when a shared surface is at stake, one at
    commit, each under 300 words, facts only.
-4. **Parallelism is bounded** — at most three agents per wave by default. A seven-domain backlog runs as
-   two or three waves; the merge cost of seven branches (conflicts in every shared census) is paid by the
-   coordinator and it is not small.
-5. **The clerk is a script, not a seat, unless the wave is contested.** The case-file's fix entries, raise
+4. **The clerk is a script, not a seat, unless the wave is contested.** The case-file's fix entries, raise
    sites, criteria and out-of-scope list are mechanical; the run keeps a build script and the coordinator
    runs it. A Fable clerk is dispatched only when a jury has read INSUFFICIENT_CONTEXT or CONTESTED on the
    scripted case-file.
-6. **The shape is the bound.** Under 1–5 a wave costs a fraction of the old one by construction; nothing is written or read before a dispatch beyond the brief.
+5. **The shape is the bound.** Under 1–4 a wave costs a fraction of the old one by construction; nothing is written or read before a dispatch beyond the brief.
+
+*Withdrawn the same day it was written (2026-09-06): a rule capping a wave at three agents. Wave width is the
+operator's call — one agent per domain with work — and the harness's own defaults never changed; the cap was an
+inference from the token arithmetic, not part of what was asked.*
 
 ## Ownership attribution in non-isolated parallel amend waves
 
