@@ -81,6 +81,27 @@ Set \`verification_skipped: true\` at the top level of your output JSON to make 
   "verification_skipped": true
 }
 \`\`\`
+
+## Cost bounds (parallel-wave) — these override any coordinator brief that says otherwise
+
+Earned on armature, 2026-09-06: three waves in one day exhausted a weekly token budget. Every rule
+below is a hard bound, not advice.
+
+1. **No full-suite runs by an agent.** Do not measure "the isolated floor before your first edit";
+   the coordinator states the floor in the brief. After your fixes, run ONLY the test modules your
+   fixes touch, once, on the plain interpreter. The \`-O\` leg, the full suite and the package build
+   are the coordinator's serial verify on the merged tree — never yours.
+2. **No per-agent pin re-derivation.** Censuses and pins are measured ONCE by the coordinator at the
+   merge with each module's own derivation. If a fix of yours moves a pin inside a module you own,
+   update that one literal and say so in the fix's \`family:\` line; do not re-derive the tree.
+3. **Relay posts are facts, not essays.** One post BEFORE the first edit only when a shared surface
+   (a string another domain prints, a signature another domain calls) is at stake; one post at
+   commit with what changed as TEXT. Each under 300 words. No re-statements of the brief.
+4. **Probes are scripts by path, never stdin.** No heredoc into an interpreter, no \`python -\`; a
+   stdin probe has hung a worktree for hours three times.
+5. **One reverted-red proof per finding**, run against the affected module only.
+6. **Stop when your findings are fixed.** Do not audit beyond your list, do not sweep siblings, do
+   not "measure for the next audit" — file one line under \`OUT-OF-DOMAIN:\` and stop.
 `;
 
 /**

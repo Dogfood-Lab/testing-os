@@ -416,6 +416,36 @@ The serial-final-verify discipline closes the gap:
 
 Skip the directive when dispatching a single-agent wave or when agents are not running in parallel — the per-agent verify is then a legitimate independent check, not a vantage-point artifact.
 
+## Cost bounds for parallel amend waves (earned armature, 2026-09-06)
+
+Three waves in one day on a 7,500-test repo — seven parallel Opus agents, two full suite legs per agent, a
+pre-edit floor run per agent, per-agent pin re-derivation, multi-thousand-word relay posts, and a Fable
+clerk rebuilding the case-file each wave — consumed the account's weekly token budget: ≈ 1.8M subagent
+tokens for a seven-domain audit, ≈ 2.9M for a six-domain amend, ≈ 0.3–0.6M per clerk, and the
+coordinator's own context on top. The serial-final-verify section above already forbade per-agent
+verification; the coordinator's briefs overrode it. These bounds are the harness's own law and the
+dispatch directive carries them into every parallel amend prompt (`SKIP_VERIFY_DIRECTIVE`,
+`packages/dogfood-swarm/commands/dispatch.js`):
+
+1. **An agent never runs the full suite** — no pre-edit floor, no post-fix full leg, no `-O` leg. It runs
+   the test modules its fixes touch, once. The coordinator's serial verify on the merged tree is the one
+   authoritative run; `verify.ps1` / `npm run verify` is the coordinator's second leg.
+2. **Pins are measured once, at the merge, by the coordinator** with each module's own derivation. Agents
+   update only a literal inside a module they own and say so.
+3. **Relay posts are bounded** — one before the first edit only when a shared surface is at stake, one at
+   commit, each under 300 words, facts only.
+4. **Parallelism is bounded** — at most three agents per wave by default. A seven-domain backlog runs as
+   two or three waves; the merge cost of seven branches (conflicts in every shared census) is paid by the
+   coordinator and it is not small.
+5. **The clerk is a script, not a seat, unless the wave is contested.** The case-file's fix entries, raise
+   sites, criteria and out-of-scope list are mechanical; the run keeps a build script and the coordinator
+   runs it. A Fable clerk is dispatched only when a jury has read INSUFFICIENT_CONTEXT or CONTESTED on the
+   scripted case-file.
+6. **The budget is measured, not felt.** Before every dispatch the coordinator reads the account's usage
+   panel and writes the planned agent count and the expected token ceiling into the run log; after every
+   wave it writes the subagent totals from the completion reports beside them. A wave that would cross
+   the week's remaining budget is not dispatched.
+
 ## Ownership attribution in non-isolated parallel amend waves
 
 `swarm collect` enforces exclusive file ownership (Key Principle #1) against the **union** of two sets: the agent's self-reported `files_changed`, and an **independently-computed** touched-file set probed straight from git via `lib/git-touched-files.js` — `git status --porcelain` (uncommitted + untracked) **plus a committed-delta diff against the dispatch base** (the worktree's fork point under `--isolate`, `runs.commit_sha` otherwise; F-4ba6036b — without the committed half, an agent that `git commit`ed inside its worktree vanished from the probe entirely). The independent probe is the part that catches an agent which under-reports `files_changed` — it is the external check on a self-reported field (a Class #14 "verifier in the thing being verified" surface).
