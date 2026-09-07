@@ -443,6 +443,42 @@ dispatch directive carries them into every parallel amend prompt (`SKIP_VERIFY_D
 operator's call — one agent per domain with work — and the harness's own defaults never changed; the cap was an
 inference from the token arithmetic, not part of what was asked.*
 
+## CI-minute bounds for what a wave WRITES (earned armature, 2026-09-07)
+
+The bounds above meter **tokens**. They say nothing about **Actions minutes**. Measured 2026-09-07 from the
+org billing API: armature was burning **441 CI min/day — 1,324 of the org's 3,010 Actions minutes for the
+month, 44%** — out of a `ci.yml` the swarm itself wrote. Free only because the repo is public; the same
+shape on a private repo consumes a Free org's entire 2,000-minute monthly allowance in under five days.
+
+**The mechanism: the coordinator's rig-local verification ritual gets transcribed into `ci.yml`.**
+`verify.ps1` runs the suite twice — plain, then `-O` with `PYTHONOPTIMIZE=1` — which is correct on the rig,
+where it is one authoritative serial run per wave on free hardware. armature's `ci.yml` carries both legs
+across a 2-version matrix, so the once-per-wave ritual became **four full suite runs per push**. Run
+`34106483511`: 22.2 + 22.2 min on 3.11, 18.4 + 19.4 on 3.13 — **82 of 84 minutes, 97.6%, is one pytest
+suite executed four times.**
+
+Bound 1 above forbids an agent an `-O` leg. It governs the agent's shell. These govern what the wave commits,
+because a shape written into `ci.yml` outlives every wave that produced it.
+
+6. **A full-suite re-run is a rig ritual, not a CI shape.** A second full-suite leg in `ci.yml` (`-O`, a flag
+   sweep, a re-run under a different env) runs **the subset that asserts the property, on one matrix cell.**
+   armature's `-O` obligation is 94 lines across **19 of 196** test files: the leg re-runs all 4,497 tests to
+   check what 9.7% of them assert, on both interpreters — when assert-stripping is interpreter-wide behaviour
+   a second Python version cannot disprove. Narrowing takes the run from ~84 min to ~43.
+7. **Every workflow a wave writes states its per-push minute cost in a comment**, measured from real job
+   timings (`gh api repos/<r>/actions/runs/<id>/jobs`), never estimated. These files are otherwise densely
+   commented; the cost is the one fact that went unwritten, which is why it grew unchallenged.
+8. **`push` + `pull_request` on the same paths double-fires**, and `group: <workflow>-<github.ref>` cannot
+   collapse it — push sees `refs/heads/<branch>`, the PR sees `refs/pull/N/merge`. Verified on armature runs
+   `34111791960` (push) and `34111797073` (pull_request): same `head_sha` `783e1219`, four seconds apart,
+   both running the full 84-minute matrix. Use `group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}`.
+9. **A wave that leaves Dependabot enabled owns the doubled bill** from 8. Studio rule is no `dependabot.yml`
+   unless requested; if a repo keeps it, set `interval: monthly`, `open-pull-requests-limit: 3`, and `groups`.
+
+**The check, once per wave, before the push:** `gh api repos/<owner>/<repo>/actions/runs/<id>/jobs` on the
+wave's own CI run, with per-job minutes recorded in the FACTS receipt beside the test counts. A wave already
+records what it proved; this records what proving it cost.
+
 ## Ownership attribution in non-isolated parallel amend waves
 
 `swarm collect` enforces exclusive file ownership (Key Principle #1) against the **union** of two sets: the agent's self-reported `files_changed`, and an **independently-computed** touched-file set probed straight from git via `lib/git-touched-files.js` — `git status --porcelain` (uncommitted + untracked) **plus a committed-delta diff against the dispatch base** (the worktree's fork point under `--isolate`, `runs.commit_sha` otherwise; F-4ba6036b — without the committed half, an agent that `git commit`ed inside its worktree vanished from the probe entirely). The independent probe is the part that catches an agent which under-reports `files_changed` — it is the external check on a self-reported field (a Class #14 "verifier in the thing being verified" surface).
